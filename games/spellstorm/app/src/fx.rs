@@ -1046,16 +1046,17 @@ impl Fx {
         let fade = 1.0 - smooth(0.95, 1.12, front);
         let y = h * front.clamp(0.0, 1.0);
         let r = 0.35;
-        let mut sp = particles(lerp_c(c, WHITE, 0.3), 30, 0.4, 0.04);
+        // Red-heavy so they read as embers, not white specks, in the crypt grade.
+        let mut sp = particles(rgba(1.0, 0.3, 0.04, 1.0), 30, 0.5, 0.06);
         sp.cell = Cell::Spark;
-        sp.glow = 2.4;
+        sp.glow = 3.2;
         sp.dir = Vec3::Y;
         sp.spread = 30.0;
         sp.v = (0.5, 1.4);
         sp.damp = (2.0, 3.0);
         sp.gravity = Vec3::ZERO;
         sp.stretch = 0.03;
-        let due = 45.0 * fade * dt;
+        let due = 80.0 * fade * dt;
         let n = due as u32 + (self.f() < due.fract()) as u32;
         let _ = key;
         for _ in 0..n {
@@ -1064,6 +1065,11 @@ impl Fx {
             let q = at + Vec3::new(a.cos() * rr, y, a.sin() * rr);
             self.emit(sp, q, 1);
         }
+        // A soft halo round the front so it glows rather than looks painted.
+        let start = self.live.len();
+        self.halo(at + Vec3::Y * y.max(0.15), rgba(1.0, 0.42, 0.08, 1.0), 0.8, 0.4 * fade);
+        let made: Vec<_> = self.live.drain(start..).collect();
+        self.early.extend(made);
         self.light(at + Vec3::Y * y.max(0.4), c, 0.7 * fade, 2.0);
         if let Some(l) = self.live_lights.pop() {
             self.early_lights.push(l);

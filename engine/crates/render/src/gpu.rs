@@ -33,7 +33,7 @@ pub fn instance() -> wgpu::Instance { instance_for(wgpu::Backends::PRIMARY) }
 /// instance and its adapters as well costs every launch hundreds of ms.
 /// `instance()` is the fallback when Vulkan cannot present.
 pub fn window_instance() -> Option<wgpu::Instance> {
-    let pinned = std::env::var_os("WGPU_BACKEND").is_some() || std::env::var_os("KERN_ADAPTER").is_some();
+    let pinned = std::env::var_os("WGPU_BACKEND").is_some() || crate::switches::ADAPTER.set();
     if !cfg!(windows) || pinned { return None; }
     // Store overlays (Steam, Epic, GOG) hook every Vulkan app as implicit
     // layers and cost a launch up to 0.7 s; a Warp game uses none of them.
@@ -103,7 +103,7 @@ impl Gpu {
     }
 
     async fn request_async(instance: &wgpu::Instance, surface: Option<&wgpu::Surface<'_>>) -> Result<(Gpu, wgpu::Adapter), String> {
-        let wanted = std::env::var("KERN_ADAPTER").ok();
+        let wanted = crate::switches::ADAPTER.get();
         let adapter = (async {
             if let Some(w) = wanted.as_deref().filter(|w| *w != "software") {
                 for a in instance.enumerate_adapters(wgpu::Backends::all()).await {
@@ -147,7 +147,7 @@ impl Gpu {
         // 80 % of WebGPU devices offer (web3dsurvey.com, 2026-11): 16
         // storage buffers per stage, 32 sampled textures, 1 GiB buffers;
         // `mac` is `browser` with the 10 storage buffers most Macs give.
-        let web = std::env::var("KERN_WEBGPU_LIMITS").ok();
+        let web = crate::switches::WEBGPU_LIMITS.get();
         let (features, limits) = match web.as_deref() {
             Some(mode @ ("spec" | "browser" | "mac")) => {
                 let mut web = wgpu::Limits::default();

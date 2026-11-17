@@ -280,12 +280,12 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
     // Every tree at its coarsest proxy, plus room for nearer trees to refine:
     // without it the far forest alone fills the splats and the shared camera
     // cut coarsens the near trees too (Joep's 13 px voxels in the forest).
-    let env=|name:&str,default:u64|std::env::var(name).ok().and_then(|v|v.parse::<u64>().ok()).unwrap_or(default);
+    let env=|switch:&crate::switches::Switch,default:u64|switch.parse::<u64>().unwrap_or(default);
     let raster_budget=forest.instances.iter().map(|v|work[v.meta[1]as usize]as u64).sum::<u64>()
-        .max(env("KERN_RASTER_FLOOR",8<<20)).clamp(1,16<<20)as u32;
+        .max(env(&crate::switches::RASTER_FLOOR,8<<20)).clamp(1,16<<20)as u32;
     // Source clusters bound the camera cut as well: unbounded, a forest
     // floor reserved 6.7M clusters and culling them took most of a 106 ms frame.
-    let source_cluster_budget=env("KERN_SOURCE_CLUSTERS",2<<20).clamp(1,crate::foliage_select::DEFAULT_SOURCE_CLUSTER_BUDGET as u64)as u32;
+    let source_cluster_budget=env(&crate::switches::SOURCE_CLUSTERS,2<<20).clamp(1,crate::foliage_select::DEFAULT_SOURCE_CLUSTER_BUDGET as u64)as u32;
     scene.voxel_forest=Some(forest);scene.voxel_proxies=trees.len()as u32*2;
     scene.gpu_forest=Some(Spec {page_budget:Default::default(),source_budget:Default::default(),nodes,source_tables,roots,branches,representations,proxies,templates,population,first_owner,slots,raster_budget,source_cluster_budget,error:policy.max_error_pixels.max(0.25)});
     Ok(())
@@ -1028,7 +1028,7 @@ impl Runtime {
         use super::*;use crate::{Camera,Lighting,Renderer,ViewRect,foliage_population::WorldRoot};
         struct Restore(Option<std::ffi::OsString>);
         impl Drop for Restore {fn drop(&mut self){unsafe {match &self.0 {Some(v)=>std::env::set_var("KERN_STATIC_SUN_CACHE",v),None=>std::env::remove_var("KERN_STATIC_SUN_CACHE")}}}}
-        let _restore=Restore(std::env::var_os("KERN_STATIC_SUN_CACHE"));
+        let _restore=Restore(crate::switches::STATIC_SUN_CACHE.os());
         let source=crate::vegetation_asset::tests::aggregate_fixture();let config=crate::vegetation_asset::tests::aggregate_config();
         let mut cooked=crate::vegetation_asset::CookedPlant::cook_aggregate(&source,config).unwrap();cooked.cook_proxy(&source,config,3).unwrap();
         let roots=[WorldRoot {id:42,placement:RootPlacement {up:Vec3::Y,pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0}}];

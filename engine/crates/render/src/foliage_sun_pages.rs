@@ -300,12 +300,12 @@ impl State {
 
 impl Resources {
     pub fn new(gpu:&Gpu,scene:&Scene)->Result<Self,String>{
-        let enabled=std::env::var("KERN_PAGED_FOLIAGE_SUN").as_deref()==Ok("1");
+        let enabled=crate::switches::PAGED_FOLIAGE_SUN.on();
         // Diagnostic coverage/precision tradeoff; physical memory and update
         // budget do not change. Keep the proven fine-page default until the
         // actual distant-crown comparison accepts a coarser world footprint.
-        let page_world=page_world_setting(std::env::var("KERN_FOLIAGE_SUN_PAGE_METRES").ok().as_deref());
-        let lod_pixels=std::env::var("KERN_FOLIAGE_SUN_LOD").ok().and_then(|s|s.parse::<f32>().ok())
+        let page_world=page_world_setting(crate::switches::FOLIAGE_SUN_PAGE_METRES.get().as_deref());
+        let lod_pixels=crate::switches::FOLIAGE_SUN_LOD.parse::<f32>()
             .filter(|x|x.is_finite()&&*x>=0.&&*x<=2.).unwrap_or(0.5);
         if enabled&&(gpu.limits.max_texture_array_layers<MAX_PAGES as u32||gpu.limits.max_texture_dimension_2d<PAGE_SIZE){return Err("device cannot allocate bounded foliage sun page array".into());}
         let mut owners:Vec<_>=if enabled{scene.instances.iter().map(caster).collect()}else{Vec::new()};

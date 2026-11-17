@@ -346,6 +346,14 @@ pub enum Screen {
     Fullscreen,
 }
 
+impl Screen {
+    /// A game under a party host: on screen only while the session runs, and
+    /// only when a daemon launched it; standalone it is as configured.
+    pub fn for_party(launched_by_daemon: bool, running: bool) -> Screen {
+        if !launched_by_daemon { Screen::Normal } else if running { Screen::Fullscreen } else { Screen::Hidden }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub title: String,

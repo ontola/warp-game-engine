@@ -120,9 +120,12 @@ static GAME_SURFACE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(No
 /// Replace game_surface.wgsl (material flag SURFACE) with a game's own
 /// `fn game_surface(s: SurfaceIn) -> SurfaceOut`. Call it before creating
 /// the renderer; it wins over `KERN_SHADER_DIR`. It may also define
-/// `fn game_glow(p: vec3<f32>, instance: u32, material: u32) -> vec3<f32>`:
-/// radiance added to every opaque surface after lighting (any material; it
-/// may read `aux`), e.g. the glowing edge of a body being built.
+/// `fn game_glow(p: vec3<f32>, instance: u32, material: u32) -> vec4<f32>`:
+/// radiance laid over every opaque surface after lighting (any material; it
+/// may read `aux`), e.g. the glowing edge of a body being built. The lit
+/// colour becomes `lit * (1 - a) + rgb`: `a = 0` only adds light, `a = 1`
+/// replaces the surface (bright additive colour washes out to cream under
+/// the tonemapper; replacing keeps an ember edge saturated).
 pub fn set_game_surface(source: &str) {
     *GAME_SURFACE.lock().unwrap() = Some(source.to_owned());
 }
@@ -130,14 +133,14 @@ pub fn set_game_surface(source: &str) {
 /// A game surface without its own `game_glow` gets the one that adds none.
 fn with_glow(mut source: String) -> String {
     if !source.contains("fn game_glow(") {
-        source.push_str("\nfn game_glow(p: vec3<f32>, instance: u32, material: u32) -> vec3<f32> { return vec3<f32>(0.0); }\n");
+        source.push_str("\nfn game_glow(p: vec3<f32>, instance: u32, material: u32) -> vec4<f32> { return vec4<f32>(0.0); }\n");
     }
     source
 }
 
 /// The override directory, if `KERN_SHADER_DIR` names one.
 pub fn dir() -> Option<PathBuf> {
-    std::env::var_os("KERN_SHADER_DIR").map(PathBuf::from).filter(|d| d.is_dir())
+    crate::switches::SHADER_DIR.os().map(PathBuf::from).filter(|d| d.is_dir())
 }
 
 /// The built-in source of `name` (one of the files above).

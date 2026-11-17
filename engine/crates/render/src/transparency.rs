@@ -74,7 +74,7 @@ const PHASE_ALL: u32 = 3;
 
 /// Whether the renderer draws refraction for this scene.
 pub(crate) fn refraction_requested(scene: &Scene) -> bool {
-    scene.graphics.refraction || std::env::var("KERN_REFRACTION").is_ok_and(|v| v == "1")
+    scene.graphics.refraction || crate::switches::REFRACTION.on()
 }
 
 struct OrderBuffer {

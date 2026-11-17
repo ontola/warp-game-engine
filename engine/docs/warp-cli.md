@@ -383,6 +383,19 @@ confirms, B or Start closes. Scripts and agents use the console:
 `state` shows `players` and `phase` (`standalone`, `waiting`, `ready`,
 `running` or `paused`).
 
+The session lifecycle is shared by every Rust game that a party host
+launches (Growing Guns, Spellstorm, Spaceracer and `warp`):
+`gamenight::party::Party` holds the client, the session id, the `Phase`
+(`Idle`, `Warm`, `Running`, `Paused`) and the finished flag. It applies
+`prepare`, `start`, `pause`, `resume` and `dispose` (only for the current
+session), `ready` (progress, then ready), `finished` (once per session),
+`room_log` and `loading`, and parses profile colours (`hex`, lenient;
+`hex_strict`, exactly `#rrggbb`). `app::Screen::for_party` picks the window
+state from the phase. A game wraps `Party` with what is its own: its
+settings and specs, which events it emits for a poll, its seats, and the
+mapping of a controller frame to `app::Controls` (`to_controls`, which
+differs per game in buttons and look rate).
+
 ### State
 
 Every module has a global `state` table that survives reloads. **main.luau's

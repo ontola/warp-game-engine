@@ -147,7 +147,7 @@ pub(crate) struct Resources {
 }
 impl Resources {
     pub fn new(gpu:&Gpu,scene:&Scene)->Result<Self,String> {
-        let enabled=std::env::var("KERN_CLUSTER_TRAVERSAL").as_deref()==Ok("1");
+        let enabled=crate::switches::CLUSTER_TRAVERSAL.on();
         let packed=Packed::new(scene,enabled)?;
         let bytes=bytemuck::cast_slice(&packed.words);
         if bytes.len()as u64>u64::from(gpu.limits.max_storage_buffer_binding_size){return Err("cluster BVH exceeds storage binding limit".into());}
