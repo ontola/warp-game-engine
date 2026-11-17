@@ -46,6 +46,7 @@ local PROP = {
 	plank = "#6b4e37", board = "#8b6b4a", dark = "#161618", sandbag = "#8a7a5a", bag = "#1d1d1f",
 	dumpster = "#2f4a3a", barrel = "#6a3a2a", hedge = "#2f4a26", fence = "#8a8478", tyre = "#1a1a1a",
 }
+local SHROUD = "#060607"
 local DEBRIS = { "#5f5a55", "#7a7470", "#4a4640", "#3a3632" }
 local CROP = { "#7d8a3a", "#8f8a40", "#6a7a32" }
 
@@ -77,6 +78,8 @@ function M.warm()
 	end
 	for _, c in { "#3c5a2c", "#2f4a26", "#26401f", "#4a6a32" } do world.warm("sphere", { color = c, roughness = 0.9 }) end
 	world.warm("sphere", { color = "#7a7470", roughness = 0.9 })
+	world.warm("cube", { color = SHROUD, roughness = 1 })
+	world.warm("cube", { color = "#3a3a3c", roughness = 0.95 })
 	world.warm("sphere", { color = "#ff9a3a", emissive = 1.2, roughness = 0.9 })
 	world.warm("cube", { color = "#3a3d42", roughness = 0.6, metal = 0.6 })
 	world.warm("cube", { color = "#fff0c8", roughness = 0.9, emissive = 1.5 })
@@ -336,6 +339,10 @@ local function building(c, x0, w, d, cols, rows, side, look, kinds, sleepers)
 		for _ = 1, random.int(0, sleepers) do
 			table.insert(c.inside, v(random.range(r.x0 + 0.7, r.x1 - 0.7), 0, random.range(r.z0 + 0.7, r.z1 - 0.7)))
 		end
+		-- Fog of war: the room is dark until somebody is in it or looks in
+		-- through a door or a hole in the wall (main.luau lifts it).
+		local h = look.height[2] + 0.15
+		r.shroud = add(c, world.spawn("cube", { pos = v((r.x0 + r.x1) / 2, h / 2, (r.z0 + r.z1) / 2 + ZC), size = v(r.x1 - r.x0 - 0.2, h, r.z1 - r.z0 - 0.2), color = SHROUD, roughness = 1, solid = false, tag = "deco" }))
 	end
 	table.insert(c.buildings, b)
 	return b
