@@ -35,8 +35,8 @@ co-op: design" doc.
 | D-pad up and down, A, B | pick an answer when talking, confirm, walk away |
 | As a ghost, A | moan: pulls nearby zombies towards you |
 
-Every zombie attack is telegraphed: arms go up, the eyes light red and a
-red ring shows its reach on the ground. Hitting or shoving it first
+Every zombie attack is telegraphed: the arms go up for a second and the
+eyes light red (no ring on the ground: the body shows it). Hitting or shoving it first
 cancels the attack. Shamblers swipe; runners lunge about three metres.
 
 ```sh
