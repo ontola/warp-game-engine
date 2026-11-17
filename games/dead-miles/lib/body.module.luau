@@ -144,6 +144,19 @@ function M.lie(b, pos, yaw, down, fall)
 	end
 end
 
+-- A held pose for someone who waits: "idle", "crouch", "wave", "down"
+-- (lying) and the like (a box figure can only lie or stand).
+function M.pose(b, pose)
+	if b.pose == pose then return end
+	b.pose, b.t = pose, 0
+	if b.human then
+		humans.set(b.human, { pose = pose, t = 0 })
+		place_weapon(b)
+	else
+		figure.lie(b.fig, at(b, b.pos), b.yaw, pose == "down")
+	end
+end
+
 -- A fall in progress: call each tick while lying.
 function M.fall(b, dt)
 	if b.pose ~= "dead" then return end

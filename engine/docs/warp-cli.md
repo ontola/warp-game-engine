@@ -305,7 +305,8 @@ keyboard mapping is in `app::input`.
   spawning never rebuilds the renderer. Set each one's feet `pos` and
   `yaw` (0 faces +z, a quarter turn +x) every tick: the legs walk, jog or
   stand from how far it moved. `pose` lays an action over that: `walk`
-  (the default), `idle`, `reach` and `raise` (arms ahead, arms over the
+  (the default), `idle`, `crouch` (low: waiting on one knee, or walking
+  crouched when it moves), `wave` (the right hand high, waving), `reach` and `raise` (arms ahead, arms over the
   head), `strike` (from raised to low over `t`), `aim`, `shove`,
   `attack`, `punch`, `jab`, `hit`, `hit_head`, `cast`, `roll` (captures
   played by `t`, 0 to 1), `dead` (the fall over `t`) and `down` (lying).

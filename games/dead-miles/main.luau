@@ -21,6 +21,8 @@
 local figure = require("lib/figure")
 local body = require("lib/body")
 local land = require("lib/land")
+local props = require("lib/props")
+local dog = require("lib/dog")
 local v = vector.create
 
 -- Every encounter file in content/encounters, in name order.
@@ -518,6 +520,7 @@ end
 local function encounter_fits(e, where, biome, day)
 	if e.where ~= where then return false end
 	if (e.min_day or 1) > day then return false end
+	if e.when and not e.when({ food = s.food, ammo = s.ammo, meds = s.meds, battery = s.battery, day = day, people = #s.survivors }) then return false end
 	if e.biomes then
 		local ok = false
 		for _, b in e.biomes do
@@ -544,10 +547,55 @@ local function choose_encounter(where, biome, day)
 	return nil
 end
 
-local function place_stranger(e, pos, chunk)
-	local look = e.look or {}
-	local fig = body.build(pos, random.range(-math.pi, math.pi), { shirt = look.shirt or pick(STRANGER_SHIRTS), skin = look.skin or pick(SKINS), pants = look.pants or pick(PANTS) }, "stranger")
-	local st = { file = e.file, pos = pos, fig = fig, chunk = chunk, done = false, yaw = 0 }
+-- side: which side of the path a prop stands (1: +z, the far kerb); its
+-- front faces the path. c: the chunk, which owns the prop.
+local function place_stranger(e, pos, chunk, c, side)
+	side = side or 1
+	local yaw0 = if side == 1 then 0 else math.pi
+	local st = { file = e.file, pos = pos, chunk = chunk, done = false, yaw = 0, pose = e.pose, nobody = e.nobody, reach = 1.6 }
+	if e.prop then
+		local pp = props.build(e.prop, pos, yaw0)
+		for _, id in pp.ents do table.insert(c.ents, id) end
+		table.insert(c.rects, pp.rect)
+		table.insert(s.rects, pp.rect)
+		grid_add(#s.rects, pp.rect)
+		local foot = props.DEFS[e.prop].foot
+		st.prop_at = pos
+		-- Talk from the path side, or reach the prop from anywhere round it.
+		local stand = e.stand or v(0, 0, -(foot[2] / 2 + 0.6))
+		st.pos = pos + v(side * stand.x, 0, side * stand.z)
+		st.lift = stand.y
+		st.reach = if e.nobody then math.max(foot[1], foot[2]) / 2 + 1.2 else 1.6 + (stand.y or 0) * 0.5
+		st.pos = collide(st.pos, RADIUS)
+	end
+	if not e.nobody then
+		local look = e.look or {}
+		local fpos = if st.lift then st.pos + v(0, st.lift, 0) else st.pos
+		st.fig = body.build(fpos, random.range(-math.pi, math.pi), { shirt = look.shirt or pick(STRANGER_SHIRTS), skin = look.skin or pick(SKINS), pants = look.pants or pick(PANTS) }, e.pool or "stranger")
+		if e.held then body.hold(st.fig, e.held, HELD) end
+	end
+	-- Whoever is with them: a child, a patient, the other side of a quarrel.
+	st.with = {}
+	for _, w in e.with or {} do
+		local look = w.look or {}
+		local at = v(w.at.x * side, 0, w.at.z * side)
+		local f = body.build(st.pos + at, 0, { shirt = look.shirt or pick(STRANGER_SHIRTS), skin = look.skin or pick(SKINS), pants = look.pants or pick(PANTS) }, w.pool or "stranger")
+		if w.held then body.hold(f, w.held, HELD) end
+		table.insert(st.with, { fig = f, at = at, pose = w.pose })
+	end
+	if e.dog then
+		st.dog = dog.build(st.pos + v(0.8, 0, 0), 0)
+		st.reach = 2.2
+	end
+	if e.lure then st.lure = { t = math.huge, every = e.lure.every or 2.5, radius = e.lure.radius or 26, sound = e.lure.sound, next = 0 } end
+	if e.light then st.light = { t = math.huge, color = e.light.color or "#ff9a4a", intensity = e.light.intensity or 700, range = e.light.range or 16 } end
+	-- A horde asleep where the street opens up: walk, don't run.
+	if e.sleepers then
+		for _ = 1, random.int(e.sleepers[1], e.sleepers[2]) do
+			local p = pos + v(random.range(-7, 7), 0, random.range(-3.2, 3.2))
+			spawn_zombie(if random.chance(0.15) then "runner" else "shambler", p, "sleep")
+		end
+	end
 	-- A hidden temperament, rolled once: what the content's results may depend on.
 	if e.temperament then
 		local total = 0
@@ -563,9 +611,18 @@ local function place_stranger(e, pos, chunk)
 		end
 		st.temperament = st.temperament or keys[#keys]
 	end
-	if e.held then body.hold(fig, e.held, HELD) end
 	table.insert(s.strangers, st)
 	return st
+end
+
+-- Everything a stranger brought along goes.
+local function drop_stranger(st)
+	if st.fig then body.remove(st.fig) end
+	st.fig = nil
+	for _, w in st.with or {} do body.remove(w.fig) end
+	st.with = {}
+	if st.dog then dog.remove(st.dog) end
+	st.dog = nil
 end
 
 local function encounter_of(st)
@@ -612,10 +669,119 @@ local function recruit(st, u)
 	r.dur = MELEE[r.melee].dur
 	hold_weapon(r)
 	table.insert(s.survivors, r)
-	body.remove(st.fig)
-	st.fig = nil
+	drop_stranger(st)
 	count("recruits")
 	game.log("Someone joined the group")
+end
+
+----------------------------------------------------------------------------
+-- Street events: what an encounter file can ask for beyond talk and
+-- trade. The files stay data; the machinery is here.
+
+-- The nearest person or survivor in a body to a point.
+local function nearest_body(pos, people_only)
+	local best, bd = nil, math.huge
+	for _, u in s.survivors do
+		if in_body(u) and u.pos and not (people_only and u.bot) then
+			local d = dist(u.pos, pos)
+			if d < bd then best, bd = u, d end
+		end
+	end
+	return best, bd
+end
+
+-- The dead come for someone: n of them from a few metres off, awake.
+local function call_dead(at, n, target)
+	for _ = 1, n do
+		local a = random.range(-math.pi, math.pi)
+		local p = at + v(math.cos(a), 0, math.sin(a)) * random.range(3.5, 7)
+		local kind = if random.chance(math.min(0.4, 0.08 * s.day)) then "runner" else "shambler"
+		spawn_zombie(kind, p, "investigate", flat(target or at))
+	end
+end
+
+local function adopt_dog(st)
+	if not st.dog then return end
+	if s.dog then dog.remove(s.dog.d) end
+	s.dog = { d = st.dog, pos = st.dog.pos, bark = 0, check = 0 }
+	st.dog = nil
+	count("dogs")
+end
+
+-- Everything a result can do besides items: see README "Street events".
+local function event_effects(u, st, res)
+	if res.zombies then call_dead(st.pos, res.zombies, u.pos) end
+	if res.lure then st.lure = { t = res.lure, every = st.lure and st.lure.every or 2.5, radius = 34, sound = res.lure_sound or (st.lure and st.lure.sound) or "alarm", next = 0 } end
+	if res.quiet then st.lure = nil end
+	if res.light then st.light = { t = res.light, color = "#ff9a4a", intensity = 700, range = 16 } end
+	if res.power_cut then
+		for _, ch in s.chunks do
+			for _, l in ch.lamps or {} do
+				if dist(l.pos, st.pos) < 70 and not l.off then
+					l.off = true
+					if l.bulb then world.set(l.bulb, { color = "#4a4640", emissive = 0 }) end
+				end
+			end
+		end
+		s.power_cut_x = st.pos.x + 70
+	end
+	if res.fog then s.fog_t = res.fog end
+	if res.calm then
+		s.dir = { mode = "calm", t = res.calm, spawn_t = 8 }
+		s.pressure = 0
+	end
+	if res.bands then
+		s.band_queue = s.band_queue or {}
+		for _, b in res.bands do table.insert(s.band_queue, b) end
+	end
+	if res.stamina then
+		for _, o in s.survivors do
+			if in_body(o) and o.stamina_max then o.stamina = o.stamina_max * res.stamina end
+		end
+	end
+	if res.bitten then
+		-- The last one to join is who was bitten.
+		local r = s.survivors[#s.survivors]
+		if r and r.recruit then r.turns = res.bitten end
+	end
+	if res.dog then adopt_dog(st) end
+	if res.dog_off and st.dog then st.dog_run = 3 end
+	if res.escort then
+		st.escort = { to = s.route + (res.escort.metres or 48), gain = res.escort.gain, text = res.escort.text }
+		st.done = false
+		st.following = true
+	end
+	if res.leave and st.fig then st.fleeing = 4 end
+	-- A short cut: the group comes out further along the way.
+	if res.skip then
+		for _, o in s.survivors do
+			if in_body(o) then
+				local x = o.pos.x + res.skip
+				o.pos = collide(v(x, 0, path_z(x) + (o.pos.z - path_z(o.pos.x)) * 0.3), RADIUS)
+				if o.fig then body.place(o.fig, o.pos, o.yaw) end
+			end
+		end
+		if s.dog then s.dog.pos = collide(s.dog.pos + v(res.skip, 0, 0), 0.25) end
+		for _, o in s.strangers do
+			if o.following then o.pos = collide(v(o.pos.x + res.skip, 0, path_z(o.pos.x + res.skip)), RADIUS) end
+		end
+	end
+end
+
+local function pick_result(st, results)
+	local pool, total = {}, 0
+	for _, r in results do
+		if r.temperament == nil or r.temperament == st.temperament then
+			table.insert(pool, r)
+			total += r.weight or 1
+		end
+	end
+	local roll = random.range(0, total)
+	for _, r in pool do
+		roll -= r.weight or 1
+		if roll <= 0 then return r end
+	end
+	return pool[#pool]
 end
 
 local function apply_result(u, st, res)
@@ -638,6 +804,7 @@ local function apply_result(u, st, res)
 		st.fleeing = 4
 		sfx("shove", st.pos)
 	end
+	event_effects(u, st, res)
 	if res.text then popup(u, res.text, res.color or "#e8e0c8") end
 	count("encounter_choices")
 end
@@ -651,28 +818,11 @@ local function choose(u, st, choice)
 		return
 	end
 	for item, n in choice.cost or {} do s[item] -= n end
-	local results = choice.results or { choice }
 	-- Results may depend on the stranger's hidden temperament.
-	local pool = {}
-	local total = 0
-	for _, r in results do
-		if r.temperament == nil or r.temperament == st.temperament then
-			table.insert(pool, r)
-			total += r.weight or 1
-		end
-	end
-	local roll = random.range(0, total)
-	local res = pool[#pool]
-	for _, r in pool do
-		roll -= r.weight or 1
-		if roll <= 0 then
-			res = r
-			break
-		end
-	end
+	local res = pick_result(st, choice.results or { choice })
+	if not (choice.stay or (res and res.stay)) then st.done = true end
 	if res then apply_result(u, st, res) end
 	if e.on_choice then e.on_choice(st, choice, res) end
-	if not (choice.stay or (res and res.stay)) then st.done = true end
 	sfx("pickup", st.pos, { pitch = 0.9 })
 	u.talk = nil
 end
@@ -694,6 +844,7 @@ local BAND = {
 }
 
 local function roll_band(day, index)
+	if s.band_queue and #s.band_queue > 0 then return table.remove(s.band_queue, 1) end
 	if index <= 2 then return "quiet" end
 	local r = random.float()
 	local horde = math.min(0.3, 0.06 + 0.04 * day)
@@ -718,6 +869,25 @@ local function populate(c, day, in_day)
 		local mode = if random.chance(band.sleep) then "sleep" else (if random.chance(0.5) then "idle" else "wander")
 		spawn_zombie(if random.chance(runners) then "runner" else "shambler", p, mode)
 	end
+end
+
+-- A free place for a prop of footprint foot ({length, depth}) at one
+-- kerb of chunk c, or nil.
+local function kerb_spot(c, foot, side)
+	local w, d = foot[1], foot[2]
+	local z = c.zc + side * (0.9 + d / 2)
+	for _ = 1, 10 do
+		local x = random.range(c.x0 + land.TURN + 1 + w / 2, c.x1 - 1 - w / 2)
+		local free = true
+		for _, r in c.rects do
+			if x + w / 2 + 0.6 > r.x0 and x - w / 2 - 0.6 < r.x1 and z + d / 2 + 0.6 > r.z0 and z - d / 2 - 0.6 < r.z1 then
+				free = false
+				break
+			end
+		end
+		if free then return v(x, 0, z) end
+	end
+	return nil
 end
 
 local function add_chunk()
@@ -757,18 +927,27 @@ local function add_chunk()
 		local where = if in_day == 0 then "camp" elseif #open > 0 and random.chance(0.6) then "room" else "path"
 		local e = choose_encounter(where, c.biome, day)
 		if e then
-			local pos
+			local pos, side = nil, if random.chance(0.5) then 1 else -1
 			if where == "room" then
 				local b = pick(open)
 				local r = b.rooms[random.int(1, #b.rooms)]
 				pos = v((r.x0 + r.x1) / 2, 0, (r.z0 + r.z1) / 2)
+				side = if (r.z0 + r.z1) / 2 > c.zc then 1 else -1
 			elseif where == "camp" then
 				pos = c.camp + v(2.5, 0, -2.8)
+			elseif e.prop and not e.in_road then
+				-- At the kerb, half on the road, where nothing else stands;
+				-- the middle of the path stays open.
+				pos = kerb_spot(c, props.DEFS[e.prop].foot, side)
+				if not pos then side = -side pos = kerb_spot(c, props.DEFS[e.prop].foot, side) end
 			else
 				pos = v(random.range(c.x0 + land.TURN + 2, c.x1 - 4), 0, c.zc + random.range(-2, 2))
 			end
-			place_stranger(e, collide(pos, RADIUS), index)
-			count("encounters")
+			if pos then
+				if not e.prop then pos = collide(pos, RADIUS) end
+				place_stranger(e, pos, index, c, side)
+				count("encounters")
+			end
 		end
 	end
 	table.insert(s.chunks, c)
@@ -801,8 +980,8 @@ local function drop_chunk(c)
 		return false
 	end)
 	s.strangers = filter(s.strangers, function(st)
-		if st.pos.x > c.x1 then return true end
-		if st.fig then body.remove(st.fig) end
+		if st.pos.x > c.x1 or st.escort then return true end
+		drop_stranger(st)
 		return false
 	end)
 end
@@ -1503,7 +1682,10 @@ end
 
 local function nearest_stranger(u)
 	for _, st in s.strangers do
-		if st.fig and not st.done and not st.fleeing and dist(st.pos, u.pos) < 1.6 then return st end
+		if (st.fig or st.nobody) and not st.done and not st.fleeing and not st.following and dist(st.pos, u.pos) < st.reach then
+			local e = encounter_of(st)
+			if e and not (e.auto and not e.choices) then return st end
+		end
 	end
 	return nil
 end
@@ -1564,7 +1746,7 @@ local function act(u, it, dt)
 	if u.talk then
 		local st = u.talk
 		local e = encounter_of(st)
-		if not e or st.done or dist(st.pos, u.pos) > 2.5 then
+		if not e or st.done or dist(st.pos, u.pos) > st.reach + 1 then
 			u.talk = nil
 		else
 			local n = #e.choices
@@ -2326,7 +2508,7 @@ local function sight_step()
 	if dark() then
 		for _, ch in s.chunks do
 			for _, l in ch.lamps or {} do
-				if math.abs(l.pos.x - cx) < 30 then table.insert(lamps, l) end
+				if not l.off and math.abs(l.pos.x - cx) < 30 then table.insert(lamps, l) end
 			end
 		end
 	end
@@ -2349,6 +2531,7 @@ local function sight_step()
 				end
 				if look and clear_line(u.pos, z.pos) then seen = true break end
 			end
+			if z.dog_t and z.dog_t > game.time() then seen = true end
 			z.seen_t = if seen then 0.6 else (z.seen_t or 0) - dt
 			body.hide(z.fig, z.seen_t <= 0)
 		end
@@ -2360,6 +2543,8 @@ end
 
 function warm_all()
 	land.warm()
+	props.warm()
+	dog.warm()
 	-- Bake the skies of the day in the background: switching to one that
 	-- is not baked yet stalls a frame for a few hundred ms.
 	local skies = {}
@@ -2451,6 +2636,127 @@ local function zombies_tick(dt)
 	end
 end
 
+-- Street events over time: lures, fires, fog, things that happen as you
+-- pass, the dog, and the bitten.
+local function events_step(dt)
+	s.event_lights = {}
+	for _, st in s.strangers do
+		local e = encounter_of(st)
+		-- Something that keeps making noise (a radio, an alarm, a bell).
+		if st.lure then
+			st.lure.t -= dt
+			st.lure.next -= dt
+			if st.lure.next <= 0 then
+				st.lure.next = st.lure.every
+				noise(st.prop_at or st.pos, st.lure.radius, 0.01)
+				if st.lure.sound then sfx(st.lure.sound, st.prop_at or st.pos) end
+			end
+			if st.lure.t <= 0 then st.lure = nil end
+		end
+		if st.light then
+			st.light.t -= dt
+			local at = st.prop_at or st.pos
+			table.insert(s.event_lights, { pos = v(at.x, 1.6, at.z), color = st.light.color, intensity = st.light.intensity * (0.85 + 0.15 * math.sin(game.time() * 11 + at.x)), range = st.light.range })
+			if st.light.t <= 0 then st.light = nil end
+		end
+		-- Things that happen as you come near: no card, or a card that opens.
+		if e and e.auto and not st.done then
+			local u, d = nearest_body(st.prop_at or st.pos, e.choices ~= nil)
+			if u and d < (e.radius or 7) then
+				if e.choices then
+					if not u.bot and not u.talk then
+						u.talk, u.talk_i, u.talk_age = st, 1, 0
+						sfx("search", st.pos, { pitch = 1.3 })
+					elseif u.bot and KNOBS.autopilot == 1 then
+						choose(u, st, e.choices[1])
+					end
+				else
+					st.done = true
+					local res = pick_result(st, e.results or {})
+					if res then apply_result(u, st, res) end
+				end
+			end
+		end
+	end
+	-- Fog rolls in for a while.
+	if s.fog_t then
+		s.fog_t -= dt
+		if s.fog_t > 0 then
+			light.set({ fog_start = 3, fog_end = 16, fog_density = 0 })
+		else
+			s.fog_t = nil
+			if dark() then light.set({ fog_start = 30, fog_end = 70, fog_density = 0 }) else light.set({ fog_start = 34, fog_end = 90, fog_density = 0 }) end
+		end
+	end
+	-- After a power cut, the lamps further on are dead too.
+	if s.power_cut_x then
+		for _, ch in s.chunks do
+			for _, l in ch.lamps or {} do
+				if not l.off and l.pos.x < s.power_cut_x + 200 and l.pos.x > s.power_cut_x - 80 then
+					l.off = true
+					if l.bulb then world.set(l.bulb, { color = "#4a4640", emissive = 0 }) end
+				end
+			end
+		end
+	end
+	-- The dog walks at a person's heel and barks at the dead it smells.
+	local dg = s.dog
+	if dg then
+		local u = nearest_body(dg.pos, true) or nearest_body(dg.pos)
+		local speed = 0
+		if u then
+			local goal = u.pos + v(-1.2, 0, 1.0)
+			local to = goal - dg.pos
+			local d = math.sqrt(to.x * to.x + to.z * to.z)
+			if d > 0.5 then
+				speed = math.min(6, d * 2.5)
+				dg.pos = collide(dg.pos + to / d * speed * dt, 0.25)
+				dg.yaw = math.atan2(-to.z, to.x)
+			end
+		end
+		dg.bark = math.max(0, dg.bark - dt * 3)
+		dg.check -= dt
+		if dg.check <= 0 then
+			dg.check = 0.5
+			for _, z in s.zombies do
+				if z.state ~= "dead" and dist(z.pos, dg.pos) < 11 then
+					-- Seen by the dog: shown for a while, through walls too.
+					z.dog_t = game.time() + 3
+					if not z.barked then
+						z.barked = true
+						dg.bark = 1
+						sfx("bark", dg.pos, { pitch = random.range(0.9, 1.1) })
+						noise(dg.pos, 5, 0)
+						if u then popup(u, "the dog growls", "#e8c890") end
+					end
+				end
+			end
+		end
+		dog.place(dg.d, dg.pos, dg.yaw or 0, speed, dt, dg.bark)
+	end
+	-- A bite they kept quiet about.
+	for _, r in s.survivors do
+		if r.turns and in_body(r) then
+			r.turns -= dt
+			if r.turns < 8 and not r.warned then
+				r.warned = true
+				local who = nearest_body(r.pos, true)
+				if who then popup(who, "the stranger is shaking", "#ff8a6a") end
+			end
+			if r.turns <= 0 then
+				r.turns = nil
+				sfx("groan", r.pos, { pitch = 0.8 })
+				local target = nearest_body(r.pos, true) or nearest_body(r.pos)
+				spawn_zombie("runner", r.pos, "investigate", if target then flat(target.pos) else nil)
+				if r.fig then body.remove(r.fig) end
+				r.fig = nil
+				r.state = "gone"
+				count("turned")
+			end
+		end
+	end
+end
+
 local function tick(dt, input)
 	s = state.s
 	if s.phase == "camp" then
@@ -2510,26 +2816,74 @@ local function tick(dt, input)
 		if s.survivors[i].state == "gone" then table.remove(s.survivors, i) end
 	end
 
-	-- Strangers face the nearest survivor; a robber runs off.
+	-- Strangers face the nearest survivor; a robber runs off; whoever is
+	-- with them keeps their place beside them.
 	for _, st in s.strangers do
-		if st.fig then
-			if st.fleeing then
-				st.fleeing -= dt
-				st.pos = collide(st.pos + v(0, 0, if st.pos.z > path_z(st.pos.x) then 4 else -4) * dt + v(3, 0, 0) * dt, RADIUS)
-				body.place(st.fig, st.pos, yaw_of(v(1, 0, if st.pos.z > path_z(st.pos.x) then 1 else -1)))
-				body.animate(st.fig, dt, 4, "swing")
-				if st.fleeing <= 0 then
-					body.remove(st.fig)
-					st.fig = nil
+		local speed = 0
+		if st.fig and st.fleeing then
+			st.fleeing -= dt
+			st.pos = collide(st.pos + v(0, 0, if st.pos.z > path_z(st.pos.x) then 4 else -4) * dt + v(3, 0, 0) * dt, RADIUS)
+			st.yaw = yaw_of(v(1, 0, if st.pos.z > path_z(st.pos.x) then 1 else -1))
+			st.lift = nil
+			body.place(st.fig, st.pos, st.yaw)
+			body.animate(st.fig, dt, 4, "swing")
+			speed = 4
+			if st.fleeing <= 0 then drop_stranger(st) end
+		elseif st.fig and st.following then
+			-- Walking with the group, a few steps behind the nearest person.
+			local u = nearest_body(st.pos, true) or nearest_body(st.pos)
+			if u then
+				local goal = u.pos + v(-1.6, 0, if st.pos.z > u.pos.z then 1 else -1)
+				local to = goal - st.pos
+				local d = math.sqrt(to.x * to.x + to.z * to.z)
+				if d > 0.4 then
+					speed = math.min(KNOBS.walk * 0.85, d * 2)
+					st.pos = collide(st.pos + to / d * speed * dt, RADIUS)
+					st.yaw = yaw_of(to)
+				end
+			end
+			body.place(st.fig, st.pos, st.yaw)
+			body.animate(st.fig, dt, speed, "swing")
+			if st.escort and s.route >= st.escort.to then
+				-- Where they were going: they thank you and head off.
+				local who = nearest_body(st.pos, true) or nearest_body(st.pos)
+				for item, n in st.escort.gain or {} do s[item] = (s[item] or 0) + n end
+				if who and st.escort.text then popup(who, st.escort.text, "#e8e0c8") end
+				sfx("pickup", st.pos, { pitch = 0.9 })
+				st.escort, st.following, st.done = nil, nil, true
+				st.fleeing = 5
+			end
+		elseif st.fig then
+			local near = nil
+			for _, u in s.survivors do
+				if in_body(u) and dist(u.pos, st.pos) < 6 then near = u end
+			end
+			if near and st.pose ~= "down" then st.yaw = yaw_of(near.pos - st.pos) end
+			body.place(st.fig, if st.lift then st.pos + v(0, st.lift, 0) else st.pos, st.yaw)
+			if st.pose then body.pose(st.fig, st.pose) else body.animate(st.fig, dt, 0, "swing") end
+		end
+		for _, w in st.with or {} do
+			local at = if st.following or st.fleeing then v(-0.9, 0, 0.7) else w.at
+			local p = collide(st.pos + at, RADIUS)
+			body.place(w.fig, p, if w.pose == "down" then 0 else st.yaw)
+			if w.pose and not (st.following or st.fleeing) then body.pose(w.fig, w.pose) else
+				if w.fig.pose ~= "walk" and w.fig.pose ~= "idle" then body.pose(w.fig, "walk") end
+				body.animate(w.fig, dt, speed, "swing")
+			end
+		end
+		-- A stray waits by the road, wagging, until fed or chased off.
+		if st.dog then
+			if st.dog_run then
+				st.dog_run -= dt
+				dog.place(st.dog, st.dog.pos + v(5 * dt, 0, 0), 0, 5, dt)
+				if st.dog_run <= 0 then
+					dog.remove(st.dog)
+					st.dog = nil
 				end
 			else
-				local near = nil
-				for _, u in s.survivors do
-					if in_body(u) and dist(u.pos, st.pos) < 6 then near = u end
-				end
-				if near then st.yaw = yaw_of(near.pos - st.pos) end
-				body.place(st.fig, st.pos, st.yaw)
-				body.animate(st.fig, dt, 0, "swing")
+				local u = nearest_body(st.dog.pos)
+				local yaw = if u then math.atan2(-(u.pos.z - st.dog.pos.z), u.pos.x - st.dog.pos.x) else 0
+				dog.place(st.dog, st.dog.pos, yaw, 0, dt, if u and dist(u.pos, st.dog.pos) < 5 then math.max(0, math.sin(game.time() * 3)) else 0)
 			end
 		end
 	end
@@ -2547,6 +2901,7 @@ local function tick(dt, input)
 
 	zombies_tick(dt)
 	director(dt)
+	events_step(dt)
 
 	if game.tick() % 50 == 0 then
 		local z = nearest_zombie(s.center, 12, true)
@@ -2630,7 +2985,7 @@ local function prompt_of(u)
 		if dist(p.pos, u.pos) < 1.1 then return { { "A", "take the " .. p.kind } }, p.pos end
 	end
 	local st = nearest_stranger(u)
-	if st then return { { "A", "talk" } }, st.pos end
+	if st then return { { "A", (encounter_of(st) or {}).verb or "talk" } }, st.pos end
 	if u.injured and s.meds > 0 then return { { "Y", "first aid" } }, nil end
 	return nil
 end
@@ -2665,7 +3020,7 @@ local function torches()
 		local near = {}
 		for _, ch in s.chunks do
 			for _, l in ch.lamps or {} do
-				local off = l.flicker and math.sin(game.time() * 7 + l.seed) + math.sin(game.time() * 23 + l.seed * 3) > 1.2
+				local off = l.off or l.flicker and math.sin(game.time() * 7 + l.seed) + math.sin(game.time() * 23 + l.seed * 3) > 1.2
 				local d = view_dist(l.pos)
 				if not off and d < 30 then table.insert(near, { l = l, d = d }) end
 			end
@@ -2683,6 +3038,9 @@ local function torches()
 		if c and view_dist(c) < 40 then
 			table.insert(list, { pos = v(c.x, 0.8, c.z), color = "#ff9a4a", intensity = 500 + math.sin(game.time() * 9) * 60, range = 12 })
 		end
+	end
+	for _, l in s.event_lights or {} do
+		if view_dist(l.pos) < 40 then table.insert(list, 1, l) end
 	end
 	while #list > 32 do table.remove(list) end
 	if #list > 0 then lights.set(list) else lights.clear() end
@@ -2806,8 +3164,9 @@ local function draw()
 
 	-- A stranger you can talk to shows a small mark.
 	for _, st in s.strangers do
-		if st.fig and not st.done and not st.fleeing then
-			local sx, sy = proj(v(st.pos.x, 2.1, st.pos.z))
+		local e = encounter_of(st)
+		if (st.fig or st.nobody) and not st.done and not st.fleeing and not st.following and e and not e.auto then
+			local sx, sy = proj(v(st.pos.x, 2.1 + (st.lift or 0), st.pos.z))
 			if sx then hud.box(sx - 4 * k, sy - 4 * k, 8 * k, 8 * k, "#f2e6b0") end
 		end
 	end
@@ -2872,6 +3231,41 @@ local debug = {
 		s = state.s
 		s.ammo += n or 10
 		return "ammo " .. s.ammo
+	end,
+	-- debug.event("radio"): that encounter a few metres ahead of the first
+	-- survivor, to look at or test it.
+	event = function(id)
+		s = state.s
+		local e = nil
+		for _, x in ENCOUNTERS do
+			if x.id == id then e = x end
+		end
+		if not e then return "no encounter " .. tostring(id) end
+		local u = s.survivors[1]
+		local x = u.pos.x + 7
+		local index = math.floor(x / CHUNK) + 1
+		local c = nil
+		for _, ch in s.chunks do
+			if ch.index == index then c = ch end
+		end
+		if not c then return "no land there" end
+		local side = 1
+		local pos = v(x, 0, path_z(x) + 1)
+		if e.where == "room" then
+			local best = nil
+			for _, b in s.buildings do
+				for _, r in b.rooms do
+					local m = v((r.x0 + r.x1) / 2, 0, (r.z0 + r.z1) / 2)
+					if m.x > u.pos.x and (best == nil or dist(m, u.pos) < dist(best, u.pos)) then best = m end
+				end
+			end
+			pos = best or pos
+			side = if pos.z > path_z(pos.x) then 1 else -1
+		elseif e.prop and not e.in_road then
+			pos = v(x, 0, path_z(x) + 0.9 + props.DEFS[e.prop].foot[2] / 2)
+		end
+		place_stranger(e, pos, index, c, side)
+		return "placed " .. id
 	end,
 }
 
