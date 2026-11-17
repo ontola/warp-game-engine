@@ -234,6 +234,11 @@ pub struct Person {
     /// the arms hanging (`humans.set(id, {tired = ...})`).
     pub tired: f32,
     prev_tired: f32,
+    /// Wound up for a heavy blow, -1..1: the chest turns the right shoulder
+    /// back and leans away (1), or follows through past the front (< 0)
+    /// (`humans.set(id, {coil = ...})`).
+    pub coil: f32,
+    prev_coil: f32,
     /// A blow's jolt on the upper body (pitch, roll in radians) and its
     /// spring's speed: `humans.hit` kicks it, it swings back by itself.
     jolt: Vec2,
@@ -301,7 +306,7 @@ impl Humans {
         p.used[slot] = true;
         let id = self.next;
         self.next += 1;
-        self.people.insert(id, Person { pool: pool.to_string(), slot, pos, yaw, prev_pos: pos, prev_yaw: yaw, legs: 0.0, prev_legs: 0.0, from: Gait::default(), to: Gait::default(), pose: "walk".into(), t: 0.0, prev_t: 0.0, tired: 0.0, prev_tired: 0.0, jolt: Vec2::ZERO, prev_jolt: Vec2::ZERO, jolt_v: Vec2::ZERO, age: (hash(id as u64, 7) % 1000) as f32 * 0.01, fresh: true });
+        self.people.insert(id, Person { pool: pool.to_string(), slot, pos, yaw, prev_pos: pos, prev_yaw: yaw, legs: 0.0, prev_legs: 0.0, from: Gait::default(), to: Gait::default(), pose: "walk".into(), t: 0.0, prev_t: 0.0, tired: 0.0, prev_tired: 0.0, coil: 0.0, prev_coil: 0.0, jolt: Vec2::ZERO, prev_jolt: Vec2::ZERO, jolt_v: Vec2::ZERO, age: (hash(id as u64, 7) % 1000) as f32 * 0.01, fresh: true });
         Ok(Some(id))
     }
 
@@ -359,6 +364,7 @@ impl Humans {
             p.prev_yaw = p.yaw;
             p.prev_t = p.t;
             p.prev_tired = p.tired;
+            p.prev_coil = p.coil;
             // The jolt springs back, overshooting once: a sway, not a snap.
             p.prev_jolt = p.jolt;
             p.jolt_v += (-p.jolt * 140.0 - p.jolt_v * 11.0) * dt;
@@ -638,6 +644,18 @@ fn pose(rig: &Rig, p: &Person, zombie: bool, alpha: f32, palette: &mut [Mat4]) {
         turn(palette, &shoulders, chest, Quat::from_rotation_x(-tired * 0.06 * breath));
         let neck = at(Bone::Neck, palette);
         turn(palette, &[rig.joint[Bone::Neck as usize], rig.joint[Bone::Head as usize]], neck, Quat::from_rotation_x(-tired * 0.3));
+    }
+
+    // Wound up: the chest turns the right shoulder back about the waist and
+    // leans away from the blow to come; negative swings through past front.
+    let coil = p.prev_coil + (p.coil - p.prev_coil) * alpha;
+    if coil.abs() > 0.01 && !lying {
+        let waist = at(Bone::Spine1, palette);
+        let upper: Vec<usize> = [Bone::Spine2, Bone::Spine3, Bone::Neck, Bone::Head, Bone::ClavicleL, Bone::UpperArmL, Bone::LowerArmL, Bone::HandL, Bone::ClavicleR, Bone::UpperArmR, Bone::LowerArmR, Bone::HandR].iter().map(|b| rig.joint[*b as usize]).collect();
+        turn(palette, &upper, waist, Quat::from_rotation_y(-coil * 0.8) * Quat::from_rotation_x(-coil.max(0.0) * 0.15));
+        // The head keeps looking at the target.
+        let neck = at(Bone::Neck, palette);
+        turn(palette, &[rig.joint[Bone::Neck as usize], rig.joint[Bone::Head as usize]], neck, Quat::from_rotation_y(coil * 0.6));
     }
 
     // A blow: the upper body jolts along it from the waist, the head

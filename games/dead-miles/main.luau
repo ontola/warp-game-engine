@@ -8,8 +8,9 @@
 -- survivor comes back in seconds as a ghost and then as a new survivor.
 -- The run ends only when nobody is standing.
 --
--- Controls: left stick moves, right stick aims, RT attacks with what is in
--- the hand (fires a gun, else swings), LT sprints (short; it costs stamina), A (hold) searches, picks
+-- Controls: left stick moves, right stick aims, RB (or X) a quick hit, RT a
+-- heavy one, charged while held (a haymaker with bare hands; with a loaded
+-- gun RT fires), LT sprints (short; it costs stamina), A (hold) searches, picks
 -- up, revives and talks to strangers, Y uses a first aid kit, LB switches
 -- the torch. Keyboard: WASD, left mouse attacks, right mouse runs, Space
 -- uses, F heals, Q torch.
@@ -1171,7 +1172,9 @@ local function from_input(i)
 	if not i then return { mx = 0, mz = 0, ax = 0, az = 0 } end
 	return {
 		mx = i.move_x, mz = -i.move_y, ax = i.aim_x, az = -i.aim_y,
-		attack = i.held.right_trigger or i.held.west or i.held.right_shoulder,
+		-- RB (or X): a quick hit. RT: a heavy one, charged while held
+		-- (with a loaded gun RT fires instead).
+		light = i.held.right_shoulder or i.held.west, heavy = i.held.right_trigger,
 		use = i.held.south, use_pressed = i.pressed.south,
 		med = i.pressed.north, torch = i.pressed.left_shoulder, run = i.held.left_trigger,
 		up = i.pressed.up, down = i.pressed.down, back = i.pressed.east,
@@ -1475,16 +1478,37 @@ end
 -- follow-through. The more out of breath, the slower and weaker it is; with
 -- no breath left it is a feeble, dragging swing.
 local IMPACT = 0.5
+local CHARGE = 1 -- seconds to charge a heavy blow fully
+local CHARGE_HOLD = 1 -- seconds it can be held at full charge
 
--- The clip's moments: the hand is up at 0.22 and lands about 0.28.
-local function swing_clip(p)
+-- No weapon, heavy: a haymaker, slow and wide, knocks them flat back.
+local HAYMAKER = { dmg = 1.4, range = 1.35, arc = 0.45, cd = 0.95, noise = 3, cleave = 1, knock = 4.5, stamina = 0.22 }
+
+-- Each clip's moments: where the wind-up tops out and where the blow lands.
+local CLIPS = { attack = { 0.22, 0.28 }, punch = { 0.17, 0.25 }, jab = { 0.15, 0.22 } }
+
+local function swing_stats(u)
+	if u.melee == "fists" and u.swing_kind == "heavy" then return HAYMAKER end
+	return MELEE[u.melee]
+end
+
+local function swing_pose(u)
+	if u.melee == "fists" then return if u.swing_kind == "heavy" then "punch" else "jab" end
+	return "attack"
+end
+
+-- Swing progress p (0..1) to clip time: a slow rise to the top, a fast
+-- blow through the landing, then the recovery.
+local function swing_clip(p, pose)
+	local c = CLIPS[pose] or CLIPS.attack
+	local up, land = c[1], c[2]
 	if p < 0.45 then
 		local a = p / 0.45
-		return 0.22 * a * a * (3 - 2 * a)
+		return up * a * a * (3 - 2 * a)
 	elseif p < 0.55 then
-		return 0.22 + (p - 0.45) / 0.1 * 0.1
+		return up + (p - 0.45) / 0.1 * (land - up + 0.04)
 	end
-	return 0.32 + (p - 0.55) / 0.45 * 0.68
+	return land + 0.04 + (p - 0.55) / 0.45 * (1 - land - 0.04)
 end
 
 local function tiredness(u)
@@ -1492,12 +1516,16 @@ local function tiredness(u)
 	return math.clamp(1 - u.stamina / u.stamina_max, 0, 1)
 end
 
-local function swing(u)
-	local w = MELEE[u.melee]
+-- kind: "light" (RB: quick, cheap, light) or "heavy" (RT: slow, charged
+-- while held at the top of the wind-up).
+local function swing(u, kind)
+	u.swing_kind = kind
+	local w = swing_stats(u)
+	local light = kind == "light"
 	local tired = tiredness(u)
-	local cost = w.stamina * KNOBS.stamina
+	local cost = w.stamina * KNOBS.stamina * (if light then 0.5 else 1)
 	local winded = u.stamina < cost
-	local len = w.cd * (1 + 1.6 * tired ^ 1.4)
+	local len = w.cd * (if light then 0.55 else 1) * (1 + 1.6 * tired ^ 1.4)
 	u.swing_power = 1 - 0.35 * tired
 	if winded then
 		if (u.winded_t or 0) <= 0 then
@@ -1515,13 +1543,20 @@ local function swing(u)
 	u.swing_t = 0
 	u.swing_landed = false
 	u.hitstop = 0
+	u.charging = not light and not winded
+	u.charge, u.charge_full = 0, 0
+	count(if light then "light_swings" else "heavy_swings")
 	count("swings")
 end
 
 -- The blow lands: everyone in the arc now takes it.
 local function swing_land(u)
-	local w = MELEE[u.melee]
-	local power = u.swing_power or 1
+	local w = swing_stats(u)
+	local light = u.swing_kind == "light"
+	local charge = u.charge or 0
+	local power = (u.swing_power or 1) * (if light then 0.55 else 1 + charge)
+	local knock = w.knock * (if light then 0.5 else 1 + 0.8 * charge)
+	local cleave = if light then 1 else w.cleave
 	local f = dir(u.yaw)
 	local hits = {}
 	for _, z in s.zombies do
@@ -1538,17 +1573,18 @@ local function swing_land(u)
 	table.sort(hits, function(a, b) return a.d < b.d end)
 	if #hits == 0 then count("misses") end
 	local hit = 0
-	for i = 1, math.min(#hits, w.cleave) do
-		hurt_zombie(hits[i].z, w.dmg * power, u.pos, w.knock * (0.5 + 0.5 * power))
+	for i = 1, math.min(#hits, cleave) do
+		hurt_zombie(hits[i].z, w.dmg * power, u.pos, knock * (0.5 + 0.5 * math.min(1, u.swing_power or 1)))
 		hit += 1
 		count("melee_hits")
 	end
-	sfx(if hit > 0 then "hit" else "swing", u.pos, { pitch = random.range(0.8, 0.95) })
+	sfx(if hit > 0 then "hit" else "swing", u.pos, { pitch = (if light then 1.15 else 0.85 - 0.12 * charge) * random.range(0.92, 1.05) })
 	if hit > 0 then
 		-- A beat of stillness on contact sells the weight.
-		u.hitstop = 0.06 + 0.02 * w.dmg
-		u.shake = math.max(u.shake or 0, 0.06 + 0.04 * w.dmg * power)
-		rumble(u, 0.3 + 0.15 * w.dmg, 0.12)
+		local heft = w.dmg * power
+		u.hitstop = if light then 0.03 else 0.06 + 0.025 * heft
+		u.shake = math.max(u.shake or 0, if light then 0.03 else 0.06 + 0.04 * heft)
+		rumble(u, math.min(1, 0.2 + 0.15 * heft), if light then 0.06 else 0.14)
 		noise(u.pos, w.noise, 0.005)
 		if u.dur then
 			u.dur -= 1
@@ -1565,12 +1601,31 @@ local function swing_land(u)
 end
 
 -- Each tick of a swing: the hit-stop holds it, the blow lands at IMPACT.
-local function swing_step(u, dt)
+local function swing_step(u, dt, held)
 	if not u.swing_len or u.swing <= 0 or u.cd_melee <= 0 then return end
 	if u.hitstop > 0 then
 		u.hitstop -= dt
 		u.cd_melee += dt
 		return
+	end
+	if u.charging then
+		-- A bot lets go at a third of a charge.
+		if u.bot and u.charge >= 0.35 then held = false end
+		local top = 0.45 * u.swing_len
+		if not held or u.stamina <= 0 or u.charge_full > CHARGE_HOLD then
+			u.charging = false
+		elseif u.swing_len - u.cd_melee >= top then
+			-- Held at the top of the wind-up: the blow gathers.
+			u.cd_melee = u.swing_len - top
+			u.breath_t = math.max(u.breath_t or 0, 0.7)
+			u.stamina = math.max(0, u.stamina - dt * 0.15 * KNOBS.stamina)
+			local was = u.charge
+			u.charge = math.min(1, u.charge + dt / CHARGE)
+			if u.charge >= 1 then
+				if was < 1 then rumble(u, 0.25, 0.08) end
+				u.charge_full += dt
+			end
+		end
 	end
 	u.swing_t = u.swing_len - u.cd_melee
 	if not u.swing_landed and u.swing_t >= IMPACT * u.swing_len then
@@ -1782,7 +1837,7 @@ local function act(u, it, dt)
 	u.invul = math.max(0, u.invul - dt)
 	u.cd_melee = math.max(0, u.cd_melee - dt)
 	u.shake = math.max(0, (u.shake or 0) - dt * 0.6)
-	swing_step(u, dt)
+	swing_step(u, dt, it.heavy)
 	u.cd_gun = math.max(0, u.cd_gun - dt)
 	u.cd_shove = math.max(0, u.cd_shove - dt)
 	u.shove_t = math.max(0, u.shove_t - dt)
@@ -1933,10 +1988,10 @@ local function act(u, it, dt)
 				drop_melee(u)
 				if GUNS[p.kind] then
 					u.gun, u.gun_dur = p.kind, p.dur
-					tip(u, "gun", { { "RT", "fire" }, { "RS", "aim" } })
+					tip(u, "gun", { { "RT", "fire" }, { "RS", "aim" }, { "RB", "hit" } })
 				else
 					u.melee, u.dur = p.kind, p.dur
-					tip(u, "melee", { { "RT", "swing (tiring)" } })
+					tip(u, "melee", { { "RB", "quick hit" }, { "RT", "heavy (hold: charge)" } })
 				end
 				hold_weapon(u)
 				sfx("pickup", u.pos, { pitch = 1.2 })
@@ -1956,13 +2011,30 @@ local function act(u, it, dt)
 
 	-- One attack: fire what is in the hand, or swing it (a gun without
 	-- rounds is swung like a fist). Bots ask with fire or melee.
-	if not busy and (it.attack or it.fire or it.melee) then
-		if u.gun and s.ammo > 0 then
+	if u.bot and it.melee then
+		-- Bots: a charged heavy on a lone one with breath to spare, else quick hits.
+		-- A quick hit to break one's wind-up (any hit does).
+		local near, threat = 0, false
+		for _, z in s.zombies do
+			if z.state ~= "dead" and z.state ~= "sleep" and dist(z.pos, u.pos) < 3.5 then
+				near += 1
+				threat = threat or z.state == "windup"
+			end
+		end
+		if u.charging or (near <= 1 and not threat and u.stamina > 0.6 * u.stamina_max) then it.heavy = true else it.light = true end
+	end
+	if not busy then
+		local loaded = u.gun and s.ammo > 0
+		if loaded and (it.heavy or it.fire) then
 			if u.cd_gun <= 0 then shoot(u) end
-		elseif u.cd_melee <= 0 then
-			swing(u)
+		elseif u.cd_melee <= 0 and (it.heavy or it.light) then
+			-- A new heavy needs a fresh press: holding RT after one does not
+			-- start another.
+			if it.heavy and not u.heavy_was then swing(u, "heavy")
+			elseif it.light then swing(u, "light") end
 		end
 	end
+	u.heavy_was = it.heavy and not (u.bot)
 	u.winded_t = math.max(0, (u.winded_t or 0) - dt)
 	u.breath_t = math.max(0, (u.breath_t or 0) - dt)
 
@@ -2003,7 +2075,7 @@ local function act(u, it, dt)
 	end
 	-- Worn out, even the jog drags.
 	local worn = 1 - 0.25 * math.clamp((tiredness(u) - 0.6) / 0.4, 0, 1)
-	local speed = KNOBS.walk * worn * (if busy then 0 else (if u.cd_melee > 0.2 then 0.5 else 1)) * (if u.injured then KNOBS.limp else 1) / (1 + KNOBS.grab * grabs) * (if running then KNOBS.run else 1)
+	local speed = KNOBS.walk * worn * (if busy then 0 else (if u.charging then 0.35 elseif u.cd_melee > 0.2 then 0.5 else 1)) * (if u.injured then KNOBS.limp else 1) / (1 + KNOBS.grab * grabs) * (if running then KNOBS.run else 1)
 	-- Running is heard: footfalls every so often.
 	u.run_t = (u.run_t or 0) - dt
 	if running and u.run_t <= 0 then
@@ -2046,8 +2118,23 @@ local function act(u, it, dt)
 	-- Out of breath shows: bent over and heaving once half the breath is gone.
 	local tired = tiredness(u)
 	body.tired(u.fig, if tired > 0.4 then math.min(1, (tired - 0.4) / 0.55) ^ 1.2 else 0)
+	local coil = 0
 	if u.cd_melee > 0 and u.swing > 0 and u.swing_len then
-		body.animate(u.fig, dt, moved, "swing_r", swing_clip(math.clamp(1 - u.cd_melee / u.swing_len, 0, 1)))
+		local p = math.clamp(1 - u.cd_melee / u.swing_len, 0, 1)
+		local pose = swing_pose(u)
+		body.animate(u.fig, dt, moved, pose, swing_clip(p, pose))
+		-- A heavy blow winds the body up (more with the charge) and swings through.
+		if u.swing_kind == "heavy" then
+			local wind = 0.45 + 0.55 * (u.charge or 0)
+			if p < 0.45 then
+				local a = p / 0.45
+				coil = wind * a * a * (3 - 2 * a)
+			elseif p < 0.55 then
+				coil = wind - (p - 0.45) / 0.1 * (wind + 0.4)
+			else
+				coil = -0.4 * (1 - (p - 0.55) / 0.45)
+			end
+		end
 	elseif u.shove_t > 0 then
 		body.animate(u.fig, dt, moved, "shove")
 	elseif it.fire or u.cd_gun > 0.2 then
@@ -2055,6 +2142,7 @@ local function act(u, it, dt)
 	else
 		body.animate(u.fig, dt, moved * (if u.injured then 0.7 else 1), "swing")
 	end
+	body.coil(u.fig, coil)
 end
 
 ----------------------------------------------------------------------------
