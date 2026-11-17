@@ -209,7 +209,7 @@ keyboard mapping is in `app::input`.
 | `sound` | `play(name, {at, db, pitch, <param> = value}) -> handle`, `set_param(handle, param, value)`, `stop(handle)`, `list()` |
 | `hud` | `text(text, x, y, {size, color, align, width})`, `box(x, y, w, h, color)`, `size() -> w, h`, `view(player) -> x, y, w, h`, `project(pos, player?) -> x, y or nil` |
 | `post` | `set({bloom, bloom_radius, bloom_threshold, bloom_wide, contrast, saturation, vignette, grain, aberration})`, `reset()` |
-| `humans` | `spawn(pool, {pos, yaw})` → id or nil when the pool is full, `set(id, {pos, yaw, pose, t, tired})`, `hit(id, dir)`, `ragdoll(id, push)`, `remove(id)`, `head(id)` and `joint(id, name)` → vector, `room(pool)` → free, total |
+| `humans` | `spawn(pool, {pos, yaw})` → id or nil when the pool is full, `set(id, {pos, yaw, pose, t, tired, coil})`, `hit(id, dir)`, `ragdoll(id, push)`, `remove(id)`, `head(id)` and `joint(id, name)` → vector, `room(pool)` → free, total |
 | `lights` | `set({{pos, color, intensity, range}, ...})` (at most 32), `spots({{pos, dir, color, intensity, range, angle, inner}, ...})` (at most 8, with shadows), `clear()` |
 | `sky` | `set(name)`, `get()`, `warm(name)` (bake a sky you will switch to later in the background, so the switch does not stall a frame) |
 | `light` | `set({sun, sun_lux, sky_lux, exposure, exposure_min, exposure_max, exposure_bias, adapt_speed, fog_start, fog_end, fog_density})`, `reset()` |
@@ -311,7 +311,10 @@ keyboard mapping is in `app::input`.
   `attack`, `punch`, `jab`, `hit`, `hit_head`, `cast`, `roll` (captures
   played by `t`, 0 to 1), `dead` (the fall over `t`) and `down` (lying).
   `tired` (0 to 1) bends anyone over, out of breath, over any pose: the
-  chest heaves and the arms hang. `hit(id, dir)` jolts the upper body
+  chest heaves and the arms hang. `coil` (-1 to 1) winds up a heavy blow:
+  at 1 the chest turns the right shoulder back and leans away while the
+  head keeps facing ahead; below 0 it swings through past the front.
+  `hit(id, dir)` jolts the upper body
   along a blow (`dir` in the world, its length the strength, about 1 for
   a heavy hit): the chest and head swing that way and spring back.
   `ragdoll(id, push)` lets it go limp from the pose it stands in, thrown
