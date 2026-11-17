@@ -521,7 +521,7 @@ impl LuaGame {
         seen.dedup_by_key(|(v, _)| *v);
         let cams: Vec<Json> = seen.into_iter().map(|(_, k)| json!({ "pos": k.pos.to_array(), "target": k.target.to_array(), "fov": k.fov })).collect();
         let players: Vec<Json> = c.roster.iter().map(|p| json!({ "id": p.id, "name": p.name, "color": p.color, "bot": p.bot, "seat": p.seat, "couch": p.couch, "view": p.view })).collect();
-        let phase = match self.party.as_ref().map(|p| p.phase) {
+        let phase = match self.party.as_ref().map(|p| p.phase()) {
             None => "standalone", Some(party::Phase::Idle) => "waiting", Some(party::Phase::Warm) => "ready", Some(party::Phase::Running) => "running", Some(party::Phase::Paused) => "paused",
         };
         let menu = self.menu.map(|i| json!({ "items": self.menu_items().iter().map(|m| m.label()).collect::<Vec<_>>(), "selected": i }));
