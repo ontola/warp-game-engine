@@ -1775,7 +1775,6 @@ local function zombie_step(z, dt)
 				z.t = spec.windup
 				z.target = target
 				body.eyes(z.fig, true)
-				fx.ring(v(z.pos.x, 0.05, z.pos.z), { radius = if z.kind == "runner" then 1.2 else spec.reach, life = spec.windup, color = "#ff3a2a", emissive = 0.25, width = 0.06, segments = 24 })
 				if random.chance(0.4) then sfx("groan", z.pos, { pitch = random.range(1.1, 1.3) }) end
 			else
 				local to = waypoint(z.pos, target.pos) - z.pos
