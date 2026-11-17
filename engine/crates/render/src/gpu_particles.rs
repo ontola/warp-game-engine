@@ -260,7 +260,7 @@ pub struct GpuParticles {
 
 impl GpuParticles {
     /// Whether `KERN_GPU_PARTICLES=1` turns GPU particles on.
-    pub fn switched_on() -> bool { std::env::var("KERN_GPU_PARTICLES").as_deref() == Ok("1") }
+    pub fn switched_on() -> bool { crate::switches::GPU_PARTICLES.on() }
 
     /// A pool of `capacity` particles (the ring: the oldest give way),
     /// live only with `KERN_GPU_PARTICLES=1` while the system is opt-in.

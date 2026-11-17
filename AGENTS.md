@@ -178,3 +178,6 @@ Docs describe how things work now; the log records how we got there.
 - `engine/HANDOFF.md` is retired; its history is `engine/docs/log/handoff.md`.
   Do not recreate it.
 - A new `KERN_*` switch gets a row in `engine/docs/renderer-switches.md`.
+  The renderer declares every switch it reads in `render/src/switches.rs` and
+  reads it only through that module; a test there fails on a raw
+  `var("KERN_...")` or on a declared switch missing from the docs.

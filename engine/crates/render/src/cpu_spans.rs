@@ -8,7 +8,7 @@ use web_time::Instant;
 pub struct Collector { acc: Mutex<(Vec<(&'static str, f64)>, u64)> }
 
 impl Collector {
-    pub fn from_env() -> Option<Self> { (std::env::var("KERN_CPU_SPANS").as_deref() == Ok("1")).then(Self::default) }
+    pub fn from_env() -> Option<Self> { (crate::switches::CPU_SPANS.on()).then(Self::default) }
 
     /// Average milliseconds per frame for each phase since the last call.
     pub fn take(&self) -> (Vec<(&'static str, f64)>, u64) {

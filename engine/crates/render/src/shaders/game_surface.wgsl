@@ -51,6 +51,6 @@ fn game_surface(s: SurfaceIn) -> SurfaceOut {
     return SurfaceOut(s.tint, s.n, s.rough, s.metal, vec3<f32>(0.0));
 }
 
-// Radiance a game adds to any opaque surface after lighting (see
+// Radiance a game lays over any opaque surface after lighting (see
 // render::set_game_surface): none here.
-fn game_glow(p: vec3<f32>, instance: u32, material: u32) -> vec3<f32> { return vec3<f32>(0.0); }
+fn game_glow(p: vec3<f32>, instance: u32, material: u32) -> vec4<f32> { return vec4<f32>(0.0); }

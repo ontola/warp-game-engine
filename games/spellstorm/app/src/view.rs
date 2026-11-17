@@ -639,8 +639,8 @@ impl View {
             let edge_y = a.pos.y + tall * front;
             let glow = {
                 let c = crate::fx::el_c(e.cfg().el);
-                let ember = Vec3::new(1.0, 0.45, 0.1);
-                ember.lerp(crate::look::linear3([c[0], c[1], c[2]]), 0.45)
+                let ember = Vec3::new(1.0, 0.1, 0.0);
+                ember.lerp(crate::look::linear3([c[0], c[1], c[2]]), 0.1)
             };
             // Bodies that fall apart go to pieces once (a blow-up after its fuse).
             if let Some(t) = ea.dead_t.filter(|_| !ea.scattered) {
@@ -949,7 +949,12 @@ impl View {
         self.cam_center = self.cam_center.lerp(center, k);
         self.cam_height += (want_h - self.cam_height) * k;
         let c = self.cam_center + Vec3::new(0.0, 0.0, -1.5);
-        self.camera = Camera { pos: c + Vec3::new(0.0, self.cam_height, self.cam_height * 0.55), target: c, fov_y: 42f32.to_radians(), near: 0.1 };
+        // SPELLSTORM_ZOOM=0.3: the camera that much as high (a close look,
+        // for shots of effects).
+        let zoom = std::env::var("SPELLSTORM_ZOOM").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0).clamp(0.05, 4.0);
+        let h = self.cam_height * zoom;
+        let c = if zoom < 1.0 { c.lerp(self.cam_center + Vec3::new(0.0, 0.0, -5.0), 1.0 - zoom) } else { c };
+        self.camera = Camera { pos: c + Vec3::new(0.0, h, h * 0.55), target: c, fov_y: 42f32.to_radians(), near: 0.1 };
     }
 }
 

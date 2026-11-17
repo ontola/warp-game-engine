@@ -204,7 +204,7 @@ impl VegetationBrickRenderer {
                 fragment:Some(wgpu::FragmentState {module:&composite_shader,entry_point:Some("fs"),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState {format:wgpu::TextureFormat::Rgba16Float,blend:Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),write_mask:wgpu::ColorWrites::ALL})]}),
                 multiview_mask:None,cache:gpu.pipeline_cache(),
             });
-            Self {inventory,empty_skip_enabled:std::env::var("KERN_BRICK_EMPTY_SKIP").as_deref()==Ok("1"),empty_jump_enabled:std::env::var("KERN_BRICK_EMPTY_JUMP").as_deref()==Ok("1"),smooth_mips_enabled:std::env::var("KERN_BRICK_SMOOTH_MIPS").as_deref()==Ok("1"),provider:[level_buffer.clone(),cells.clone(),status.clone()],provider_bytes:level_buffer.size()+cells.size()+status.size(),data_layout,composite_layout,tiles,integrate,composite,targets:Mutex::new(Vec::new())}
+            Self {inventory,empty_skip_enabled:crate::switches::BRICK_EMPTY_SKIP.on(),empty_jump_enabled:crate::switches::BRICK_EMPTY_JUMP.on(),smooth_mips_enabled:crate::switches::BRICK_SMOOTH_MIPS.on(),provider:[level_buffer.clone(),cells.clone(),status.clone()],provider_bytes:level_buffer.size()+cells.size()+status.size(),data_layout,composite_layout,tiles,integrate,composite,targets:Mutex::new(Vec::new())}
         })
     }
     /// Diagnostic controls change consumer work only, never provider buffers

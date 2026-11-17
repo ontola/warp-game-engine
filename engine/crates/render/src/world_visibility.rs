@@ -15,9 +15,9 @@ pub(crate) struct Resources {
 
 impl Resources {
     pub fn new(gpu: &Gpu, scene: &Scene, height_view: &wgpu::TextureView) -> Result<Self,String> {
-        let enabled=match std::env::var("KERN_WORLD_TERRAIN_VISIBILITY").as_deref() {Ok("1")=>true,Ok("0")=>false,_=>scene.world_terrain_visibility};
+        let enabled=match crate::switches::WORLD_TERRAIN_VISIBILITY.var().as_deref() {Ok("1")=>true,Ok("0")=>false,_=>scene.world_terrain_visibility};
         let start=web_time::Instant::now();
-        let budget=std::env::var("KERN_TERRAIN_NODE_BUDGET").ok().and_then(|v|v.parse::<u32>().ok())
+        let budget=crate::switches::TERRAIN_NODE_BUDGET.parse::<u32>()
             .unwrap_or(crate::terrain_trace::DEFAULT_NODE_BUDGET).min(crate::terrain_trace::MAX_NODE_BUDGET);
         // A baked sun visibility replaces the per-pixel trace and its hierarchy.
         let baked=enabled && !scene.terrain_sun.is_empty() && scene.terrain_sun.len()==scene.heightfield.heights.len();

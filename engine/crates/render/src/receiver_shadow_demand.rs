@@ -160,7 +160,7 @@ struct Builder {config:wgpu::Buffer,extra:wgpu::Buffer,bind:wgpu::BindGroup,pipe
 pub struct Resources {enabled:bool,words:wgpu::Buffer,owner_slots:u32,builder:Option<Builder>}
 impl Resources {
     pub fn new(gpu:&Gpu,instances:&wgpu::Buffer,wind:&wgpu::Buffer,clusters:&wgpu::Buffer,owner_slots:u32)->Result<Self,String> {
-        let enabled=std::env::var("KERN_RECEIVER_SHADOW_DEMAND").as_deref()==Ok("1");
+        let enabled=crate::switches::RECEIVER_SHADOW_DEMAND.on();
         let words=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("receiver shadow tile demand"),
             size:if enabled {u64::from(BUFFER_WORDS)*4}else{16},
             usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false});
