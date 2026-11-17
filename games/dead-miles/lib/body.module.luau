@@ -53,7 +53,7 @@ local function new_human(b)
 	if not id then return false end
 	b.human = id
 	b.eye = world.spawn("cube", { pos = b.pos, size = v(0.11, 0.025, 0.02), color = "#1a1a1a", emissive = 0, solid = false, tag = "eyes", visible = false })
-	humans.set(id, { pose = b.pose, t = b.t })
+	humans.set(id, { pose = b.pose, t = b.t, tired = b.tired or 0 })
 	if b.glowing then
 		world.set(b.eye, M.EYE_GLOW)
 		world.set(b.eye, { visible = true })
@@ -127,6 +127,21 @@ function M.animate(b, dt, speed, arms, t)
 	else
 		figure.animate(b.fig, dt, speed, arms, t)
 	end
+end
+
+-- Out of breath, 0..1: bent over and heaving (humans only).
+function M.tired(b, x)
+	if not b.human then return end
+	local was = b.tired or 0
+	if was == x or (x > 0 and math.abs(was - x) < 0.01) then return end
+	b.tired = x
+	humans.set(b.human, { tired = x })
+end
+
+-- Struck from `push` (its length the strength): the upper body jolts away
+-- and sways back (humans only; a box figure just takes the knock).
+function M.hit(b, push)
+	if b.human then humans.hit(b.human, push) end
 end
 
 -- Lying down (sleeping, downed) or getting up. `fall` plays the fall.

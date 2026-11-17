@@ -81,11 +81,11 @@ local LEASH = 13 -- how far a survivor may stray from the group, m
 local BEHIND = 13 -- how far behind the group the left edge of the world is
 
 local MELEE = {
-	fists = { dmg = 0.6, range = 1.3, arc = 0.5, cd = 0.38, noise = 2, cleave = 1, knock = 2, stamina = 0.12 },
-	pipe = { dmg = 1, range = 1.6, arc = 0.35, cd = 0.45, dur = 25, noise = 6, cleave = 2, knock = 3, stamina = 0.24 },
-	bat = { dmg = 1.5, range = 1.75, arc = 0.25, cd = 0.52, dur = 30, noise = 6, cleave = 3, knock = 4, stamina = 0.32 },
-	machete = { dmg = 2, range = 1.55, arc = 0.35, cd = 0.38, dur = 20, noise = 5, cleave = 2, knock = 2, stamina = 0.2 },
-	axe = { dmg = 3, range = 1.75, arc = 0.3, cd = 0.72, dur = 15, noise = 7, cleave = 3, knock = 3.5, stamina = 0.45 },
+	fists = { dmg = 0.6, range = 1.3, arc = 0.5, cd = 0.6, noise = 2, cleave = 1, knock = 2, stamina = 0.12 },
+	pipe = { dmg = 1, range = 1.6, arc = 0.35, cd = 0.75, dur = 25, noise = 6, cleave = 2, knock = 3, stamina = 0.24 },
+	bat = { dmg = 1.5, range = 1.75, arc = 0.25, cd = 0.9, dur = 30, noise = 6, cleave = 3, knock = 4, stamina = 0.32 },
+	machete = { dmg = 2, range = 1.55, arc = 0.35, cd = 0.65, dur = 20, noise = 5, cleave = 2, knock = 2, stamina = 0.2 },
+	axe = { dmg = 3, range = 1.75, arc = 0.3, cd = 1.2, dur = 15, noise = 7, cleave = 3, knock = 3.5, stamina = 0.45 },
 }
 local RANK = { fists = 0, pipe = 1, bat = 2, pistol = 2.5, machete = 3, shotgun = 3.5, axe = 4 }
 local GUNS = {
@@ -473,11 +473,36 @@ end
 
 local NO_GLOW = { color = "#1a1a1a", emissive = 0 }
 
-local function kill_zombie(z)
+-- Blood on the ground: flat dark pools that stay (the oldest go first).
+local BLOOD = { { color = "#4a0f0c", roughness = 0.25 }, { color = "#5e1410", roughness = 0.3 }, { color = "#36100c", roughness = 0.35 } }
+local BLOOD_MAX = 90
+
+local function blood_drop(at, r)
+	s.blood = s.blood or {}
+	local look = BLOOD[random.int(1, #BLOOD)]
+	local id = world.spawn("sphere", { pos = v(at.x, 0.012 + #s.blood % 7 * 0.0012, at.z), size = v(r * random.range(0.8, 1.25), 0.012, r * random.range(0.8, 1.25)), rot = v(0, random.range(0, math.pi), 0), color = look.color, roughness = look.roughness, solid = false, tag = "deco" })
+	table.insert(s.blood, id)
+	if #s.blood > BLOOD_MAX then world.remove(table.remove(s.blood, 1)) end
+end
+
+-- A splat at `at`, flung along `away`: one pool and drops trailing off.
+local function blood_splat(at, away, size)
+	blood_drop(at + away * (0.2 * size), 0.28 * size)
+	for i = 1, 2 + math.floor(size * 3) do
+		local f = random.range(0.3, 1.4) * size
+		local side = v(-away.z, 0, away.x) * random.range(-0.35, 0.35) * f
+		blood_drop(at + away * (0.35 + f) + side, random.range(0.05, 0.12) * size)
+	end
+	fx.burst(v(at.x, 1.05, at.z), { color = "#6a1410", count = math.floor(6 + 8 * size), speed = 2.5 + 2 * size, life = 0.45, size = 0.07 + 0.03 * size, gravity = 12 })
+end
+
+local function kill_zombie(z, away, strength)
 	z.state = "dead"
 	z.t = 15
 	body.eyes(z.fig, false, NO_GLOW)
 	body.lie(z.fig, z.pos, z.yaw, true, true)
+	away = away or v(1, 0, 0)
+	blood_splat(z.pos, away, 1.6 + (strength or 1) * 0.4)
 	fx.burst(v(z.pos.x, 0.8, z.pos.z), { color = "#5a1e18", count = 10, speed = 3, life = 0.5, size = 0.1, gravity = 9 })
 	sfx("splat", z.pos, { pitch = random.range(0.85, 1.15) })
 	count("kills")
@@ -490,11 +515,15 @@ local function hurt_zombie(z, dmg, from, knock)
 	local away = z.pos - from
 	local d = vector.magnitude(away)
 	away = if d > 0.01 then away / d else v(1, 0, 0)
+	local heavy = math.min(1.5, 0.45 + 0.35 * dmg)
 	if z.hp <= 0 then
-		kill_zombie(z)
+		kill_zombie(z, away, heavy)
 		return
 	end
 	z.knock = away * (knock or 2)
+	-- The blow carries through: the upper body snaps away and sways back.
+	body.hit(z.fig, away * heavy)
+	blood_splat(z.pos, away, 0.6 + 0.4 * heavy)
 	if z.state == "sleep" then
 		z.state = "rise"
 		z.t = 0.5
@@ -504,7 +533,6 @@ local function hurt_zombie(z, dmg, from, knock)
 		z.t = 0.35
 	end
 	body.eyes(z.fig, false, NO_GLOW)
-	fx.burst(v(z.pos.x, 1.1, z.pos.z), { color = "#6a2a20", count = 5, speed = 2.5, life = 0.35, size = 0.08, gravity = 9 })
 end
 
 local function remove_zombie_body(z)
@@ -1277,7 +1305,7 @@ local function bot_intent(u)
 		local tired = (u.stamina or 1) < w.stamina * KNOBS.stamina
 		if gun and (d < 2 or (z.kind == "runner" and d < 7) or (close >= 4 and s.ammo > 2)) then
 			it.fire = true
-		elseif d < w.range - 0.1 and not gun and not tired then
+		elseif d < w.range - 0.3 and not gun and not tired then
 			it.melee = true
 		elseif tired and d < 2.5 then
 			-- Out of breath: step back from it.
@@ -1437,31 +1465,66 @@ local function die(u)
 	sfx("moan", u.pos, { pitch = 1.3 })
 end
 
+-- A swing takes its time: a slow wind-up, the blow at the middle, a heavy
+-- follow-through. The more out of breath, the slower and weaker it is; with
+-- no breath left it is a feeble, dragging swing.
+local IMPACT = 0.5
+
+-- The clip's moments: the hand is up at 0.22 and lands about 0.28.
+local function swing_clip(p)
+	if p < 0.45 then
+		local a = p / 0.45
+		return 0.22 * a * a * (3 - 2 * a)
+	elseif p < 0.55 then
+		return 0.22 + (p - 0.45) / 0.1 * 0.1
+	end
+	return 0.32 + (p - 0.55) / 0.45 * 0.68
+end
+
+local function tiredness(u)
+	if not u.stamina_max then u.stamina_max = KNOBS.stamina u.stamina = u.stamina_max end
+	return math.clamp(1 - u.stamina / u.stamina_max, 0, 1)
+end
+
 local function swing(u)
 	local w = MELEE[u.melee]
-	-- Swinging is hard work: heavy things wear you out fast.
-	if not u.stamina_max then u.stamina_max = KNOBS.stamina u.stamina = u.stamina_max end
-	if u.stamina < w.stamina * KNOBS.stamina then
+	local tired = tiredness(u)
+	local cost = w.stamina * KNOBS.stamina
+	local winded = u.stamina < cost
+	local len = w.cd * (1 + 1.6 * tired ^ 1.4)
+	u.swing_power = 1 - 0.35 * tired
+	if winded then
 		if (u.winded_t or 0) <= 0 then
 			popup(u, "out of breath", "#c8c0b4")
-			sfx("swing", u.pos, { pitch = 0.6, db = -8 })
 			u.winded_t = 1.2
 		end
-		u.cd_melee = 0.3
-		return
+		len *= 1.5
+		u.swing_power = 0.4
 	end
-	u.stamina -= w.stamina * KNOBS.stamina
+	u.stamina = math.max(0, u.stamina - cost)
 	u.breath_t = 0.7
-	u.cd_melee = w.cd
+	u.swing_len = math.min(3.2, len)
+	u.cd_melee = u.swing_len
 	u.swing = 0.0001
+	u.swing_t = 0
+	u.swing_landed = false
+	u.hitstop = 0
 	count("swings")
+end
+
+-- The blow lands: everyone in the arc now takes it.
+local function swing_land(u)
+	local w = MELEE[u.melee]
+	local power = u.swing_power or 1
 	local f = dir(u.yaw)
 	local hits = {}
 	for _, z in s.zombies do
 		if z.state ~= "dead" then
 			local to = z.pos - u.pos
 			local d = math.sqrt(to.x * to.x + to.z * to.z)
-			if d < w.range and d > 0.01 and (to.x * f.x + to.z * f.z) / d > w.arc then
+			-- A little more reach than the wind-up promised: the blow
+			-- follows through, so a step in during the wind-up still lands.
+			if d < w.range + 0.25 and d > 0.01 and (to.x * f.x + to.z * f.z) / d > w.arc - 0.08 then
 				table.insert(hits, { z = z, d = d })
 			end
 		end
@@ -1470,12 +1533,16 @@ local function swing(u)
 	if #hits == 0 then count("misses") end
 	local hit = 0
 	for i = 1, math.min(#hits, w.cleave) do
-		hurt_zombie(hits[i].z, w.dmg, u.pos, w.knock)
+		hurt_zombie(hits[i].z, w.dmg * power, u.pos, w.knock * (0.5 + 0.5 * power))
 		hit += 1
 		count("melee_hits")
 	end
-	sfx(if hit > 0 then "hit" else "swing", u.pos, { pitch = random.range(0.9, 1.1) })
+	sfx(if hit > 0 then "hit" else "swing", u.pos, { pitch = random.range(0.8, 0.95) })
 	if hit > 0 then
+		-- A beat of stillness on contact sells the weight.
+		u.hitstop = 0.06 + 0.02 * w.dmg
+		u.shake = math.max(u.shake or 0, 0.06 + 0.04 * w.dmg * power)
+		rumble(u, 0.3 + 0.15 * w.dmg, 0.12)
 		noise(u.pos, w.noise, 0.005)
 		if u.dur then
 			u.dur -= 1
@@ -1488,6 +1555,21 @@ local function swing(u)
 				count("breaks")
 			end
 		end
+	end
+end
+
+-- Each tick of a swing: the hit-stop holds it, the blow lands at IMPACT.
+local function swing_step(u, dt)
+	if not u.swing_len or u.swing <= 0 or u.cd_melee <= 0 then return end
+	if u.hitstop > 0 then
+		u.hitstop -= dt
+		u.cd_melee += dt
+		return
+	end
+	u.swing_t = u.swing_len - u.cd_melee
+	if not u.swing_landed and u.swing_t >= IMPACT * u.swing_len then
+		u.swing_landed = true
+		swing_land(u)
 	end
 end
 
@@ -1693,6 +1775,8 @@ end
 local function act(u, it, dt)
 	u.invul = math.max(0, u.invul - dt)
 	u.cd_melee = math.max(0, u.cd_melee - dt)
+	u.shake = math.max(0, (u.shake or 0) - dt * 0.6)
+	swing_step(u, dt)
 	u.cd_gun = math.max(0, u.cd_gun - dt)
 	u.cd_shove = math.max(0, u.cd_shove - dt)
 	u.shove_t = math.max(0, u.shove_t - dt)
@@ -1891,7 +1975,7 @@ local function act(u, it, dt)
 	elseif u.breath_t <= 0 then
 		u.stamina = math.min(u.stamina_max, u.stamina + dt * KNOBS.breath * KNOBS.stamina)
 	end
-	local speed = KNOBS.walk * (if busy then 0 else (if u.cd_melee > 0.2 then 0.6 else 1)) * (if u.injured then KNOBS.limp else 1) / (1 + KNOBS.grab * grabs) * (if running then KNOBS.run else 1)
+	local speed = KNOBS.walk * (if busy then 0 else (if u.cd_melee > 0.2 then 0.5 else 1)) * (if u.injured then KNOBS.limp else 1) / (1 + KNOBS.grab * grabs) * (if running then KNOBS.run else 1)
 	-- Running is heard: footfalls every so often.
 	u.run_t = (u.run_t or 0) - dt
 	if running and u.run_t <= 0 then
@@ -1931,8 +2015,11 @@ local function act(u, it, dt)
 
 	body.place(u.fig, u.pos, u.yaw)
 	local moved = dist(before, u.pos) / dt
-	if u.cd_melee > 0 and u.swing > 0 then
-		body.animate(u.fig, dt, moved, "swing_r", 1 - u.cd_melee / MELEE[u.melee].cd)
+	-- Out of breath shows: bent over and heaving once half the breath is gone.
+	local tired = tiredness(u)
+	body.tired(u.fig, if tired > 0.4 then math.min(1, (tired - 0.4) / 0.55) ^ 1.2 else 0)
+	if u.cd_melee > 0 and u.swing > 0 and u.swing_len then
+		body.animate(u.fig, dt, moved, "swing_r", swing_clip(math.clamp(1 - u.cd_melee / u.swing_len, 0, 1)))
 	elseif u.shove_t > 0 then
 		body.animate(u.fig, dt, moved, "shove")
 	elseif it.fire or u.cd_gun > 0.2 then
@@ -2343,6 +2430,14 @@ local function camera_step(dt)
 		local target = v(cam.x, 0.5, cam.z)
 		local pos = target + v(0, KNOBS.cam_height * k, KNOBS.cam_back * k)
 		s.eyes[n] = pos
+		-- A heavy blow shakes the view of whoever is in it.
+		local shake = 0
+		for _, u in g.members do shake = math.max(shake, u.shake or 0) end
+		if shake > 0.005 then
+			local j = v(random.range(-1, 1), random.range(-0.5, 0.5), random.range(-1, 1)) * shake
+			pos += j
+			target += j * 0.5
+		end
 		local any = false
 		for _, u in g.members do
 			if not u.bot and players.get(u.id) then
@@ -2567,6 +2662,7 @@ function warm_all()
 	world.warm("cube", NO_GLOW)
 	world.warm("cube", figure.CORPSE)
 	world.warm("sphere", { color = "#cfe6ff", emissive = 0.35 })
+	for _, b in BLOOD do world.warm("sphere", b) end
 	world.warm("cube", { color = "#3b3631", roughness = 0.8, metal = 0, emissive = 0 })
 	world.warm("outline16", { color = "#f2e6b0", emissive = 0.12 })
 	for _, w in HELD do world.warm("cube", { color = w.color, metal = w.metal, roughness = w.roughness or 0.6 }) end
