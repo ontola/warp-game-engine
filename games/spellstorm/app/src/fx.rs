@@ -1046,16 +1046,17 @@ impl Fx {
         let fade = 1.0 - smooth(0.95, 1.12, front);
         let y = h * front.clamp(0.0, 1.0);
         let r = 0.35;
-        let mut sp = particles(lerp_c(c, WHITE, 0.3), 30, 0.4, 0.04);
+        // Red-heavy so they read as embers, not white specks, in the crypt grade.
+        let mut sp = particles(rgba(1.0, 0.3, 0.04, 1.0), 30, 0.5, 0.06);
         sp.cell = Cell::Spark;
-        sp.glow = 2.4;
+        sp.glow = 3.2;
         sp.dir = Vec3::Y;
         sp.spread = 30.0;
         sp.v = (0.5, 1.4);
         sp.damp = (2.0, 3.0);
         sp.gravity = Vec3::ZERO;
         sp.stretch = 0.03;
-        let due = 45.0 * fade * dt;
+        let due = 80.0 * fade * dt;
         let n = due as u32 + (self.f() < due.fract()) as u32;
         let _ = key;
         for _ in 0..n {
