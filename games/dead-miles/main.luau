@@ -33,6 +33,9 @@ end
 -- @knobs
 local KNOBS = {
 	walk = 4.3, -- survivor speed, m/s
+	run = 1.45, -- running (hold LT) is this much faster
+	run_noise = 6, -- how far the dead hear you run, m
+	car_noise = 9, -- how far they hear you rummage through a car, m
 	limp = 0.72, -- share of that speed while injured
 	shambler = 1.25, -- shambler speed, m/s
 	runner = 4.4, -- runner speed, m/s
@@ -40,7 +43,7 @@ local KNOBS = {
 	start_food = 4, -- food at the start of a run
 	start_battery = 100, -- torch battery at the start, percent
 	drain = 0.22, -- battery percent per second for each lit torch
-	pressure = 0.006, -- how fast the director's pressure rises per second
+	pressure = 0, -- how fast the director's pressure rises by itself per second (noise raises it)
 	peak = 12, -- seconds of a director peak (a horde from behind)
 	calm = 25, -- seconds of calm after a peak
 	downed = 8, -- seconds a downed survivor can wait for a revive
@@ -59,7 +62,7 @@ local KNOBS = {
 	grab = 0.3, -- how much each zombie within reach slows you (0.3: two of them, half speed)
 	day_alert = 1.8, -- how much further the dead see in daylight
 	day_speed = 1.3, -- how much faster they move in daylight
-	trap = 12, -- seconds inside a building before the dead outside close in on it
+	trap = 0, -- seconds inside a building before the dead outside close in on it (0: off; noise does it)
 	turns = 0.35, -- chance the way turns north or south at a chunk
 	encounters = 0.35, -- chance of an encounter in a chunk
 	autopilot = 0, -- 1: bots drive the people too (demos, store clips, tests)
@@ -417,6 +420,8 @@ end
 
 local function noise(pos, radius, amount)
 	count("noises")
+	-- The last loud thing: where a horde heads.
+	if radius >= 6 then s.heard, s.heard_at = flat(pos), game.time() end
 	for _, z in s.zombies do
 		if z.state ~= "dead" then
 			local d = dist(z.pos, pos)
@@ -914,7 +919,7 @@ local function from_input(i)
 		mx = i.move_x, mz = -i.move_y, ax = i.aim_x, az = -i.aim_y,
 		fire = i.held.right_trigger, melee = i.held.west or i.held.right_shoulder,
 		shove = i.pressed.east, use = i.held.south, use_pressed = i.pressed.south,
-		med = i.pressed.north, torch = i.pressed.left_shoulder,
+		med = i.pressed.north, torch = i.pressed.left_shoulder, run = i.held.left_trigger,
 		up = i.pressed.up, down = i.pressed.down, back = i.pressed.east,
 		stick_y = i.move_y,
 	}
@@ -1327,6 +1332,8 @@ end
 
 local function search_done(u, c)
 	c.searched = true
+	-- A car is loud to go through: doors, glass, the boot. Cupboards less so.
+	if c.kind == "car" or c.kind == "police" then noise(v(c.x, 0, c.z), KNOBS.car_noise, 0.05) else noise(v(c.x, 0, c.z), 3, 0) end
 	world.set(c.id, { color = "#3b3631", roughness = 0.8, metal = 0, emissive = 0 })
 	count("searches")
 	local e = roll(c.kind)
@@ -1618,7 +1625,14 @@ local function act(u, it, dt)
 			if dx * dx + dz * dz < 1.6 * 1.6 then grabs += 1 end
 		end
 	end
-	local speed = KNOBS.walk * (if busy then 0 else (if u.cd_melee > 0.2 then 0.6 else 1)) * (if u.injured then KNOBS.limp else 1) / (1 + KNOBS.grab * grabs)
+	local running = it.run and not busy and m > 0.5
+	local speed = KNOBS.walk * (if busy then 0 else (if u.cd_melee > 0.2 then 0.6 else 1)) * (if u.injured then KNOBS.limp else 1) / (1 + KNOBS.grab * grabs) * (if running then KNOBS.run else 1)
+	-- Running is heard: footfalls every so often.
+	u.run_t = (u.run_t or 0) - dt
+	if running and u.run_t <= 0 then
+		u.run_t = 0.5
+		noise(u.pos, KNOBS.run_noise, 0.004)
+	end
 	local go = mv * speed + u.vel
 	u.vel = u.vel * math.max(0, 1 - 10 * dt)
 	local np = u.pos + go * dt
@@ -1861,8 +1875,8 @@ local function spawn_edge(kind, mode, goal, behind)
 	return nil
 end
 
--- The director: pressure rises with time and noise; at the top the dead
--- come from behind, then a calm. A hurt group gets breathing room.
+-- The director: noise builds pressure; at the top the dead come for the
+-- last loud thing they heard, then a calm. A hurt group gets breathing room.
 local function director(dt)
 	local d = s.dir
 	d.t -= dt
@@ -1883,13 +1897,17 @@ local function director(dt)
 		return
 	end
 	s.pressure = math.min(1.3, s.pressure + dt * KNOBS.pressure * (1 + 0.15 * s.day) * (if relief then 0.4 else 1))
+	-- Quiet lets it settle: only noise builds it up.
+	s.pressure = math.max(0, s.pressure - dt * 0.004)
+	local heard = s.heard and s.heard_at and game.time() - s.heard_at < 20
 	if d.mode == "build" then
 		d.spawn_t -= dt
 		if d.spawn_t <= 0 then
 			d.spawn_t = 9 - 6 * math.min(1, s.pressure) + random.range(-1, 1)
 			if awake < (14 + 5 * s.day) * KNOBS.density and not relief then
 				local kind = if random.chance(math.min(0.3, 0.06 * s.day)) then "runner" else "shambler"
-				spawn_edge(kind, "investigate", s.center, random.chance(0.6))
+				-- Stragglers wander in; after a noise they head for it.
+				if heard then spawn_edge(kind, "investigate", s.heard, random.chance(0.4)) else spawn_edge(kind, "wander", nil, random.chance(0.3)) end
 				count("trickle")
 			end
 		end
@@ -1898,12 +1916,16 @@ local function director(dt)
 			d.t = KNOBS.peak
 			d.peak_left = math.ceil((6 + 3 * s.day) * KNOBS.density)
 			count("peaks")
-			sfx("scream", v(s.min_x, 0, 0))
+			d.goal = if heard then s.heard else s.center
 		end
 	elseif d.mode == "peak" then
 		if (d.peak_left or 0) > 0 and game.tick() % 20 == 0 then
 			local kind = if random.chance(math.min(0.45, 0.1 + 0.05 * s.day)) then "runner" else "shambler"
-			if spawn_edge(kind, "investigate", s.center, random.chance(0.8)) then d.peak_left -= 1 end
+			local z = spawn_edge(kind, "investigate", d.goal or s.center, random.chance(0.5))
+			if z then
+				d.peak_left -= 1
+				if d.peak_left % 3 == 0 then sfx("groan", z.pos, { pitch = random.range(0.7, 0.95), db = 2 }) end
+			end
 		end
 		if d.t <= 0 then
 			d.mode = "calm"
@@ -1990,7 +2012,7 @@ local function buildings_step(dt)
 				b.inside_t = math.max(0, (b.inside_t or 0) - dt * 0.5)
 			end
 			local door = front_door(b)
-			if inside and door and b.inside_t > KNOBS.trap then
+			if KNOBS.trap > 0 and inside and door and b.inside_t > KNOBS.trap then
 				b.closed_in = true
 				count("closed_in")
 				local at = door.pa
@@ -2411,7 +2433,7 @@ local function prompt_of(u)
 			if d < bd then best, bd = c, d end
 		end
 	end
-	if best then return { { "A", "hold: search" } }, v(best.x, 0, best.z) end
+	if best then return { { "A", if best.kind == "car" or best.kind == "police" then "hold: search (loud)" else "hold: search" } }, v(best.x, 0, best.z) end
 	for _, p in s.pickups do
 		if dist(p.pos, u.pos) < 1.1 then return { { "A", "take the " .. p.kind } }, p.pos end
 	end
