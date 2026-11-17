@@ -40,6 +40,9 @@ pub struct GameToml {
     /// Warp Humans reserved up front, by pool name (`[humans.zombie]`):
     /// `humans.spawn("zombie", ...)` takes one from that pool.
     pub humans: std::collections::BTreeMap<String, HumanPool>,
+    /// HDR output on an HDR screen: true asks for it, false refuses it;
+    /// unset follows `WARP_HDR`. F10 overrides it. See engine/docs/hdr-and-exposure.md.
+    pub hdr: Option<bool>,
 }
 
 /// A pool of Warp Humans (`[humans.NAME]` in game.toml).
@@ -67,7 +70,7 @@ impl Default for HumanPool {
 
 impl Default for GameToml {
     fn default() -> Self {
-        GameToml { title: "Warp game".into(), id: String::new(), storage: false, tick_rate: 60.0, players: 1, split: true, bots: 0, min_players: 1, seed: 1, max_entities: 1024, size: [1280, 720], sky: "gradient".into(), steps: 200_000, memory_mb: 64, humans: Default::default() }
+        GameToml { title: "Warp game".into(), id: String::new(), storage: false, tick_rate: 60.0, players: 1, split: true, bots: 0, min_players: 1, seed: 1, max_entities: 1024, size: [1280, 720], sky: "gradient".into(), steps: 200_000, memory_mb: 64, humans: Default::default(), hdr: None }
     }
 }
 

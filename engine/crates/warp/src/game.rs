@@ -897,6 +897,8 @@ fn post(r: &render::Renderer, p: &api::Post, lamps: &[api::Lamp], spots: &[api::
 }
 
 impl Game for LuaGame {
+    fn hdr(&self) -> Option<bool> { self.cfg.hdr }
+
     fn debug(&self) -> (Vec<render::debug_ui::DebugMenu>, Vec<render::debug_ui::DebugControl>) {
         self.editor_pages.clone()
     }
