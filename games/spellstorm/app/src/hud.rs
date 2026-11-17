@@ -121,6 +121,8 @@ struct Hints {
     text: String,
     /// A hint just done: its words, ticked off and fading (Joep).
     gone: Option<(String, f32)>,
+    /// How long something newly learned has waited behind a basic hint.
+    learned_wait: f32,
 }
 /// Seconds a done hint shows its tick while it fades.
 const HINT_GONE: f32 = 1.2;
@@ -331,13 +333,47 @@ impl Hud {
             h.used |= wz.used;
             h.used_el |= wz.used_el;
             let done = |bit: u32, used: u32, used_el: u32| if bit == NEW_ELEMENT { new_element(&wz, used_el).is_none() } else { used & bit == bit };
+            // A new skill's hint waits for its card to go (Joep).
+            let cards = !self.unlocks.is_empty();
+            let u = h.used;
+            let ready = |bit: u32| match bit {
+                // Only something learned later: the first elements are the
+                // basics' own hints.
+                NEW_ELEMENT => !cards && u & used::CAST != 0,
+                used::NOVA => !cards && wz.form_open(Form::Nova),
+                used::PLANT => !cards && wz.form_open(Form::Plant),
+                used::ENCHANT => !cards && wz.form_open(Form::Enchant),
+                used::ROLL | used::SWING => fight,
+                used::DEFLECT => shots && u & used::SWING != 0,
+                used::CAST_PAIR => u & used::CAST != 0,
+                // Taught as soon as a second slot opens (Joep), after its card.
+                used::CAST2 => !cards && wz.queue.size >= 2 && u & used::CAST != 0,
+                // One of the first steps (Joep), once something is loaded.
+                used::SHAKE => !wz.queue.is_empty() && u & used::LOAD != 0,
+                _ => true,
+            };
+            // Something just learned (a new element, a new move) comes before
+            // whatever basic is showing, a while after its card (Joep: "press
+            // X to load it" under the player too, until they do).
+            const NEW: [u32; 5] = [NEW_ELEMENT, used::CAST2, used::NOVA, used::PLANT, used::ENCHANT];
+            let learned = NEW.iter().copied().find(|&bit| !done(bit, h.used, h.used_el) && ready(bit));
             if let Some((bit, t)) = &mut h.now {
                 *t += dt;
                 if done(*bit, h.used, h.used_el) {
                     h.gone = Some((std::mem::take(&mut h.text), 0.0));
                     h.now = None;
                     h.wait = 0.0;
+                } else if let Some(l) = learned.filter(|_| !NEW.contains(bit)) {
+                    h.learned_wait += dt;
+                    if h.learned_wait >= HINT_WAIT {
+                        h.now = Some((l, 0.0));
+                        h.learned_wait = 0.0;
+                        h.text = hint_text(l, &wz, &w.a(id).mods, h.used_el);
+                    } else {
+                        h.text = hint_text(*bit, &wz, &w.a(id).mods, h.used_el);
+                    }
                 } else {
+                    h.learned_wait = 0.0;
                     h.text = hint_text(*bit, &wz, &w.a(id).mods, h.used_el);
                 }
                 continue;
@@ -346,24 +382,6 @@ impl Hud {
             if h.wait < HINT_WAIT {
                 continue;
             }
-            // A new skill's hint waits for its card to go (Joep).
-            let cards = !self.unlocks.is_empty();
-            let ready = |bit: u32| match bit {
-                // Only something learned later: the first elements are the
-                // basics' own hints.
-                NEW_ELEMENT => !cards && h.used & used::CAST != 0,
-                used::NOVA => !cards && wz.form_open(Form::Nova),
-                used::PLANT => !cards && wz.form_open(Form::Plant),
-                used::ENCHANT => !cards && wz.form_open(Form::Enchant),
-                used::ROLL | used::SWING => fight,
-                used::DEFLECT => shots && h.used & used::SWING != 0,
-                used::CAST_PAIR => h.used & used::CAST != 0,
-                // Taught as soon as a second slot opens (Joep), after its card.
-                used::CAST2 => !cards && wz.queue.size >= 2 && h.used & used::CAST != 0,
-                // One of the first steps (Joep), once something is loaded.
-                used::SHAKE => !wz.queue.is_empty() && h.used & used::LOAD != 0,
-                _ => true,
-            };
             h.now = HINTS.iter().copied().find(|&bit| !done(bit, h.used, h.used_el) && ready(bit)).map(|bit| (bit, 0.0));
             if let Some((bit, _)) = h.now {
                 h.text = hint_text(bit, &wz, &w.a(id).mods, h.used_el);
@@ -505,14 +523,15 @@ impl Hud {
             }
             let x = (c.x / c.w * 0.5 + 0.5) * size[0] as f32 / s;
             let y = (0.5 - c.y / c.w * 0.5) * size[1] as f32 / s;
-            p.text(&wz.name, x, y + 14.0, body(), 26.0, lighten(wz.robe, 0.4), TextAlign::Center, 9.0);
+            // Smaller than they were (Joep), the bar as big as a monster's.
+            p.text(&wz.name, x, y + 12.0, body(), 19.0, lighten(wz.robe, 0.4), TextAlign::Center, 7.0);
             // Health under the name (Joep): red on a dark sleeve, gone
             // while down.
             if a.alive && a.max_hp > 0.0 {
                 let k = (a.hp / a.max_hp).clamp(0.0, 1.0) as f32;
-                let (bw, by) = (96.0, y + 50.0);
-                p.rect([x - bw * 0.5 - 2.0, by - 2.0, bw + 4.0, 11.0], [0.0, 0.0, 0.0, 0.7]);
-                p.rect([x - bw * 0.5, by, bw * k, 7.0], [0.8, 0.12, 0.08, 1.0]);
+                let (bw, by) = (64.0, y + 30.0);
+                p.rect([x - bw * 0.5 - 2.0, by - 2.0, bw + 4.0, 9.0], [0.0, 0.0, 0.0, 0.7]);
+                p.rect([x - bw * 0.5, by, bw * k, 5.0], [0.8, 0.12, 0.08, 1.0]);
             }
             let key = if wz.player_id.is_empty() { format!("seat{}", wz.seat) } else { wz.player_id.clone() };
             let shown = self.hints.get(&key).filter(|_| a.alive && wz.bot.is_none());
@@ -520,12 +539,12 @@ impl Hud {
                 if let Some((_, t)) = h.now.filter(|_| !h.text.is_empty()) {
                     // In softly, then a slow pulse so it is noticed.
                     let a = (t / 0.4).min(1.0) * (0.8 + 0.2 * (t * 3.0).sin());
-                    hint_line(&mut p, &h.text, x, y + 84.0, a, None);
+                    hint_line(&mut p, &h.text, x, y + 62.0, a, None);
                 } else if let Some((text, t)) = h.gone.as_ref().filter(|g| !g.0.is_empty()) {
                     // Done (Joep): a tick in front, then it fades and rises.
                     let k = (t / HINT_GONE).clamp(0.0, 1.0);
                     let a = 1.0 - smooth01(((k - 0.35) / 0.65).clamp(0.0, 1.0));
-                    hint_line(&mut p, text, x, y + 84.0 - 10.0 * k * k, a, Some((t / 0.2).min(1.0)));
+                    hint_line(&mut p, text, x, y + 62.0 - 10.0 * k * k, a, Some((t / 0.2).min(1.0)));
                 }
             }
         }
