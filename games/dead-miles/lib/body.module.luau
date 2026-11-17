@@ -14,6 +14,8 @@ M.EYE_GLOW = figure.EYE_GLOW
 local EYES_OFF = { color = "#1a1a1a", emissive = 0 }
 
 local function forward(yaw) return v(-math.sin(yaw), 0, -math.cos(yaw)) end
+-- Where the body is drawn: out of sight (under the ground) while hidden.
+local function at(b, pos) return if b.hidden then pos - v(0, 40, 0) else pos end
 
 local function place_eyes(b)
 	local head = humans.head(b.human)
@@ -47,7 +49,7 @@ local function human_weapon(b)
 end
 
 local function new_human(b)
-	local id = humans.spawn(b.pool, { pos = b.pos, yaw = b.yaw + math.pi })
+	local id = humans.spawn(b.pool, { pos = at(b, b.pos), yaw = b.yaw + math.pi })
 	if not id then return false end
 	b.human = id
 	b.eye = world.spawn("cube", { pos = b.pos, size = v(0.11, 0.025, 0.02), color = "#1a1a1a", emissive = 0, solid = false, tag = "eyes", visible = false })
@@ -62,9 +64,9 @@ local function new_human(b)
 end
 
 local function new_figure(b)
-	b.fig = figure.build(b.pos, b.yaw, b.look)
+	b.fig = figure.build(at(b, b.pos), b.yaw, b.look)
 	if b.held then figure.hold(b.fig, b.held, b.held_looks) end
-	if b.pose == "down" or b.pose == "dead" then figure.lie(b.fig, b.pos, b.yaw, true) end
+	if b.pose == "down" or b.pose == "dead" then figure.lie(b.fig, at(b, b.pos), b.yaw, true) end
 	if b.glowing then figure.eyes(b.fig, true) end
 	if b.tint then world.set(b.fig.torso, b.tint) end
 end
@@ -99,6 +101,7 @@ end
 
 function M.place(b, pos, yaw)
 	b.pos, b.yaw = pos, yaw
+	pos = at(b, pos)
 	if b.human then
 		humans.set(b.human, { pos = pos, yaw = yaw + math.pi })
 		place_eyes(b)
@@ -131,6 +134,7 @@ function M.lie(b, pos, yaw, down, fall)
 	b.pos, b.yaw = pos, yaw
 	b.pose = if down then (if fall then "dead" else "down") else "walk"
 	b.t = 0
+	pos = at(b, pos)
 	if b.human then
 		humans.set(b.human, { pos = pos, yaw = yaw + math.pi, pose = b.pose, t = 0 })
 		place_eyes(b)
@@ -174,6 +178,22 @@ end
 function M.tint(b, look)
 	if b.fig then world.set(b.fig.torso, look) end
 	b.tint = look
+end
+
+-- Fog of war: nobody sees this one. Hidden bodies are drawn under the
+-- ground, so a human keeps its place in the pool.
+function M.hide(b, hidden)
+	hidden = hidden or nil
+	if b.hidden == hidden then return end
+	b.hidden = hidden
+	if b.pose == "down" or b.pose == "dead" then
+		local pose, t = b.pose, b.t
+		M.lie(b, b.pos, b.yaw, true, pose == "dead")
+		b.pose, b.t = pose, t
+		if b.human then humans.set(b.human, { pose = pose, t = t }) end
+	else
+		M.place(b, b.pos, b.yaw)
+	end
 end
 
 function M.remove(b)

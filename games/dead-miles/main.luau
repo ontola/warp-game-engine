@@ -2040,6 +2040,87 @@ local function blocks_step()
 	end
 end
 
+-- Fog of war. A room stays dark until somebody stands in it or looks in
+-- from just outside through a door or a hole in the wall; the dead show
+-- only where somebody can see them: near, in a torch beam, or under a
+-- working street light, and never through a wall. Every 4 ticks.
+local function clear_line(a, b)
+	local d = b - a
+	local m = math.sqrt(d.x * d.x + d.z * d.z)
+	if m < 0.3 then return true end
+	local hit = world.raycast(v(a.x, 1.0, a.z), v(d.x / m, 0, d.z / m), m, { tag = "wall" })
+	return not hit or hit.distance > m - 0.25
+end
+
+local function sight_step()
+	local dt = 4 / 60
+	local eyes = {}
+	for _, u in s.survivors do
+		if in_body(u) and u.pos then table.insert(eyes, u) end
+	end
+	local cx = (s.center or v(0, 0, 0)).x
+	for _, b in s.buildings do
+		if #b.rooms > 0 and math.abs((b.x0 + b.x1) / 2 - cx) < 40 then
+			for _, r in b.rooms do
+				if r.shroud then
+					local seen = false
+					for _, u in eyes do
+						local p = u.pos
+						local ox = math.max(r.x0 - p.x, 0, p.x - r.x1)
+						local oz = math.max(r.z0 - p.z, 0, p.z - r.z1)
+						if ox == 0 and oz == 0 then
+							seen = true
+						elseif ox < 2.2 and oz < 2.2 then
+							local q = v(math.clamp(p.x, r.x0 + 0.5, r.x1 - 0.5), 0, math.clamp(p.z, r.z0 + 0.5, r.z1 - 0.5))
+							seen = clear_line(p, q)
+						end
+						if seen then break end
+					end
+					r.seen_t = if seen then 0.8 else (r.seen_t or 0) - dt
+					local dark_now = r.seen_t <= 0
+					if dark_now ~= (r.dark ~= false) then
+						r.dark = dark_now
+						world.set(r.shroud, { visible = dark_now })
+					end
+				end
+			end
+		end
+	end
+	local day = daylight()
+	local near = if day then 22 else (if dark() then 6.5 else 12)
+	local lamps = {}
+	if dark() then
+		for _, ch in s.chunks do
+			for _, l in ch.lamps or {} do
+				if math.abs(l.pos.x - cx) < 30 then table.insert(lamps, l) end
+			end
+		end
+	end
+	for _, z in s.zombies do
+		if z.fig then
+			local seen = false
+			for _, u in eyes do
+				local dx, dz = z.pos.x - u.pos.x, z.pos.z - u.pos.z
+				local d = math.sqrt(dx * dx + dz * dz)
+				local look = d < near
+				if not look and d < 15 and u.torch and s.battery > 0 and dark() then
+					local f = dir(u.yaw)
+					look = (dx * f.x + dz * f.z) > d * 0.86
+				end
+				if not look and d < 22 then
+					for _, l in lamps do
+						local lx, lz = z.pos.x - l.pos.x, z.pos.z - l.pos.z
+						if lx * lx + lz * lz < 20 then look = true break end
+					end
+				end
+				if look and clear_line(u.pos, z.pos) then seen = true break end
+			end
+			z.seen_t = if seen then 0.6 else (z.seen_t or 0) - dt
+			body.hide(z.fig, z.seen_t <= 0)
+		end
+	end
+end
+
 ----------------------------------------------------------------------------
 -- Hooks
 
@@ -2153,6 +2234,7 @@ local function tick(dt, input)
 
 	camera_step(dt)
 	if game.tick() % 4 == 0 then blocks_step() end
+	if game.tick() % 4 == 2 then sight_step() end
 	buildings_step(dt)
 	stream_land()
 	look_of_hour()
