@@ -445,8 +445,11 @@ fn player(c: &Core, p: Option<i64>) -> mlua::Result<usize> {
     })
 }
 
-/// With one shared view, the player whose camera it is; else `i`.
+/// The player whose camera `i` looks through: the first one in the roster
+/// on the same view (players can share one, `camera.views`), with one
+/// shared view the first with a view; else `i`.
 fn viewer(c: &Core, i: usize) -> usize {
+    if let Some(v) = c.roster[i].view { return c.roster.iter().position(|p| p.view == Some(v)).unwrap_or(i); }
     if !c.shared_view { return i; }
     c.roster.iter().position(|p| p.view.is_some()).unwrap_or(i)
 }
@@ -688,6 +691,27 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
                 }
             }
             c.roster[i].cam = cam;
+            Ok(())
+        })),
+        // Who looks through which part of the screen: {[player id] = view},
+        // views numbered from 1. Players on the same view share its camera
+        // (the first of them in players.list() is the one camera.set moves);
+        // the screen splits into as many parts as there are views. Players
+        // left out keep theirs. A game splits the screen when its players
+        // walk apart and joins it again when they come together.
+        ("views", f!(core, move |_, t: Table| {
+            let mut c = lock(&core);
+            for pair in t.pairs::<i64, i64>() {
+                let (id, n) = pair?;
+                let i = player(&c, Some(id))?;
+                if n < 1 || n > 8 { return Err(rt(format!("camera.views: view {n} for player {id} (1 to 8)"))); }
+                c.roster[i].view = Some(n as usize - 1);
+            }
+            // Number the views 0.. in order, without gaps.
+            let mut used: Vec<usize> = c.roster.iter().filter_map(|p| p.view).collect();
+            used.sort_unstable();
+            used.dedup();
+            for p in &mut c.roster { if let Some(v) = p.view { p.view = used.iter().position(|u| *u == v); } }
             Ok(())
         })),
         ("get", f!(core, move |lua, p: Option<i64>| {

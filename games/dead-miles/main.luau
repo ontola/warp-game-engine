@@ -332,6 +332,17 @@ end
 
 local function standing(u) return u.state == "ok" end
 local function in_body(u) return u.state == "ok" or u.state == "down" end
+-- The nearest person (not a bot) in a body, for a bot to stay by.
+local function nearest_person(p)
+	local best, bd = nil, math.huge
+	for _, o in s.survivors do
+		if not o.bot and KNOBS.autopilot ~= 1 and in_body(o) and o.pos then
+			local d = dist(o.pos, p)
+			if d < bd then best, bd = o.pos, d end
+		end
+	end
+	return best
+end
 
 -- One thing in the hand: a gun, a melee weapon, or nothing.
 local function held_kind(u) return u.gun or (if u.melee ~= "fists" then u.melee else nil) end
@@ -393,8 +404,21 @@ end
 
 -- Warp Humans go to the dead the camera can see (game.toml's zombie and
 -- runner pools); the rest are box figures until they come near.
-local function near_view(p)
-	return s.cam == nil or math.abs(p.x - s.cam.x) < 26
+-- slack widens the test (a body leaves the pool only well out of view).
+local function near_view(p, slack)
+	slack = slack or 0
+	if not s.cams or #s.cams == 0 then return true end
+	for _, c in s.cams do
+		if math.abs(p.x - c.x) < 26 + slack and math.abs(p.z - c.z) < 18 + slack then return true end
+	end
+	return false
+end
+
+-- How far p is from the nearest view's centre, on the ground.
+local function view_dist(p)
+	local best = math.huge
+	for _, c in s.cams or {} do best = math.min(best, dist(v(p.x, 0, p.z), v(c.x, 0, c.z))) end
+	return best
 end
 
 local function spawn_zombie(kind, pos, mode, goal)
@@ -1695,11 +1719,14 @@ local function act(u, it, dt)
 	local go = mv * speed + u.vel
 	u.vel = u.vel * math.max(0, 1 - 10 * dt)
 	local np = u.pos + go * dt
-	if s.center then
-		local away = np - s.center
+	-- Bots keep near the people; people go where they like (the screen
+	-- splits when they walk apart).
+	local anchor = if u.bot then (nearest_person(u.pos) or s.center) else nil
+	if anchor then
+		local away = np - anchor
 		local d = math.sqrt(away.x * away.x + away.z * away.z)
-		if d > LEASH and d > dist(u.pos, s.center) then
-			np = s.center + away / d * math.max(LEASH, dist(u.pos, s.center))
+		if d > LEASH and d > dist(u.pos, anchor) then
+			np = anchor + away / d * math.max(LEASH, dist(u.pos, anchor))
 		end
 	end
 	-- No way back west: the land behind is gone.
@@ -1996,35 +2023,127 @@ end
 ----------------------------------------------------------------------------
 -- The camera
 
-local function group_center()
+local function group_center(members)
 	local sum, n = v(0, 0, 0), 0
-	for _, u in s.survivors do
+	for _, u in members do
 		if standing(u) and not u.recruit then
 			sum = sum + u.pos
 			n += 1
 		end
 	end
 	if n == 0 then
-		for _, u in s.survivors do
+		for _, u in members do
 			if u.pos and u.state ~= "gone" then
 				sum = sum + u.pos
 				n += 1
 			end
 		end
 	end
-	if n == 0 then return v(s.min_x + 4, 0, 0), 0 end
+	if n == 0 then return nil, 0 end
 	local c = sum / n
 	local spread = 0
-	for _, u in s.survivors do
+	for _, u in members do
 		if standing(u) and not u.recruit then spread = math.max(spread, dist(u.pos, c)) end
 	end
 	return c, spread
 end
 
+-- Split screen. People who walk apart each get their own part of the
+-- screen and the group's camera stays with each; they share one again
+-- when they come together. Apart is measured as the screen sees it: a
+-- metre up or down the screen counts for more than one across it.
+local SPLIT_AT, JOIN_AT = 18, 12
+local function apart(a, b) return math.max(math.abs(a.x - b.x), math.abs(a.z - b.z) * 1.6) end
+
+local function groups_step()
+	local people = {}
+	for _, u in s.survivors do
+		if not u.bot and u.pos and u.state ~= "gone" then table.insert(people, u) end
+	end
+	local root = {}
+	for i = 1, #people do root[i] = i end
+	local function find(i)
+		while root[i] ~= i do i = root[i] end
+		return i
+	end
+	for i = 1, #people do
+		for j = i + 1, #people do
+			local a, b = people[i], people[j]
+			local limit = if (a.group or 1) == (b.group or 1) then SPLIT_AT else JOIN_AT
+			if apart(a.pos, b.pos) < limit then root[find(j)] = find(i) end
+		end
+	end
+	local by_root, groups = {}, {}
+	for i, u in people do
+		local r = find(i)
+		if not by_root[r] then
+			by_root[r] = { members = {} }
+			table.insert(groups, by_root[r])
+		end
+		table.insert(by_root[r].members, u)
+	end
+	if #groups == 0 then groups = { { members = {} } } end
+	-- Bots go with the nearest person's group.
+	for _, u in s.survivors do
+		if u.bot or not u.pos or u.state == "gone" then
+			local best, bd = groups[1], math.huge
+			if u.pos then
+				for _, g in groups do
+					for _, m in g.members do
+						local d = dist(m.pos, u.pos)
+						if d < bd then best, bd = g, d end
+					end
+				end
+			end
+			table.insert(best.members, u)
+		end
+	end
+	for _, g in groups do g.center, g.spread = group_center(g.members) end
+	-- The parts stack top to bottom: north first when the groups are apart
+	-- up and down the screen, else west first.
+	local x0, x1, z0, z1 = math.huge, -math.huge, math.huge, -math.huge
+	for _, g in groups do
+		if g.center then
+			x0, x1 = math.min(x0, g.center.x), math.max(x1, g.center.x)
+			z0, z1 = math.min(z0, g.center.z), math.max(z1, g.center.z)
+		end
+	end
+	local by_z = #groups > 1 and (z1 - z0) * 1.6 > x1 - x0
+	local function key(g)
+		if not g.center then return 0 end
+		return if by_z then g.center.z else g.center.x
+	end
+	table.sort(groups, function(a, b) return key(a) < key(b) end)
+	local views = {}
+	for n, g in groups do
+		for _, u in g.members do
+			u.group = n
+			views[u.id] = n
+		end
+	end
+	local known = {}
+	for _, p in players.list() do known[p.id] = true end
+	for id in views do
+		if not known[id] then views[id] = nil end
+	end
+	if next(views) then camera.views(views) end
+	s.groups = groups
+end
+
 local function camera_step(dt)
-	local c, spread = group_center()
+	groups_step()
+	local c, spread = group_center(s.survivors)
+	c = c or v(s.min_x + 4, 0, 0)
 	s.center = c
-	s.front = math.max(s.front, c.x)
+	local west, east = math.huge, -math.huge
+	for _, g in s.groups do
+		if g.center then
+			west = math.min(west, g.center.x)
+			east = math.max(east, g.center.x)
+		end
+	end
+	if west == math.huge then west, east = c.x, c.x end
+	s.front = math.max(s.front, east)
 	-- Along the way: east, plus every street walked up or down.
 	local i = math.floor(s.front / CHUNK) + 1
 	local r = s.front - s.start_x
@@ -2035,25 +2154,41 @@ local function camera_step(dt)
 		r += math.abs(zc - prev) * done
 	end
 	s.route = math.max(s.route, r)
-	s.min_x = math.max(s.min_x, c.x - BEHIND)
-	if not s.cam then s.cam = c end
-	s.cam = s.cam + (v(c.x + 2, 0, c.z) - s.cam) * math.min(1, dt * 3)
-	s.spread = (s.spread or spread) + (spread - (s.spread or spread)) * math.min(1, dt * 2)
-	local k = 1 + math.max(0, s.spread - 5) * 0.04
-	local target = v(s.cam.x, 0.5, s.cam.z)
-	local pos = target + v(0, KNOBS.cam_height * k, KNOBS.cam_back * k)
-	s.eye = pos
-	local any = false
-	for _, p in players.list() do
-		if p.human then
-			camera.set(p.id, { pos = pos, target = target, fov = KNOBS.fov })
-			any = true
+	s.min_x = math.max(s.min_x, west - BEHIND)
+	-- One camera per part of the screen; a new part starts where the
+	-- shared camera was, so it slides over to its people.
+	s.cams = s.cams or {}
+	s.spreads = s.spreads or {}
+	s.eyes = s.eyes or {}
+	local from = s.cams[1] or c
+	for n, g in s.groups do
+		local gc = g.center or c
+		local cam = s.cams[n] or from
+		cam = cam + (v(gc.x + 2, 0, gc.z) - cam) * math.min(1, dt * 3)
+		s.cams[n] = cam
+		local sp = s.spreads[n] or g.spread
+		sp = sp + (g.spread - sp) * math.min(1, dt * 2)
+		s.spreads[n] = sp
+		local k = 1 + math.max(0, sp - 5) * 0.04
+		local target = v(cam.x, 0.5, cam.z)
+		local pos = target + v(0, KNOBS.cam_height * k, KNOBS.cam_back * k)
+		s.eyes[n] = pos
+		local any = false
+		for _, u in g.members do
+			if not u.bot and players.get(u.id) then
+				camera.set(u.id, { pos = pos, target = target, fov = KNOBS.fov })
+				any = true
+			end
+		end
+		if not any and n == 1 then
+			local first = players.list()[1]
+			if first then camera.set(first.id, { pos = pos, target = target, fov = KNOBS.fov }) end
 		end
 	end
-	if not any then
-		local first = players.list()[1]
-		if first then camera.set(first.id, { pos = pos, target = target, fov = KNOBS.fov }) end
+	for n = #s.groups + 1, #s.cams do
+		s.cams[n], s.spreads[n], s.eyes[n] = nil, nil, nil
 	end
+	s.cam, s.eye = s.cams[1], s.eyes[1]
 end
 
 -- Going in for supplies is a gamble: stay inside a building too long and
@@ -2127,12 +2262,12 @@ local function seg_hits_box(a, b, x0, x1, y0, y1, z0, z1)
 end
 
 local function blocks_step()
-	local eye = s.eye
-	if not eye then return end
+	if not s.eyes or #s.eyes == 0 then return end
 	for _, b in s.blocks do
 		local hide = false
-		if math.abs((b.x0 + b.x1) / 2 - eye.x) < 30 then
+		if view_dist(v((b.x0 + b.x1) / 2, 0, (b.z0 + b.z1) / 2)) < 34 then
 			for _, u in s.survivors do
+				local eye = s.eyes[u.group or 1] or s.eyes[1]
 				if in_body(u) and u.pos then
 					-- A little around each survivor, so the view clears early.
 					for _, off in { v(0, 0, 0), v(-1.5, 0, -1.5), v(1.5, 0, -1.5) } do
@@ -2306,7 +2441,7 @@ local function zombies_tick(dt)
 	-- A full pool takes the human of the oldest corpse first.
 	if game.tick() % 15 == 0 and s.cam then
 		for _, z in s.zombies do
-			if z.fig and body.is_human(z.fig) and not near_view(z.pos + v(if z.pos.x > s.cam.x then -8 else 8, 0, 0)) then
+			if z.fig and body.is_human(z.fig) and not near_view(z.pos, 8) then
 				body.demote(z.fig)
 			end
 		end
@@ -2543,7 +2678,7 @@ local function torches()
 		for _, ch in s.chunks do
 			for _, l in ch.lamps or {} do
 				local off = l.flicker and math.sin(game.time() * 7 + l.seed) + math.sin(game.time() * 23 + l.seed * 3) > 1.2
-				local d = math.abs(l.pos.x - s.cam.x)
+				local d = view_dist(l.pos)
 				if not off and d < 30 then table.insert(near, { l = l, d = d }) end
 			end
 		end
@@ -2557,13 +2692,32 @@ local function torches()
 		end
 	end
 	for _, c in { s.camp, s.camp_used } do
-		if c and math.abs(c.x - s.cam.x) < 40 then
+		if c and view_dist(c) < 40 then
 			table.insert(list, { pos = v(c.x, 0.8, c.z), color = "#ff9a4a", intensity = 500 + math.sin(game.time() * 9) * 60, range = 12 })
 		end
 	end
 	while #list > 32 do table.remove(list) end
 	if #list > 0 then lights.set(list) else lights.clear() end
 	lights.spots(spots)
+end
+
+-- A point on the screen, through the camera of the part of the screen u
+-- is on (or the nearest group's, for things without a person).
+local function proj(pos, u)
+	if u and players.get(u.id) then return hud.project(pos, u.id) end
+	local g = if u and u.group and s.groups then s.groups[u.group] else nil
+	if not g and s.groups then
+		local bd = math.huge
+		for _, o in s.groups do
+			if o.center and dist(o.center, pos) < bd then g, bd = o, dist(o.center, pos) end
+		end
+	end
+	if g then
+		for _, m in g.members do
+			if players.get(m.id) then return hud.project(pos, m.id) end
+		end
+	end
+	return hud.project(pos)
 end
 
 local function draw()
@@ -2595,7 +2749,7 @@ local function draw()
 
 	for _, u in s.survivors do
 		if u.pos and u.state ~= "gone" then
-			local px, py = hud.project(v(u.pos.x, 0, u.pos.z))
+			local px, py = proj(v(u.pos.x, 0, u.pos.z), u)
 			if px then
 				local c = { u.color.x, u.color.y, u.color.z, 1 }
 				if u.state == "ok" then
@@ -2616,7 +2770,7 @@ local function draw()
 				elseif u.state == "down" then
 					bar(px - 30 * k, py + 12 * k, 60 * k, 6 * k, u.t / KNOBS.downed, "#ff4a3a")
 				elseif u.state == "ghost" then
-					local gx, gy = hud.project(v(u.pos.x, 1.4, u.pos.z))
+					local gx, gy = proj(v(u.pos.x, 1.4, u.pos.z), u)
 					if gx then bar(gx - 24 * k, gy + 26 * k, 48 * k, 4 * k, 1 - u.t / KNOBS.ghost, c) end
 				end
 				if u.popup then
@@ -2630,7 +2784,7 @@ local function draw()
 						if row then
 							local qx, qy = px, py - 112 * k
 							if at then
-								local ax, ay = hud.project(v(at.x, 1.6, at.z))
+								local ax, ay = proj(v(at.x, 1.6, at.z), u)
 								if ax then qx, qy = ax, ay - 30 * k end
 							end
 							button_row(qx, qy, row, k)
@@ -2665,7 +2819,7 @@ local function draw()
 	-- A stranger you can talk to shows a small mark.
 	for _, st in s.strangers do
 		if st.fig and not st.done and not st.fleeing then
-			local sx, sy = hud.project(v(st.pos.x, 2.1, st.pos.z))
+			local sx, sy = proj(v(st.pos.x, 2.1, st.pos.z))
 			if sx then hud.box(sx - 4 * k, sy - 4 * k, 8 * k, 8 * k, "#f2e6b0") end
 		end
 	end

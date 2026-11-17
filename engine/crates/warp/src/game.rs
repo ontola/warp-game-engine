@@ -332,7 +332,13 @@ impl LuaGame {
         if k == 0 && let Some(p) = c.roster.first_mut() { p.view = Some(0); }
     }
 
-    fn views(&self) -> usize { self.core().roster.iter().filter(|p| p.view.is_some()).count().max(1) }
+    fn views(&self) -> usize {
+        let c = self.core();
+        let mut v: Vec<usize> = c.roster.iter().filter_map(|p| p.view).collect();
+        v.sort_unstable();
+        v.dedup();
+        v.len().max(1)
+    }
 
     /// The party's seats changed mid-session: names and colours follow,
     /// a new seat joins (`player_joined(p)`), a gone seat leaves
@@ -509,7 +515,11 @@ impl LuaGame {
         let c = self.core();
         let mut tags = std::collections::BTreeMap::<&str, u32>::new();
         for e in c.world.entities.values() { *tags.entry(e.tag.as_str()).or_default() += 1; }
-        let cams: Vec<Json> = c.roster.iter().filter(|p| p.view.is_some()).map(|p| p.cam).map(|k| json!({ "pos": k.pos.to_array(), "target": k.target.to_array(), "fov": k.fov })).collect();
+        // One per part of the screen: the first player's on each view.
+        let mut seen: Vec<(usize, Cam)> = c.roster.iter().filter_map(|p| p.view.map(|v| (v, p.cam))).collect();
+        seen.sort_by_key(|(v, _)| *v);
+        seen.dedup_by_key(|(v, _)| *v);
+        let cams: Vec<Json> = seen.into_iter().map(|(_, k)| json!({ "pos": k.pos.to_array(), "target": k.target.to_array(), "fov": k.fov })).collect();
         let players: Vec<Json> = c.roster.iter().map(|p| json!({ "id": p.id, "name": p.name, "color": p.color, "bot": p.bot, "seat": p.seat, "couch": p.couch, "view": p.view })).collect();
         let phase = match self.party.as_ref().map(|p| p.phase) {
             None => "standalone", Some(party::Phase::Idle) => "waiting", Some(party::Phase::Warm) => "ready", Some(party::Phase::Running) => "running", Some(party::Phase::Paused) => "paused",
@@ -1043,7 +1053,9 @@ impl Game for LuaGame {
             c.humans.draw(frame.gpu, r, &mut c.world.scene, frame.alpha)?;
         }
         let mut seen: Vec<(usize, Cam)> = c.roster.iter().filter_map(|p| p.view.map(|v| (v, p.cam_prev.towards(&p.cam, frame.alpha)))).collect();
+        // Players sharing a view: the first one's camera.
         seen.sort_by_key(|(v, _)| *v);
+        seen.dedup_by_key(|(v, _)| *v);
         if seen.is_empty() { seen.push((0, Cam::default())); }
         let cameras = seen.into_iter().map(|(_, k)| k).map(|k| Camera { pos: k.pos, target: k.target, fov_y: k.fov.to_radians(), near: 0.05 }).collect();
         drop(c);
