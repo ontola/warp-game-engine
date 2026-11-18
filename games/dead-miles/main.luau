@@ -47,6 +47,7 @@ local KNOBS = {
 	blown = 0.3, -- after sprinting yourself empty, the stamina you need back before you can sprint again
 	spent = 4.5, -- seconds spent after running out of breath: a slow walk, slow swings, panting
 	spent_walk = 0.45, -- walking speed while spent
+	held = 0.45, -- speed while one of the dead holds on (pull free before it bites)
 	run_noise = 6, -- how far the dead hear you run, m
 	car_noise = 9, -- how far they hear you rummage through a car, m
 	limp = 0.72, -- share of that speed while injured
@@ -110,8 +111,10 @@ local HELD = {
 }
 
 local ZOMBIES = {
-	shambler = { hp = 3, sense = 8, reach = 1.35, windup = 1.0, strike = 0.25, recover = 1.0 },
-	runner = { hp = 2, sense = 12, reach = 3.6, windup = 0.9, strike = 0.35, recover = 1.2, lunge = 8.5 },
+	-- reach: where it starts its grab; windup: arms out, lurching in; strike:
+	-- the grab itself; bite: how long it holds on before it bites.
+	shambler = { hp = 3, sense = 8, reach = 1.35, windup = 0.8, strike = 0.3, recover = 1.0, bite = 1.1 },
+	runner = { hp = 2, sense = 12, reach = 3.6, windup = 0.9, strike = 0.35, recover = 1.2, lunge = 8.5, bite = 0.75 },
 }
 local ZOMBIE_SKIN = { "#7d8f6a", "#8a9178", "#6f7f66", "#93977f" }
 local ZOMBIE_SHIRTS = { "#5b5148", "#4d5560", "#6a4f45", "#56604a", "#6b6458", "#3f4650" }
@@ -1384,7 +1387,9 @@ local function bot_intent(u)
 	if u.state == "down" then return it end
 	it.torch = dark() ~= u.torch and s.battery > 0
 
-	-- A sidekick: stays near its person, a step behind, and lets them lead.
+	-- A sidekick: stays close to its person, a step behind, lets them lead
+	-- and plays it safe: it fights what comes at the two of them, not what
+	-- it could go and find.
 	local lead = nil
 	if #humans > 0 then
 		local h, hd = nil, math.huge
@@ -1395,10 +1400,13 @@ local function bot_intent(u)
 			end
 		end
 		lead = h
-		if h and hd > 7 then
+		-- (Off to search something close to its person is still close.)
+		local c = u.going_to
+		local searching = c and h and not c.searched and c.claim == u.id and dist(v(c.x, 0, c.z), h.pos) < 6.5
+		if h and hd > (if searching then 7 else 4.5) and not nearest_zombie(u.pos, 1.6, true) then
 			it.mx, it.mz = steer(u, h.pos)
 			-- Left behind: a short sprint to catch up, with breath to spare.
-			it.run = hd > 10 and (u.stamina or 1) > 0.5 * (u.stamina_max or 1)
+			it.run = hd > 9 and (u.stamina or 1) > 0.5 * (u.stamina_max or 1)
 			return it
 		end
 	elseif s.center and dist(u.pos, s.center) > 9 and not nearest_zombie(u.pos, 2.5, true) then
@@ -1429,7 +1437,12 @@ local function bot_intent(u)
 	if u.injured and s.meds > 0 then it.med = true end
 
 	-- Fight what is close or in the way; walk away from the rest.
-	local z, d = nearest_zombie(u.pos, if lead then 4.5 else 7, true)
+	local z, d = nearest_zombie(u.pos, if lead then 2.4 else 7, true)
+	-- One on its person: go and help.
+	if lead and not z then
+		local lz, ld = nearest_zombie(lead.pos, 2.2, true)
+		if lz and dist(lz.pos, u.pos) < 5 then z, d = lz, dist(lz.pos, u.pos) end
+	end
 	-- Not through a wall: one in the next room is no fight yet.
 	if z and d > 0.6 then
 		local to = z.pos - u.pos
@@ -1456,8 +1469,14 @@ local function bot_intent(u)
 		elseif d < w.range - 0.3 and not gun and not tired then
 			it.melee = true
 		elseif tired and d < 2.5 then
-			-- Out of breath: step back from it.
-			it.mx, it.mz = -to.x / d, -to.z / d
+			-- Out of breath: step back from it, towards its person.
+			local back = v(-to.x / d, 0, -to.z / d)
+			if lead then
+				local tl = lead.pos - u.pos
+				local m = vector.magnitude(tl)
+				if m > 0.5 then back = (back + tl / m) * 0.5 end
+			end
+			it.mx, it.mz = back.x, back.z
 		elseif d < 4 and chasing(u, z, dt) then
 			it.mx, it.mz = to.x / d, to.z / d
 		end
@@ -1492,6 +1511,7 @@ local function bot_intent(u)
 			best.claim = nil
 			best = nil
 		end
+		u.going_to = best
 		if best then
 			best.claim = u.id
 			if to_rect(u.pos, best.rect) < 0.75 then
@@ -2117,6 +2137,19 @@ local function act(u, it, dt)
 			end
 			if best then
 				busy = true
+				-- Going through it is heard: a car is doors, glass and the boot.
+				u.rummage_t = (u.rummage_t or 0) - dt
+				if u.rummage_t <= 0 then
+					local car = best.kind == "car" or best.kind == "police"
+					u.rummage_t = random.range(0.45, 0.8)
+					local at = v(best.x, 0, best.z)
+					if car then
+						local r = random.float()
+						sfx(if u.search_t < 0.3 then "car_door" elseif r < 0.3 then "car_glass" elseif r < 0.65 then "car_thump" else "rummage", at, { pitch = random.range(0.9, 1.1) })
+					else
+						sfx("rummage", at, { pitch = random.range(0.85, 1.15), db = -4 })
+					end
+				end
 				u.search_t += dt
 				if u.search_t >= KNOBS.search then
 					u.search_t = 0
@@ -2152,9 +2185,10 @@ local function act(u, it, dt)
 				-- Two things carried: into a free slot, else what is in the
 				-- hand goes down here.
 				store(u)
+				local at = u.pos + v(random.range(-0.4, 0.4), 0, random.range(-0.4, 0.4))
 				local slot = if not u.slots[1] then 1 elseif not u.slots[2] then 2 elseif u.hand > 0 then u.hand else 1
 				local old = u.slots[slot]
-				if old then place_weapon(old.kind, u.pos + v(random.range(-0.4, 0.4), 0, random.range(-0.4, 0.4)), old.dur) end
+				if old then place_weapon(old.kind, at, old.dur) end
 				u.slots[slot] = { kind = p.kind, dur = p.dur }
 				u.hand = slot
 				load_hand(u)
@@ -2222,10 +2256,12 @@ local function act(u, it, dt)
 
 	-- Hands on you: every one of the dead within reach drags at you.
 	local grabs = 0
+	u.held = false
 	for _, z in s.zombies do
 		if z.state ~= "dead" and z.state ~= "sleep" then
 			local dx, dz = z.pos.x - u.pos.x, z.pos.z - u.pos.z
 			if dx * dx + dz * dz < 1.6 * 1.6 then grabs += 1 end
+			if z.state == "hold" and z.target == u then u.held = true end
 		end
 	end
 	if not u.stamina_max then u.stamina_max = KNOBS.stamina u.stamina = u.stamina_max end
@@ -2264,6 +2300,8 @@ local function act(u, it, dt)
 	-- Worn out, even the jog drags.
 	local worn = if spent then KNOBS.spent_walk else 1 - 0.25 * math.clamp((tiredness(u) - 0.6) / 0.4, 0, 1)
 	local speed = KNOBS.walk * (u.speed or 1) * worn * (if busy then 0 else (if u.charging then 0.35 elseif u.cd_melee > 0.2 then 0.5 else 1)) * (if u.injured then KNOBS.limp else 1) / (1 + KNOBS.grab * grabs) * (if running then KNOBS.run else 1)
+	-- In someone's hands: every step is a struggle to pull free.
+	if u.held then speed *= KNOBS.held end
 	-- Running is heard: footfalls every so often.
 	u.run_t = (u.run_t or 0) - dt
 	if running and u.run_t <= 0 then
@@ -2346,6 +2384,39 @@ local function noticed_at(spec, u)
 	if dark() then k = if (u.torch and s.battery > 0) or u.in_light then 1.35 else 0.55 end
 	if daylight() then k = KNOBS.day_alert end
 	return spec.sense * k
+end
+
+-- Someone walking with the group (an escort) is bitten: they cannot fight,
+-- only run. The second bite kills them; whoever was with them runs off.
+local function stranger_bitten(st, z)
+	st.hp = (st.hp or 2) - 1
+	local away = st.pos - z.pos
+	local d = vector.magnitude(away)
+	away = if d > 0.01 then away / d else v(1, 0, 0)
+	blood_splat(st.pos, away, 0.7)
+	sfx("scream", st.pos, { pitch = random.range(1.05, 1.25) })
+	st.scared = 2.5
+	count("escort_bites")
+	if st.hp > 0 then
+		if st.fig then body.hit(st.fig, away * 1.2) end
+		return
+	end
+	if st.fig then
+		body.ragdoll(st.fig, away * 2.5)
+		body.lie(st.fig, st.pos, st.yaw, true, true)
+		body.tint(st.fig, figure.CORPSE)
+		table.insert(s.corpses, { fig = st.fig, t = 20, pos = st.pos })
+		st.fig = nil
+	end
+	for _, w in st.with or {} do
+		table.insert(s.strangers, { fig = w.fig, pos = collide(st.pos + (w.at or v(0.6, 0, 0.5)), RADIUS), yaw = st.yaw, fleeing = 5, done = true, reach = 0 })
+	end
+	st.with = {}
+	st.escort, st.following, st.done = nil, nil, true
+	local who = nearest_body(st.pos, true)
+	if who then popup(who, "they didn't make it", "#ff8a6a") end
+	count("escorts_lost")
+	game.log("an escort was killed")
 end
 
 -- The dead eat. A downed survivor or a fresh body draws the dead nearby
@@ -2455,9 +2526,17 @@ local function zombie_step(z, dt)
 			if d < seen and d < td then target, td = u, d end
 		end
 	end
+	-- Those walking with the group are prey too.
+	for _, st in s.strangers do
+		if st.fig and st.following then
+			local d = dist(st.pos, z.pos)
+			local seen = if z.state == "feed" then 2.5 else spec.sense * (if dark() then 0.7 else 1)
+			if d < seen and d < td then target, td = st, d end
+		end
+	end
 	-- Someone down near by is a meal; somebody standing comes first.
 	local meal = nil
-	if not target and (z.state ~= "windup" and z.state ~= "strike" and z.state ~= "recover" and z.state ~= "stagger") then
+	if not target and (z.state ~= "windup" and z.state ~= "strike" and z.state ~= "hold" and z.state ~= "recover" and z.state ~= "stagger") then
 		meal = meal_for(z)
 		if meal then target = nil end
 	end
@@ -2475,8 +2554,14 @@ local function zombie_step(z, dt)
 		z.knock = z.knock * math.max(0, 1 - 6 * dt)
 		if z.t <= 0 then z.state = if target then "chase" else "investigate" end
 	elseif z.state == "windup" then
-		arms = "raise"
-		if z.target and z.target.pos then z.yaw = yaw_of(z.target.pos - z.pos) end
+		-- Arms out, still lurching in: the grab is coming.
+		arms = "reach"
+		if z.target and z.target.pos then
+			local to = z.target.pos - z.pos
+			z.yaw = yaw_of(to)
+			local d = math.sqrt(to.x * to.x + to.z * to.z)
+			if z.kind ~= "runner" and d > 0.7 then move = to / d * speed * 0.5 end
+		end
 		if z.t <= 0 then
 			z.state = "strike"
 			z.t = spec.strike
@@ -2487,6 +2572,16 @@ local function zombie_step(z, dt)
 	elseif z.state == "strike" then
 		local f = dir(z.yaw)
 		if z.kind == "runner" then move = f * spec.lunge end
+		local prey = z.target
+		if not z.hit and prey and prey.following and prey.fig then
+			local to = prey.pos - z.pos
+			local d = math.sqrt(to.x * to.x + to.z * to.z)
+			local reach = if z.kind == "runner" then 0.85 else spec.reach + 0.1
+			if d < reach and (d < 0.3 or (to.x * f.x + to.z * f.z) / d > 0.2) then
+				z.hit = true
+				stranger_bitten(prey, z)
+			end
+		end
 		if not z.hit then
 			for _, u in s.survivors do
 				if in_body(u) then
@@ -2494,17 +2589,57 @@ local function zombie_step(z, dt)
 					local d = math.sqrt(to.x * to.x + to.z * to.z)
 					local reach = if z.kind == "runner" then 0.85 else spec.reach + 0.1
 					if d < reach and (d < 0.3 or (to.x * f.x + to.z * f.z) / d > 0.2) then
-						hurt(u, z.pos)
 						z.hit = true
-						count("zombie_hits")
+						if standing(u) then
+							-- Hands on you: no harm yet. Pull free, hit it or
+							-- shove it before it bites.
+							z.state = "hold"
+							z.target = u
+							z.t = spec.bite
+							z.hold_d = math.max(d, 0.6)
+							body.eyes(z.fig, true)
+							rumble(u, 0.45, 0.2)
+							sfx("groan", z.pos, { pitch = random.range(1.05, 1.25) })
+							if not u.bot then popup(u, "grabbed!", "#ff8a6a") end
+							count("grabs")
+						else
+							hurt(u, z.pos)
+							count("zombie_hits")
+						end
 						break
 					end
 				end
 			end
 		end
-		if z.t <= 0 then
+		if z.t <= 0 and z.state == "strike" then
 			z.state = "recover"
 			z.t = spec.recover
+		end
+	elseif z.state == "hold" then
+		arms = "reach"
+		local u = z.target
+		local to = if u and u.pos then u.pos - z.pos else v(0, 0, 0)
+		local d = math.sqrt(to.x * to.x + to.z * to.z)
+		if not (u and standing(u)) or d > (z.hold_d or 0.8) + 0.55 then
+			-- Pulled free (or nothing left to hold).
+			z.state = "recover"
+			z.t = spec.recover * 0.7
+			body.eyes(z.fig, false, NO_GLOW)
+			if u and standing(u) then count("pulled_free") end
+		else
+			z.yaw = yaw_of(to)
+			-- It hangs on, leaning in; pull hard enough and the grip goes.
+			if z.t <= 0 then
+				body.hit(z.fig, to / math.max(d, 0.01) * 1.4)
+				hurt(u, z.pos)
+				blood_splat(u.pos, to / math.max(d, 0.01), 0.5)
+				sfx("splat", u.pos, { pitch = random.range(0.7, 0.9) })
+				count("zombie_hits")
+				count("bites")
+				z.state = "recover"
+				z.t = spec.recover
+				body.eyes(z.fig, false, NO_GLOW)
+			end
 		end
 	elseif z.state == "recover" then
 		move = z.knock
@@ -3515,8 +3650,33 @@ local function tick(dt, input)
 			if st.fleeing <= 0 then drop_stranger(st) end
 		elseif st.fig and st.following then
 			-- Walking with the group, a few steps behind the nearest person.
+			-- Scared stiff of the dead: one comes near and they run, and
+			-- come back once it is clear.
 			local u = nearest_body(st.pos, true) or nearest_body(st.pos)
-			if u then
+			local zz, zd = nearest_zombie(st.pos, 4.5, true)
+			st.scared = math.max(0, (st.scared or 0) - dt)
+			if zz or st.scared > 0 then
+				local away = if zz then st.pos - zz.pos else st.pos - (st.ran_from or st.pos)
+				if zz then st.ran_from = zz.pos end
+				local m = math.sqrt(away.x * away.x + away.z * away.z)
+				if m > 0.05 then
+					-- Away from it, leaning towards the people if they can.
+					local dir = away / m
+					if u then
+						local tu = u.pos - st.pos
+						local mu = math.sqrt(tu.x * tu.x + tu.z * tu.z)
+						if mu > 0.5 and (tu.x * dir.x + tu.z * dir.z) / mu > -0.2 then dir = (dir * 2 + tu / mu) / 3 end
+					end
+					speed = KNOBS.walk * 1.2
+					st.pos = collide(st.pos + dir * speed * dt, RADIUS)
+					st.yaw = yaw_of(dir)
+				end
+				if zz and not st.cried then
+					st.cried = true
+					sfx("scream", st.pos, { pitch = random.range(1.2, 1.4), db = -6 })
+				end
+			elseif u then
+				st.cried = nil
 				local goal = u.pos + v(-1.6, 0, if st.pos.z > u.pos.z then 1 else -1)
 				local to = goal - st.pos
 				local d = math.sqrt(to.x * to.x + to.z * to.z)
@@ -3839,12 +3999,13 @@ local function draw()
 	if not s or not s.cam then return end
 	local W, H = hud.size()
 	local k = H / 720
+	torches()
+	if state.no_hud then return end
 	-- Overrun: only the end of the story, nothing else over it.
 	if s.phase == "over" then
 		draw_over(W, H, k)
 		return
 	end
-	torches()
 
 	if s.phase == "camp" then
 		hud.box(0, 0, W, H, { 0.02, 0.02, 0.03, 0.85 })
@@ -4125,6 +4286,20 @@ local debug = {
 		hurt(u, u.pos + v(1, 0, 0))
 		return u.state
 	end,
+	escort = function()
+		s = state.s
+		local u = s.survivors[1]
+		local e = nil
+		for _, x in ENCOUNTERS do
+			if x.id == "mother_child" then e = x end
+		end
+		if not e then return "no mother_child" end
+		local st = place_stranger(e, u.pos + v(-1.5, 0, 1), nil, { ents = {}, rects = {} })
+		st.escort = { to = s.route + 60 }
+		st.following = true
+		spawn_zombie("shambler", u.pos + v(-5, 0, 2), "investigate", flat(st.pos))
+		return "escort with a shambler near"
+	end,
 	join = function()
 		s = state.s
 		local u = s.survivors[1]
@@ -4145,6 +4320,11 @@ local debug = {
 		o.pos = collide(v(o.pos.x + (m or 30), 0, path_z(o.pos.x + (m or 30))), RADIUS)
 		if o.fig then body.place(o.fig, o.pos, o.yaw) end
 		return "apart"
+	end,
+	-- debug.hud(false): no HUD, for store art and clean shots.
+	hud = function(on)
+		state.no_hud = on == false
+		return if state.no_hud then "hud off" else "hud on"
 	end,
 	peak = function()
 		s = state.s
