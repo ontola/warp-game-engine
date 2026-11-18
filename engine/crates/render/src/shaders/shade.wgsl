@@ -260,7 +260,11 @@ override VOXEL_PASS: bool = false;
 // Like the voxel pass: the kernel's size, not its work, set the pace.
 override SHADE_CLASS: u32 = 0u;
 override SHADE_DIAGNOSTICS: bool = true;
-const VOXEL_SKY_LIFT: f32 = 1.0;
+// Voxel leaves light like the needle brushes they stand for (KERN_VOXEL_LEAF_PARITY,
+// 1 default, 0 = before): the brushes' own sub-cell shade (NEEDLE_BRUSH_OWN) on sun
+// and sky, and sky visibility read at the surface as for a mesh needle.
+override VOXEL_LEAF_PARITY: f32 = 1.0;
+const VOXEL_SKY_LIFT_OLD: f32 = 1.0;
 @group(1) @binding(20) var voxel_surface: texture_2d<u32>;
 
 // A voxel pixel: the same sun, sky, contact and fog terms as a procedural
@@ -395,15 +399,21 @@ fn shade_voxel(px: vec2<i32>, size: vec2<u32>, dir: vec3<f32>, depth: f32) {
     // November). VOXEL_OWN_IN_CLIPMAP keeps that share of the march (1 = old).
     let own_sun = mix(own, 1.0, sun_clipmap_cover(p) * (1.0 - VOXEL_OWN_IN_CLIPMAP));
     var shadow = mix(1.0, others * mix(own_sun, own_sun * own_sun, outside), light.sun_color.w);
+    // A cell's leaves are needle brushes: their own needles shade each other below
+    // the cell size, as NEEDLE_BRUSH_OWN does for the mesh (outside the shadow
+    // strength, like the mesh). Bark (leaf 0) keeps full sun.
+    let brush_own = mix(1.0, NEEDLE_BRUSH_OWN, leaf * VOXEL_LEAF_PARITY);
+    shadow *= brush_own;
     shadow *= cloud_sun_transmittance(p, l, light.clouds, light.cloud_motion);
     let sun_e = light.sun_color.rgb * light.sun_dir.w * shadow;
     // Sky reaches a cell through its own crown too. sky_visibility only sees
     // what lies past the lift, so inner cells lit as if under open sky and
     // a voxel crown read ~3.5x brighter than the same tree as a mesh (Joep,
     // 6 November). The crown's sun transmittance stands in for the sky's.
-    let crown_sky = 0.25 + 0.75 * sqrt(own_sky);
-    let sky_vis = sky_visibility(p + n * VOXEL_SKY_LIFT, n) * crown_sky;
-    let back_sky_vis = sky_visibility(p - n * VOXEL_SKY_LIFT, -n) * crown_sky;
+    let crown_sky = 0.25 + 0.75 * sqrt(min(own_sky, brush_own));
+    let sky_lift = VOXEL_SKY_LIFT_OLD * (1.0 - VOXEL_LEAF_PARITY);
+    let sky_vis = sky_visibility(p + n * sky_lift, n) * crown_sky;
+    let back_sky_vis = sky_visibility(p - n * sky_lift, -n) * crown_sky;
     let refl = reflect(dir, n);
     // No screen-space AO: a voxel's blocky depth darkened its own crown to
     // 60 % of the leaves' sky light (forest_ladder, sun_lux=0).

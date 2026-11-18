@@ -349,6 +349,10 @@ impl CookedPlant {
     pub fn stats(&self) -> CookStats {
         self.stats
     }
+    /// Every branch and geometry voxel asset (diagnostics: cook statistics per level).
+    pub fn voxel_assets(&self) -> impl Iterator<Item = &VoxelAsset> {
+        self.branches.iter().filter_map(|b| b.volume.as_ref()).chain(self.geometry.iter().filter_map(|g| g.volume.as_ref()))
+    }
 
     /// Stable source placement ID and its branch ID; not scene buffer indices.
     pub fn source_ids(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
@@ -434,6 +438,18 @@ pub struct AttachLimits {
     pub max_primitive_instances: usize,
     pub max_primitive_meshes: usize,
     pub pack: PackLimits,
+}
+
+impl AttachLimits {
+    /// Size the CPU volume pack to what these plants hold, at least the
+    /// defaults. Fine branch cells (KERN_BRANCH_CELL_M) hold several times
+    /// the default 1M cells; the GPU only sees the pages the cache streams in.
+    pub fn fit_voxels<'a>(&mut self, plants: impl Iterator<Item = &'a CookedPlant>) {
+        let (cells, dense) = plants.flat_map(|c| c.voxel_assets()).flat_map(|a| &a.levels)
+            .fold((0usize, 0usize), |(c, d), l| (c + l.voxels.len(), d + l.dimensions.iter().map(|&v| v as usize).product::<usize>()));
+        self.pack.max_sparse_cells = self.pack.max_sparse_cells.max(cells + cells / 8);
+        self.pack.max_dense_indices = self.pack.max_dense_indices.max(dense + dense / 8);
+    }
 }
 
 impl Default for AttachLimits {
@@ -1019,7 +1035,7 @@ impl<'a> SceneVegetation<'a> {
         let mut forest=if self.bindings.is_empty() {foliage_volume_data::GpuForest::default()} else {
             crate::aggregate_lod::validate(&selection)?;
             let mut forest=foliage_volume_data::pack(&self.assets,&self.bindings,&self.scene.instances,self.limits.pack)?;
-            foliage_volume_data::pack_bricks(&mut forest,128)?;
+            foliage_volume_data::pack_bricks(&mut forest,foliage_volume_data::MAX_PACKED_BRICKS_PER_LEVEL)?;
             forest
         };
         // Whole-plant proxies follow, densely indexed: they are larger than
@@ -1978,7 +1994,7 @@ pub(crate) mod tests {
                 gpu.device.poll(wgpu::PollType::Wait {submission_index:Some(submission),timeout:Some(std::time::Duration::from_secs(30))}).unwrap();rx.recv().unwrap().unwrap();
                 let bytes=out.slice(..).get_mapped_range().unwrap();bytes.chunks_exact(4).map(bytemuck::pod_read_unaligned).collect()
             };
-            let counters=read(&selector.counters);let records=read(&selector.records);let fallback=read(&selector.fallback);
+            let counters=read(&selector.counters);let records=selector.records.read(&gpu);let fallback=selector.fallback.read(&gpu);
             assert_eq!(counters[0],if coarse{1200}else{3600});assert!(fallback.iter().all(|&v|v==0));
             let mut cuts=vec![Vec::new();1200];
             for r in records.chunks_exact(4).take(counters[0]as usize) {
@@ -2025,8 +2041,8 @@ pub(crate) mod tests {
             let mut enc=gpu.device.create_command_encoder(&Default::default());
             selector.first(&gpu,&mut enc,vp,vp,[128;2],error,false,&depth).unwrap();
             selector.second(&gpu,&mut enc,&depth);gpu.queue.submit([enc.finish()]);
-            let counters=read(&selector.counters);let records=read(&selector.records);
-            assert_eq!(read(&selector.fallback)[0],0,"unconstrained cut must not overflow");
+            let counters=read(&selector.counters);let records=selector.records.read(&gpu);
+            assert_eq!(selector.fallback.read(&gpu)[0],0,"unconstrained cut must not overflow");
             let mut coverage=vec![0u32;cooked.placements.len()];let mut kinds=[false;3];
             for r in records.chunks_exact(4).take(counters[0]as usize) {
                 assert_eq!(r[0],0);assert_eq!(r[3],17);

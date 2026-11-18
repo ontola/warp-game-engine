@@ -933,6 +933,13 @@ impl Shell<'_> {
                 let line = format!("adaptive quality: content too heavy at {}", q.label());
                 println!("{} {} {line}", manners::stamp(), manners::process());
                 self.game.quality_event(&line);
+                // Resolution is spent: a forest gives up detail next (coarser
+                // voxels, needles nearer by) before the game cuts content.
+                if let Some(tier) = render::vegetation_quality::step_down() {
+                    let line = format!("adaptive quality: vegetation {}", tier.name());
+                    println!("{} {} {line}", manners::stamp(), manners::process());
+                    self.game.quality_event(&line);
+                }
                 self.game.content_too_heavy();
             }
         }

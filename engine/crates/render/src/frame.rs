@@ -7478,6 +7478,7 @@ fn far_crown_constants() -> Vec<(&'static str, f64)> {
     if let Some(x) = crate::switches::FAR_TREE_SHADOW_MIN_M.parse::<f64>() { out.push(("FAR_TREE_SHADOW_MIN_M", x)); }
     if let Some(x) = crate::switches::NEEDLE_BRUSH_OWN.parse::<f64>() { out.push(("NEEDLE_BRUSH_OWN", x)); }
     if let Some(x) = crate::switches::VOXEL_OWN_IN_CLIPMAP.parse::<f64>() { out.push(("VOXEL_OWN_IN_CLIPMAP", x)); }
+    if let Some(x) = crate::switches::VOXEL_LEAF_PARITY.parse::<f64>() { out.push(("VOXEL_LEAF_PARITY", x)); }
     if let Some(d) = crate::switches::FAR_CROWN_DEBUG.parse::<f64>() { out.push(("FAR_CROWN_DEBUG", d)); }
     out
 }
