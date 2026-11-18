@@ -37,3 +37,28 @@ smoothstep for the taper (60 % of the top length halfway up); blend 1.6
 Open: the back of long hair shows dark blocks (strands take the body's sun
 shadow and cast none themselves); a bob hangs before the cheek in profile;
 no gender or age in the choice of cut; not seen on a real GPU.
+
+## Later the same day: age, coiled hair, rarer long hair
+
+Playtester: still odd cuts; men with very long hair are rare; black people
+mostly have coiled hair, not straight; wants young/old as a parameter.
+
+- The eight from three-quarter showed what the four-view sheet hid: bangs
+  lay as a flat lid from 8 cm back and were cut 2 to 4 cm above the eyes.
+  Bangs now start 3 to 6 cm back, end at the brows and are rare.
+- Polygon-shaped light and dark patches on short hair came from the strand's
+  sun lookup 8 mm off the scalp, inside the head's own flat triangles. The
+  lookup is 3 cm out now; the head's own shading comes from the wrap term.
+- A person has no sex (one body, four blended heads), so long hair cannot
+  follow it. Long cuts are rare for everyone until there is a female body.
+- Coiled hair: a helix of 2 to 4 mm radius and 10 to 18 mm pitch round the
+  strand's line, standing off the head, no sag. Ten points per strand give
+  about four per turn at 4 cm; at 10 cm it is a zigzag, which reads as
+  kinky in the mass.
+- Grey: first try `smooth(32, 68) * (0.5 + roll)` made 51 to 58 year olds
+  white. Now `smooth(35, 80)^1.5 * (0.3 + 1.2 roll)`.
+- Age series (same eight at 20, 50, 80) rendered from copies of
+  games/human-lab with `age = [n, n]`.
+
+Open: an old face is a young face with lines and white hair (no sagging,
+no thinner lips, no stoop); no children; no women.

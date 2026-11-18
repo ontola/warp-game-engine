@@ -70,11 +70,11 @@ struct StrandOut { @builtin(position) clip:vec4<f32>, @location(0) world:vec3<f3
     let radius=f.radius*length(g.fit[1].xyz);
     let filtered=max(radius,.76*pixel);
     let edge=world.xyz+across*(f.side*filtered);
-    return StrandOut(cam.vp*vec4<f32>(edge,1.),world.xyz,normal,g.tint.rgb*f.tint,tangent,vec2<f32>(f.side,radius/filtered));
+    return StrandOut(cam.vp*vec4<f32>(edge,1.),world.xyz,normal,select(g.tint.rgb*f.tint,vec3<f32>(.72,.71,.69)*(f.tint-2.),f.tint>=2.),tangent,vec2<f32>(f.side,radius/filtered));
 }
 @fragment fn strand_light(v:StrandOut)->@location(0) vec4<f32> {
     let n=normalize(v.normal);
-    let sc=light.shadow_view_proj*vec4<f32>(v.world+n*.008,1.);
+    let sc=light.shadow_view_proj*vec4<f32>(v.world+n*.03,1.);
     let q=sc.xyz/sc.w;
     var visibility=1.;
     if all(abs(q.xy)<vec2<f32>(1.)) && q.z>0. && q.z<1. {
