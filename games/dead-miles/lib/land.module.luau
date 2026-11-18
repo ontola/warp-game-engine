@@ -985,6 +985,33 @@ local function shift(c, dz)
 	c.camp = p(c.camp)
 end
 
+-- The stretches of one side (sd) of the road from x0 to x1 that keep
+-- their pavement: all of it, less where a street comes in.
+local function pavement_runs(x0, x1, sd, ...)
+	local runs = { { x0, x1 } }
+	for _, cut in { ... } do
+		if cut and cut.side == sd then
+			local out = {}
+			for _, rn in runs do
+				if cut.to <= rn[1] or cut.from >= rn[2] then
+					table.insert(out, rn)
+				else
+					if cut.from > rn[1] then table.insert(out, { rn[1], cut.from }) end
+					if cut.to < rn[2] then table.insert(out, { cut.to, rn[2] }) end
+				end
+			end
+			runs = out
+		end
+	end
+	return runs
+end
+
+local function pavement(c, sd, z0, z1, color, ...)
+	for _, run in pavement_runs(c.x0, c.x1, sd, ...) do
+		flat(c, run[1], sd * z0, run[2], sd * z1, 0.008, color)
+	end
+end
+
 -- zc: this chunk's path centre; zc_prev: the one before (a turn between).
 function M.chunk(index, day, in_day, zc, zc_prev)
 	zc = zc or 0
@@ -996,6 +1023,9 @@ function M.chunk(index, day, in_day, zc, zc_prev)
 	local c = { index = index, x0 = x0, x1 = x1, biome = biome, ents = {}, rects = {}, containers = {}, buildings = {}, blocks = {}, weapons = {}, inside = {}, outside = {}, lamps = {}, zc = zc, zc_prev = zc_prev }
 	local HZ = M.HALF_Z
 	local turn = zc ~= zc_prev
+	-- Where the turning street meets the new road the pavement is cut
+	-- (open on the side it comes from, and on both at a crossroads).
+	local open_lo, open_hi = nil, nil
 	ZC = 0
 	local lo, hi = math.min(zc, zc_prev), math.max(zc, zc_prev)
 	add(c, mat.spawn("cube", { pos = v((x0 + x1) / 2, -0.5, (lo + hi) / 2), size = v(M.CHUNK, 1, hi - lo + HZ * 2 + 30), color = look.ground, roughness = 1, solid = false, tag = "ground" }))
@@ -1025,6 +1055,38 @@ function M.chunk(index, day, in_day, zc, zc_prev)
 			end
 		end
 		if town then
+			-- Round inner corners: the asphalt sweeps round and the pavement
+			-- follows it, where the turning street meets the old road and
+			-- the new one. (Raised a little: the old road's kerb ends here.)
+			local r = if biome == "city" then 2.5 else 2
+			local w = if biome == "city" then 1.2 else 1
+			local function corner(cx, cz, sx, sz)
+				-- The arc's centre is r into the block from the corner; slices
+				-- along rays from it lay the pavement ring (r - w to r) and
+				-- the asphalt beyond it out to the corner's square.
+				local ox, oz = cx + sx * r, cz + sz * r
+				local n = 10
+				for i = 0, n - 1 do
+					local t = (i + 0.5) / n * math.pi / 2
+					local dx, dz = -sx * math.cos(t), -sz * math.sin(t)
+					local yaw = math.atan2(-dz, dx)
+					local reach = r / math.max(math.cos(t), math.sin(t))
+					local slice = math.pi / 2 / n * 1.15
+					local mid = (reach + r) / 2
+					deco(c, "cube", v(ox + dx * mid, 0.106, oz + dz * mid), v(reach - r + 0.05, 0.004, reach * slice + 0.05), look.path, { roughness = 0.95, tag = "ground", rot = v(0, yaw, 0) })
+					local pm = r - w / 2
+					deco(c, "cube", v(ox + dx * pm, 0.108, oz + dz * pm), v(w, 0.004, r * slice + 0.04), look.edge, { roughness = 0.95, tag = "ground", rot = v(0, yaw, 0) })
+				end
+			end
+			corner(x0 + M.TURN, zc - dir * half, 1, -dir)
+			corner(x0, zc_prev + dir * half, -1, dir)
+			-- The outer corners: the pavement wraps round them.
+			if not cross then
+				flat(c, x0, zc_prev - dir * half, x0 + M.TURN + 1.2, zc_prev - dir * (half + w), 0.008, look.edge)
+			end
+			flat(c, x0 - 1.2, far, x0, far + dir * w, 0.008, look.edge)
+			open_lo = { side = -dir, from = x0 - 0.1, to = x0 + M.TURN + r }
+			if cross then open_hi = { side = dir, from = x0 - 0.1, to = x0 + M.TURN + 0.1 } end
 			-- The kerb on the far side, up to where the new path leaves
 			-- (cut where the old road goes on).
 			if cross then
@@ -1076,16 +1138,16 @@ function M.chunk(index, day, in_day, zc, zc_prev)
 	if biome == "city" then
 		-- Asphalt, a faded centre line and pavements up to the buildings.
 		flat(c, x0, -3.2, x1, 3.2, 0.004, look.path)
-		flat(c, x0, -4.4, x1, -3.2, 0.008, look.edge)
-		flat(c, x0, 3.2, x1, 4.4, 0.008, look.edge)
+		pavement(c, -1, 3.2, 4.4, look.edge, open_lo, open_hi)
+		pavement(c, 1, 3.2, 4.4, look.edge, open_lo, open_hi)
 		for x = x0, x1 - 2, 4 do
 			if random.chance(0.7) then flat(c, x, -0.06, x + 2, 0.06, 0.009, "#c9b25a") end
 		end
 	else
 		flat(c, x0, -2.6, x1, 2.6, 0.004, look.path)
 		if biome == "suburb" then
-			flat(c, x0, -3.6, x1, -2.6, 0.008, look.edge)
-			flat(c, x0, 2.6, x1, 3.6, 0.008, look.edge)
+			pavement(c, -1, 2.6, 3.6, look.edge, open_lo, open_hi)
+			pavement(c, 1, 2.6, 3.6, look.edge, open_lo, open_hi)
 			for x = x0, x1 - 2, 4 do flat(c, x, -0.08, x + 2, 0.08, 0.009, "#d8d0a0") end
 		end
 	end
@@ -1093,7 +1155,9 @@ function M.chunk(index, day, in_day, zc, zc_prev)
 	local kerb = if biome == "city" then 3.2 elseif biome == "suburb" then 2.6 else nil
 	if kerb then
 		for _, sd in { -1, 1 } do
-			deco(c, "cube", v((x0 + x1) / 2, 0.05, sd * (kerb + 0.07)), v(x1 - x0, 0.1, 0.16), KERB, { roughness = 0.95 })
+			for _, run in pavement_runs(x0, x1, sd, open_lo, open_hi) do
+				deco(c, "cube", v((run[1] + run[2]) / 2, 0.05, sd * (kerb + 0.07)), v(run[2] - run[1], 0.1, 0.16), KERB, { roughness = 0.95 })
+			end
 			for x = x0 + random.range(1, 5), x1 - 1, random.range(7, 10) do
 				deco(c, "cube", v(x, 0.04, sd * (kerb - 0.25)), v(0.45, 0.012, 0.3), DRAIN, { roughness = 0.6, metal = 0.5 })
 			end
