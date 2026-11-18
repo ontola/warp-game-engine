@@ -36,6 +36,7 @@ impl PlayerStrands {
     pub(crate) fn new(
         gpu: &Gpu,
         descriptors: &[(usize, usize, Groom)],
+        grown: &[[f32; 4]],
         actors: &[crate::skinning::Actor],
         owners: &wgpu::Buffer,
         palette: &wgpu::Buffer,
@@ -74,6 +75,13 @@ impl PlayerStrands {
                 usage: U::STORAGE,
             });
         let guides = guide_buffer(gpu);
+        let grown = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("grown hair strands"),
+                contents: bytemuck::cast_slice(if grown.is_empty() { &[[0f32; 4]] } else { grown }),
+                usage: U::STORAGE,
+            });
         let module = gpu
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -151,7 +159,15 @@ impl PlayerStrands {
             })
         };
         let cull_group = group(&select.get_bind_group_layout(0), 4, &commands);
-        let draw_group = group(&render.get_bind_group_layout(0), 8, &guides);
+        let draw_group = {
+            let entries = [(0, &camera), (1, &heads), (2, owners), (3, palette), (8, &guides), (9, &grown)]
+                .map(|(binding, b)| wgpu::BindGroupEntry { binding, resource: b.as_entire_binding() });
+            gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("procedural hair sources"),
+                layout: &render.get_bind_group_layout(0),
+                entries: &entries,
+            })
+        };
         let atmosphere_layout = render.get_bind_group_layout(1);
         Self {
             camera,
