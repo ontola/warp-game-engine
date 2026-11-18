@@ -311,7 +311,7 @@ pub struct Runtime {
     pipeline:wgpu::ComputePipeline,pose_pipelines:[wgpu::ComputePipeline;3],pose_cache:wgpu::Buffer,pose_work:wgpu::Buffer,pose_depth:u32,branch_count:u32,empty_depth:wgpu::TextureView,
     pub choices:wgpu::Buffer,slots:u32,trees:u32,error:f32,raster_budget:u32,source_cluster_budget:u32,
     wind:std::sync::Mutex<crate::wind::WindState>,
-    population:std::sync::Mutex<std::sync::Arc<crate::foliage_population::Population>>,templates:std::sync::Arc<Vec<RootTemplate>>,publish_pipeline:wgpu::ComputePipeline,publish_layout:wgpu::BindGroupLayout,source_buffer:wgpu::Buffer,proxy_buffer:wgpu::Buffer,proxy_owners:std::sync::Arc<Vec<u32>>,
+    population:std::sync::Mutex<std::sync::Arc<crate::foliage_population::Population>>,templates:std::sync::Arc<Vec<RootTemplate>>,publish_pipeline:wgpu::ComputePipeline,publish_layout:wgpu::BindGroupLayout,source_buffer:wgpu::Buffer,proxy_buffer:crate::foliage_select::Region,proxy_owners:std::sync::Arc<Vec<u32>>,
 }
 #[derive(Debug,serde::Serialize)]
 pub struct ConsumerCounts {pub outside:u32,pub camera_only:u32,pub shadow_only:u32,pub both:u32}
@@ -434,13 +434,22 @@ impl Runtime {
         let residency=Residency::new(gpu,&selector,spec.slots)?;
         crate::shaders::checked(gpu,|| {
             let upload=|label,data:&[u8]|gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some(label),contents:data,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST});
-            let uniform=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("GPU forest pose state"),size:48,usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
+            let uniform=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("GPU forest pose state"),size:64,usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
             let choices=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("GPU forest shared representation choices"),size:u64::from(spec.slots)*8,
                 usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false});
             let root_history=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("GPU forest root representation history"),size:spec.roots.len()as u64*32,usage:wgpu::BufferUsages::STORAGE,mapped_at_creation:false});
-            let branches=upload("shared forest branch rigs",bytemuck::cast_slice(&cooked_branches));
-            let reps=upload("shared forest representations",bytemuck::cast_slice(&spec.representations));
-            let proxies=upload("resident forest roots",bytemuck::cast_slice(&spec.proxies));
+            // Branch rigs, representations and root proxies in one buffer
+            // (foliage_materialize.wgsl `tables`); population publish writes
+            // the proxies through their own range.
+            let align=|n:u64|n.div_ceil(256)*256;
+            let (branch_bytes,rep_bytes,proxy_bytes):(&[u8],&[u8],&[u8])=(bytemuck::cast_slice(&cooked_branches),bytemuck::cast_slice(&spec.representations),bytemuck::cast_slice(&spec.proxies));
+            let rep_at=align(branch_bytes.len()as u64);let proxy_at=rep_at+align(rep_bytes.len()as u64);
+            let mut table_bytes=vec![0u8;(proxy_at as usize)+proxy_bytes.len()];
+            table_bytes[..branch_bytes.len()].copy_from_slice(branch_bytes);table_bytes[rep_at as usize..rep_at as usize+rep_bytes.len()].copy_from_slice(rep_bytes);table_bytes[proxy_at as usize..].copy_from_slice(proxy_bytes);
+            let tables=upload("shared forest branch rigs, representations and root proxies",&table_bytes);
+            let proxies=crate::foliage_select::Region::new(tables.clone(),proxy_at,proxy_bytes.len()as u64);
+            // State.tables: first vec4 of the representations and of the proxies.
+            gpu.queue.write_buffer(&uniform,48,bytemuck::cast_slice(&[(rep_at/16)as u32,(proxy_at/16)as u32,0u32,0u32]));
             let scratch=|label,size|gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some(label),size,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false});
             let pose_cache=scratch("shared branch pose cache",pose_capacity as u64*64);
             let pose_work=scratch("shared pose depth queues",(128+spec.slots as u64*(max_depth as u64+1))*4);
@@ -455,11 +464,11 @@ impl Runtime {
             let root_poses=scratch("shared root poses",spec.roots.len()as u64*48);
             let mut levels=vec![0u32;(max_depth as usize+1)*64];for d in 0..=max_depth {levels[d as usize*64]=d;}
             let levels=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some("immutable pose depth dispatch"),contents:bytemuck::cast_slice(&levels),usage:wgpu::BufferUsages::UNIFORM});
-            let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("GPU forest materialization"),entries:&(0..18).filter(|&binding|binding!=2).map(|binding|wgpu::BindGroupLayoutEntry {
+            let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("GPU forest materialization"),entries:&(0..18).filter(|&binding|binding!=2 && binding!=4 && binding!=7).map(|binding|wgpu::BindGroupLayoutEntry {
                 binding,visibility:wgpu::ShaderStages::COMPUTE,count:None,ty:wgpu::BindingType::Buffer {ty:if binding==0 || binding==16 {wgpu::BufferBindingType::Uniform}else{wgpu::BufferBindingType::Storage {read_only:binding<8 || binding==11 || binding==17}},has_dynamic_offset:binding==16,min_binding_size:None},
             }).collect::<Vec<_>>()});
-            let buffers=[&uniform,&selector._instances.buffer,&selector._nodes.buffer,&branches,&reps,&residency.slots,&selector.fallback,&proxies,instances,volumes,&choices,&selector.demand,&root_history,&pose_cache,&pose_work,&root_poses,&levels,&selector.asset_pages];
-            let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("GPU forest materialization"),layout:&layout,entries:&buffers.iter().enumerate().filter(|&(i,_)|i!=2).map(|(i,b)|wgpu::BindGroupEntry {binding:i as u32,resource:if i==16 {wgpu::BindingResource::Buffer(wgpu::BufferBinding {buffer:b,offset:0,size:std::num::NonZeroU64::new(16)})}else{b.as_entire_binding()}}).collect::<Vec<_>>()});
+            let buffers=[&uniform,&selector._instances.buffer,&selector._nodes.buffer,&tables,&tables,&residency.slots,&selector.fallback,&tables,instances,volumes,&choices,&selector.demand,&root_history,&pose_cache,&pose_work,&root_poses,&levels,&selector.asset_pages];
+            let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("GPU forest materialization"),layout:&layout,entries:&buffers.iter().enumerate().filter(|&(i,_)|i!=2 && i!=4 && i!=7).map(|(i,b)|wgpu::BindGroupEntry {binding:i as u32,resource:if i==16 {wgpu::BindingResource::Buffer(wgpu::BufferBinding {buffer:b,offset:0,size:std::num::NonZeroU64::new(16)})}else{b.as_entire_binding()}}).collect::<Vec<_>>()});
             let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("GPU forest materialization"),bind_group_layouts:&[Some(&layout)],immediate_size:0});
             let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("GPU forest materialization"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_materialize.wgsl").into())});
             let pipeline=gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some("GPU forest materialization"),layout:Some(&pl),module:&module,entry_point:Some("materialize"),compilation_options:Default::default(),cache:gpu.pipeline_cache()});
@@ -487,8 +496,8 @@ impl Runtime {
             // Bound each upload even when every reserved root changes at once.
             for batch in changes.chunks(16384) {
             let upload=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some("forest population delta"),contents:bytemuck::cast_slice(batch),usage:wgpu::BufferUsages::STORAGE});
-            let buffers=[&upload,&self.selector._instances.buffer,&self.proxy_buffer,&self.source_buffer];
-            let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("forest population publish"),layout:&self.publish_layout,entries:&buffers.iter().enumerate().map(|(i,b)|wgpu::BindGroupEntry {binding:i as u32,resource:if i==1 {self.selector._instances.binding()}else{b.as_entire_binding()}}).collect::<Vec<_>>()});
+            let buffers=[&upload,&self.selector._instances.buffer,&self.proxy_buffer.buffer,&self.source_buffer];
+            let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("forest population publish"),layout:&self.publish_layout,entries:&buffers.iter().enumerate().map(|(i,b)|wgpu::BindGroupEntry {binding:i as u32,resource:if i==1 {self.selector._instances.binding()}else if i==2 {self.proxy_buffer.binding()}else{b.as_entire_binding()}}).collect::<Vec<_>>()});
             {let mut pass=encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {label:Some("forest population publish"),timestamp_writes:None});
                 pass.set_pipeline(&self.publish_pipeline);pass.set_bind_group(0,&bind,&[]);pass.dispatch_workgroups((batch.len()as u32).div_ceil(64),1,1);}
             }
