@@ -902,11 +902,17 @@ fn fast_round_phase(at:u32,phase_late:bool)->vec4<u32> {
  // Shadows never book them, so they must not hold the shadow scale: a
  // source fill inside the dead band froze it wherever startup left it.
  let fills=vec2<f32>(max(f.x,f.y),max(shadow_slots,f.z));
+ // The camera comes first in the shared slot pool: shadows give slots back
+ // from the fill at which the camera would start refining again (0.85), and
+ // take more only while the pool has room beyond that. A whole-root proxy
+ // still casts at the level its sun texel wants, so a shadow slot buys less
+ // than a camera slot.
+ let pool=vec2<f32>(0.0,f.x);
  for(var c=0u;c<2u;c++) {
   let word=79u-c;var s=fast_scale_word(word);
   let blocked=atomicLoad(&counters[STATE_BASE+76u-c])!=0u;
-  if blocked || fills[c]>0.92 {s=s*1.06;}
-  else if fills[c]<0.85 {s=max(select(1.0,CAMERA_CUT_FLOOR,c==0u),s/1.02);}
+  if blocked || fills[c]>0.92 || pool[c]>0.85 {s=s*1.06;}
+  else if fills[c]<0.85 && pool[c]<0.78 {s=max(select(1.0,CAMERA_CUT_FLOOR,c==0u),s/1.02);}
   atomicStore(&counters[STATE_BASE+word],bitcast<u32>(min(s,1e5)));
  }
  {
