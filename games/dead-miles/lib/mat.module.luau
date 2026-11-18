@@ -39,7 +39,7 @@ M.BY_COLOR = {
 	["#2a2624"] = K.RUST, ["#6a4030"] = K.RUST, ["#5a4a3a"] = K.RUST, ["#4a5048"] = K.RUST, ["#6a5a48"] = K.RUST,
 	["#202024"] = K.GLASS, ["#161618"] = K.GLASS, ["#08080a"] = K.GLASS,
 	-- Set dressing.
-	["#6b4e37"] = K.WOOD, ["#8b6b4a"] = K.WOOD, ["#5a4632"] = K.WOOD, ["#c9b25a"] = K.CLOTH,
+	["#3b2a1e"] = K.WOOD, ["#6b4e37"] = K.WOOD, ["#8b6b4a"] = K.WOOD, ["#5a4632"] = K.WOOD, ["#c9b25a"] = K.CLOTH,
 	["#8a7a5a"] = K.CLOTH, ["#4a5a6a"] = K.CLOTH, ["#1d1d1f"] = K.RUBBER, ["#1a1a1a"] = K.RUBBER,
 	["#2f4a3a"] = K.METAL, ["#6a3a2a"] = K.RUST, ["#3a3d42"] = K.METAL, ["#7a7d82"] = K.METAL, ["#5f6266"] = K.METAL,
 	["#5a5a5e"] = K.METAL,
