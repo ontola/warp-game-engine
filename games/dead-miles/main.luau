@@ -3999,12 +3999,13 @@ local function draw()
 	if not s or not s.cam then return end
 	local W, H = hud.size()
 	local k = H / 720
+	torches()
+	if state.no_hud then return end
 	-- Overrun: only the end of the story, nothing else over it.
 	if s.phase == "over" then
 		draw_over(W, H, k)
 		return
 	end
-	torches()
 
 	if s.phase == "camp" then
 		hud.box(0, 0, W, H, { 0.02, 0.02, 0.03, 0.85 })
@@ -4319,6 +4320,11 @@ local debug = {
 		o.pos = collide(v(o.pos.x + (m or 30), 0, path_z(o.pos.x + (m or 30))), RADIUS)
 		if o.fig then body.place(o.fig, o.pos, o.yaw) end
 		return "apart"
+	end,
+	-- debug.hud(false): no HUD, for store art and clean shots.
+	hud = function(on)
+		state.no_hud = on == false
+		return if state.no_hud then "hud off" else "hud on"
 	end,
 	peak = function()
 		s = state.s
