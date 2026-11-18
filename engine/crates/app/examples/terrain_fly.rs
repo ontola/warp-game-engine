@@ -1395,12 +1395,52 @@ fn main() -> Result<(), String> {
         let every = arg("--dump-every").and_then(|n| n.parse::<u32>().ok()).unwrap_or(1).max(1);
         let forward = if args.iter().any(|a| a == "--dump-forward") { 1.0 } else { 0.0 };
         for _ in 0..warm { game.tick(&[Controls::default()]); headless.frame(&mut game)?; }
+        // --dump-cut PATH: per frame, what each tree draws (GPU forest cut
+        // snapshot) and which trees changed since the last frame, by kind,
+        // as JSON lines. Diagnostic readback; finding level-of-detail pops.
+        let mut cut_log = arg("--dump-cut").map(|p| std::fs::File::create(&p).map(std::io::BufWriter::new).map_err(|e| format!("{p}: {e}"))).transpose()?;
+        let mut last_cut: Option<render::foliage_runtime::CutSnapshot> = None;
         for i in 0..n.parse::<u32>().map_err(|_| "--dump N DIR")? {
             // --climb holds climb: cloud and parallax checks while rising.
             let held = if args.iter().any(|a| a == "--climb") { Buttons(Buttons::SOUTH) } else { Buttons::default() };
             game.tick(&[Controls { look: [pan, 0.0], mv: [0.0, forward], held, ..Default::default() }]);
             let rgba = headless.frame(&mut game)?;
             if i % every == 0 { render::write_png(&PathBuf::from(&dir).join(format!("{:03}.png", i / every)), w, h, &rgba)?; }
+            if let (Some(out), Some(forest)) = (cut_log.as_mut(), headless.renderer().and_then(|r| r.gpu_forest_runtime())) {
+                use std::io::Write;
+                let cut = forest.cut_snapshot(&gpu)?;
+                let cam = game.camera(game.pos, 1.0);
+                let dir3 = (cam.target - cam.pos).normalize();
+                let view = glam::Mat4::look_at_rh(cam.pos, cam.pos + dir3, Vec3::Y);
+                let clip = glam::Mat4::perspective_infinite_reverse_rh(cam.fov_y, w as f32 / h as f32, cam.near) * view;
+                // Camera changes on screen (tree root inside the frame), off screen, shadow.
+                let mut counts = [std::collections::BTreeMap::<String, u32>::new(), Default::default(), Default::default()];
+                let mut changes = Vec::new();
+                if let Some(prev) = &last_cut {
+                    for (tree, (a, b)) in prev.trees.iter().zip(&cut.trees).enumerate() {
+                        for consumer in 0..2 {
+                            let Some(kind) = render::foliage_runtime::CutSnapshot::change(&a[consumer], &b[consumer], forest.representation_kinds()) else { continue };
+                            if consumer == 1 { *counts[2].entry(format!("{kind:?}")).or_default() += 1; continue; }
+                            let p = Vec3::from(cut.positions[tree]);
+                            let c = clip * p.extend(1.0);
+                            let (sx, sy) = ((c.x / c.w * 0.5 + 0.5) * w as f32, (0.5 - c.y / c.w * 0.5) * h as f32);
+                            let on = c.w > 0.0 && (0.0..w as f32).contains(&sx) && (0.0..h as f32).contains(&sy);
+                            *counts[if on {0} else {1}].entry(format!("{kind:?}")).or_default() += 1;
+                            if on {
+                                changes.push(serde_json::json!([tree, format!("{kind:?}"), sx.round(), sy.round(), p.distance(cam.pos).round()]));
+                            }
+                        }
+                    }
+                }
+                writeln!(out, "{}", serde_json::json!({"frame": i, "camera": [cam.pos.x, cam.pos.y, cam.pos.z, game.yaw, game.pitch], "scale": cut.scale,
+                    // used slots, camera splats, shadow splats, source clusters; refusals (76 camera, 75 shadow, 86 source); shadow slots 81, allowance 88.
+                    "used": [cut.state[0], cut.state[1], cut.state[2], cut.state[69]], "blocked": [cut.state[76], cut.state[75], cut.state[86]], "shadow_slots": [cut.state[81], cut.state[88]],
+                    "fills": [f32::from_bits(cut.state[74]), f32::from_bits(cut.state[77])],
+                    "sun_levels": headless.renderer().map(|r| r.sun_clipmap_log()).unwrap_or_default(),
+                    "pages": headless.renderer().and_then(|r| r.foliage_page_stats()),
+                    "camera_changes": counts[0], "offscreen_changes": counts[1], "shadow_changes": counts[2], "changes": changes})).map_err(|e| e.to_string())?;
+                last_cut = Some(cut);
+            }
         }
         return Ok(());
     }

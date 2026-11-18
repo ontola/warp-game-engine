@@ -26,7 +26,9 @@ pub(crate) struct Refiner {
     worked:wgpu::Buffer,rounds:std::sync::Mutex<Rounds>,
     /// Error-driven cut (default) instead of budgeted collective admission.
     /// `KERN_FOLIAGE_CUT=budget` selects the old admission for A/B.
-    fast:std::sync::atomic::AtomicBool,budgeted:bool,
+    fast:std::sync::atomic::AtomicBool,
+    /// Whether the budget pipelines exist; set_error_cut (tests) keeps the error cut without them.
+    #[cfg_attr(not(test),allow(dead_code))] budgeted:bool,
 }
 /// How many refinement rounds to encode. Every round costs a fixed set of
 /// dispatches and barriers even when its work list is empty, and the hierarchy
