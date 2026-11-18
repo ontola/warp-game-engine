@@ -108,6 +108,7 @@ my-game/
 | `bots` | 0 | Bots without a party host, 0 to 7. `--bots` overrides it. |
 | `min_players` | 1 | Bots fill up to this many players, with or without a party host (a duel needs two). 1 to 8. |
 | `seed` | 1 | Seed of the `random` generator. `--seed` overrides it. |
+| `fresh_seed` | false | A new seed for every round played: `warp run` picks one at launch and New round in the start menu another. `--seed`, scripts and tests keep `seed`. |
 | `sky` | `gradient` | The sky at start. `--sky` overrides it; scripts call `sky.set`. |
 | `max_entities` | 1024 | Entities alive at once (render slots reserved up front). |
 | `size` | `[1280, 720]` | Window size in pixels. |
@@ -181,6 +182,7 @@ A module returns a table of hooks. All of them are optional.
 | `init()` | Once, when the module first loads, and again after `restart`. |
 | `tick(dt, input)` | Every tick, at `tick_rate`. `input[1]` is player 1's input. |
 | `draw()` | Every displayed frame. For the HUD (and cameras). |
+| `menu(y)` | Every displayed frame while the start menu is open, instead of `draw()`: `hud` calls draw over the menu's backdrop, from `y` (pixels, under its last item) down. With this hook the menu sits higher. |
 | `reload()` | After a saved edit has reloaded the module. |
 | `player_joined(p)` | A Splitscreen Club seat was added mid-game (`p` is a player table). |
 | `player_left(p)` | A player left mid-game. |
