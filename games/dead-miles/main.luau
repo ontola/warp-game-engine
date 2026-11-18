@@ -2373,6 +2373,39 @@ local function noticed_at(spec, u)
 	return spec.sense * k
 end
 
+-- Someone walking with the group (an escort) is bitten: they cannot fight,
+-- only run. The second bite kills them; whoever was with them runs off.
+local function stranger_bitten(st, z)
+	st.hp = (st.hp or 2) - 1
+	local away = st.pos - z.pos
+	local d = vector.magnitude(away)
+	away = if d > 0.01 then away / d else v(1, 0, 0)
+	blood_splat(st.pos, away, 0.7)
+	sfx("scream", st.pos, { pitch = random.range(1.05, 1.25) })
+	st.scared = 2.5
+	count("escort_bites")
+	if st.hp > 0 then
+		if st.fig then body.hit(st.fig, away * 1.2) end
+		return
+	end
+	if st.fig then
+		body.ragdoll(st.fig, away * 2.5)
+		body.lie(st.fig, st.pos, st.yaw, true, true)
+		body.tint(st.fig, figure.CORPSE)
+		table.insert(s.corpses, { fig = st.fig, t = 20, pos = st.pos })
+		st.fig = nil
+	end
+	for _, w in st.with or {} do
+		table.insert(s.strangers, { fig = w.fig, pos = collide(st.pos + (w.at or v(0.6, 0, 0.5)), RADIUS), yaw = st.yaw, fleeing = 5, done = true, reach = 0 })
+	end
+	st.with = {}
+	st.escort, st.following, st.done = nil, nil, true
+	local who = nearest_body(st.pos, true)
+	if who then popup(who, "they didn't make it", "#ff8a6a") end
+	count("escorts_lost")
+	game.log("an escort was killed")
+end
+
 -- The dead eat. A downed survivor or a fresh body draws the dead nearby
 -- that have nobody standing to chase: they kneel around it and tear at it,
 -- jolting back with each bite, blood pooling. A downed survivor being eaten
@@ -2480,6 +2513,14 @@ local function zombie_step(z, dt)
 			if d < seen and d < td then target, td = u, d end
 		end
 	end
+	-- Those walking with the group are prey too.
+	for _, st in s.strangers do
+		if st.fig and st.following then
+			local d = dist(st.pos, z.pos)
+			local seen = if z.state == "feed" then 2.5 else spec.sense * (if dark() then 0.7 else 1)
+			if d < seen and d < td then target, td = st, d end
+		end
+	end
 	-- Someone down near by is a meal; somebody standing comes first.
 	local meal = nil
 	if not target and (z.state ~= "windup" and z.state ~= "strike" and z.state ~= "hold" and z.state ~= "recover" and z.state ~= "stagger") then
@@ -2518,6 +2559,16 @@ local function zombie_step(z, dt)
 	elseif z.state == "strike" then
 		local f = dir(z.yaw)
 		if z.kind == "runner" then move = f * spec.lunge end
+		local prey = z.target
+		if not z.hit and prey and prey.following and prey.fig then
+			local to = prey.pos - z.pos
+			local d = math.sqrt(to.x * to.x + to.z * to.z)
+			local reach = if z.kind == "runner" then 0.85 else spec.reach + 0.1
+			if d < reach and (d < 0.3 or (to.x * f.x + to.z * f.z) / d > 0.2) then
+				z.hit = true
+				stranger_bitten(prey, z)
+			end
+		end
 		if not z.hit then
 			for _, u in s.survivors do
 				if in_body(u) then
@@ -3586,8 +3637,33 @@ local function tick(dt, input)
 			if st.fleeing <= 0 then drop_stranger(st) end
 		elseif st.fig and st.following then
 			-- Walking with the group, a few steps behind the nearest person.
+			-- Scared stiff of the dead: one comes near and they run, and
+			-- come back once it is clear.
 			local u = nearest_body(st.pos, true) or nearest_body(st.pos)
-			if u then
+			local zz, zd = nearest_zombie(st.pos, 4.5, true)
+			st.scared = math.max(0, (st.scared or 0) - dt)
+			if zz or st.scared > 0 then
+				local away = if zz then st.pos - zz.pos else st.pos - (st.ran_from or st.pos)
+				if zz then st.ran_from = zz.pos end
+				local m = math.sqrt(away.x * away.x + away.z * away.z)
+				if m > 0.05 then
+					-- Away from it, leaning towards the people if they can.
+					local dir = away / m
+					if u then
+						local tu = u.pos - st.pos
+						local mu = math.sqrt(tu.x * tu.x + tu.z * tu.z)
+						if mu > 0.5 and (tu.x * dir.x + tu.z * dir.z) / mu > -0.2 then dir = (dir * 2 + tu / mu) / 3 end
+					end
+					speed = KNOBS.walk * 1.2
+					st.pos = collide(st.pos + dir * speed * dt, RADIUS)
+					st.yaw = yaw_of(dir)
+				end
+				if zz and not st.cried then
+					st.cried = true
+					sfx("scream", st.pos, { pitch = random.range(1.2, 1.4), db = -6 })
+				end
+			elseif u then
+				st.cried = nil
 				local goal = u.pos + v(-1.6, 0, if st.pos.z > u.pos.z then 1 else -1)
 				local to = goal - st.pos
 				local d = math.sqrt(to.x * to.x + to.z * to.z)
@@ -4195,6 +4271,20 @@ local debug = {
 		u.injured, u.invul = true, 0
 		hurt(u, u.pos + v(1, 0, 0))
 		return u.state
+	end,
+	escort = function()
+		s = state.s
+		local u = s.survivors[1]
+		local e = nil
+		for _, x in ENCOUNTERS do
+			if x.id == "mother_child" then e = x end
+		end
+		if not e then return "no mother_child" end
+		local st = place_stranger(e, u.pos + v(-1.5, 0, 1), nil, { ents = {}, rects = {} })
+		st.escort = { to = s.route + 60 }
+		st.following = true
+		spawn_zombie("shambler", u.pos + v(-5, 0, 2), "investigate", flat(st.pos))
+		return "escort with a shambler near"
 	end,
 	join = function()
 		s = state.s
