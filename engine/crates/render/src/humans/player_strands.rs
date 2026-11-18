@@ -32,6 +32,9 @@ pub(crate) struct PlayerStrands {
     atmosphere_layout: wgpu::BindGroupLayout,
 }
 
+/// Points per grown strand (assets' warp_hair::POINTS; the shader's 10).
+const GROWN_POINTS: usize = 10;
+
 impl PlayerStrands {
     pub(crate) fn new(
         gpu: &Gpu,
@@ -47,8 +50,19 @@ impl PlayerStrands {
             offsets.push(offset);
             offset += actor.palette.len() as u32;
         }
+        // Grown hair fits the device's storage binding, like the people
+        // pools: heads whose strands lie past it go without (bald), rather
+        // than an invalid bind group stopping every frame.
+        let max_strands = (gpu.limits.max_storage_buffer_binding_size as usize / 16) / GROWN_POINTS;
+        let fits = |g: &Groom| g.info[2] != 3 || g.info[3] as usize + g.weights[0] as usize <= max_strands;
+        let dropped = descriptors.iter().filter(|(_, _, g)| !fits(g)).count();
+        if dropped > 0 {
+            eprintln!("humans: grown hair for {dropped} of {} heads does not fit this device's {} MB storage binding; they go without", descriptors.len(), gpu.limits.max_storage_buffer_binding_size >> 20);
+        }
+        let grown = &grown[..grown.len().min(max_strands * GROWN_POINTS)];
         let data: Vec<_> = descriptors
             .iter()
+            .filter(|(_, _, g)| fits(g))
             .map(|&(actor, head, mut groom)| {
                 groom.info[0] = actors[actor].owner;
                 groom.info[1] = offsets[actor] + head as u32;
