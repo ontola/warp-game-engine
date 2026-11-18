@@ -10,6 +10,27 @@ struct HairView { vp:mat4x4<f32>, focal:f32, slot:u32, clock:f32, heads:u32 }
 @group(0) @binding(2) var<storage,read> owners:array<Owner>;
 @group(0) @binding(3) var<storage,read> bones:array<Rows>;
 @group(0) @binding(4) var<storage,read_write> arguments:array<vec4<u32>>;
+// Grown hair (assets warp_hair): ten points per strand, [x, y, z, shade] in
+// the groom's fit space. A groom of style 3 draws these; info.w is its first
+// strand, weights.x how many it has.
+@group(0) @binding(9) var<storage,read> grown:array<vec4<f32>>;
+fn grown_fibre(vid:u32,first:u32)->Fibre {
+    let corner=vid%6u;
+    let upper=corner==1u || corner==4u || corner==5u;
+    let side=select(-1.,1.,corner==2u || corner==3u || corner==5u);
+    let k=(vid/6u)%9u+u32(upper);
+    let base=(first+vid/54u)*10u;
+    let at=grown[base+k];
+    let before=grown[base+max(k,1u)-1u].xyz; let after=grown[base+min(k+1u,9u)].xyz;
+    // A strand cut short repeats its last point: no direction, no width.
+    let along=after-before;
+    let tangent=along*inverseSqrt(max(dot(along,along),1.e-12));
+    // Lit as part of a rounded head of hair, not as a lone cylinder.
+    let normal=normalize(at.xyz-vec3<f32>(0.,.925,-.008));
+    let t=f32(k)/9.;
+    let radius=mix(.00013,.00024,strand_hash(base))*(1.-.85*t*t);
+    return Fibre(at.xyz,normal,cross(tangent,normal),tangent,at.w,side,radius);
+}
 @group(1) @binding(0) var<uniform> view:View;
 @group(1) @binding(2) var<uniform> light:Light;
 @group(1) @binding(5) var shadow_tex:texture_depth_2d;
@@ -28,13 +49,18 @@ fn affine(r:Rows,p:vec4<f32>)->vec4<f32> {
         let head_pixels=.24*cam.focal/clip.w;
         let close_bob=select(0.,10240.*smoothstep(130.,280.,head_pixels),g.info.z==1u);
         count=u32(6144.*smoothstep(24.,142.,head_pixels)+close_bob);
+        // Grown hair has no groom mesh under it: every strand it has, from
+        // as far as a head is a few pixels.
+        if g.info.z==3u {count=u32(g.weights.x*smoothstep(4.,40.,head_pixels));}
     }
     arguments[i]=vec4<u32>(count*54u,1u,i*VERTICES_PER_HEAD,0u);
 }
 struct StrandOut { @builtin(position) clip:vec4<f32>, @location(0) world:vec3<f32>, @location(1) normal:vec3<f32>, @location(2) color:vec3<f32>, @location(3) tangent:vec3<f32>, @location(4) edge:vec2<f32> }
 @vertex fn player_strand(@builtin(vertex_index) id:u32)->StrandOut {
     let g=heads[id/VERTICES_PER_HEAD]; let r=owners[g.info.x].r; let b=bones[g.info.y];
-    let f=grow_strand(id%VERTICES_PER_HEAD,g.info.z,g.info.w,g.weights,cam.clock);
+    var f:Fibre;
+    if g.info.z==3u {f=grown_fibre(id%VERTICES_PER_HEAD,g.info.w);}
+    else {f=grow_strand(id%VERTICES_PER_HEAD,g.info.z,g.info.w,g.weights,cam.clock);}
     let world=affine(r,affine(b,g.fit*vec4<f32>(f.p,1.)));
     let normal=normalize(affine(r,affine(b,g.fit*vec4<f32>(f.normal,0.))).xyz);
     let tangent=normalize(affine(r,affine(b,g.fit*vec4<f32>(f.tangent,0.))).xyz);
