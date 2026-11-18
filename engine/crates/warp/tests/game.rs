@@ -492,9 +492,9 @@ fn dead_miles_bot_searches_and_fights() {
     let run = || {
         let mut g = LuaGame::load(&repo().join("games/dead-miles"), &Overrides { bots: Some(3), ..Default::default() }, None).unwrap();
         g.echo = false;
-        // The person walks east for fifteen seconds, then waits for the bots.
+        // The person walks east for twenty seconds, then waits for the bots.
         for t in 0..3600 {
-            let c = Controls { mv: if t < 900 { [0.6, 0.0] } else { [0.0, 0.0] }, ..Default::default() };
+            let c = Controls { mv: if t < 1200 { [0.6, 0.0] } else { [0.0, 0.0] }, ..Default::default() };
             g.tick(&[c]);
         }
         state(&g)

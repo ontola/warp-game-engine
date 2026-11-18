@@ -221,8 +221,8 @@ declare lights: {
 -- hit, hit_head, cast, roll, dead, down; t is its progress, 0 to 1.
 declare humans: {
 	spawn: (pool: string, opts: { pos: Vec?, yaw: number? }?) -> number?,
-	-- tired 0..1: bent over, out of breath, over any pose
-	set: (id: number, opts: { pos: Vec?, yaw: number?, pose: string?, t: number?, tired: number? }) -> boolean,
+	-- tired 0..1: bent over, out of breath, over any pose; coil -1..1: wound up for a heavy blow (1), swung through (< 0)
+	set: (id: number, opts: { pos: Vec?, yaw: number?, pose: string?, t: number?, tired: number?, coil: number? }) -> boolean,
 	-- A blow along dir (its length the strength, ~1 heavy): the upper body jolts and sways back
 	hit: (id: number, dir: Vec) -> boolean,
 	-- Limp from the pose it stands in, thrown by push (m/s); up again with any pose but dead/down

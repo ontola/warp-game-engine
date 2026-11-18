@@ -114,7 +114,7 @@ function M.place(b, pos, yaw)
 end
 
 -- The box figure's arm names, as poses.
-local POSE = { swing = "walk", reach = "walk", raise = "raise", swing_r = "attack", aim = "aim", shove = "shove" }
+local POSE = { swing = "walk", reach = "walk", raise = "raise", swing_r = "attack", attack = "attack", punch = "punch", jab = "jab", aim = "aim", shove = "shove" }
 
 -- speed in m/s (a human measures it itself); arms as in lib/figure.
 function M.animate(b, dt, speed, arms, t)
@@ -125,6 +125,7 @@ function M.animate(b, dt, speed, arms, t)
 		humans.set(b.human, { pose = pose, t = b.t })
 		place_weapon(b)
 	else
+		if arms == "attack" or arms == "punch" or arms == "jab" then arms = "swing_r" end
 		figure.animate(b.fig, dt, speed, arms, t)
 	end
 end
@@ -136,6 +137,15 @@ function M.tired(b, x)
 	if was == x or (x > 0 and math.abs(was - x) < 0.01) then return end
 	b.tired = x
 	humans.set(b.human, { tired = x })
+end
+
+-- Wound up for a heavy blow, -1..1 (humans only).
+function M.coil(b, x)
+	if not b.human then return end
+	local was = b.coil or 0
+	if was == x or (x ~= 0 and math.abs(was - x) < 0.01) then return end
+	b.coil = x
+	humans.set(b.human, { coil = x })
 end
 
 -- Struck from `push` (its length the strength): the upper body jolts away
