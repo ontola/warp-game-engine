@@ -218,10 +218,10 @@ fn short(value: &str, length: usize) -> String {
     if value.chars().count() <= length { value.into() } else { value.chars().take(length - 1).collect::<String>() + "…" }
 }
 
-/// The GameNight wordmark as a neon sign (room.gd `_logo`).
+/// The Splitscreen Club wordmark as a neon sign (room.gd `_logo`).
 pub fn logo(c: &mut Canvas) {
     let wordmark = faces().wordmark;
-    let words = [("Game", AMBER), ("Night", NIGHT_LILAC)];
+    let words = [("Splitscreen ", AMBER), ("Club", NIGHT_LILAC)];
     // Narrow enough to clear the wall shelves on both sides (Joep).
     let mut size = 140.0;
     let widths = |size: f32| words.map(|w| render::hud::measure(w.0, wordmark, size)[0]);
@@ -383,7 +383,7 @@ pub fn plaque(c: &mut Canvas, show: &Show) {
     let cy = qr[1] + side / 2.0;
     if show.qr.is_empty() {
         text(c, "Phone joining", [qr[0], cy - 6.0], 16.0, DIM, side, TextAlign::Center);
-        text(c, "starts with Gamepad Party", [qr[0], cy + 18.0], 16.0, DIM, side, TextAlign::Center);
+        text(c, "starts with Splitscreen Club", [qr[0], cy + 18.0], 16.0, DIM, side, TextAlign::Center);
     } else {
         // Dark modules on a light square, the host's SVG margin as the quiet
         // zone: Android's scanner (ML Kit) does not read inverted codes at

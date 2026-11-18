@@ -128,5 +128,5 @@ dropped behind; the left edge follows the group 13 m back.
 
 ## Not yet
 
-More encounters, more zombie kinds, raiders, phone screens, Gamepad Party settings (the knobs stand in), the store
+More encounters, more zombie kinds, raiders, phone screens, Splitscreen Club settings (the knobs stand in), the store
 clip.

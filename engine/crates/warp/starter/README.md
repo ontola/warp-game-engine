@@ -4,7 +4,7 @@ A Warp game made of Luau scripts and sound patches, run by the `warp`
 executable without compiling anything. Capsules run and jump on a floor
 and collect glowing orbs (with a pickup sound); first to 10 wins. Each
 person gets a split-screen view, bots chase the nearest orb, and under
-Gamepad Party the party's seats are the players. Start opens the menu.
+Splitscreen Club the party's seats are the players. Start opens the menu.
 
 ```sh
 warp run .                      # play in a window (WASD, mouse, Space, Enter for the menu)

@@ -18,7 +18,7 @@ Use a fresh output directory for each run and run GPU workloads serially.
   [native profiling](../docs/native-profiling.md) for capture commands and limits.
 
 See [frame-budget.md](frame-budget.md) for contracts and limitations.
-Sideways launchers and Gamepad Party acceptance tools live in
+Sideways launchers and Splitscreen Club acceptance tools live in
 [`games/sideways/tools`](../../games/sideways/tools/).
 Scene definitions live in `games/sideways/scenarios/`.
 
