@@ -5,11 +5,26 @@ struct Node { sphere:vec4<f32>, error:vec4<f32>, links:vec4<u32> };
 struct Tree { x:vec4<f32>, y:vec4<f32>, z:vec4<f32>, scale:vec4<f32>, info:vec4<u32> };
 // info: root node, stable generation, reserved, reserved. scale.y: wind envelope.
 struct Consumer { vp:mat4x4<f32>, pixels:vec4<f32> };
-struct View { consumers:array<Consumer,32>, consumer_count:vec4<u32>, vp:mat4x4<f32>, previous_vp:mat4x4<f32>, pixels:vec4<f32>, counts:vec4<u32> };
+struct View { consumers:array<Consumer,32>, consumer_count:vec4<u32>, vp:mat4x4<f32>, previous_vp:mat4x4<f32>, pixels:vec4<f32>, counts:vec4<u32>, catalog:vec4<u32> };
 
 @group(0) @binding(0) var<uniform> view:View;
-@group(0) @binding(1) var<storage,read> nodes:array<Node>;
-@group(0) @binding(2) var<storage,read> trees:array<Tree>;
+@group(0) @binding(1) var<storage,read> catalog:array<vec4<u32>>;
+// Hierarchy nodes (three vec4 each) and trees (five each) in one read-only
+// binding (foliage_select.rs Region::catalog): nodes from 0, trees from
+// refine_layout.selected.z. Read by field so a loop touching one field loads one vec4.
+fn catalog_trees()->u32 {return refine_layout.selected.z;}
+// Nodes in the hierarchy; each node's source work table follows them.
+fn catalog_nodes()->u32 {return refine_layout.selected.w;}
+fn node_sphere(i:u32)->vec4<f32> {return bitcast<vec4<f32>>(catalog[i*3u]);}
+fn node_error(i:u32)->vec4<f32> {return bitcast<vec4<f32>>(catalog[i*3u+1u]);}
+fn node_links(i:u32)->vec4<u32> {return catalog[i*3u+2u];}
+fn node_at(i:u32)->Node {return Node(node_sphere(i),node_error(i),node_links(i));}
+fn tree_x(i:u32)->vec4<f32> {return bitcast<vec4<f32>>(catalog[catalog_trees()+i*5u]);}
+fn tree_y(i:u32)->vec4<f32> {return bitcast<vec4<f32>>(catalog[catalog_trees()+i*5u+1u]);}
+fn tree_z(i:u32)->vec4<f32> {return bitcast<vec4<f32>>(catalog[catalog_trees()+i*5u+2u]);}
+fn tree_scale(i:u32)->vec4<f32> {return bitcast<vec4<f32>>(catalog[catalog_trees()+i*5u+3u]);}
+fn tree_info(i:u32)->vec4<u32> {return catalog[catalog_trees()+i*5u+4u];}
+fn tree_at(i:u32)->Tree {return Tree(tree_x(i),tree_y(i),tree_z(i),tree_scale(i),tree_info(i));}
 struct AssetPage {resident:u32,requested:atomic<u32>,generation:u32,padding:u32};
 @group(0) @binding(3) var<storage,read_write> pages:array<AssetPage>;
 struct Proposal {old:vec4<u32>,replacement:vec4<u32>,prefix:vec4<u32>,control:vec4<u32>,output:vec4<u32>,publication:vec4<u32>};
@@ -85,13 +100,13 @@ fn used_snapshot()->vec4<u32> {return vec4<u32>(atomicLoad(&counters[STATE_BASE+
 // the finest bin books every cluster.
 const SOURCE_TABLE_T0:f32=0.00025;
 fn source_work_at(node:u32,pixels_per_m:f32)->u32 {
- let full=nodes[node].links.w>>8u;
+ let full=node_links(node).w>>8u;
  if !(pixels_per_m>0.0) || pixels_per_m>=1e29 {return full;}
  let t=1.41421356/pixels_per_m;
  if t<SOURCE_TABLE_T0 {return full;}
  // Half-octave bins, two 16-bit counts per word (foliage_source_pages).
  let k=min(u32(floor(2.0*log2(t/SOURCE_TABLE_T0))),23u);
- let r=nodes[node+arrayLength(&nodes)/2u];
+ let r=node_at(node+catalog_nodes());
  var table=array<u32,12>(bitcast<u32>(r.sphere.x),bitcast<u32>(r.sphere.y),bitcast<u32>(r.sphere.z),bitcast<u32>(r.sphere.w),
   bitcast<u32>(r.error.x),bitcast<u32>(r.error.y),bitcast<u32>(r.error.z),bitcast<u32>(r.error.w),r.links.x,r.links.y,r.links.z,r.links.w);
  let count=(table[k/2u]>>(16u*(k&1u)))&0xffffu;
@@ -100,13 +115,13 @@ fn source_work_at(node:u32,pixels_per_m:f32)->u32 {
 }
 fn work(tree:u32,node:u32,consumers:u32)->vec4<u32> {
  var cost=vec4<u32>(0u);
- if node==NONE {cost.y=u32(trees[tree].scale.z);cost.z=u32(trees[tree].scale.w);}
- else {let n=nodes[node];cost=vec4<u32>(select(1u,0u,(n.links.w&2u)!=0u),u32(n.error.z),u32(n.error.w),0u);}
- if node!=NONE && (nodes[node].links.w>>8u)!=0u {
-  var clusters=0u;let bound=sphere(trees[tree],nodes[node]);
+ if node==NONE {cost.y=u32(tree_scale(tree).z);cost.z=u32(tree_scale(tree).w);}
+ else {let n=node_at(node);cost=vec4<u32>(select(1u,0u,(n.links.w&2u)!=0u),u32(n.error.z),u32(n.error.w),0u);}
+ if node!=NONE && (node_links(node).w>>8u)!=0u {
+  var clusters=0u;let bound=sphere(tree_at(tree),node_at(node));
   for(var i=0u;i<view.consumer_count.x;i++) {let c=view.consumers[i];
    if (consumers&select(512u,256u,c.pixels.z==0.0))!=0u && visible_in(bound,c.vp) {
-    clusters+=source_work_at(node,error_in(bound,1.0,c.vp,c.pixels.xy)*trees[tree].scale.x);
+    clusters+=source_work_at(node,error_in(bound,1.0,c.vp,c.pixels.xy)*tree_scale(tree).x);
    }
   }
   cost.w=clusters;
@@ -117,7 +132,7 @@ fn work(tree:u32,node:u32,consumers:u32)->vec4<u32> {
  // recomputed for the refund within one encode, so books stay balanced.
  if atomicLoad(&counters[STATE_BASE+80])!=0u && (cost.y!=0u || cost.z!=0u) {
   var bound=vec4<f32>(0.0);
-  if node==NONE {bound=sphere(trees[tree],nodes[trees[tree].info.x]);}else{bound=sphere(trees[tree],nodes[node]);}
+  if node==NONE {bound=sphere(tree_at(tree),node_at(tree_info(tree).x));}else{bound=sphere(tree_at(tree),node_at(node));}
   var inside=vec2<f32>(0.0);
   for(var i=0u;i<view.consumer_count.x;i++) {let c=view.consumers[i];
    let k=select(1u,0u,c.pixels.z==0.0);inside[k]=max(inside[k],inside_fraction(bound,c.vp));
@@ -128,7 +143,7 @@ fn work(tree:u32,node:u32,consumers:u32)->vec4<u32> {
   // cell <= error.x/2^k (foliage_runtime). error_in measures length(dx,dy),
   // sqrt(2) times one axis for square pixels. The sun maps do not thin.
   if node!=NONE {
-   let n=nodes[node];let cell=n.error.x*exp2(-f32((n.links.w>>3u)&31u))*trees[tree].scale.x;
+   let n=node_at(node);let cell=n.error.x*exp2(-f32((n.links.w>>3u)&31u))*tree_scale(tree).x;
    var side=0.0;
    for(var i=0u;i<view.consumer_count.x;i++) {let c=view.consumers[i];
     if c.pixels.z==0.0 && visible_in(bound,c.vp) {side=max(side,error_in(bound,cell,c.vp,c.pixels.xy));}
@@ -162,8 +177,8 @@ var<workgroup> seed_scan:array<vec4<u32>,256>;
 @compute @workgroup_size(256) fn seed(@builtin(global_invocation_id) id:vec3<u32>,@builtin(local_invocation_index) lane:u32,@builtin(workgroup_id) group:vec3<u32>) {
  let tree=id.x;var value=vec4<u32>(0u);
  if tree<view.counts.x {
-  let root=trees[tree];var consumers=0u;
-  if root.info.w==0u {consumers=mask(sphere(root,nodes[root.info.x]));}
+  let root=tree_at(tree);var consumers=0u;
+  if root.info.w==0u {consumers=mask(sphere(root,node_at(root.info.x)));}
   if view.counts.w!=0u && seed_visibility[tree]==0u {consumers&=~256u;}
   demand[tree].bucket=consumers;demand[tree].prefix=0u;
   // Bits 16+: the rounds this tree's shadow reserved last frame (fast_round
@@ -252,13 +267,13 @@ fn projected(t:Tree,n:Node,roles:u32)->vec2<f32> {
 // Intermediate occupancy need not be monotonic: inspect through expensive or
 // nonresident intermediate levels, but publish only a resident affordable end.
 fn candidate(tree:u32,start:u32,request_pages:bool,roles:u32)->u32 {
- let t=trees[tree];var at=start;var best=start;
- let budget=work(tree,start,mask(sphere(t,nodes[start]))&roles);
+ let t=tree_at(tree);var at=start;var best=start;
+ let budget=work(tree,start,mask(sphere(t,node_at(start)))&roles);
  loop {
-  let n=nodes[at];if n.links.x==NONE {break;}
+  let n=node_at(at);if n.links.x==NONE {break;}
   let scale=projected(t,n,roles);
   if at==best && (n.links.w&1u)==0u && scale.x<1e29 && scale.x*n.error.x<=view.pixels.z*cut_scale && (n.error.y==0.0 || scale.x*n.error.y<=cut_scale) {break;}
-  let child=n.links.x;let c=nodes[child];if c.links.y!=n.links.y {break;}
+  let child=n.links.x;let c=node_at(child);if c.links.y!=n.links.y {break;}
   let cost=work(tree,child,mask(sphere(t,c))&roles);
   if all(cost<=budget) {
    var resident=pages[c.links.z].resident!=0u;
@@ -274,17 +289,17 @@ fn candidate(tree:u32,start:u32,request_pages:bool,roles:u32)->u32 {
 // If its splat cost cannot fit, exact source remains a complete alternative.
 // w: 1 = all source, 2 = pixel-acceptable mixed source/voxel frontier.
 fn endpoint_acceptable(tree:u32,node:u32)->bool {
- let n=nodes[node];let scale=projected(trees[tree],n,256u);
+ let n=node_at(node);let scale=projected(tree_at(tree),n,256u);
  return (n.links.w&1u)==0u && scale.x<1e29 && scale.x*n.error.x<=view.pixels.z && scale.x*n.error.y<=1.0;
 }
 struct Endpoint {cost:vec4<u32>,mode:u32};
 fn endpoint_frontier(tree:u32,node:u32,old:vec4<u32>,used:vec4<u32>,request_pages:bool,source_only:bool)->Endpoint {
- let t=trees[tree];let end=nodes[node].links.y;var at=nodes[node].links.x;
+ let t=tree_at(tree);let end=node_links(node).y;var at=node_links(node).x;
  var cost=vec4<u32>(0u);var resident=true;
  let available=limits()-min(used,limits());
  loop {
   if at==NONE || at>=end {break;}
-  let n=nodes[at];let roles=mask(sphere(t,n))&256u;
+  let n=node_at(at);let roles=mask(sphere(t,n))&256u;
   if roles==0u {at=n.links.y;continue;}
   let endpoint=select(endpoint_acceptable(tree,at),(n.links.w&4u)!=0u && n.links.x==NONE,source_only);
   if !endpoint {
@@ -321,7 +336,7 @@ fn complete_endpoint(tree:u32,node:u32,old:vec4<u32>,used:vec4<u32>,request_page
    let source=complete_endpoint(task.x,task.y,p.old,used,true);
    if source.mode!=0u {
     p.replacement=source.cost;p.publication.x=source.mode;p.control.z=0u;p.output.y=0u;
-    let n=nodes[task.y];let scale=projected(trees[task.x],n,task.z);
+    let n=node_at(task.y);let scale=projected(tree_at(task.x),n,task.z);
     let delta=source.cost-min(source.cost,p.old);let price=max(1.0,f32(delta.x)*256.0+f32(delta.y));
     let parent_error=select(n.error.x,n.sphere.w,(n.links.w&1u)!=0u);
     let benefit=max(0.001,scale.y*parent_error);
@@ -334,7 +349,7 @@ fn complete_endpoint(tree:u32,node:u32,old:vec4<u32>,used:vec4<u32>,request_page
   atomicAdd(&counters[STATE_BASE+28],1u);proposals[at]=p;return;
  }
  if task.z==0u {proposals[at]=p;return;}
- let t=trees[task.x];let node_id=select(task.y,t.info.x,task.y==NONE);let n=nodes[node_id];
+ let t=tree_at(task.x);let node_id=select(task.y,t.info.x,task.y==NONE);let n=node_at(node_id);
  p.old=work(task.x,task.y,task.z);atomicAdd(&counters[4],1u);
  let scale=projected(t,n,task.z);
  var refine=task.y==NONE || (n.links.x!=NONE && ((n.links.w&1u)!=0u || scale.x>=1e29 || scale.x*n.error.x>view.pixels.z || scale.x*n.error.y>1.0));
@@ -345,14 +360,14 @@ fn complete_endpoint(tree:u32,node:u32,old:vec4<u32>,used:vec4<u32>,request_page
  if refine {
   loop {
    if child==NONE || child>=end {break;}
-   let selected=candidate(task.x,child,true,task.z);let c=nodes[selected];let consumers=mask(sphere(t,c))&task.z;
+   let selected=candidate(task.x,child,true,task.z);let c=node_at(selected);let consumers=mask(sphere(t,c))&task.z;
    if consumers!=0u {
     let resident=ready(c.links.z);refine=refine&&resident;
     p.replacement=plus(p.replacement,work(task.x,selected,consumers));
     if c.links.x!=NONE {children++;}
     child_error=max(child_error,c.error.x);
    }
-   child=nodes[child].links.y;
+   child=node_links(child).y;
   }
  }
  // Relieve a temporary camera-splat barrier without publishing intermediate
@@ -462,7 +477,7 @@ var<workgroup> priority_source:array<u32,256>;
 fn publish(task:vec4<u32>) {
  if task.z==0u {return;}
  if task.y==NONE {atomicOr(&fallback[task.x],task.z);return;}
- let n=nodes[task.y];let resident=ready(n.links.z);
+ let n=node_at(task.y);let resident=ready(n.links.z);
  if !resident {atomicOr(&fallback[task.x],task.z);return;}
  if (n.links.w&2u)!=0u {
   let publication=task.x+select(0u,view.counts.x,task.z==512u);
@@ -472,7 +487,7 @@ fn publish(task:vec4<u32>) {
   atomicAdd(&counters[7],1u);return;
  }
  let at=atomicAdd(&counters[0],1u);atomicAdd(&demand[task.x+select(0u,view.counts.x,task.z==512u)].count,1u);
- if at<view.counts.y {set_record(at,vec4<u32>(task.x,task.y,n.links.z,trees[task.x].info.y),task.z);}
+ if at<view.counts.y {set_record(at,vec4<u32>(task.x,task.y,n.links.z,tree_info(task.x).y),task.z);}
  else {atomicOr(&fallback[task.x],1u);atomicAdd(&counters[3],1u);}
 }
 fn state_park_index(at:u32,p:Proposal)->u32 {
@@ -501,10 +516,10 @@ fn state_park_index(at:u32,p:Proposal)->u32 {
  // Admission reserved the entire endpoint frontier; replay exactly the same
  // traversal. Pages and views are immutable throughout this encode.
  if p.publication.x!=0u {
-  let t=trees[task.x];let end=nodes[task.y].links.y;var child=nodes[task.y].links.x;
+  let t=tree_at(task.x);let end=node_links(task.y).y;var child=node_links(task.y).x;
   loop {
    if child==NONE || child>=end {break;}
-   let n=nodes[child];let roles=mask(sphere(t,n))&256u;
+   let n=node_at(child);let roles=mask(sphere(t,n))&256u;
    if roles==0u {child=n.links.y;continue;}
    let endpoint=select(endpoint_acceptable(task.x,child),(n.links.w&4u)!=0u && n.links.x==NONE,p.publication.x==1u);
    if !endpoint {child=n.links.x;continue;}
@@ -513,16 +528,16 @@ fn state_park_index(at:u32,p:Proposal)->u32 {
   return;
  }
  var offset=p.output.x+blocks[32u+(at/256u)*32u].y;
- let t=trees[task.x];var child=t.info.x;var end=child+1u;
- if task.y!=NONE {child=nodes[task.y].links.x;end=nodes[task.y].links.y;}
+ let t=tree_at(task.x);var child=t.info.x;var end=child+1u;
+ if task.y!=NONE {child=node_links(task.y).x;end=node_links(task.y).y;}
  loop {
   if child==NONE || child>=end {break;}
-  let selected=candidate(task.x,child,true,task.z);let c=nodes[selected];let consumers=mask(sphere(t,c))&task.z;
+  let selected=candidate(task.x,child,true,task.z);let c=node_at(selected);let consumers=mask(sphere(t,c))&task.z;
   if consumers!=0u {
    let replacement=vec4<u32>(task.x,selected,consumers,0u);
    if c.links.x==NONE {publish(replacement);}else{queue[refine_layout.queue.y+offset]=replacement;offset++;}
   }
-  child=nodes[child].links.y;
+  child=node_links(child).y;
  }
 }
 @compute @workgroup_size(1) fn advance() {
@@ -612,16 +627,16 @@ fn error_in(s:vec4<f32>,error:f32,vp:mat4x4<f32>,pixels:vec2<f32>)->f32 {
 // Diagnose the next complete replacement against final remaining work. Read
 // residency only: explicit diagnostics must not generate new asset requests.
 fn audit_camera_limit(tree:u32,node:u32,camera_scale:f32) {
- let n=nodes[node];if camera_scale==0.0 {return;}
+ let n=node_at(node);if camera_scale==0.0 {return;}
  if (n.links.w&1u)==0u && camera_scale*n.error.x<=view.pixels.z && camera_scale*n.error.y<=1.0 {return;}
  atomicAdd(&counters[STATE_BASE+48],1u);
  if n.links.x==NONE {atomicAdd(&counters[STATE_BASE+53],1u);return;}
- let t=trees[tree];var replacement=vec4<u32>(0u);var missing=false;var child=n.links.x;
+ let t=tree_at(tree);var replacement=vec4<u32>(0u);var missing=false;var child=n.links.x;
  loop {
   if child==NONE || child>=n.links.y {break;}
-  let selected=candidate(tree,child,false,256u);let c=nodes[selected];let consumers=mask(sphere(t,c))&256u;
+  let selected=candidate(tree,child,false,256u);let c=node_at(selected);let consumers=mask(sphere(t,c))&256u;
   if consumers!=0u {replacement=plus(replacement,work(tree,selected,consumers));missing=missing||pages[c.links.z].resident==0u;}
-  child=nodes[child].links.y;
+  child=node_links(child).y;
  }
  let old=work(tree,node,mask(sphere(t,n))&256u);let delta=replacement-min(replacement,old);
  let used=used_now();
@@ -635,7 +650,7 @@ fn audit_camera_limit(tree:u32,node:u32,camera_scale:f32) {
  if missing {atomicAdd(&counters[STATE_BASE+52],1u);}if !any(blocked) && !missing {atomicAdd(&counters[STATE_BASE+54],1u);}
 }
 fn audit_node(tree:u32,node:u32,roles:u32) {
- let n=nodes[node];let scale=projected(trees[tree],n,roles);
+ let n=node_at(node);let scale=projected(tree_at(tree),n,roles);
  audit_camera_limit(tree,node,scale.y);
  let spatial=min(scale*n.error.x,vec2<f32>(1e30));
  let ratio=min(max(spatial/max(view.pixels.z,1e-8),scale*n.error.y),vec2<f32>(1e30));
@@ -647,19 +662,19 @@ fn audit_node(tree:u32,node:u32,roles:u32) {
 @compute @workgroup_size(64) fn audit(@builtin(global_invocation_id) id:vec3<u32>) {
  let at=id.x;
  if at<min(atomicLoad(&counters[0]),view.counts.y) {
-  let r=record_at(at);let n=nodes[r.y];let failure=atomicLoad(&fallback[r.x]);var roles=record_consumers_at(at)&~failure;
+  let r=record_at(at);let n=node_at(r.y);let failure=atomicLoad(&fallback[r.x]);var roles=record_consumers_at(at)&~failure;
   if (failure&7u)!=0u {roles=0u;}if roles!=0u {audit_node(r.x,r.y,roles);
   let base=select(36u,32u,(n.links.w&4u)!=0u);
   atomicAdd(&counters[STATE_BASE+base+(roles>>8u)],1u);}
  }
  if at>=view.counts.x {return;}
  let failure=atomicLoad(&fallback[at]);if failure!=0u {atomicAdd(&counters[STATE_BASE+25],1u);}
- let first=trees[at].info.x;let end=nodes[first].links.y;
+ let first=tree_info(at).x;let end=node_links(first).y;
  for(var role=0u;role<2u;role++) {
   let rep=demand[at+role*view.counts.x].prefix;if rep==0u {continue;}
   let roles=256u<<role;if (failure&(roles|7u))!=0u {continue;}var found=false;
   for(var n=first;n<end;n++) {
-   if nodes[n].links.z+1u==rep && (nodes[n].links.w&2u)!=0u {audit_node(at,n,roles);atomicAdd(&counters[STATE_BASE+40u+(roles>>8u)],1u);found=true;break;}
+   if node_links(n).z+1u==rep && (node_links(n).w&2u)!=0u {audit_node(at,n,roles);atomicAdd(&counters[STATE_BASE+40u+(roles>>8u)],1u);found=true;break;}
   }
   if !found {atomicAdd(&counters[STATE_BASE+26],1u);}
  }
@@ -771,7 +786,7 @@ fn fast_round_wave(at:u32,lane:u32,phase_late:bool) {
 fn publish_reserve(task:vec4<u32>)->u32 {
  if task.z==0u {return NONE;}
  if task.y==NONE {atomicOr(&fallback[task.x],task.z);return NONE;}
- let n=nodes[task.y];let resident=ready(n.links.z);
+ let n=node_at(task.y);let resident=ready(n.links.z);
  if !resident {atomicOr(&fallback[task.x],task.z);return NONE;}
  if (n.links.w&2u)!=0u {
   let publication=task.x+select(0u,view.counts.x,task.z==512u);
@@ -783,7 +798,7 @@ fn publish_reserve(task:vec4<u32>)->u32 {
  return atomicAdd(&wave_counts[0],1u);
 }
 fn publish_write(task:vec4<u32>,at:u32) {
- if at<view.counts.y {set_record(at,vec4<u32>(task.x,task.y,nodes[task.y].links.z,trees[task.x].info.y),task.z);}
+ if at<view.counts.y {set_record(at,vec4<u32>(task.x,task.y,node_links(task.y).z,tree_info(task.x).y),task.z);}
  else {atomicOr(&fallback[task.x],1u);atomicAdd(&counters[3],1u);}
 }
 // Returns the task to publish (z 0: none). Children that are leaves still
@@ -800,7 +815,7 @@ fn fast_round_phase(at:u32,phase_late:bool)->vec4<u32> {
  // and mesh (Joep's playtest, 9 November: ~1k flips on a 20 degree turn).
  let detailed=(task.z&256u)!=0u && atomicLoad(&demand[task.x].failed)>1u;
  if detailed {cut_scale=cut_scale/CUT_HYSTERESIS;}
- let t=trees[task.x];let node_id=select(task.y,t.info.x,task.y==NONE);let n=nodes[node_id];
+ let t=tree_at(task.x);let node_id=select(task.y,t.info.x,task.y==NONE);let n=node_at(node_id);
  if WAVE_PUBLISH {atomicAdd(&wave_counts[2],1u);} else {atomicAdd(&counters[4],1u);}
  let scale=projected(t,n,task.z);
  let wanted=task.y==NONE || (n.links.x!=NONE && ((n.links.w&1u)!=0u || scale.x>=1e29 || scale.x*n.error.x>view.pixels.z*cut_scale || scale.x*n.error.y>cut_scale));
@@ -813,14 +828,14 @@ fn fast_round_phase(at:u32,phase_late:bool)->vec4<u32> {
  request_urgency=u32(clamp(min(scale.x,1e8)*n.error.x*16.0*select(1.0,4.0,(task.z&256u)!=0u),1.0,1e9));
  loop {
   if child==NONE || child>=end {break;}
-  let selected=candidate(task.x,child,true,task.z);let c=nodes[selected];let consumers=mask(sphere(t,c))&task.z;
+  let selected=candidate(task.x,child,true,task.z);let c=node_at(selected);let consumers=mask(sphere(t,c))&task.z;
   if consumers!=0u {
    resident=ready(c.links.z)&&resident;
    replacement=plus(replacement,work(task.x,selected,consumers));
    if c.links.x!=NONE {branching++;}
    if (c.links.w&4u)!=0u {source_leaves=true;}
   }
-  child=nodes[child].links.y;
+  child=node_links(child).y;
  }
  // Missing pages keep the complete parent; ready() has requested them.
  if !resident {atomicAdd(&counters[STATE_BASE+73],1u);return task;}
@@ -830,7 +845,7 @@ fn fast_round_phase(at:u32,phase_late:bool)->vec4<u32> {
  // crown and the branches that lost the budget race stayed 4-16 px voxel
  // balls among needles (Joep, 13 November). KERN_SOURCE_PER_TREE=0: per branch.
  var step=scale.x;
- if SOURCE_PER_TREE {step=max(step,projected(t,nodes[t.info.x],task.z).x);}
+ if SOURCE_PER_TREE {step=max(step,projected(t,node_at(t.info.x),task.z).x);}
  if (task.z&256u)!=0u && source_leaves && task.y!=NONE && (n.links.w&1u)==0u && step<1e29 {
   let s=fast_source_scale()/select(1.0,CUT_HYSTERESIS,detailed);
   if step*n.error.x<=view.pixels.z*s && step*n.error.y<=s {return task;}
@@ -852,12 +867,12 @@ fn fast_round_phase(at:u32,phase_late:bool)->vec4<u32> {
  var out=offset;child=first;
  loop {
   if child==NONE || child>=end {break;}
-  let selected=candidate(task.x,child,true,task.z);let c=nodes[selected];let consumers=mask(sphere(t,c))&task.z;
+  let selected=candidate(task.x,child,true,task.z);let c=node_at(selected);let consumers=mask(sphere(t,c))&task.z;
   if consumers!=0u {
    let replacement_task=vec4<u32>(task.x,selected,consumers,0u);
    if c.links.x==NONE {publish(replacement_task);}else{queue[refine_layout.queue.y+out]=replacement_task;out++;}
   }
-  child=nodes[child].links.y;
+  child=node_links(child).y;
  }
  return vec4<u32>(0u);
 }

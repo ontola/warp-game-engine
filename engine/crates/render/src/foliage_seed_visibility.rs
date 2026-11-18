@@ -22,8 +22,8 @@ impl Visibility {
    // view's matrix. Reuse buffers/bind groups across frames and target resizes.
    let mut words=[0u32;20];words[..16].copy_from_slice(&camera.projection.to_cols_array().map(f32::to_bits));words[16]=s.count;
    let offset=index as u64*self.stride;gpu.queue.write_buffer(&self.uniform,offset,bytemuck::cast_slice(&words));
-   let entries=[wgpu::BindGroupEntry {binding:0,resource:wgpu::BindingResource::Buffer(wgpu::BufferBinding {buffer:&self.uniform,offset,size:std::num::NonZeroU64::new(80)})},wgpu::BindGroupEntry {binding:1,resource:s._nodes.as_entire_binding()},
-    wgpu::BindGroupEntry {binding:2,resource:s._instances.as_entire_binding()},wgpu::BindGroupEntry {binding:3,resource:wgpu::BindingResource::TextureView(camera.pyramid)},
+   let entries=[wgpu::BindGroupEntry {binding:0,resource:wgpu::BindingResource::Buffer(wgpu::BufferBinding {buffer:&self.uniform,offset,size:std::num::NonZeroU64::new(80)})},wgpu::BindGroupEntry {binding:1,resource:s._nodes.binding()},
+    wgpu::BindGroupEntry {binding:2,resource:s._instances.binding()},wgpu::BindGroupEntry {binding:3,resource:wgpu::BindingResource::TextureView(camera.pyramid)},
     wgpu::BindGroupEntry {binding:4,resource:s.seed_visibility.as_entire_binding()}];
    let bind=self.binds.lock().unwrap().entries(gpu,&self.layout,"foliage seed camera",&entries);
    let mut pass=enc.begin_compute_pass(&Default::default());pass.set_pipeline(&self.pipeline);pass.set_bind_group(0,&bind,&[]);pass.dispatch_workgroups(s.count.div_ceil(64),1,1);
