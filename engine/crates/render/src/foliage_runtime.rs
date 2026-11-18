@@ -386,7 +386,7 @@ fn profile_root_volume(volume:usize,slots:u32,trees:u32)->Option<(u32,u32)> {
 impl Runtime {
     /// The refiner's state buffer and the word that takes last frame's stored
     /// camera splat count (foliage_refine.wgsl fast_adapt).
-    pub(crate) fn splat_feedback(&self)->(&wgpu::Buffer,u64) {(&self.selector.refiner.state,82*4)}
+    pub(crate) fn splat_feedback(&self)->(&wgpu::Buffer,u64) {(&self.selector.refiner.state,crate::foliage_refine::STATE_OFFSET+82*4)}
     pub(crate) fn root_shadow_bound(&self,root:Instance)->Option<[f32;4]> {
         self.templates.iter().find(|t|t.node==root.info[0]).and_then(|t|root_shadow_sphere(root,t.shadow_sphere))
     }
@@ -562,12 +562,12 @@ impl Runtime {
     /// Bytes in one consumer-class choice table; camera then shadow.
     pub(crate) fn choice_table_bytes(&self)->u64 {u64::from(self.slots)*4}
     pub fn diagnostics(&self,gpu:&Gpu)->Result<Diagnostics,String> {
-        let inputs=[(&self.selector.counters,64u64),(&self.residency.counters,32),(&self.selector.fallback,self.trees as u64*4),(&self.choices,self.choices.size()),(&self.pose_work,268),(&self.selector.demand,self.trees as u64*32),(&self.selector.refiner.state,384)];
-        let size=inputs.iter().map(|(_,n)|n).sum();
+        let inputs=[(&self.selector.counters,0,64u64),(&self.residency.counters,0,32),(&self.selector.fallback,0,self.trees as u64*4),(&self.choices,0,self.choices.size()),(&self.pose_work,0,268),(&self.selector.demand,0,self.trees as u64*32),(&self.selector.refiner.state,crate::foliage_refine::STATE_OFFSET,384)];
+        let size=inputs.iter().map(|(_,_,n)|n).sum();
         let output=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("forest diagnostic snapshot"),size,usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
         let mut enc=gpu.device.create_command_encoder(&Default::default());let mut offset=0;
         self.selector.refiner.audit(gpu,&mut enc,&self.selector);
-        for (buffer,len) in inputs {enc.copy_buffer_to_buffer(buffer,0,&output,offset,len);offset+=len;}
+        for (buffer,from,len) in inputs {enc.copy_buffer_to_buffer(buffer,from,&output,offset,len);offset+=len;}
         let submission=gpu.queue.submit([enc.finish()]);let(tx,rx)=std::sync::mpsc::sync_channel(1);
         output.slice(..).map_async(wgpu::MapMode::Read,move|r|{let _=tx.send(r);});
         gpu.device.poll(wgpu::PollType::Wait {submission_index:Some(submission),timeout:Some(std::time::Duration::from_secs(30))}).map_err(|e|e.to_string())?;
