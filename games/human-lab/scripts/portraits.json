@@ -1,0 +1,22 @@
+{ "size": [1280, 720],
+  "steps": [
+    { "ticks": 30, "note": "people settle into idle" },
+    { "expect": "/errors", "equals": [] },
+    { "cmd": "lua state.person = 1; state.view = 6", "ticks": 4, "capture": "row.png" },
+    { "cmd": "lua state.person = 1; state.view = 1", "ticks": 4, "capture": "p1-face.png" },
+    { "cmd": "lua state.view = 2", "ticks": 4, "capture": "p1-three-quarter.png" },
+    { "cmd": "lua state.view = 3", "ticks": 4, "capture": "p1-profile.png" },
+    { "cmd": "lua state.view = 4", "ticks": 4, "capture": "p1-bust.png" },
+    { "cmd": "lua state.view = 5", "ticks": 4, "capture": "p1-body.png" },
+    { "cmd": "lua state.person = 2; state.view = 1", "ticks": 4, "capture": "p2-face.png" },
+    { "cmd": "lua state.person = 3", "ticks": 4, "capture": "p3-face.png" },
+    { "cmd": "lua state.person = 4", "ticks": 4, "capture": "p4-face.png" },
+    { "cmd": "lua state.person = 5", "ticks": 4, "capture": "p5-face.png" },
+    { "cmd": "lua state.person = 6", "ticks": 4, "capture": "p6-face.png" },
+    { "cmd": "lua state.person = 7", "ticks": 4, "capture": "p7-face.png" },
+    { "cmd": "lua state.person = 8", "ticks": 4, "capture": "p8-face.png" },
+    { "cmd": "lua state.person = 3; state.view = 2", "ticks": 4, "capture": "p3-three-quarter.png" },
+    { "cmd": "lua state.person = 5; state.view = 2", "ticks": 4, "capture": "p5-three-quarter.png" },
+    { "expect": "/errors", "equals": [] }
+  ]
+}
