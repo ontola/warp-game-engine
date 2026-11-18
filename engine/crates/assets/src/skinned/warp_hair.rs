@@ -13,63 +13,176 @@ pub(super) const POINTS: usize = 10;
 /// Strands on a full head of hair (the strand renderer's budget per head).
 const STRANDS: usize = 16_384;
 
+/// The height of the hairline at a point of the head, metres above the
+/// eyes: across the forehead, down at the temples to a sideburn before the
+/// ear, close over the ear, and down behind it to the nape.
+fn hairline(p: Vec3) -> f32 {
+    let front = 0.062 - 0.034 * smooth(0.030, 0.072, p.x.abs());
+    let side = 0.012;
+    let nape = -0.072;
+    let line = front + (side - front) * smooth(-0.020, -0.050, p.z);
+    let sideburn = 0.030 * smooth(-0.036, -0.046, p.z) * smooth(-0.068, -0.060, p.z);
+    line - sideburn + (nape - side) * smooth(-0.100, -0.120, p.z)
+}
+
 /// How thickly hair grows at a point of the head, 0 to 1: `p` in metres
 /// from the point between the eyes (x to the person's left, y up, z out of
-/// the face). The hairline crosses the forehead, drops at the temples, runs
-/// over the ears and down to the nape.
+/// the face).
 pub(super) fn scalp(p: Vec3) -> f32 {
-    let front = 0.062 - 0.034 * smooth(0.030, 0.072, p.x.abs());
-    let side = 0.026;
-    let nape = -0.072;
-    let mut line = front + (side - front) * smooth(-0.020, -0.050, p.z);
-    line += (nape - side) * smooth(-0.125, -0.155, p.z);
+    let line = hairline(p);
     smooth(line, line + 0.007, p.y)
 }
 
-/// What the seed decides about a head of hair.
+/// What the seed decides about a head of hair: a cut as a hairdresser
+/// makes it. Short cuts are tapered (short at the ears and the nape,
+/// growing to the length on top); long cuts are cut to a hem, the height
+/// at which all the hair ends.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Cut {
     pub seed: u32,
-    /// Metres on top of the head, at the sides and back.
+    /// Metres on top of the head.
     pub top: f32,
-    pub sides: f32,
+    /// Metres at the hairline over the ears and at the nape; `band` is how
+    /// far up from that hairline to the crown the hair is as long as on
+    /// top (1 at the crown), and `fade` how late it grows on the way up
+    /// (1 evenly, more for a fade).
+    pub taper: f32,
+    pub band: f32,
+    pub fade: f32,
+    /// Height in metres from the eyes below which hair is cut off.
+    pub hem: f32,
     /// Where the hair parts across the head, metres from the middle; hair
     /// lies away from it on both sides.
     pub part: f32,
-    /// How far the front is swept back (1) or falls forward as a fringe (-1).
+    /// How far the front is swept back (1) or worn forward (-1).
     pub sweep: f32,
+    /// Whether the front hair comes down over the forehead while the rest
+    /// follows the parting (1), or not (0).
+    pub bangs: f32,
     /// Height above the eyes at which hair over the face is cut, metres.
     pub fringe: f32,
     /// How steeply hair leaves the scalp, 0 flat to 1 upright.
     pub lift: f32,
+    /// How far locks lie out of the comb's line, 0 combed to 1 tousled.
+    pub mess: f32,
     /// Waves: sideways swing in metres, and waves per metre of hair.
     pub wave: f32,
     pub pitch: f32,
 }
 
+/// The cuts a seed chooses from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Style {
+    Buzz,
+    Crop,
+    SidePart,
+    SweptBack,
+    Fringe,
+    Curtains,
+    Bob,
+    Shoulder,
+    Long,
+}
+
+/// No hem: the hair ends where its length does.
+const UNCUT: f32 = -10.;
+
 impl Cut {
     pub fn new(seed: u32) -> Self {
-        let roll = |k: u32| unit(hash(seed ^ k.wrapping_mul(0x9e37_79b9)));
-        // Cropped, short, collar length and long, with short the most common.
-        let (top, sides) = match roll(1) {
-            r if r < 0.14 => (0.012 + 0.012 * roll(2), 0.006 + 0.008 * roll(3)),
-            r if r < 0.58 => (0.045 + 0.045 * roll(2), 0.018 + 0.030 * roll(3)),
-            r if r < 0.80 => (0.10 + 0.06 * roll(2), 0.09 + 0.07 * roll(3)),
-            _ => (0.20 + 0.14 * roll(2), 0.20 + 0.14 * roll(3)),
+        let r = unit(hash(seed ^ 0x9e37_79b9));
+        let style = match r {
+            r if r < 0.07 => Style::Buzz,
+            r if r < 0.29 => Style::Crop,
+            r if r < 0.46 => Style::SidePart,
+            r if r < 0.58 => Style::SweptBack,
+            r if r < 0.68 => Style::Fringe,
+            r if r < 0.76 => Style::Curtains,
+            r if r < 0.87 => Style::Bob,
+            r if r < 0.96 => Style::Shoulder,
+            _ => Style::Long,
         };
+        Self::styled(seed, style)
+    }
+
+    pub fn styled(seed: u32, style: Style) -> Self {
+        let roll = |k: u32| unit(hash(seed ^ k.wrapping_mul(0x9e37_79b9)));
+        let side = if roll(7) < 0.5 { -1. } else { 1. };
         let wavy = roll(6).powi(2);
-        Self {
+        let short = Self {
             seed,
-            top,
-            sides,
-            part: if roll(4) < 0.25 { 0. } else { (0.025 + 0.02 * roll(5)) * if roll(7) < 0.5 { -1. } else { 1. } },
-            // Hair long enough to reach the eyes is worn out of the face.
-            sweep: if top < 0.03 { 0. } else if top > 0.07 { 0.6 + 0.4 * roll(8) } else { roll(8) * 2. - 0.6 },
-            lift: 0.10 + 0.30 * roll(9) * (0.05 / top.max(0.05)),
-            fringe: 0.022 + 0.026 * roll(11),
-            wave: 0.012 * wavy,
+            top: 0.05,
+            taper: 0.005 + 0.009 * roll(3),
+            band: 0.75 + 0.25 * roll(12),
+            fade: 1.3 + 1.7 * roll(13),
+            hem: UNCUT,
+            part: 0.,
+            sweep: 0.,
+            bangs: 0.,
+            fringe: 0.022 + 0.022 * roll(11),
+            lift: 0.2,
+            mess: 0.2,
+            wave: 0.006 * wavy,
             pitch: 12. + 25. * roll(10),
+        };
+        // Cut to a hem: no taper, and long enough to reach it from the top.
+        // The front is drawn back a little, so it falls beside the face and
+        // not before it.
+        let long = Self { top: 0.6, taper: 0.6, sweep: 0.35 + 0.25 * roll(8), wave: 0.014 * wavy, lift: 0.08 + 0.10 * roll(9), mess: 0.15, ..short };
+        let parted = if roll(4) < 0.45 { 0. } else { (0.028 + 0.015 * roll(5)) * side };
+        match style {
+            Style::Buzz => Self { top: 0.004 + 0.007 * roll(2), taper: 0.002 + 0.002 * roll(3), lift: 0.8, mess: 0.3, wave: 0., ..short },
+            // Short and tousled, pushed up or forward.
+            Style::Crop => Self {
+                top: 0.028 + 0.027 * roll(2),
+                part: 0.02 * side * roll(5),
+                sweep: if roll(8) < 0.5 { -0.5 - 0.3 * roll(14) } else { 0.2 + 0.5 * roll(14) },
+                lift: 0.40 + 0.30 * roll(9),
+                mess: 0.6 + 0.4 * roll(15),
+                ..short
+            },
+            Style::SidePart => Self {
+                top: 0.05 + 0.035 * roll(2),
+                part: (0.030 + 0.014 * roll(5)) * side,
+                sweep: 0.25 + 0.35 * roll(8),
+                lift: 0.14 + 0.16 * roll(9),
+                ..short
+            },
+            Style::SweptBack => Self {
+                top: 0.06 + 0.035 * roll(2),
+                part: if roll(4) < 0.5 { 0. } else { 0.035 * side },
+                sweep: 0.8 + 0.2 * roll(8),
+                lift: 0.25 + 0.25 * roll(9),
+                mess: 0.3,
+                ..short
+            },
+            // Worn forward from the crown and cut across the forehead.
+            Style::Fringe => Self {
+                top: 0.05 + 0.03 * roll(2),
+                part: 0.02 * side * roll(5),
+                sweep: -1.,
+                lift: 0.10 + 0.12 * roll(9),
+                mess: 0.35 + 0.3 * roll(15),
+                ..short
+            },
+            // Parted in the middle and cut round at the ears.
+            Style::Curtains => Self { hem: -0.025 - 0.035 * roll(2), part: 0.012 * side * roll(5), ..long },
+            Style::Bob => Self { hem: -0.075 - 0.03 * roll(2), part: parted, bangs: f32::from(roll(16) < 0.45), ..long },
+            Style::Shoulder => Self { hem: -0.17 - 0.06 * roll(2), part: parted, bangs: f32::from(roll(16) < 0.3), ..long },
+            Style::Long => Self { hem: -0.26 - 0.04 * roll(2), part: parted, bangs: f32::from(roll(16) < 0.25), ..long },
         }
+    }
+
+    /// The length in metres to which hair is cut where it grows at, or lies
+    /// over, `p`.
+    fn length(&self, p: Vec3, crown: f32) -> f32 {
+        // The front hairline is not tapered: hair there is as on top.
+        let tapered = smooth(-0.015, -0.050, p.z);
+        let line = hairline(p);
+        let up = ((p.y - line) / (crown - line).max(0.01) / self.band).clamp(0., 1.).powf(self.fade);
+        // Under the hairline nothing is left long: the neck and the ears
+        // are cut clean.
+        let grown = (self.taper + (self.top - self.taper) * up) * smooth(-0.012, 0., p.y - line);
+        if self.taper >= self.top { self.top } else { self.top + (grown - self.top) * tapered }
     }
 }
 
@@ -154,13 +267,8 @@ impl Skull {
         )
     }
 
-    /// Keep `p` at least `clear` metres outside the skin.
-    fn rest(&self, p: Vec3, clear: f32) -> Vec3 {
-        let d = p - self.centre;
-        let r = d.length();
-        if r < 1e-5 {
-            return p;
-        }
+    /// How far the skin reaches from the middle in direction `d`.
+    fn skin(&self, d: Vec3) -> f32 {
         let (x, y) = Self::cell(d);
         let (x, y) = (x - 0.5, (y - 0.5).clamp(0., UPWARD as f32 - 1.));
         let (x0, y0) = (x.floor(), y.floor());
@@ -168,9 +276,24 @@ impl Skull {
             self.reach[(i.rem_euclid(AROUND as f32)) as usize % AROUND + (j as usize).min(UPWARD - 1) * AROUND]
         };
         let (fx, fy) = (x - x0, y - y0);
-        let skin = (at(x0, y0) * (1. - fx) + at(x0 + 1., y0) * fx) * (1. - fy)
-            + (at(x0, y0 + 1.) * (1. - fx) + at(x0 + 1., y0 + 1.) * fx) * fy;
+        (at(x0, y0) * (1. - fx) + at(x0 + 1., y0) * fx) * (1. - fy) + (at(x0, y0 + 1.) * (1. - fx) + at(x0 + 1., y0 + 1.) * fx) * fy
+    }
+
+    /// Keep `p` at least `clear` metres outside the skin.
+    fn rest(&self, p: Vec3, clear: f32) -> Vec3 {
+        let d = p - self.centre;
+        let r = d.length();
+        if r < 1e-5 {
+            return p;
+        }
+        let skin = self.skin(d);
         if r >= skin + clear { p } else { self.centre + d / r * (skin + clear) }
+    }
+
+    /// Metres between `p` and the skin under it.
+    fn above(&self, p: Vec3) -> f32 {
+        let d = p - self.centre;
+        d.length() - self.skin(d)
     }
 
     fn outward(&self, p: Vec3) -> Vec3 {
@@ -178,15 +301,18 @@ impl Skull {
     }
 }
 
+/// Hair lying over shorter hair is cut to blend with it: no longer past a
+/// point than this many times the length of the hair that grows there.
+const BLEND: f32 = 1.1;
+
 /// One strand from a root: POINTS positions in metres from the eye midpoint.
 fn grow(root: Vec3, normal: Vec3, cut: Cut, skull: &Skull, id: u32) -> [Vec3; POINTS] {
     let roll = |k: u32| unit(hash(id.wrapping_mul(0x85eb_ca6b) ^ k));
     // Hair lies as its lock does: neighbours share length and bend.
     let lock = |k: u32| 0.5 + 0.5 * noise(root, 0.012, cut.seed ^ k);
-    // From the sides to the top the hair changes over a wide band: a short
-    // step would leave the scalp bare under the longer hair above it.
+    let uneven = 0.78 + 0.2 * lock(11) + 0.12 * roll(1);
+    let length = cut.length(root, skull.centre.y + skull.radii.y) * uneven;
     let top = smooth(0.05, 0.85, normal.y);
-    let length = (cut.sides + (cut.top - cut.sides) * top) * (0.75 + 0.2 * lock(11) + 0.15 * roll(1));
     // The comb: away from the parting on top, back or forward at the front,
     // down everywhere else.
     // Next to the parting hair runs back along it before it turns aside,
@@ -211,20 +337,41 @@ fn grow(root: Vec3, normal: Vec3, cut: Cut, skull: &Skull, id: u32) -> [Vec3; PO
         // At the front it comes down over the forehead as a fringe.
         comb = comb.lerp((outward * (1. - turn) + round * turn).normalize_or(Vec3::Z) + Vec3::new(0., -0.15 - 1.2 * fore, 0.), forward);
     }
+    // Bangs: the hair above the forehead comes forward and down, whatever
+    // the rest does.
+    // Lock by lock, so that where bangs end the two lie through each other
+    // and no parting opens between them.
+    let front = smooth(-0.085, -0.035, root.z) * smooth(0.078, 0.045, root.x.abs());
+    let bangs = cut.bangs * smooth(lock(43) - 0.15, lock(43) + 0.15, front * 1.3);
+    comb = comb.lerp(Vec3::new(0.2 * away, -0.8, 1.), bangs);
     let flat = |v: Vec3, n: Vec3| (v - n * v.dot(n)).normalize_or(Vec3::NEG_Y);
     // Off the top hair lies down the head, except at a front that is
     // combed back: down from the hairline is over the face.
-    let lie = flat(comb.lerp(Vec3::NEG_Y, (1. - top) * (1. - fore * back.min(1.))), normal);
+    let mut lie = flat(comb.lerp(Vec3::NEG_Y, (1. - top) * (1. - fore * back.min(1.)) * (1. - bangs)), normal);
+    // Tousled hair: every lock lies a little its own way.
+    let stray = (lock(31) - 0.5) * 2.4 * cut.mess * (0.3 + 0.7 * top);
+    lie = (lie * stray.cos() + normal.cross(lie) * stray.sin()).normalize_or(lie);
     // Hair stands up most on top; at the sides it lies down the head.
     let lift = (cut.lift * (0.7 + 0.6 * lock(13)) * (0.5 + 0.5 * top)).clamp(0.03, 0.9);
     let mut dir = (normal * lift + lie * (1. - lift)).normalize();
     let across = dir.cross(normal).normalize_or(Vec3::X);
-    let step = length / (POINTS - 1) as f32;
     let phase = std::f32::consts::TAU * lock(17);
-    let mut points = [root; POINTS];
+    let swing = |s: f32| cut.wave * (cut.pitch * s + phase).sin() * (s / 0.04).clamp(0., 1.);
+    // Where this strand is cut: the hem, a little ragged, and thinned so
+    // the ends are not one edge. Hair that grows below the hem (the nape
+    // under a bob) is kept short instead.
+    let hem = (cut.hem + 0.012 * (lock(37) - 0.5) + 0.03 * roll(7).powi(3)).min(root.y - 0.015 - 0.01 * roll(9));
+    let fringe = cut.fringe + 0.006 * (lock(19) - 0.5) + 0.004 * roll(11);
+    let face = (-0.018 - 0.014 * roll(5), 0.058 + 0.008 * lock(41));
+    // The strand is laid in steps much shorter than its segments.
+    let pace = (length / 18.).clamp(0.0012, 0.005);
+    let mut path = Vec::with_capacity(64);
+    path.push(root);
     let mut p = root;
-    for k in 1..POINTS {
-        let along = step * k as f32;
+    let mut along = 0.;
+    let mut limit = length;
+    while along < limit && path.len() < 400 {
+        let step = pace.min(limit - along);
         // Weight bends a strand more the longer it reaches past its root;
         // stray hairs stand off a little.
         let sag = (along / 0.06).min(1.) * 0.55 + 0.05;
@@ -234,28 +381,65 @@ fn grow(root: Vec3, normal: Vec3, cut: Cut, skull: &Skull, id: u32) -> [Vec3; PO
         // settles onto the head; where the head falls away, it hangs.
         let out = skull.outward(p);
         let carried = smooth(0.05, 0.45, out.y);
-        let settle = carried * smooth(0.02, 0.08, along);
-        dir = (dir - out * dir.dot(out).max(0.) * settle + Vec3::NEG_Y * sag * (1. - carried) * step / 0.012 * 0.25).normalize();
-        let swing = cut.wave * (cut.pitch * along + phase).sin() * (along / 0.04).min(1.);
-        let next = p + dir * step + across * (swing - cut.wave * (cut.pitch * (along - step) + phase).sin() * ((along - step) / 0.04).clamp(0., 1.));
+        let settle = carried * smooth(0.02, 0.08, along) * (step / 0.012).min(1.);
+        // Long hair that has left the head there is pressed back onto it.
+        let press = carried * sag * smooth(0.03, 0.10, along) * smooth(0.002, 0.012, skull.above(p)) * 0.5;
+        dir = (dir - out * (dir.dot(out).max(0.) * settle + press * step / 0.012) + Vec3::NEG_Y * sag * (1. - carried) * step / 0.012 * 0.25).normalize();
+        let next = p + dir * step + across * (swing(along + step) - swing(along));
+        along += step;
         // Rest on the skull, lower layers under upper ones.
-        let clear = 0.002 + 0.006 * roll(3) * (along / length.max(1e-4)) + 0.004 * lift;
-        let rested = skull.rest(next, clear);
+        let clear = 0.002 + 0.006 * roll(3) * (along / length.max(1e-4)).min(1.) + 0.004 * lift;
+        // Hair leaves the scalp where it grows and rises over what stands
+        // out next to it (an ear) on a slope, not at once.
+        let rise = (root - skull.centre).length() + 0.003 + 0.7 * along;
+        let mut rested = skull.rest(next, clear);
+        let (from, to) = ((next - skull.centre).length(), (rested - skull.centre).length());
+        if to > rise.max(from) {
+            rested = skull.centre + (rested - skull.centre) * (rise.max(from) / to);
+        }
         if rested != next {
             // Slide along the head instead of into it.
             let out = skull.outward(rested);
             dir = flat(dir, out).lerp(dir, 0.2).normalize();
         }
-        p = rested;
-        // The face stays clear: hair that would come down over it is cut
-        // there, as a fringe across the forehead and shorter round the
-        // cheeks.
-        if p.z > -0.03 - 0.02 * roll(5) && p.y < cut.fringe + 0.006 * (lock(19) - 0.5) {
-            let end = points[k - 1];
-            points[k..].fill(end);
+        // Cut at the hem, and where it would come down over the face (a
+        // fringe across the forehead; beside the face it hangs free).
+        let over_face = rested.z > face.0 && rested.x.abs() < face.1;
+        // Bangs are cut straight across, also where they reach past it.
+        let floor = if over_face || bangs > 0.5 { fringe.max(hem) } else { hem };
+        if rested.y < floor {
+            if p.y > floor {
+                path.push(p + (rested - p) * ((p.y - floor) / (p.y - rested.y)));
+            }
             break;
         }
-        points[k] = p;
+        p = rested;
+        path.push(p);
+        // Lying over shorter hair, it is cut to blend with it.
+        limit = limit.min(along + BLEND * cut.length(p, skull.centre.y + skull.radii.y) * uneven);
+    }
+    // Ten points along what was laid, closer together where it bends
+    // (over the head) than where it hangs straight: a radian of bend
+    // counts as BEND metres of hair.
+    const BEND: f32 = 0.06;
+    let mut measure = vec![0f32; path.len()];
+    for k in 1..path.len() {
+        let bend = if k >= 2 { (path[k] - path[k - 1]).angle_between(path[k - 1] - path[k - 2]) } else { 0. };
+        measure[k] = measure[k - 1] + path[k].distance(path[k - 1]) + BEND * if bend.is_finite() { bend } else { 0. };
+    }
+    let whole = measure[path.len() - 1];
+    let mut points = [root; POINTS];
+    let mut at = 1;
+    for (k, point) in points.iter_mut().enumerate().skip(1) {
+        if path.len() < 2 {
+            break;
+        }
+        let want = whole * k as f32 / (POINTS - 1) as f32;
+        while at < path.len() - 1 && measure[at] < want {
+            at += 1;
+        }
+        let span = measure[at] - measure[at - 1];
+        *point = path[at - 1].lerp(path[at], if span > 0. { ((want - measure[at - 1]) / span).clamp(0., 1.) } else { 1. });
     }
     points
 }
@@ -330,28 +514,63 @@ mod tests {
         (body, indices, (lo + hi) * 0.5)
     }
 
+    fn metres(strand: &[[f32; 4]], eyes: Vec3, k: usize) -> Vec3 {
+        (Vec3::new(strand[k][0], strand[k][1], strand[k][2]) - eyes) * METRES
+    }
+
     #[test]
     fn hair_grows_from_the_scalp_and_stays_outside_the_head() {
         let (body, indices, eyes) = person(7);
-        let cut = Cut { top: 0.08, sides: 0.05, ..Cut::new(3) };
+        let cut = Cut::styled(3, Style::SidePart);
         let hair = strands(&body, &indices, eyes, 1., cut);
         assert!(hair.len() > STRANDS * POINTS * 8 / 10, "a full head: {} points", hair.len());
         assert_eq!(hair.len() % POINTS, 0);
         let mut face = 0;
         for strand in hair.chunks_exact(POINTS) {
-            let at = |k: usize| (Vec3::new(strand[k][0], strand[k][1], strand[k][2]) - eyes) * METRES;
+            let at = |k: usize| metres(strand, eyes, k);
             assert!(scalp(at(0)) > 0., "root on the scalp: {}", at(0));
             let length: f32 = (1..POINTS).map(|k| at(k).distance(at(k - 1))).sum();
-            assert!(length > 0.002 && length < 0.12, "length {length}");
+            assert!(length > 0.001 && length < 0.12, "length {length}");
             // Nothing hangs in front of the eyes.
             face += usize::from((0..POINTS).any(|k| at(k).z > 0.0 && at(k).y.abs() < 0.012 && at(k).x.abs() < 0.05));
         }
         assert!(face < STRANDS / 100, "{face} strands across the eyes");
     }
 
+    /// A short cut is short at the ears and the nape, and the longer hair
+    /// on top does not hang over them.
+    #[test]
+    fn short_cuts_taper_to_the_hairline() {
+        let (body, indices, eyes) = person(7);
+        for style in [Style::Crop, Style::SidePart, Style::SweptBack, Style::Fringe] {
+            let hair = strands(&body, &indices, eyes, 1., Cut::styled(5, style));
+            for strand in hair.chunks_exact(POINTS) {
+                let tip = metres(strand, eyes, POINTS - 1);
+                if tip.z < -0.05 {
+                    assert!(tip.y > hairline(tip) - 0.03, "{style:?}: hair ends {} m under the hairline", hairline(tip) - tip.y);
+                }
+            }
+        }
+    }
+
+    /// Long cuts end at their hem, all round.
+    #[test]
+    fn long_cuts_end_at_the_hem() {
+        let (body, indices, eyes) = person(7);
+        let cut = Cut::styled(5, Style::Bob);
+        let hair = strands(&body, &indices, eyes, 1., cut);
+        let mut at_hem = 0;
+        for strand in hair.chunks_exact(POINTS) {
+            let tip = metres(strand, eyes, POINTS - 1);
+            assert!(tip.y > cut.hem - 0.03, "hair ends {} m under the hem", cut.hem - tip.y);
+            at_hem += usize::from(tip.y < cut.hem + 0.04);
+        }
+        assert!(at_hem > hair.len() / POINTS / 2, "{at_hem} strands reach the hem");
+    }
+
     #[test]
     fn cuts_differ_by_seed() {
-        let lengths: Vec<f32> = (0..40).map(|s| Cut::new(s).top).collect();
-        assert!(lengths.iter().any(|&l| l < 0.03) && lengths.iter().any(|&l| l > 0.15), "{lengths:?}");
+        let cuts: Vec<Cut> = (0..60).map(Cut::new).collect();
+        assert!(cuts.iter().any(|c| c.top < 0.03) && cuts.iter().any(|c| c.hem > UNCUT), "{cuts:?}");
     }
 }
