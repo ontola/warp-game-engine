@@ -389,7 +389,7 @@ impl Character {
             let a = &body[tri[0] as usize];
             // A fitted person's hair is grown strands; the crowd's groom
             // meshes stay with the crowd.
-            if native && a.material >= 20 {
+            if native && (a.material >= 20 || a.material == 13) {
                 continue;
             }
             let tag = if a.material == 3
@@ -435,6 +435,19 @@ impl Character {
                 warp_skin::Traits::new(seed, skin_color.dot(Vec3::new(0.3, 0.6, 0.1))),
                 // The face's tint multiplies this back to the hair's dark.
                 (hair * 0.7 * CHEEKS[tile] / skin_color.max(Vec3::splat(0.05))).min(Vec3::ONE),
+                warp_skin::Brows {
+                    color: (brows * 0.8 * CHEEKS[tile] / skin_color.max(Vec3::splat(0.05))).min(Vec3::ONE),
+                    spans: [false, true].map(|left| {
+                        let eyes = eye_midpoint(&body);
+                        let mut lo = Vec3::splat(f32::MAX);
+                        let mut hi = Vec3::splat(f32::MIN);
+                        for v in body.iter().filter(|v| v.material == 13 && (v.position.x > eyes.x) == left) {
+                            let p = (v.position - eyes) * warp_skin::METRES;
+                            (lo, hi) = (lo.min(p), hi.max(p));
+                        }
+                        (lo, hi)
+                    }),
+                },
                 render::frame::TEXTURE_SIZE as usize,
             );
             (

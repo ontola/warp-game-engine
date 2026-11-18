@@ -124,6 +124,23 @@ impl Skull {
                 }
             }
         }
+        // Hair lies over an ear as over a soft rise, not into its folds:
+        // every direction takes the furthest skin near it, smoothed.
+        for _ in 0..2 {
+            let near = |reach: &[f32], x: usize, y: usize, fold: fn(f32, f32) -> f32, start: f32| {
+                let mut out = start;
+                for dy in -1i32..=1 {
+                    for dx in -1i32..=1 {
+                        let yy = (y as i32 + dy).clamp(0, UPWARD as i32 - 1) as usize;
+                        let xx = (x as i32 + dx).rem_euclid(AROUND as i32) as usize;
+                        out = fold(out, reach[xx + yy * AROUND]);
+                    }
+                }
+                out
+            };
+            let furthest: Vec<f32> = (0..AROUND * UPWARD).map(|i| near(&reach, i % AROUND, i / AROUND, f32::max, 0.)).collect();
+            reach = (0..AROUND * UPWARD).map(|i| near(&furthest, i % AROUND, i / AROUND, |a, b| a + b, 0.) / 9.).collect();
+        }
         Self { centre, radii, reach }
     }
 
@@ -166,7 +183,9 @@ fn grow(root: Vec3, normal: Vec3, cut: Cut, skull: &Skull, id: u32) -> [Vec3; PO
     let roll = |k: u32| unit(hash(id.wrapping_mul(0x85eb_ca6b) ^ k));
     // Hair lies as its lock does: neighbours share length and bend.
     let lock = |k: u32| 0.5 + 0.5 * noise(root, 0.012, cut.seed ^ k);
-    let top = smooth(0.35, 0.85, normal.y);
+    // From the sides to the top the hair changes over a wide band: a short
+    // step would leave the scalp bare under the longer hair above it.
+    let top = smooth(0.05, 0.85, normal.y);
     let length = (cut.sides + (cut.top - cut.sides) * top) * (0.75 + 0.2 * lock(11) + 0.15 * roll(1));
     // The comb: away from the parting on top, back or forward at the front,
     // down everywhere else.
@@ -174,11 +193,30 @@ fn grow(root: Vec3, normal: Vec3, cut: Cut, skull: &Skull, id: u32) -> [Vec3; PO
     // so the parting is a line and not a bare strip.
     let away = smooth(-0.006, 0.006, root.x - cut.part) * 2. - 1.;
     let fore = smooth(-0.07, -0.01, root.z);
-    let comb = Vec3::new(away * (0.35 + 0.65 * (1. - fore * cut.sweep.abs())), -0.15, -cut.sweep * fore - 0.25 * (1. - fore));
+    let back = cut.sweep.max(0.);
+    let mut comb = Vec3::new(away * (0.35 + 0.65 * (1. - fore * back)), -0.15, -back * fore - 0.25 * (1. - fore));
+    // Hair worn forward grows out of a whorl at the back of the crown:
+    // away from it on every side, and round it close by, so that the hair
+    // next to the whorl lies over it.
+    let forward = (-cut.sweep / 0.6).clamp(0., 1.);
+    if forward > 0. {
+        // Each lock takes the whorl a little elsewhere, so the locks cross
+        // over its middle and none of it is bare.
+        let whorl = Vec3::new(cut.part * 0.6 + 0.024 * (lock(23) - 0.5), 0., skull.centre.z - 0.55 * skull.radii.z + 0.024 * (lock(29) - 0.5));
+        let from = Vec3::new(root.x - whorl.x, 0., root.z - whorl.z);
+        let far = from.length();
+        let outward = from / far.max(1e-4);
+        let round = Vec3::new(-outward.z, 0., outward.x) * if cut.seed & 1 == 0 { 1. } else { -1. };
+        let turn = 0.9 * smooth(0.05, 0.0, far) + 0.15;
+        // At the front it comes down over the forehead as a fringe.
+        comb = comb.lerp((outward * (1. - turn) + round * turn).normalize_or(Vec3::Z) + Vec3::new(0., -0.15 - 1.2 * fore, 0.), forward);
+    }
     let flat = |v: Vec3, n: Vec3| (v - n * v.dot(n)).normalize_or(Vec3::NEG_Y);
-    let lie = flat(comb.lerp(Vec3::NEG_Y, 1. - top), normal);
+    // Off the top hair lies down the head, except at a front that is
+    // combed back: down from the hairline is over the face.
+    let lie = flat(comb.lerp(Vec3::NEG_Y, (1. - top) * (1. - fore * back.min(1.))), normal);
     // Hair stands up most on top; at the sides it lies down the head.
-    let lift = (cut.lift * (0.7 + 0.6 * lock(13)) * (0.3 + 0.7 * top)).clamp(0.03, 0.9);
+    let lift = (cut.lift * (0.7 + 0.6 * lock(13)) * (0.5 + 0.5 * top)).clamp(0.03, 0.9);
     let mut dir = (normal * lift + lie * (1. - lift)).normalize();
     let across = dir.cross(normal).normalize_or(Vec3::X);
     let step = length / (POINTS - 1) as f32;
@@ -190,12 +228,14 @@ fn grow(root: Vec3, normal: Vec3, cut: Cut, skull: &Skull, id: u32) -> [Vec3; PO
         // Weight bends a strand more the longer it reaches past its root;
         // stray hairs stand off a little.
         let sag = (along / 0.06).min(1.) * 0.55 + 0.05;
-        // Hair follows the round of the head it lies on: what points away
-        // from the skull is bent back along it, less the more the hair is
-        // lifted, and not below the widest part of the head, where it hangs.
+        // On top of the head hair lies where the comb left it: its weight
+        // presses it down but does not drag it downhill (that parts it in
+        // a star round the highest point). Past a few centimetres it
+        // settles onto the head; where the head falls away, it hangs.
         let out = skull.outward(p);
-        let hug = (1. - lift) * smooth(-0.03, 0.02, p.y - skull.centre.y);
-        dir = (dir - out * dir.dot(out).max(0.) * hug + Vec3::NEG_Y * sag * step / 0.012 * 0.25).normalize();
+        let carried = smooth(0.05, 0.45, out.y);
+        let settle = carried * smooth(0.02, 0.08, along);
+        dir = (dir - out * dir.dot(out).max(0.) * settle + Vec3::NEG_Y * sag * (1. - carried) * step / 0.012 * 0.25).normalize();
         let swing = cut.wave * (cut.pitch * along + phase).sin() * (along / 0.04).min(1.);
         let next = p + dir * step + across * (swing - cut.wave * (cut.pitch * (along - step) + phase).sin() * ((along - step) / 0.04).clamp(0., 1.));
         // Rest on the skull, lower layers under upper ones.
