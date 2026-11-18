@@ -62,3 +62,24 @@ mostly have coiled hair, not straight; wants young/old as a parameter.
 
 Open: an old face is a young face with lines and white hair (no sagging,
 no thinner lips, no stoop); no children; no women.
+
+## Evening: old faces sag, old heads have less hair
+
+Playtester: "oud moet minder haar en saggy skin en zo".
+
+- `warp_skin::settle` moves the head's vertices by a sum of seven lumps
+  (jowl, cheek, eye bag, brow, temple, nose tip, under the chin) given on a
+  reference head and scaled by the person's face width and eyes-to-chin
+  length (measured: chin at -110 to -120 mm, side of the face 64 to 83 mm
+  over three seeds). Normals turn by the change of the welded smooth normal.
+- Folds are grooves along polylines in the same reference coordinates.
+  First try had the marionette line at 0.7 and 22 % darkening: a ruled dark
+  stripe from the mouth corner, like a puppet. Now 0.4, 12 %, and the lines
+  wander by 2 mm of noise.
+- The strand budget was shared over the hair-bearing area, so a receding
+  hairline made the rest denser. It is shared over a full head now, times
+  `Cut::full`.
+
+Open: thin white hair reads as separate stiff strands (ribbons are opaque
+and as wide as young hair); the neck below the chin and the hands do not
+age; no stoop.

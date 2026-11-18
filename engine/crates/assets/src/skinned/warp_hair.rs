@@ -79,6 +79,8 @@ pub(super) struct Cut {
     pub thin: f32,
     /// The share of hairs that are grey.
     pub grey: f32,
+    /// The share of a young head's hairs that are left.
+    pub full: f32,
 }
 
 /// The cuts a seed chooses from.
@@ -108,8 +110,10 @@ impl Cut {
         // With the years the hairline goes back in some and the crown
         // thins in fewer; almost everyone greys.
         let older = smooth(28., 70., years);
-        let recede = if roll(21) < 0.45 { 0.045 * older * (0.4 + 0.6 * roll(22)) } else { 0.008 * older };
-        let thin = if roll(23) < 0.3 { smooth(40., 75., years) * (0.4 + 0.6 * roll(24)) } else { 0. };
+        let recede = if roll(21) < 0.6 { 0.05 * older * (0.4 + 0.6 * roll(22)) } else { 0.012 * older };
+        let thin = if roll(23) < 0.5 { smooth(40., 75., years) * (0.4 + 0.6 * roll(24)) } else { 0.25 * smooth(55., 85., years) };
+        // And everyone's hair gets sparser.
+        let full = 1. - smooth(45., 85., years) * (0.25 + 0.35 * roll(29));
         let grey = (smooth(35., 80., years).powf(1.5) * (0.3 + 1.2 * roll(25))).min(1.);
         let r = roll(1);
         let pick = |odds: &[(Style, f32)]| {
@@ -145,7 +149,7 @@ impl Cut {
         } else if years > 50. && !coily && matches!(style, Style::Crop | Style::Fringe) && roll(27) < 0.6 {
             style = if roll(28) < 0.6 { Style::SidePart } else { Style::SweptBack };
         }
-        Self { coil: f32::from(coily), recede, thin, grey, ..Self::styled(seed, style) }
+        Self { coil: f32::from(coily), recede, thin, grey, full, ..Self::styled(seed, style) }
     }
 
     pub fn styled(seed: u32, style: Style) -> Self {
@@ -171,6 +175,7 @@ impl Cut {
             recede: 0.,
             thin: 0.,
             grey: 0.,
+            full: 1.,
         };
         // Cut to a hem: no taper, and long enough to reach it from the top.
         // The front is drawn back a little, so it falls beside the face and
@@ -228,7 +233,7 @@ impl Cut {
     /// How thickly this person's hair grows at `p`, 0 to 1.
     pub fn grows(&self, p: Vec3) -> f32 {
         let crown = Vec3::new(0., 0.118, -0.125);
-        scalp(p, self.recede) * (1. - self.thin * smooth(0.075, 0.025, p.distance(crown)))
+        scalp(p, self.recede) * (1. - self.thin * smooth(0.085, 0.025, p.distance(crown)))
     }
 
     /// The length in metres to which hair is cut where it grows at, or lies
@@ -533,7 +538,15 @@ pub(super) fn strands(body: &[BodyVertex], indices: &[u32], eyes: Vec3, skull: f
         let p = t.map(|v| metres(v.position));
         0.5 * (p[1] - p[0]).cross(p[2] - p[0]).length() * cut.grows((p[0] + p[1] + p[2]) / 3.)
     };
-    let total: f32 = triangles.iter().map(cover).sum();
+    // The budget is for a full head: where hair has gone, it is not made
+    // up for elsewhere.
+    let total: f32 = triangles
+        .iter()
+        .map(|t| {
+            let p = t.map(|v| metres(v.position));
+            0.5 * (p[1] - p[0]).cross(p[2] - p[0]).length() * scalp((p[0] + p[1] + p[2]) / 3., 0.)
+        })
+        .sum();
     if total <= 0. {
         return Vec::new();
     }
@@ -541,7 +554,7 @@ pub(super) fn strands(body: &[BodyVertex], indices: &[u32], eyes: Vec3, skull: f
     let mut owed = 0.;
     let mut id = cut.seed;
     for t in &triangles {
-        owed += cover(t) / total * STRANDS as f32;
+        owed += cover(t) / total * STRANDS as f32 * cut.full;
         while owed >= 1. && out.len() < STRANDS * POINTS {
             owed -= 1.;
             id = hash(id.wrapping_add(0x9e37_79b9));
