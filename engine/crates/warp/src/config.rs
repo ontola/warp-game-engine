@@ -67,11 +67,14 @@ pub struct HumanPool {
     pub shirt: Option<String>,
     /// Standing height range in metres.
     pub height: [f32; 2],
+    /// Age range in years (adults); default: seeded, 18 to 78 with the
+    /// young the most.
+    pub age: Option<[f32; 2]>,
     pub seed: u64,
 }
 
 impl Default for HumanPool {
-    fn default() -> Self { HumanPool { count: 8, variety: 4, style: "person".into(), skin: None, shirt: None, height: [1.6, 1.9], seed: 1 } }
+    fn default() -> Self { HumanPool { count: 8, variety: 4, style: "person".into(), skin: None, shirt: None, height: [1.6, 1.9], age: None, seed: 1 } }
 }
 
 impl Default for GameToml {
@@ -150,6 +153,7 @@ impl GameToml {
         for (name, p) in &self.humans {
             if !(1..=256).contains(&p.count) { return Err(format!("game.toml: humans.{name}.count {} (1 to 256)", p.count)); }
             if !(1..=16).contains(&p.variety) { return Err(format!("game.toml: humans.{name}.variety {} (1 to 16)", p.variety)); }
+            if let Some([lo, hi]) = p.age { if !(18.0..=100.0).contains(&lo) || !(lo..=100.0).contains(&hi) { return Err(format!("game.toml: humans.{name}.age [{lo}, {hi}] (years, 18 to 100, low first)")); } }
             if p.style != "person" && p.style != "zombie" { return Err(format!("game.toml: humans.{name}.style {:?} (\"person\" or \"zombie\")", p.style)); }
             if !(p.height[0] >= 1.0 && p.height[0] <= p.height[1] && p.height[1] <= 2.3) { return Err(format!("game.toml: humans.{name}.height {:?} (1 to 2.3 m, low first)", p.height)); }
             for c in [&p.skin, &p.shirt].into_iter().flatten() {

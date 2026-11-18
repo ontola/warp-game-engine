@@ -81,7 +81,7 @@ impl Character {
         person: &Instance,
         skin: Option<[f32; 3]>,
     ) -> Result<Self, String> {
-        self.fit_human(person, skin, false, false)
+        self.fit_human(person, skin, None, false, false)
     }
 
     /// Keep the hm08 upper body in its native relaxed pose for a live two-hand
@@ -91,7 +91,7 @@ impl Character {
         person: &Instance,
         skin: Option<[f32; 3]>,
     ) -> Result<Self, String> {
-        self.fit_human(person, skin, true, true)
+        self.fit_human(person, skin, None, true, true)
     }
 
     /// A person with their own anatomy: the spine, neck, head and arm joints
@@ -99,12 +99,14 @@ impl Character {
     /// shoulders keep their width and height and the skin binds undeformed.
     /// Open hands, blinking eyes and close-up hair strands. The caller poses
     /// the joints this returns, not the donor's.
+    /// `age` in years; the seed chooses one when it is `None`.
     pub fn warp_human_person(
         &self,
         person: &Instance,
         skin: Option<[f32; 3]>,
+        age: Option<f32>,
     ) -> Result<Self, String> {
-        self.fit_human(person, skin, true, false)
+        self.fit_human(person, skin, age, true, false)
     }
 
     /// Where `warp_human_person` and `warp_human_player` put this rig's
@@ -155,6 +157,7 @@ impl Character {
         &self,
         person: &Instance,
         skin: Option<[f32; 3]>,
+        age: Option<f32>,
         native: bool,
         gripping: bool,
     ) -> Result<Self, String> {
@@ -264,6 +267,14 @@ impl Character {
         }
         let skin_color = skin.map(Vec3::from).unwrap_or_else(|| person.skin_color());
         let (hair, brows) = person.hair_and_brows(skin_color);
+        // What the seed makes of this person's skin and hair, at their age.
+        let seed = (person.face_phase() * 16777216.) as u32;
+        let fair = skin_color.dot(Vec3::new(0.3, 0.6, 0.1));
+        let traits = warp_skin::Traits::new(seed, fair);
+        let traits = age.map_or(traits, |years| traits.aged(years));
+        let cut = warp_hair::Cut::new(seed, fair, traits.years());
+        // Brows grey later and less than the head.
+        let brows = brows.lerp(Vec3::splat(0.62), 0.6 * cut.grey * cut.grey);
         let (body, indices) = person.fitted_mesh(gripping);
         let face = native.then(|| {
             let first = fitted_joints.len();
@@ -293,7 +304,6 @@ impl Character {
                 info: [0,0,person.hair_style(),(person.face_phase()*16777216.) as u32],
             };
             // Hair grown from the seed out of this person's own scalp.
-            let cut = warp_hair::Cut::new((person.face_phase() * 16777216.) as u32);
             let strands = std::sync::Arc::new(warp_hair::strands(&body, &indices, eye_midpoint(&body), skull, cut));
             FaceRig { strands, first, head, eyes, scale, phase: person.face_phase(), groom }
         });
@@ -424,7 +434,6 @@ impl Character {
         // A fitted person is seen up close: their own skin and eyes, grown
         // from the seed over the painted face they share.
         let own_skin = native.then(|| {
-            let seed = (person.face_phase() * 16777216.) as u32;
             let tile = person.face_tile();
             let maps = warp_skin::face(
                 &body,
@@ -432,9 +441,11 @@ impl Character {
                 eye_midpoint(&body),
                 &shared_tiles()[tile],
                 CHEEKS[tile],
-                warp_skin::Traits::new(seed, skin_color.dot(Vec3::new(0.3, 0.6, 0.1))),
-                // The face's tint multiplies this back to the hair's dark.
-                (hair * 0.7 * CHEEKS[tile] / skin_color.max(Vec3::splat(0.05))).min(Vec3::ONE),
+                traits,
+                // The face's tint multiplies this back to the hair's dark;
+                // under grey hair it is grey.
+                (hair.lerp(Vec3::splat(0.6), cut.grey) * 0.7 * CHEEKS[tile] / skin_color.max(Vec3::splat(0.05))).min(Vec3::ONE),
+                &cut,
                 warp_skin::Brows {
                     color: (brows * 0.8 * CHEEKS[tile] / skin_color.max(Vec3::splat(0.05))).min(Vec3::ONE),
                     spans: [false, true].map(|left| {

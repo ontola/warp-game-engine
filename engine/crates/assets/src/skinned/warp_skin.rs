@@ -38,6 +38,14 @@ impl Traits {
         let freckles = (roll(1).powi(3) * (0.35 + 0.65 * fair)).clamp(0., 1.);
         Self { seed, age: roll(2).powf(1.4), freckles, flush: 0.4 + 0.6 * roll(3), fair }
     }
+
+    /// The age in years these traits stand for, and the traits at an age.
+    pub fn years(&self) -> f32 {
+        18. + 60. * self.age
+    }
+    pub fn aged(self, years: f32) -> Self {
+        Self { age: ((years - 18.) / 60.).clamp(0., 1.), ..self }
+    }
 }
 
 pub(super) fn hash(mut x: u32) -> u32 {
@@ -398,6 +406,7 @@ pub(super) fn face(
     cheek: Vec3,
     traits: Traits,
     under_hair: Vec3,
+    cut: &super::warp_hair::Cut,
     brows: Brows,
     size: usize,
 ) -> Maps {
@@ -427,7 +436,7 @@ pub(super) fn face(
                         color *= tint;
                         // Under the hair the scalp is seen through it, in
                         // its shade.
-                        let hair = super::warp_hair::scalp(t.p);
+                        let hair = cut.grows(t.p);
                         color = color.lerp(under_hair * 255., 0.7 * hair * hair);
                         color = color.lerp(brows.color * 255., brow(t.p, &brows, traits.seed));
                         // Lashes: a dark, broken line along the rim of the
@@ -511,10 +520,10 @@ mod tests {
         let (body, indices, eyes) = fixture(7);
         let base = super::super::warp_human::tile(0);
         let cheek = Vec3::new(0.855, 0.659, 0.541);
-        let a = face(&body, &indices, eyes, &base, cheek, Traits::new(1, 0.8), Vec3::splat(0.2), Brows { color: Vec3::splat(0.1), spans: [(Vec3::splat(1.), Vec3::splat(-1.)); 2] }, 256);
-        let b = face(&body, &indices, eyes, &base, cheek, Traits::new(2, 0.8), Vec3::splat(0.2), Brows { color: Vec3::splat(0.1), spans: [(Vec3::splat(1.), Vec3::splat(-1.)); 2] }, 256);
+        let a = face(&body, &indices, eyes, &base, cheek, Traits::new(1, 0.8), Vec3::splat(0.2), &super::super::warp_hair::Cut::styled(1, super::super::warp_hair::Style::SidePart), Brows { color: Vec3::splat(0.1), spans: [(Vec3::splat(1.), Vec3::splat(-1.)); 2] }, 256);
+        let b = face(&body, &indices, eyes, &base, cheek, Traits::new(2, 0.8), Vec3::splat(0.2), &super::super::warp_hair::Cut::styled(1, super::super::warp_hair::Style::SidePart), Brows { color: Vec3::splat(0.1), spans: [(Vec3::splat(1.), Vec3::splat(-1.)); 2] }, 256);
         assert_ne!(a.albedo.as_raw(), b.albedo.as_raw());
-        assert_eq!(a.albedo.as_raw(), face(&body, &indices, eyes, &base, cheek, Traits::new(1, 0.8), Vec3::splat(0.2), Brows { color: Vec3::splat(0.1), spans: [(Vec3::splat(1.), Vec3::splat(-1.)); 2] }, 256).albedo.as_raw());
+        assert_eq!(a.albedo.as_raw(), face(&body, &indices, eyes, &base, cheek, Traits::new(1, 0.8), Vec3::splat(0.2), &super::super::warp_hair::Cut::styled(1, super::super::warp_hair::Style::SidePart), Brows { color: Vec3::splat(0.1), spans: [(Vec3::splat(1.), Vec3::splat(-1.)); 2] }, 256).albedo.as_raw());
         let bent = a.normal.pixels().filter(|p| p[0].abs_diff(128) > 2 || p[1].abs_diff(128) > 2).count();
         assert!(bent > 256 * 256 / 20, "relief bends the normals: {bent}");
         // The shading mask in the painted alpha survives (128 is skin).
@@ -544,7 +553,7 @@ mod tests {
         let base = super::super::warp_human::tile(person.face_tile());
         let traits = Traits { seed: 7, age: 0.6, freckles: 0.5, flush: 0.8, fair: 0.8 };
         let start = std::time::Instant::now();
-        let maps = face(&body, &indices, eyes, &base, Vec3::new(0.855, 0.659, 0.541), traits, Vec3::splat(0.2), Brows { color: Vec3::splat(0.1), spans: [(Vec3::splat(1.), Vec3::splat(-1.)); 2] }, 2048);
+        let maps = face(&body, &indices, eyes, &base, Vec3::new(0.855, 0.659, 0.541), traits, Vec3::splat(0.2), &super::super::warp_hair::Cut::styled(1, super::super::warp_hair::Style::SidePart), Brows { color: Vec3::splat(0.1), spans: [(Vec3::splat(1.), Vec3::splat(-1.)); 2] }, 2048);
         eprintln!("{:?}", start.elapsed());
         let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../build/human-skin");
         std::fs::create_dir_all(&out).unwrap();
