@@ -667,6 +667,25 @@ mod fine_cell_probe {
                 }
             }
         }
+        // Page sizes as the GPU forest would hold them (foliage_pages.rs).
+        let world = [crate::foliage_population::WorldRoot { id: 1, placement: crate::foliage_runtime::RootPlacement { up: glam::Vec3::Y, pos: glam::Vec3::ZERO, yaw: 0., scale: 1., variant: 0 } }];
+        let mut scene = crate::Scene::default();
+        match crate::foliage_runtime::plant_population(&mut scene, std::slice::from_ref(&plant), &world, 4, 65_536, crate::aggregate_lod::Policy { allow_sampled_optics: true, max_coverage_error: 1., max_color_error: 1., ..Default::default() }) {
+            Ok(_) => {
+                let forest = scene.voxel_forest.as_ref().unwrap();
+                let mut pages: std::collections::BTreeMap<u32, (f32, usize, [usize; 4])> = Default::default();
+                for id in 0..forest.levels.len() {
+                    let (cell, words) = crate::foliage_pages::VoxelPage::cook(forest, id).unwrap().grouped().sizes();
+                    let row = pages.entry((cell * 1e5).round() as u32).or_insert((cell, 0, [0; 4]));
+                    row.1 += 1; for i in 0..4 { row.2[i] += words[i]; }
+                }
+                for (_, (cell, n, w)) in pages {
+                    println!("pages cell {cell:.4} m: {n:4} pages, directory {:9} words, brick records {:9} words, splat bricks {:9} words, cells {:8} ({:.1} MB index, {:.1} MB cells)",
+                        w[0], w[1], w[2], w[3], (w[0] + w[1] + w[2]) as f64 * 4.0 / 1048576.0, w[3] as f64 * 128.0 / 1048576.0);
+                }
+            }
+            Err(e) => println!("plant_population failed: {e}"),
+        }
         for (_, (cell, n, area, luma, sigma, leaf, assets)) in rows {
             println!("cell {cell:.4} m: assets {assets:4} voxels {n:8} area {area:9.2} m2 albedo luma {:.4} mean max-sigma {:.1}/m leaf {:.3}",
                 luma / area.max(1e-12), sigma / n.max(1) as f64, leaf / n.max(1) as f64);
