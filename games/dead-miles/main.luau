@@ -709,6 +709,7 @@ local function place_stranger(e, pos, chunk, c, side)
 	local st = { file = e.file, pos = pos, chunk = chunk, done = false, yaw = 0, pose = e.pose, nobody = e.nobody, reach = 1.6 }
 	if e.prop then
 		local pp = props.build(e.prop, pos, yaw0)
+		st.lids = pp.lids
 		for _, id in pp.ents do table.insert(c.ents, id) end
 		table.insert(c.rects, pp.rect)
 		table.insert(s.rects, pp.rect)
@@ -887,8 +888,15 @@ end
 -- Everything a result can do besides items: see README "Street events".
 local function event_effects(u, st, res)
 	if res.zombies then call_dead(st.pos, res.zombies, u.pos) end
-	if res.lure then st.lure = { t = res.lure, every = st.lure and st.lure.every or 2.5, radius = 34, sound = res.lure_sound or (st.lure and st.lure.sound) or "alarm", next = 0 } end
-	if res.quiet then st.lure = nil end
+	if res.open then props.open(st.lids) end
+	if res.lure then
+		if st.lure and st.lure.h then sound.stop(st.lure.h) end
+		st.lure = { t = res.lure, every = st.lure and st.lure.every or 2.5, radius = 34, sound = res.lure_sound or (st.lure and st.lure.sound) or "alarm", next = 0 }
+	end
+	if res.quiet then
+		if st.lure and st.lure.h then sound.stop(st.lure.h) end
+		st.lure = nil
+	end
 	if res.light then st.light = { t = res.light, color = "#ff9a4a", intensity = 700, range = 16 } end
 	if res.power_cut then
 		for _, ch in s.chunks do
@@ -2155,7 +2163,7 @@ local function act(u, it, dt)
 					local at = v(best.x, 0, best.z)
 					if car then
 						local r = random.float()
-						sfx(if u.search_t < 0.3 then "car_door" elseif r < 0.3 then "car_glass" elseif r < 0.65 then "car_thump" else "rummage", at, { pitch = random.range(0.9, 1.1) })
+						sfx(if u.search_t < 0.3 then "car_door" elseif r < 0.3 then "car_glass" elseif r < 0.65 then "car_thump" else "rummage", at, { pitch = random.range(0.9, 1.1), db = 5 })
 					else
 						sfx("rummage", at, { pitch = random.range(0.85, 1.15), db = -4 })
 					end
@@ -3418,9 +3426,22 @@ local function events_step(dt)
 			if st.lure.next <= 0 then
 				st.lure.next = st.lure.every
 				noise(st.prop_at or st.pos, st.lure.radius, 0.01)
-				if st.lure.sound then sfx(st.lure.sound, st.prop_at or st.pos) end
+				-- One sound for the whole lure: a recorded loop (an alarm that
+				-- wails on until it dies), else the patch again and again.
+				local name = st.lure.sound
+				if name and sound.recorded(name .. "_loop") then
+					if not st.lure.h then
+						local at = st.prop_at or st.pos
+						st.lure.h = sound.play(name .. "_loop", { at = v(at.x, 1, at.z) })
+					end
+				elseif name then
+					sfx(name, st.prop_at or st.pos)
+				end
 			end
-			if st.lure.t <= 0 then st.lure = nil end
+			if st.lure.t <= 0 then
+				if st.lure.h then sound.stop(st.lure.h) end
+				st.lure = nil
+			end
 		end
 		if st.light then
 			st.light.t -= dt
