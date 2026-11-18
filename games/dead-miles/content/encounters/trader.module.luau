@@ -12,7 +12,7 @@ return {
 	choices = {
 		{ label = "2 food for 3 rounds", cost = { food = 2 }, results = { { gain = { ammo = 3 }, text = "+3 ammo" } } },
 		{ label = "3 rounds for a first aid kit", cost = { ammo = 3 }, results = { { gain = { meds = 1 }, text = "+1 first aid" } } },
-		{ label = "1 food for batteries", cost = { food = 1 }, results = { { gain = { battery = 40 }, text = "batteries" } } },
+		{ label = "1 food for batteries", cost = { food = 1 }, results = { { gain = { batteries = 1 }, text = "batteries" } } },
 		{ label = "Leave", results = { { text = "Stay safe." } }, stay = true },
 	},
 }

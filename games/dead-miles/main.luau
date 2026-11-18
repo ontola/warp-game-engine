@@ -152,7 +152,7 @@ local LOOT = {
 	barn = { { 35, "weapon" }, { 25, "food", 1, 2 }, { 40, nil } },
 	hay = { { 15, "weapon" }, { 10, "food", 1, 1 }, { 75, nil } },
 }
-local ITEM_COLORS = { ammo = "#e0b84a", food = "#7fc25a", battery = "#7ab8e8", meds = "#f2f2f2" }
+local ITEM_COLORS = { ammo = "#e0b84a", food = "#7fc25a", battery = "#7ab8e8", batteries = "#7ab8e8", meds = "#f2f2f2" }
 local BATTERY = 40 -- percent in one battery
 
 local s -- the run: state.s
@@ -484,6 +484,23 @@ local function tip(u, key, row)
 	u.tips[key] = (u.tips[key] or 0) + 1
 	if u.tips[key] > 2 then return end
 	u.tip = { row = row, t = 3.5 }
+end
+
+local function new_battery(u)
+	if s.batteries <= 0 then
+		if not u.bot then
+			popup(u, "no spare battery", "#ff8a6a")
+			sfx("click", u.pos)
+		end
+		return
+	end
+	if s.battery >= 99 then return end
+	s.batteries -= 1
+	s.battery = 100
+	popup(u, "fresh battery", ITEM_COLORS.battery)
+	sfx("click", u.pos, { pitch = 0.7 })
+	sfx("pickup", u.pos, { pitch = 1.4, db = -6 })
+	count("batteries_used")
 end
 
 -- Y: the first thing, the second, bare hands, round again (empty slots skipped).
@@ -1296,6 +1313,7 @@ local function new_run()
 		food = KNOBS.start_food,
 		meds = 1,
 		battery = KNOBS.start_battery,
+		batteries = 1, -- spares: a fresh one goes in with d-pad down
 		kills = 0,
 		day = 1,
 		survivors = {},
@@ -1957,9 +1975,9 @@ local function search_done(u, c)
 		tip(u, "take", { { "A", "pick it up" } })
 		count("shotguns")
 	elseif item == "battery" then
-		s.battery = math.min(100, s.battery + BATTERY)
-		popup(u, "batteries", ITEM_COLORS.battery)
-		tip(u, "battery", { { "LB", "torch on/off" } })
+		s.batteries += 1
+		popup(u, "a battery", ITEM_COLORS.battery)
+		tip(u, "battery", { { "DOWN", "new battery" }, { "LB", "torch" } })
 		count("found_battery")
 	else
 		local n = random.int(e[3], e[4])
@@ -2072,6 +2090,9 @@ local function act(u, it, dt)
 		if u.card_t <= 0 then u.card_t = nil end
 	end
 	if u.state == "gone" then return end
+	-- D-pad down: the spent battery out, a fresh one in (what was left in
+	-- the old one is lost). Bots change it once it is dead.
+	if (it.down and not u.talk) or (u.bot and s.battery <= 0) then new_battery(u) end
 
 	if u.state == "ghost" then
 		u.t -= dt
@@ -3376,6 +3397,8 @@ function warm_all()
 	for _, w in HELD do world.warm("cube", { color = w.color, metal = w.metal, roughness = w.roughness or 0.6 }) end
 	for _, c in { "#6a2a20" } do world.warm("cube", { color = c, emissive = 0.06 }) end
 	world.warm(BLOOD_AIR.shape, { color = BLOOD_AIR.color, roughness = BLOOD_AIR.roughness, emissive = 0 })
+	world.warm("cube", body.TORCH_BODY)
+	world.warm("cube", body.TORCH_LENS)
 	-- A breaking weapon bursts into bits of its own colour.
 	for _, w in HELD do world.warm("cube", { color = w.color, emissive = 0.06 }) end
 	world.warm("cube", { color = "#fff2c0", emissive = 0.6 })
@@ -3787,6 +3810,10 @@ local function tick(dt, input)
 		local it = if u.bot or KNOBS.autopilot == 1 then bot_intent(u) else from_input(input[u.id])
 		act(u, it, dt)
 	end
+	-- A torch in the hand while its light is on.
+	for _, u in s.survivors do
+		if u.fig then body.torch(u.fig, u.torch and s.battery > 0 and dark() and u.state == "ok") end
+	end
 	-- Drop recruits that died.
 	for i = #s.survivors, 1, -1 do
 		if s.survivors[i].state == "gone" then table.remove(s.survivors, i) end
@@ -3950,7 +3977,7 @@ local function button_row(cx, y, row, k, alpha)
 	local size = 18 * k
 	local widths, total = {}, 0
 	for i, e in row do
-		local chip = if e[1] ~= "" then (if #e[1] == 1 then 24 else 34) * k else 0
+		local chip = if e[1] ~= "" then (if #e[1] == 1 then 24 elseif #e[1] == 2 then 34 else 12 + 11 * #e[1]) * k else 0
 		local w = chip + (if chip > 0 then 6 * k else 0) + #e[2] * size * 0.52
 		widths[i] = { chip, w }
 		total += w + (if i > 1 then 16 * k else 0)
@@ -3988,6 +4015,7 @@ local function prompt_of(u)
 	local st = nearest_stranger(u)
 	if st then return { { "A", (encounter_of(st) or {}).verb or "talk" } }, st.pos end
 	if u.injured and s.meds > 0 then return { { "Y", "hold: first aid" } }, nil end
+	if dark() and s.battery < 15 and s.batteries > 0 then return { { "DOWN", "new battery" } }, nil end
 	return nil
 end
 
@@ -4002,16 +4030,35 @@ end
 local function torches()
 	local list = {}
 	local spots = {}
-	local flicker = s.battery < 15 and math.floor(game.time() * 13) % 5 == 0
-	for _, u in s.survivors do
+	-- A dying battery: the beam browns out and goes warm, and it sputters
+	-- now and then, in uneven bursts (never a steady blink).
+	local t = game.time()
+	local low = math.clamp(s.battery / 20, 0, 1)
+	local power = 0.3 + 0.7 * low
+	local warm = if s.battery < 12 then "#ffcf98" else "#ffe6c0"
+	for i, u in s.survivors do
 		if in_body(u) and u.pos then
-			if u.torch and s.battery > 0 and dark() and not flicker then
+			if u.torch and s.battery > 0 and dark() then
+				local p = power
+				if low < 1 then
+					local seed = i * 1.7
+					local wave = math.sin(t * 1.1 + seed) * 0.5 + math.sin(t * 2.7 + seed * 2) * 0.3 + math.sin(t * 0.37 + seed) * 0.2
+					p *= 1 - 0.18 * (1 - low) * (0.5 + 0.5 * math.sin(t * 1.9 + seed))
+					if wave > 0.95 - 0.75 * (1 - low) then
+						local buzz = math.abs(math.sin(t * 29 + math.sin(t * 6.3) * 4))
+						p *= if buzz < 0.35 then 0.04 else 0.25 + 0.75 * buzz
+					end
+				end
 				local f = dir(u.yaw)
 				local down = if u.state == "down" then 0.05 else 0.22
-				-- Out past the arms and the weapon: a Warp Human's own body
-				-- would shadow a torch held at the chest.
-				table.insert(spots, { pos = v(u.pos.x + f.x * 0.85, 1.3, u.pos.z + f.z * 0.85), dir = v(f.x, -down, f.z), color = "#ffe6c0", intensity = KNOBS.torch, range = 18, angle = 28, inner = 12 })
-				table.insert(list, { pos = v(u.pos.x + f.x * 0.6, 1.6, u.pos.z + f.z * 0.6), color = "#ffe6c0", intensity = KNOBS.torch * 0.012, range = 3 })
+				local at = v(u.pos.x + f.x * 0.85, 1.3, u.pos.z + f.z * 0.85)
+				local d = v(f.x, -down, f.z)
+				-- The torch in the hand: its light comes from the lens and
+				-- moves with the walk.
+				local b = u.fig
+				if b and b.torch_at and u.state ~= "down" then at, d = b.torch_at, b.torch_dir end
+				table.insert(spots, { pos = at, dir = d, color = warm, intensity = KNOBS.torch * p, range = 18 * (0.6 + 0.4 * p), angle = 28, inner = 12 })
+				table.insert(list, { pos = v(u.pos.x + f.x * 0.6, 1.6, u.pos.z + f.z * 0.6), color = warm, intensity = KNOBS.torch * 0.012 * p, range = 3 })
 			end
 			if u.flash then table.insert(list, { pos = v(u.pos.x, 1.4, u.pos.z), color = "#ffd27a", intensity = 900, range = 14 }) end
 		end
@@ -4175,13 +4222,14 @@ local function draw()
 	end
 
 	local x, y = 24 * k, 18 * k
-	hud.box(x - 10 * k, y - 8 * k, 330 * k, 44 * k, { 0, 0, 0, 0.4 })
+	hud.box(x - 10 * k, y - 8 * k, 336 * k, 44 * k, { 0, 0, 0, 0.4 })
 	icon(x, y, k, "ammo", s.ammo)
 	icon(x + 70 * k, y, k, "food", s.food)
 	icon(x + 140 * k, y, k, "meds", s.meds)
 	-- The battery as a bar.
-	icons.draw("battery", x + 210 * k, y + 3 * k, 18 * k)
-	bar(x + 234 * k, y + 8 * k, 70 * k, 8 * k, s.battery / 100, if s.battery < 15 then "#ff6a4a" else ITEM_COLORS.battery)
+	-- The battery: spares, then the charge of the one in the torch.
+	icon(x + 210 * k, y, k, "battery", s.batteries)
+	bar(x + 252 * k, y + 8 * k, 56 * k, 8 * k, s.battery / 100, if s.battery < 15 then "#ff6a4a" else ITEM_COLORS.battery)
 	hud.text("DAY " .. s.day .. "   " .. math.max(0, math.floor(s.route)) .. " m", W - 260 * k, y, { size = 22 * k, width = 240 * k, align = "right", color = "#f4efe6" })
 
 	-- Button rows of people standing together stack instead of overlapping.
