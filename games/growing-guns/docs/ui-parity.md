@@ -33,7 +33,7 @@ KERN_ADAPTER=software target/debug/growing-guns script games/growing-guns/script
 | `ui.json` | | HUD, firing, Tab scoreboard, pause, settings and a slider, card flip, pick, focus, picked |
 | `ui-match.json` | `--rounds 1` | hit marker and damage arcs, match-over pop and buttons, start screen and its settings |
 | `ui-split.json` | `--players 2`, `--players 4` | split-screen HUDs and a card pick in one view |
-| `ui-names.json` | `--players 2` | party names, name tags, network error panel, Gamepad Party pause, ADVANCED, settings with per-player aim |
+| `ui-names.json` | `--players 2` | party names, name tags, network error panel, Splitscreen Club pause, ADVANCED, settings with per-player aim |
 | `ui-phoenix.json` | | explosion flash, phoenix white rising and fading |
 | `ui-text.json` | | join field typing, editing, scrolling and paste (pause and start screen), Player name, the pad's on-screen keyboard, the name in the scoreboard |
 | `ui-hotjoin.json` | `--players 1` | splitscreen hint, SPLITSCREEN, PRESS X TO JOIN, pads joining over bots, PLAYER MENU, LEAVE, splitscreen off |
@@ -108,9 +108,9 @@ the clipboard (the in-process one).
 |---|---|---|
 | Start screen | `start_screen.tscn`: dim 0.32, logo 440 x 190, gothic stone frame 350 x 392 with spikes, gold trim and skull, VERSUS / WAVE SURVIVAL / SETTINGS, match ID share, join field, background bot fight with an orbiting camera (82 m, 34 up, FOV 66) | done; the join field with JOIN beside it (see lobby) |
 | Pause menu | `_build_pause_menu`: logo, share ID + HOST ONLINE / COPY, join field, Bots - n +, VERSUS, WAVE SURVIVAL, SPLITSCREEN, SETTINGS, RESUME, EXIT GAME, arena seed | done; COPY puts the ID on the clipboard and shows COPIED! for 1.5 s; the join notice follows `_update_join_form` (paste / own ID / valid, connecting / connecting...) |
-| Gamepad Party pause | `_build_gamenight_pause_menu`: slab with red edge and hatching, logo, status line, RESUME, NEW MATCH, SWITCH TO ..., AI PLAYERS - n +, ADVANCED, SETTINGS | done |
-| ADVANCED | `_gn_open_advanced`: the party's settings as sliders, sent through Gamepad Party | done |
-| Settings | `build_settings_panel`: Player name, Retro shader, Music, Mouse, Stick (or Aim: NAME per party player), Movement tilt, BACK; saved to settings.cfg | close: Player name (20 characters, Player_NNN at first start, committed on Enter, on leaving the field and on BACK; an empty name keeps the old one) names the first local seat in the scoreboard, kill feed and banners; it is not sent to the host (the protocol has no name) and under Gamepad Party the party names everyone, so the field is not offered there. No Retro shader; Movement tilt leans the gun (the port has no camera roll); saved to `$XDG_CONFIG_HOME/growing-guns/settings.json` |
+| Splitscreen Club pause | `_build_gamenight_pause_menu`: slab with red edge and hatching, logo, status line, RESUME, NEW MATCH, SWITCH TO ..., AI PLAYERS - n +, ADVANCED, SETTINGS | done |
+| ADVANCED | `_gn_open_advanced`: the party's settings as sliders, sent through Splitscreen Club | done |
+| Settings | `build_settings_panel`: Player name, Retro shader, Music, Mouse, Stick (or Aim: NAME per party player), Movement tilt, BACK; saved to settings.cfg | close: Player name (20 characters, Player_NNN at first start, committed on Enter, on leaving the field and on BACK; an empty name keeps the old one) names the first local seat in the scoreboard, kill feed and banners; it is not sent to the host (the protocol has no name) and under Splitscreen Club the party names everyone, so the field is not offered there. No Retro shader; Movement tilt leans the gun (the port has no camera roll); saved to `$XDG_CONFIG_HOME/growing-guns/settings.json` |
 | Text fields | Godot `LineEdit`: typing, caret, Ctrl+V/C, IME | done (engine `app::TextField`): typed text, IME commits, Backspace/Delete/arrows/Home/End, Ctrl/Cmd+V and C, Enter submits, Esc backs out, Up/Down/Tab leave the field; the text scrolls to keep the caret in view. No selection or mouse caret placement. A pad gets an on-screen keyboard on A (`app::ui::CharPicker`: letters, digits, - _ ., SPACE, SHIFT, DEL, PASTE, DONE; X deletes, START done, B cancels), which Godot does not have |
 | Pause behaviour | one human: the match stops; more: it runs on | done |
 | Mouse | hover focuses, click takes, sliders drag; mouse released in menus | done (engine `Game::pointer`, `mouse_capture`) |
@@ -123,7 +123,7 @@ the clipboard (the in-process one).
 | Each view its own HUD, toasts, card pick, death and phoenix overlays | done |
 | Prompts per device (view 1 keyboard, others pad) | done |
 | Join prompt "PRESS X TO JOIN" | done: top centre (22, gold, outline 8) while splitscreen is on and fewer than 4 seats are used; the mouse-click join for a pad-led host is not ported |
-| SPLITSCREEN (pause menu) | done: on, the first seat keeps the keyboard (and the pad used last); off, every joined seat goes back to a bot, "SPLITSCREEN OFF". Godot also clears the bots and waits for joins; here a joining pad takes over a bot's seat instead. Hidden under Gamepad Party (the party seats everyone), host or offline only |
+| SPLITSCREEN (pause menu) | done: on, the first seat keeps the keyboard (and the pad used last); off, every joined seat goes back to a bot, "SPLITSCREEN OFF". Godot also clears the bots and waits for joins; here a joining pad takes over a bot's seat instead. Hidden under Splitscreen Club (the party seats everyone), host or offline only |
 | Hot-join | done: an unused pad's X gives it a local seat between ticks on the host: a bot's seat (never a remote's or a wave enemy's), or offline in versus with no bot left a new seat (up to 8 players); online with no bot free it says GAME FULL. The new view, HUD and name tag hiding come at once (the views are rebuilt), "P3 joined". The X does not also reload. `--players N` seats take the devices in order as before |
 | PLAYER MENU | done: a joined seat's Start opens it (RESUME / LEAVE, "> LEAVE <" focus, A or X takes, B or Start resumes), drawn in the screen's centre as Godot does; LEAVE gives the seat back to a bot ("P2 left") |
 
@@ -133,7 +133,7 @@ the clipboard (the in-process one).
 |---|---|
 | Host online (iroh) from the menu, match ID shown | done; the ID is shown in the field and printed (`play --host` also writes `growing-guns-ticket.txt`) |
 | Join by pasting an ID into the field | done: start screen and pause menu; the ID is taken out of a pasted line or block (`extract_iroh_node_id`), a valid one joins at once (or on Enter / JOIN), your own is refused; the join runs on a thread ("Connecting...", JOIN shows "...") and the new session replaces this one; a failure shows under the menu. `play --join TICKET` still works |
-| Gamepad Party: names, seats, settings, pause | done; names replace P1..P4 in the scoreboard, kill feed, banners, round strip and tags |
+| Splitscreen Club: names, seats, settings, pause | done; names replace P1..P4 in the scoreboard, kill feed, banners, round strip and tags |
 | "X joined" / "X left" | done (a remote taking or leaving a seat) |
 | Ping per player | missing: the session measures no round trip yet |
 

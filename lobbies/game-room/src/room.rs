@@ -618,7 +618,7 @@ fn window(r: &mut RoomBuild) {
 }
 
 fn logo(r: &mut RoomBuild) {
-    // The GameNight wordmark as a real neon sign: the text is rendered into a
+    // The Splitscreen Club wordmark as a real neon sign: the text is rendered into a
     // transparent texture and used as emission, so glow picks it up.
     let y = 8.0;
     let z = BACK + 0.12;

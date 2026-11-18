@@ -736,7 +736,7 @@ impl Game for Lobby {
         true
     }
 
-    fn title(&self) -> Option<String> { Some("Gamepad Party Game Room".into()) }
+    fn title(&self) -> Option<String> { Some("Splitscreen Club Game Room".into()) }
 
     fn screen(&self) -> app::Screen {
         if self.client.is_none() { return app::Screen::Normal; }

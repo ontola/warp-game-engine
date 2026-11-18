@@ -84,7 +84,7 @@ impl Lobby {
             if !(active.is_object() && get(active, "game", "") == *game) { self.host.quitting = None; }
         }
         if was_ready.is_empty() && !self.host.update_ready().is_empty() {
-            self.toast("New Gamepad Party version ready. It installs when the room is quiet, or press Start.", GREEN);
+            self.toast("New Splitscreen Club version ready. It installs when the room is quiet, or press Start.", GREEN);
         }
         self.profiles = self.host.party["players"].as_array().map(|a| a.iter().map(Profile::from_player).collect()).unwrap_or_default();
         self.apply_claims();
@@ -402,11 +402,11 @@ impl Lobby {
         let mut items = vec![MenuItem::new("Close menu", "close"), MenuItem::new("Leave the party", "leave")];
         // Hosts that predate couch positions don't send them.
         if self.profile(id).is_some_and(|p| p.couch.is_some()) { items.insert(1, MenuItem::new("Couch position", "couch")); }
-        if !self.host.update_ready().is_empty() { items.insert(0, MenuItem::new("Update Gamepad Party now", "update")); }
+        if !self.host.update_ready().is_empty() { items.insert(0, MenuItem::new("Update Splitscreen Club now", "update")); }
         if self.host.is_linked(id) { items.insert(1, MenuItem::new("Unlink my phone profile", "unlink")); }
         if self.profiles.len() > 1 { items.push(MenuItem::new("Remove a player", "remove_page")); }
         if self.host.party["lobbies"].as_array().is_some_and(|l| l.len() > 1) { items.push(MenuItem::new("Switch lobby", "lobbies")); }
-        items.push(MenuItem::new("Quit Gamepad Party", "quit"));
+        items.push(MenuItem::new("Quit Splitscreen Club", "quit"));
         items
     }
 
@@ -426,9 +426,9 @@ impl Lobby {
     /// The mouse's menu: nobody's, so only what the room itself can do.
     fn mouse_items(&self) -> Vec<MenuItem> {
         let mut items = vec![MenuItem::new("Close menu", "close")];
-        if !self.host.update_ready().is_empty() { items.push(MenuItem::new("Update Gamepad Party now", "update")); }
+        if !self.host.update_ready().is_empty() { items.push(MenuItem::new("Update Splitscreen Club now", "update")); }
         if self.host.party["lobbies"].as_array().is_some_and(|l| l.len() > 1) { items.push(MenuItem::new("Switch lobby", "lobbies")); }
-        items.push(MenuItem::new("Quit Gamepad Party", "quit"));
+        items.push(MenuItem::new("Quit Splitscreen Club", "quit"));
         items
     }
 
@@ -509,7 +509,7 @@ impl Lobby {
             },
             "update" => {
                 self.menus.remove(id);
-                self.toast("Updating Gamepad Party… everyone stays in the party.", GREEN);
+                self.toast("Updating Splitscreen Club… everyone stays in the party.", GREEN);
                 self.command(json!({"type": "apply_update"}));
             }
             "leave" => { self.menus.remove(id); self.command(json!({"type": "leave_party", "player_id": id})); }
@@ -658,7 +658,7 @@ impl Lobby {
             vec![("LB", "Previous", true), ("Y", if playing { "Pause" } else { "Play" }, true), ("RB", "Next", true)]
         } else { vec![("Y", "Play", true)] };
         self.set_prompt("music", &music, true, occupied.contains_key("music1"));
-        let exit = if mouse_only.as_deref() == Some("exit") { if self.mouse_quit_armed() { "Click again to quit" } else { "Quit Gamepad Party" } } else { "Leave" };
+        let exit = if mouse_only.as_deref() == Some("exit") { if self.mouse_quit_armed() { "Click again to quit" } else { "Quit Splitscreen Club" } } else { "Leave" };
         self.set_prompt("exit", &[("Y", exit, true)], true, occupied.contains_key("exit"));
         for (name, p) in self.prompts.iter_mut() {
             let mouse = mouse_only.as_deref() == Some(name.as_str());

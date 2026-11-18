@@ -19,7 +19,7 @@ const IDLE: f32 = 5.0;
 /// World metres per prompt texture pixel (room.rs `prompt`).
 const PROMPT_PX: f32 = 0.0042;
 /// Stations the mouse can work. The doors are somebody's: picking up a
-/// profile needs a controller. The exit quits Gamepad Party for the mouse.
+/// profile needs a controller. The exit quits Splitscreen Club for the mouse.
 const STATIONS: [&str; 5] = ["tv", "shelf", "queue", "music", "exit"];
 /// Seconds a first click on the exit's Quit waits for the second.
 const QUIT_CONFIRM: f32 = 3.0;
@@ -196,7 +196,7 @@ impl Lobby {
 }
 
 fn exit_station() -> Station {
-    Station { id: "exit".into(), kind: "exit".into(), label: "Quit Gamepad Party".into(), enabled: true, ..Default::default() }
+    Station { id: "exit".into(), kind: "exit".into(), label: "Quit Splitscreen Club".into(), enabled: true, ..Default::default() }
 }
 
 /// The prompt a station's buttons float on.

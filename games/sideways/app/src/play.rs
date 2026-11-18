@@ -1110,8 +1110,8 @@ impl App {
                     }
                 }
                 Command::Action{key,..} if key=="new_stage"=>{self.next_stage()?;}
-                Command::Disconnected(reason)=>{eprintln!("Gamepad Party disconnected: {reason}");self.finish(event_loop,"host_disconnected");return Ok(false);}
-                Command::Error(reason)=>return Err(format!("Gamepad Party: {reason}")),
+                Command::Disconnected(reason)=>{eprintln!("Splitscreen Club disconnected: {reason}");self.finish(event_loop,"host_disconnected");return Ok(false);}
+                Command::Error(reason)=>return Err(format!("Splitscreen Club: {reason}")),
                 _=>{}
             }
             self.trace(true);
@@ -2016,8 +2016,8 @@ pub fn run(raw:&[String])->i32{
     if let Some(s)=&mut scenario {if let Some(prepared)=&s.skies[0] {prepared.apply_scene(&mut built.scene,&mut light);sky_metadata=prepared.metadata.clone();}s.applied_section=Some(0);}
     startup_timing.mark("scenario_sky_presets");
     let now=Instant::now();
-    let host=match Client::connect_from_env(){Ok(h)=>h,Err(e)=>{eprintln!("Gamepad Party: {e}");return 1;}};
-    if scenario.is_some()&&host.is_some(){eprintln!("scenario runs are standalone; remove Gamepad Party host environment");return 2;}
+    let host=match Client::connect_from_env(){Ok(h)=>h,Err(e)=>{eprintln!("Splitscreen Club: {e}");return 1;}};
+    if scenario.is_some()&&host.is_some(){eprintln!("scenario runs are standalone; remove Splitscreen Club host environment");return 2;}
     if a.smoke_next_stage && host.is_some(){eprintln!("--smoke-next-stage is standalone validation only");return 2;}
     let seats:Vec<_>=(0..a.views).map(|i|Seat{index:i,player_id:format!("standalone-{i}"),name:format!("Player {}",i+1),color:String::new(),controller:String::new(),ai:false,couch:Some(i as i64)}).collect();
     let sky_controls=crate::procedural_sky::LiveSky::new(&sky_metadata,&light);
