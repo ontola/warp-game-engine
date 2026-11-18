@@ -10,7 +10,7 @@
 use crate::scene::Heightfield;
 use glam::Vec3;
 
-const SUN_RADIUS: f64 = 0.00465;
+pub(crate) const SUN_RADIUS: f64 = 0.00465;
 const UNKNOWN_HEIGHT: f64 = -1.0e8;
 
 /// Direct solar visibility, independent for each camera and independent of

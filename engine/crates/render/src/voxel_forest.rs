@@ -128,6 +128,37 @@ fn diagnostic_u64(bytes: &[u8], word: usize) -> u64 {
 // against WebGPU's per-stage limit (10 scene + 7 volume = 17). Keep this
 // interface small instead of increasing the requested hardware limit.
 pub(crate) const SCENE_BINDINGS: &[u32] = &[4, 5, 12, 13, 14, 15, 16, 17, 18, 22, 23, 25];
+/// The forest lighting passes read two storage buffers, the owner transforms
+/// and scene tables. Far grass shares a wider lighting layout.
+pub(crate) const FOREST_LIGHTING_BINDINGS: &[u32] = &[4, 5, 17, 18, 22, 23, 25];
+
+#[derive(Clone, Copy)]
+enum VoxelPass { Prepare, Integrate, Emit, Surface }
+use VoxelPass::{Emit, Integrate, Prepare, Surface};
+
+impl VoxelPass {
+    fn bindings(self) -> &'static [u32] {
+        match self {
+            Prepare => &[3,5,6,7,9,10,12],
+            Integrate => &[1,2,3,5,6,7,9,10,11],
+            Emit => &[1,2,3,5,7,9,14,15,20],
+            Surface => &[1,2,3,6,7,10,15,17,18,19],
+        }
+    }
+}
+
+/// Parallel sets of layouts and target bind groups, indexed by the same pass.
+struct PassSet<T>([T; 4]);
+impl<T> PassSet<T> {
+    fn new(build: impl FnMut(VoxelPass) -> T) -> Self {
+        Self([Prepare, Integrate, Emit, Surface].map(build))
+    }
+}
+impl<T> std::ops::Index<VoxelPass> for PassSet<T> {
+    type Output = T;
+    fn index(&self, pass: VoxelPass) -> &T { &self.0[pass as usize] }
+}
+
 /// Legacy authored selection capacity; GPU-driven tables use the runtime slot count.
 pub(crate) const MAX_VIEW_GROUPS: usize = 16384;
 /// Volumes the integrator path (no rasterized voxels) may march: its per-ray
@@ -346,11 +377,11 @@ struct Targets {
     splat: Option<SplatTargets>,
     size: (u32, u32),
     layer: wgpu::Texture,
-    bind: wgpu::BindGroup,
+    bind: PassSet<wgpu::BindGroup>,
     composite: wgpu::BindGroup,
     counters: wgpu::Buffer,
     tiles: crate::foliage_select::Region,
-    jobs: wgpu::Buffer,
+    jobs_at: u64,
     indirect: wgpu::Buffer,
     config: wgpu::Buffer,
     motion: Option<wgpu::Texture>,
@@ -364,8 +395,8 @@ struct TemporalPipelines {
     gbuffer: wgpu::ComputePipeline,
     selection: Option<[wgpu::ComputePipeline; 3]>,
     second: Option<wgpu::ComputePipeline>,
-    data_layout: wgpu::BindGroupLayout,
-    layout: wgpu::PipelineLayout,
+    data_layout: PassSet<wgpu::BindGroupLayout>,
+    layout: PassSet<wgpu::PipelineLayout>,
     pipelines: [wgpu::ComputePipeline;8],
 }
 pub(crate) struct VoxelRenderer {
@@ -384,14 +415,16 @@ pub(crate) struct VoxelRenderer {
     second: Option<wgpu::ComputePipeline>,
     brick_hzb: Option<crate::depth_pyramid::DepthPyramid>,
     raster:Option<SplatRaster>,
-    pipeline_layout: wgpu::PipelineLayout,
+    pipeline_layout: PassSet<wgpu::PipelineLayout>,
+    owner_layout: wgpu::BindGroupLayout,
+    owner_bind: wgpu::BindGroup,
     scene_layout: wgpu::BindGroupLayout,
     view_layout: wgpu::BindGroupLayout,
     temporal: Mutex<Option<TemporalPipelines>>,
     temporal_error: Option<String>,
     source: String,
     composite: wgpu::RenderPipeline,
-    data_layout: wgpu::BindGroupLayout,
+    data_layout: PassSet<wgpu::BindGroupLayout>,
     composite_layout: wgpu::BindGroupLayout,
     data: [wgpu::Buffer; 4],
     page_cache:Option<Mutex<crate::foliage_pages::cache::Cache>>,
@@ -440,7 +473,7 @@ fn data_bindings(temporal: bool) -> Vec<(u32, wgpu::BindingType)> {
     let output=|format|wgpu::BindingType::StorageTexture {access:wgpu::StorageTextureAccess::WriteOnly,format,view_dimension:wgpu::TextureViewDimension::D2};
     let mut entries=vec![(1,storage(true)),(2,storage(true)),(3,storage(true)),
         (5,storage(false)),(6,output(wgpu::TextureFormat::Rgba16Float)),
-        (7,uniform),(8,storage(false)),(9,storage(true)),(12,storage(true)),
+        (7,uniform),(9,storage(true)),(12,storage(true)),
         (14,storage(true)),(15,storage(false)),
         (17,wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Uint,view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}),
         (18,wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Depth,view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}),
@@ -449,10 +482,21 @@ fn data_bindings(temporal: bool) -> Vec<(u32, wgpu::BindingType)> {
     if temporal {entries.extend([(10,output(wgpu::TextureFormat::Rgba32Float)),(11,storage(true))]);}
     entries
 }
-fn create_data_layout(gpu:&Gpu,temporal:bool)->wgpu::BindGroupLayout {
-    let entries = data_bindings(temporal);
-    gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("voxel data"),
-        entries:&entries.into_iter().map(|(binding,ty)|wgpu::BindGroupLayoutEntry {binding,ty,visibility:wgpu::ShaderStages::COMPUTE,count:None}).collect::<Vec<_>>()})
+fn pass_layouts(gpu: &Gpu, owners: &wgpu::BindGroupLayout, lighting: &wgpu::BindGroupLayout,
+    view: &wgpu::BindGroupLayout, temporal: bool) -> (PassSet<wgpu::BindGroupLayout>, PassSet<wgpu::PipelineLayout>) {
+    let bindings = data_bindings(temporal);
+    let data = PassSet::new(|pass| {
+        let entries = bindings.iter().filter(|(binding,_)| pass.bindings().contains(binding))
+            .map(|&(binding,ty)| wgpu::BindGroupLayoutEntry {binding,ty,visibility:wgpu::ShaderStages::COMPUTE,count:None})
+            .collect::<Vec<_>>();
+        gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("voxel pass data"), entries:&entries})
+    });
+    let pipelines = PassSet::new(|pass| {
+        let scene = if matches!(pass, Emit | Prepare) { owners } else { lighting };
+        gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("voxel pass"),
+            bind_group_layouts:&[Some(scene),Some(view),Some(&data[pass])],immediate_size:0})
+    });
+    (data, pipelines)
 }
 /// Brick culling's helpers: the visible tree list, the step between its two
 /// passes and the one after (voxel_forest.wgsl VOXEL_BRICK_CULL).
@@ -567,7 +611,7 @@ fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgp
     SplatRaster { main_pipeline, cells: cells_buffer, capacity, layout, pipeline, sun_layout, sun_empty, sun_splats, sun_cached_layout, sun_cached_splats, sun_raster, sun_cached_raster,
         sun_target: Mutex::new(Vec::new()) }
 }
-fn pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, active_tiles: bool,global_intervals:bool,cull:Option<bool>) -> [wgpu::ComputePipeline; 8] {
+fn pipelines(gpu: &Gpu, layout: &PassSet<wgpu::PipelineLayout>, source: &str, active_tiles: bool,global_intervals:bool,cull:Option<bool>) -> [wgpu::ComputePipeline; 8] {
     let mut splat_constants = brick_cull_constants(cull);
     if cull.is_some() {splat_constants.push(("VOXEL_COMPACT", 1.0));}
     let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -577,8 +621,10 @@ fn pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, active_tile
         (true,true)=>"voxel_integrate_global_active",(false,true)=>"voxel_integrate_global",
         (true,false)=>"voxel_integrate_active",(false,false)=>"voxel_integrate"},
         if active_tiles {"voxel_intervals_active"} else {"voxel_intervals"},"voxel_brick_scatter","voxel_splats","voxel_splat_resolve"]
-        .map(|entry| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some(entry), layout: Some(layout), module: &module, entry_point: Some(entry),
+        .map(|entry| (entry, match entry { "voxel_splats" => Emit, "voxel_splat_resolve" => Surface,
+            name if name.starts_with("voxel_integrate") => Integrate, _ => Prepare }))
+        .map(|(entry, pass)| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some(entry), layout: Some(&layout[pass]), module: &module, entry_point: Some(entry),
             compilation_options: wgpu::PipelineCompilationOptions {
                 constants: if entry == "voxel_splats" { &splat_constants } else { &[] },
                 ..Default::default() }, cache: gpu.pipeline_cache(),
@@ -725,6 +771,7 @@ impl VoxelRenderer {
     pub(crate) fn new(
         gpu: &Gpu,
         scene: &Scene,
+        owners: &wgpu::Buffer,
         scene_layout: &wgpu::BindGroupLayout,
         volume_view_layout: &wgpu::BindGroupLayout,
         page_cache:Option<crate::foliage_pages::cache::Cache>,
@@ -838,18 +885,10 @@ impl VoxelRenderer {
                         .collect::<Vec<_>>(),
                 })
         };
-        let data_layout = create_data_layout(gpu,false);
-        let pipeline_layout = gpu
-            .device
-            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("voxel forest"),
-                bind_group_layouts: &[
-                    Some(scene_layout),
-                    Some(volume_view_layout),
-                    Some(&data_layout),
-                ],
-                immediate_size: 0,
-            });
+        let owner_layout = layout("voxel owners", &[(4, crate::frame::storage(true))], wgpu::ShaderStages::COMPUTE);
+        let owner_bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("voxel owners"),layout:&owner_layout,
+            entries:&[wgpu::BindGroupEntry {binding:4,resource:owners.as_entire_binding()}]});
+        let (data_layout, pipeline_layout) = pass_layouts(gpu, &owner_layout, scene_layout, volume_view_layout, false);
         let source = shader_source();
         let mut integrator_options = IntegratorOptions::from_environment();
         if page_cache.is_some(){integrator_options.brick_visibility=false;}
@@ -883,9 +922,9 @@ impl VoxelRenderer {
         let brick_hzb = (brick_hzb_enabled() && (!paged || forest.levels.len() * 32 >= 176)).then(|| crate::depth_pyramid::DepthPyramid::new(gpu));
         let cull = brick_hzb.as_ref().map(|_| paged);
         let [bins, tiles, clear, integrate,intervals,scatter,splats,resolve] = pipelines(gpu, &pipeline_layout, &specialized_source, scene.voxel_active_tiles,integrator_options.global_intervals,cull);
-        let gbuffer = surface_pipeline(gpu, &pipeline_layout, &specialized_source);
-        let selection = splat_selection_pipelines(gpu, &pipeline_layout, &specialized_source, cull);
-        let second = brick_hzb.as_ref().map(|_| second_splat_pipeline(gpu, &pipeline_layout, &specialized_source, paged));
+        let gbuffer = surface_pipeline(gpu, &pipeline_layout[Surface], &specialized_source);
+        let selection = splat_selection_pipelines(gpu, &pipeline_layout[Emit], &specialized_source, cull);
+        let second = brick_hzb.as_ref().map(|_| second_splat_pipeline(gpu, &pipeline_layout[Emit], &specialized_source, paged));
         eprintln!("voxel integrator: interval_capacity=64 active_capacity=16 empty_ceiling={} (accepted skip fix; bounded prototype, complete scan on cache overflow)",
             integrator_options.empty_ceiling);
         eprintln!("voxel normals: antipodal_requested={antipodal_requested} antipodal_eligible={antipodal_eligible} antipodal_enabled={} normal_lobes={} cell_bytes=128 (experimental; exact pairs, generic fallback)",
@@ -898,7 +937,7 @@ impl VoxelRenderer {
                 let limits=gpu.device.limits();
                 let capacity=bounded_splat_capacity(requested,forest.instances.len()as u64,u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size));
                 eprintln!("voxel raster: enabled cells={} splats_per_view={capacity} (stochastic opaque voxels; integrator off)", cells.len() - forest.levels.len());
-                Some(splat_raster(gpu, &cells, capacity, scene_layout, &data_layout, &specialized_source,page_cache.as_ref().map(|c|&c.buffers[3])))
+                Some(splat_raster(gpu, &cells, capacity, &owner_layout, &data_layout[Emit], &specialized_source,page_cache.as_ref().map(|c|&c.buffers[3])))
             }
             Ok(_) => { eprintln!("voxel raster fallback: no occupied cells"); None }
             Err(error) => { eprintln!("voxel raster fallback: {error}"); None }
@@ -966,6 +1005,7 @@ impl VoxelRenderer {
             gbuffer, selection, second, brick_hzb,
             raster,
             pipeline_layout: lighting_layout,
+            owner_layout, owner_bind,
             scene_layout: scene_layout.clone(),
             view_layout: volume_view_layout.clone(),
             temporal: Mutex::new(None),
@@ -1043,12 +1083,10 @@ impl VoxelRenderer {
         if temporal.is_some() {return Ok(());}
         let source=self.integrator_options.specialize(&temporal_source(&self.source,true)?)?;
         let prepared=crate::shaders::checked(gpu,|| {
-            let data_layout=create_data_layout(gpu,true);
-            let layout=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label:Some("temporal voxel forest"),bind_group_layouts:&[Some(&self.scene_layout),Some(&self.view_layout),Some(&data_layout)],immediate_size:0});
+            let (data_layout,layout)=pass_layouts(gpu,&self.owner_layout,&self.scene_layout,&self.view_layout,true);
             let pipelines=pipelines(gpu,&layout,&source,self.active_tiles,self.integrator_options.global_intervals,self.brick_cull());
-            let gbuffer = surface_pipeline(gpu, &layout, &source);
-            TemporalPipelines {selection: splat_selection_pipelines(gpu, &layout, &source, self.brick_cull()),second: self.brick_cull().map(|paged| second_splat_pipeline(gpu, &layout, &source, paged)),data_layout,layout,pipelines,gbuffer}
+            let gbuffer = surface_pipeline(gpu, &layout[Surface], &source);
+            TemporalPipelines {selection: splat_selection_pipelines(gpu, &layout[Emit], &source, self.brick_cull()),second: self.brick_cull().map(|paged| second_splat_pipeline(gpu, &layout[Emit], &source, paged)),data_layout,layout,pipelines,gbuffer}
         })?;
         *temporal=Some(prepared);Ok(())
     }
@@ -1063,14 +1101,14 @@ impl VoxelRenderer {
             let specialized=self.integrator_options.specialize(&temporal_source(&source,true)?)?;
             Some(crate::shaders::checked(gpu,||(
                 self::pipelines(gpu,&temporal.layout,&specialized,self.active_tiles,self.integrator_options.global_intervals,self.brick_cull()),
-                surface_pipeline(gpu,&temporal.layout,&specialized),
-                self.brick_cull().map(|paged|second_splat_pipeline(gpu,&temporal.layout,&specialized,paged)),
-                splat_selection_pipelines(gpu,&temporal.layout,&specialized,self.brick_cull())))?)
+                surface_pipeline(gpu,&temporal.layout[Surface],&specialized),
+                self.brick_cull().map(|paged|second_splat_pipeline(gpu,&temporal.layout[Emit],&specialized,paged)),
+                splat_selection_pipelines(gpu,&temporal.layout[Emit],&specialized,self.brick_cull())))?)
         } else {None};
         let sun=self.raster.as_ref().map(|r|crate::shaders::checked(gpu,||(sun_splat_pipeline(gpu,&r.sun_layout,&specialized_source,false),sun_splat_pipeline(gpu,&r.sun_cached_layout,&specialized_source,true)))).transpose()?;
-        let surface=crate::shaders::checked(gpu,||surface_pipeline(gpu,&self.pipeline_layout,&specialized_source))?;
-        let second=self.brick_cull().map(|paged|crate::shaders::checked(gpu,||second_splat_pipeline(gpu,&self.pipeline_layout,&specialized_source,paged))).transpose()?;
-        let selection=crate::shaders::checked(gpu,||splat_selection_pipelines(gpu,&self.pipeline_layout,&specialized_source,self.brick_cull()))?;
+        let surface=crate::shaders::checked(gpu,||surface_pipeline(gpu,&self.pipeline_layout[Surface],&specialized_source))?;
+        let second=self.brick_cull().map(|paged|crate::shaders::checked(gpu,||second_splat_pipeline(gpu,&self.pipeline_layout[Emit],&specialized_source,paged))).transpose()?;
+        let selection=crate::shaders::checked(gpu,||splat_selection_pipelines(gpu,&self.pipeline_layout[Emit],&specialized_source,self.brick_cull()))?;
         Ok(Some(Reload { pipelines, surface, selection, second, temporal, sun, source }))
     }
     pub(crate) fn commit_reload(&mut self, reload: Reload) {
@@ -1088,7 +1126,7 @@ impl VoxelRenderer {
         targets.resize_with(count, || None);
     }
     fn targets(&self, gpu: &Gpu, size: (u32, u32), selection: &wgpu::Buffer,
-        temporal:Option<(&wgpu::BindGroupLayout,&wgpu::Buffer)>) -> Result<Targets,String> {
+        temporal:Option<(&PassSet<wgpu::BindGroupLayout>,&wgpu::Buffer)>) -> Result<Targets,String> {
         let limits=gpu.device.limits();
         let interval_stream=if self.integrator_options.global_intervals {
             Some(interval_stream_layout(size,limits.max_buffer_size.min(u64::from(limits.max_storage_buffer_binding_size)))?)
@@ -1126,9 +1164,14 @@ impl VoxelRenderer {
         // the next 256-byte boundary: one atomic binding (VolumeConfig.layout).
         let tiles_at = (COUNTER_BYTES + mask_bytes).div_ceil(256) * 256;
         let tiles_bytes = tile_count * u64::from(CANDIDATES + 1) * 4;
+        let jobs_at = tiles_at + tiles_bytes;
+        let jobs_bytes = interval_stream.map_or((4+tile_count)*4, |s|s.bytes);
+        if jobs_at + jobs_bytes > u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size) {
+            return Err("voxel worklists exceed the device binding limit".into());
+        }
         let counters = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("voxel diagnostics, indirect draw and tile candidates"),
-            size: tiles_at + tiles_bytes,
+            size: jobs_at + jobs_bytes,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT
                 | wgpu::BufferUsages::COPY_SRC
                 | wgpu::BufferUsages::COPY_DST,
@@ -1138,14 +1181,6 @@ impl VoxelRenderer {
         // Header: dispatch xyz, active count; then one tile index per job.
         // Keep indirect arguments separate: the integration pass reads jobs
         // as storage, which cannot alias an indirect-dispatch argument buffer.
-        let jobs = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("voxel active tile worklist"),
-            size: interval_stream.map_or((4+tile_count)*4,|s|s.bytes),
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
         let indirect = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("voxel active tile indirect arguments"),
             size: 12,
@@ -1198,10 +1233,6 @@ impl VoxelRenderer {
                     binding: 7,
                     resource: config.as_entire_binding(),
                 },
-                wgpu::BindGroupEntry {
-                    binding: 8,
-                    resource: jobs.as_entire_binding(),
-                },
                 wgpu::BindGroupEntry { binding: 9, resource: selection.as_entire_binding() },
             ];
         // Splat resources; one-texel stand-ins when rasterization is off.
@@ -1245,8 +1276,10 @@ impl VoxelRenderer {
             entries.push(wgpu::BindGroupEntry {binding:10,resource:wgpu::BindingResource::TextureView(motion_view.as_ref().unwrap())});
             entries.push(wgpu::BindGroupEntry {binding:11,resource:previous.as_entire_binding()});
         }
-        let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("voxel data"),layout:temporal.map_or(&self.data_layout,|(layout,_)|layout),entries:&entries,
+        let layouts=temporal.map_or(&self.data_layout,|(layout,_)|layout);
+        let bind=PassSet::new(|pass| {
+            let selected=entries.iter().filter(|e|pass.bindings().contains(&e.binding)).cloned().collect::<Vec<_>>();
+            gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("voxel pass resources"),layout:&layouts[pass],entries:&selected})
         });
         let composite = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("voxel composite"),
@@ -1264,7 +1297,7 @@ impl VoxelRenderer {
             composite,
             counters,
             tiles,
-            jobs,
+            jobs_at,
             indirect,
             config,
             motion,
@@ -1292,11 +1325,11 @@ impl VoxelRenderer {
         self.targets.lock().unwrap().get(index)?.as_ref()?.splat.as_ref().map(|s| s.depth.clone())
     }
     fn select_splat_trees(&self, encoder:&mut wgpu::CommandEncoder, target:&Targets,
-        scene:&wgpu::BindGroup, view:&wgpu::BindGroup, pipeline:&wgpu::ComputePipeline) {
+        view:&wgpu::BindGroup, pipeline:&wgpu::ComputePipeline) {
         encoder.clear_buffer(&target.tiles.buffer,target.tiles.offset,Some(16));
         {
             let mut pass=encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {label:Some("voxel visible tree list"),timestamp_writes:None});
-            pass.set_pipeline(pipeline);pass.set_bind_group(0,scene,&[]);pass.set_bind_group(1,view,&[]);pass.set_bind_group(2,&target.bind,&[]);
+            pass.set_pipeline(pipeline);pass.set_bind_group(0,&self.owner_bind,&[]);pass.set_bind_group(1,view,&[]);pass.set_bind_group(2,&target.bind[Emit],&[]);
             let groups=(self.count-self.consumer_roots).div_ceil(64);pass.dispatch_workgroups(groups.min(65535),groups.div_ceil(65535).max(1),1);
         }
         encoder.copy_buffer_to_buffer(&target.tiles.buffer,target.tiles.offset,&target.indirect,0,12);
@@ -1344,16 +1377,16 @@ impl VoxelRenderer {
         // rest only resolves and composites what it rastered.
         let splats_done = stage == Stage::Rest && target.splat.is_some();
         if !splats_done {
-        encoder.clear_buffer(&target.counters, 0, None);
+        encoder.clear_buffer(&target.counters, 0, Some(target.tiles.offset));
         // Counts and slots share a buffer; clearing it preserves a bounded
         // zero-allocation append path and prevents old counts surviving views.
         target.tiles.clear(encoder);
         if self.active_tiles {
-            encoder.clear_buffer(&target.jobs, 0, Some(16));
+            encoder.clear_buffer(&target.counters, target.jobs_at, Some(16));
         }
         if let Some(stream)=target.interval_stream {
             let bytes=if self.integrator_options.brick_visibility {16+u64::from(stream.pixel_slots)*8}else{16};
-            encoder.clear_buffer(&target.jobs,u64::from(stream.header_word)*4,Some(bytes));
+            encoder.clear_buffer(&target.counters,target.jobs_at + u64::from(stream.header_word)*4,Some(bytes));
         }
         }
         if let (Some(raster), Some(splat)) = (&self.raster, &target.splat) {
@@ -1362,13 +1395,13 @@ impl VoxelRenderer {
             let selection=temporal_pipelines.and_then(|p|p.selection.as_ref()).or(self.selection.as_ref());
             if let Some(p)=selection {
                 if let Some((q,i))=times[0].filter(|_|encoder_times) {encoder.write_timestamp(q,i);}
-                self.select_splat_trees(encoder,target,scene,view,&p[0]);
+                self.select_splat_trees(encoder,target,view,&p[0]);
             }
             {
                 let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("voxel splats"),
                     timestamp_writes: times[0].map(|(query_set, i)| wgpu::ComputePassTimestampWrites {
                         query_set, beginning_of_pass_write_index: if selection.is_some() && encoder_times { None } else { Some(i) }, end_of_pass_write_index: Some(i + 1) }) });
-                pass.set_bind_group(0, scene, &[]); pass.set_bind_group(1, view, &[]); pass.set_bind_group(2, &target.bind, &[]);
+                pass.set_bind_group(0, &self.owner_bind, &[]); pass.set_bind_group(1, view, &[]); pass.set_bind_group(2, &target.bind[Emit], &[]);
                 pass.set_pipeline(splats);
                 // One workgroup per tree.
                 if selection.is_some() {pass.dispatch_workgroups_indirect(&target.indirect,0);}
@@ -1386,14 +1419,14 @@ impl VoxelRenderer {
                     if let Some((q,i))=times[6].filter(|_|encoder_times) {encoder.write_timestamp(q,i);}
                     {
                         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {label:Some("voxel brick cull base"),timestamp_writes:None});
-                        pass.set_bind_group(0, scene, &[]); pass.set_bind_group(1, view, &[]); pass.set_bind_group(2, &target.bind, &[]);
+                        pass.set_bind_group(0, &self.owner_bind, &[]); pass.set_bind_group(1, view, &[]); pass.set_bind_group(2, &target.bind[Emit], &[]);
                         pass.set_pipeline(&helpers[1]); pass.dispatch_workgroups(1, 1, 1);
                     }
                     encoder.copy_buffer_to_buffer(&target.counters, CULL_OFFSET + 24, &target.indirect, 0, 12);
                     let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                         label: Some("voxel brick second pass"), timestamp_writes: times[6].map(|(query_set,i)| wgpu::ComputePassTimestampWrites {
                             query_set, beginning_of_pass_write_index:(!encoder_times).then_some(i),end_of_pass_write_index:Some(i+1) }) });
-                    pass.set_bind_group(0, scene, &[]); pass.set_bind_group(1, view, &[]); pass.set_bind_group(2, &target.bind, &[]);
+                    pass.set_bind_group(0, &self.owner_bind, &[]); pass.set_bind_group(1, view, &[]); pass.set_bind_group(2, &target.bind[Emit], &[]);
                     pass.set_pipeline(temporal_pipelines.and_then(|p|p.second.as_ref()).or(self.second.as_ref()).unwrap());
                     pass.dispatch_workgroups_indirect(&target.indirect,0);
                     pass.set_pipeline(&helpers[2]); pass.dispatch_workgroups(1, 1, 1);
@@ -1428,7 +1461,7 @@ impl VoxelRenderer {
                 let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("voxel surface"),
                     timestamp_writes: times[3].map(|(query_set, i)| wgpu::ComputePassTimestampWrites {
                         query_set, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }) });
-                pass.set_bind_group(0, scene, &[]); pass.set_bind_group(1, view, &[]); pass.set_bind_group(2, &target.bind, &[]);
+                pass.set_bind_group(0, scene, &[]); pass.set_bind_group(1, view, &[]); pass.set_bind_group(2, &target.bind[Surface], &[]);
                 pass.set_pipeline(temporal_pipelines.map_or(&self.gbuffer, |p| &p.gbuffer));
                 pass.dispatch_workgroups(size.0.div_ceil(8), size.1.div_ceil(8), 1);
             }
@@ -1436,19 +1469,19 @@ impl VoxelRenderer {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("voxel splat resolve"),
                 timestamp_writes: times[3].map(|(query_set, i)| wgpu::ComputePassTimestampWrites {
                     query_set, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }) });
-            pass.set_bind_group(0, scene, &[]); pass.set_bind_group(1, view, &[]); pass.set_bind_group(2, &target.bind, &[]);
+            pass.set_bind_group(0, scene, &[]); pass.set_bind_group(1, view, &[]); pass.set_bind_group(2, &target.bind[Surface], &[]);
             pass.set_pipeline(resolve);
             pass.dispatch_workgroups(size.0.div_ceil(8), size.1.div_ceil(8), 1);
         }
         for (stage, pipeline) in [bins, tiles, integrate].into_iter().enumerate().filter(|_| self.raster.is_none()) {
             if stage == 2 && self.active_tiles {
-                encoder.copy_buffer_to_buffer(&target.jobs, 0, &target.indirect, 0, 12);
+                encoder.copy_buffer_to_buffer(&target.counters, target.jobs_at, &target.indirect, 0, 12);
             }
             if stage==2 && self.integrator_options.brick_visibility {
                 let mut pass=encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label:Some("parallel voxel brick visibility"),timestamp_writes:times[2].map(|(query_set,i)|
                         wgpu::ComputePassTimestampWrites {query_set,beginning_of_pass_write_index:Some(i),end_of_pass_write_index:None})});
-                pass.set_bind_group(0,scene,&[]);pass.set_bind_group(1,view,&[]);pass.set_bind_group(2,&target.bind,&[]);
+                pass.set_bind_group(0,&self.owner_bind,&[]);pass.set_bind_group(1,view,&[]);pass.set_bind_group(2,&target.bind[Prepare],&[]);
                 pass.set_pipeline(scatter);let groups=self.bin_count.div_ceil(64);
                 pass.dispatch_workgroups(groups.min(65535),groups.div_ceil(65535).max(1),1);
             }
@@ -1458,7 +1491,7 @@ impl VoxelRenderer {
                 let mut pass=encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label:Some("voxel brick visibility stream"),timestamp_writes:times[2].map(|(query_set,i)|
                         wgpu::ComputePassTimestampWrites {query_set,beginning_of_pass_write_index:if self.integrator_options.brick_visibility {None}else{Some(i)},end_of_pass_write_index:Some(i+1)})});
-                pass.set_bind_group(0,scene,&[]);pass.set_bind_group(1,view,&[]);pass.set_bind_group(2,&target.bind,&[]);
+                pass.set_bind_group(0,&self.owner_bind,&[]);pass.set_bind_group(1,view,&[]);pass.set_bind_group(2,&target.bind[Prepare],&[]);
                 pass.set_pipeline(intervals);
                 if self.active_tiles {pass.dispatch_workgroups_indirect(&target.indirect,0);}
                     else {pass.dispatch_workgroups(size.0.div_ceil(8),size.1.div_ceil(8),1);}
@@ -1473,9 +1506,10 @@ impl VoxelRenderer {
                     }
                 }),
             });
-            pass.set_bind_group(0, scene, &[]);
+            let pass_kind = if stage == 2 { Integrate } else { Prepare };
+            pass.set_bind_group(0, if stage == 2 { scene } else { &self.owner_bind }, &[]);
             pass.set_bind_group(1, view, &[]);
-            pass.set_bind_group(2, &target.bind, &[]);
+            pass.set_bind_group(2, &target.bind[pass_kind], &[]);
             if stage == 1 && self.active_tiles {
                 // Count the necessary clear in the tile-pass GPU timestamp.
                 // This entry point never reaches the large per-ray arrays.
@@ -1530,7 +1564,7 @@ impl VoxelRenderer {
     pub(crate) fn sun_selection() -> Vec<u32> { vec![selection_pack([1, u32::MAX, 0, 2]); MAX_VIEW_GROUPS] }
     /// Draw the voxels of every sun-casting group into the sun map, after
     /// its source raster. `selection` is the sun view's selection buffer.
-    pub(crate) fn render_sun(&self, gpu: &Gpu, encoder: &mut wgpu::CommandEncoder, scene: &wgpu::BindGroup,
+    pub(crate) fn render_sun(&self, gpu: &Gpu, encoder: &mut wgpu::CommandEncoder,
         selection: &wgpu::Buffer, sun: SunSplatView<'_>, times: [Option<(&wgpu::QuerySet, u32)>; 2]) -> Result<(), String> {
         let Some(raster) = &self.raster else { return Ok(()) };
         let mut slots = raster.sun_target.lock().unwrap();
@@ -1551,7 +1585,7 @@ impl VoxelRenderer {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("voxel sun splats"),
                 timestamp_writes: times[0].map(|(query_set, i)| wgpu::ComputePassTimestampWrites {
                     query_set, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }) });
-            pass.set_bind_group(0, scene, &[]); pass.set_bind_group(1, &raster.sun_empty, &[]); pass.set_bind_group(2, &target.bind, &[]);
+            pass.set_bind_group(0, &self.owner_bind, &[]); pass.set_bind_group(1, &raster.sun_empty, &[]); pass.set_bind_group(2, &target.bind[Emit], &[]);
             pass.set_pipeline(if sun.damage.is_some(){&raster.sun_cached_splats}else{&raster.sun_splats});
             if let Some(mask)=sun.damage {pass.set_bind_group(3,mask,&[]);}
             let count=self.count-self.consumer_roots;pass.dispatch_workgroups(count.min(65535), count.div_ceil(65535).max(1), 1);
@@ -1647,7 +1681,7 @@ impl VoxelRenderer {
                 encoder.copy_buffer_to_buffer(&splat.draw,DRAW_OFFSET,&read,i as u64*stride+COUNTER_BYTES+8,16);
             }
             if let Some(stream)=target.interval_stream {
-                encoder.copy_buffer_to_buffer(&target.jobs,(u64::from(stream.header_word)+1)*4,
+                encoder.copy_buffer_to_buffer(&target.counters,target.jobs_at + (u64::from(stream.header_word)+1)*4,
                     &read,i as u64*stride+COUNTER_BYTES,8);
             }
         }
@@ -2154,14 +2188,14 @@ mod tests {
         assert_eq!(cap(0,0,128<<20),0);
     }
     #[test]
-    fn temporal_layout_fits_sixteen_storage_bindings() {
+    fn voxel_pass_layouts_fit_eight_storage_bindings() {
         for temporal in [false, true] {
-            let count = super::data_bindings(temporal).iter().filter(|(_, ty)| matches!(ty,
-                wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { .. }, .. })).count();
-            // Reduced scene: instances, wind, terrain hierarchy, foliage pages.
-            // The tile candidates live inside the counters binding, the level
-            // headers inside the index binding.
-            assert_eq!(count + 4, if temporal { 14 } else { 13 });
+            for pass in [super::Prepare, super::Integrate, super::Emit, super::Surface] {
+                let scene = if matches!(pass, super::Emit | super::Prepare) { 1 } else { 2 };
+                let count = super::data_bindings(temporal).iter().filter(|(b, ty)| pass.bindings().contains(b) && matches!(ty,
+                    wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { .. }, .. })).count();
+                assert!(scene + count <= 8);
+            }
         }
         assert!(super::shader_source().contains("const VOLUME_MASK_WORD: u32 = 36u;"));
         assert!(super::shader_source().contains("const VOLUME_CULL_WORD: u32 = 26u;"));

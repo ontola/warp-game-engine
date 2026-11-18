@@ -114,3 +114,33 @@ GPU time per pass group and counters, and a 960 px JPEG per view and per base
 view, for a page to show side by side. Run `look-clips.py LABEL --exe EXE` first to
 add the suite's `clips`: terrain_fly `--dump` with `--dump-warm`, `--dump-every` and
 `--dump-forward`, encoded with ffmpeg.
+
+## Finding pop-in
+
+Pop-in is a one-frame change that camera motion does not explain. Two tools
+find it in a clip and name its cause:
+
+- `terrain_fly --dump N DIR --dump-cut DIR/cut.jsonl` writes, per frame, what
+  every GPU forest tree draws for the camera and the sun (a read-back of the
+  residency slots and root histories, `foliage_runtime::Runtime::cut_snapshot`)
+  and how each changed since the previous frame (`CutSnapshot::change`:
+  appear or disappear, fallback, whole tree to branch cut or back, whole-tree
+  mip, branch refine or coarsen, voxels to needles, voxel mip). Changes of trees whose
+  root is on screen carry their screen position and distance. Each line also
+  has the error-cut scales, the refine state's used totals, refusals and fills,
+  the sun clipmap levels (`Renderer::sun_clipmap_log`: deferred, drawn,
+  full redraw, scroll), voxel page cache counters, and `depth_flips`. These
+  two counts are on-screen appearances and disappearances accompanied by the
+  corresponding current-depth visibility change. `--dump-freeze-cut N`
+  holds the published geometry from frame N-1 while the camera keeps moving.
+  Compare the same screen region at the same frame in a normal and frozen
+  replay after warming the forest. Diagnostic
+  readbacks: use it for clips, not timing.
+- `cargo run --release -p render --example pop_meter -- DIR` reads the PNGs.
+  Per 16 px block it takes the smallest mean luma difference to the previous
+  frame over shifts up to `--radius` px, and counts a pop where that residual
+  is a spike over the frames before and after (shimmer and motion are not).
+  It writes `DIR/pops.json` (per frame score, the 20 largest regions with
+  their luma before and after) and, with `--crops OUT`, before|after crops.
+  Disocclusion behind a near trunk or branch also scores, so pick paths
+  without anything within a few metres of the camera.

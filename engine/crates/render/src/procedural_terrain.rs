@@ -9,7 +9,7 @@
 //! let pool = procedural_terrain::reserve(&mut scene, 16384, terrain_material, seed, Style::default());
 //! let renderer = Renderer::new(&gpu, &scene, &light);
 //! let mut terrain = ProceduralTerrain::new(pool, Settings::default());
-//! terrain.update(&gpu, &renderer, &[TerrainView::new(&camera, height_px)])?; // per frame
+//! terrain.update(&gpu, &renderer, &[TerrainView::new(&camera, width_px, height_px)])?; // per frame
 //! ```
 use crate::cluster::{GpuCluster, Vertex};
 use crate::scene::{GeometryCategory, GpuInstance, Material, Scene, INSTANCE_CATEGORY_SHIFT};
@@ -392,6 +392,22 @@ impl TerrainView {
             forward: (camera.target - camera.pos).normalize_or(Vec3::NEG_Z), cos_half_cone: 1.0 / (1.0 + corner * corner).sqrt() }
     }
 
+    /// Nearest potential receiver along the shadow of this patch. A distant
+    /// ridge can project onto the camera's feet, even when behind the camera.
+    /// At the caster the solar disc subtends a footprint of separation times
+    /// its angular radius. Finer detail cannot move the whole shadow edge.
+    fn shadow_needs_detail(&self, sun: Option<Vec3>, centre: Vec3, radius: f32, cell: f32, error: f32, settings: &Settings, lod: f32) -> bool {
+        let Some(sun) = sun else { return false };
+        let delta = centre - self.pos;
+        let along = delta.dot(sun);
+        if along <= radius { return false; }
+        let transverse = ((delta - along * sun).length() - radius).max(0.0);
+        let receiver_pixel = transverse / self.pixels_per_radian;
+        let sun_footprint = (along - radius) * crate::terrain_visibility::SUN_RADIUS as f32;
+        cell > (settings.cell_pixels * receiver_pixel * lod).max(sun_footprint)
+            || error > (settings.error_pixels * receiver_pixel * lod).max(sun_footprint)
+    }
+
     /// Whether a sphere can be inside the view cone.
     #[cfg(test)]
     fn sees(&self, centre: Vec3, radius: f32) -> bool { self.sees_within(centre, radius, 0.0) }
@@ -484,6 +500,8 @@ impl Node {
 
 /// The CPU half: patch selection and slot bookkeeping.
 pub struct ProceduralTerrain {
+    /// Sun direction used to select the current patch set.
+    sun: Option<Vec3>,
     pub spec: TerrainSpec,
     pub settings: Settings,
     slots: HashMap<(Node, u32), u32>,
@@ -528,7 +546,7 @@ const BUDGET: f32 = 0.9;
 impl ProceduralTerrain {
     pub fn new(spec: TerrainSpec, settings: Settings) -> Self {
         let instances = (0..spec.capacity).map(|slot| hidden_instance(&spec, slot)).collect();
-        ProceduralTerrain { free: (0..spec.capacity).rev().collect(), instances, spec, settings, slots: HashMap::default(), lod: 1.0, samples: Default::default(),
+        ProceduralTerrain { sun: None, free: (0..spec.capacity).rev().collect(), instances, spec, settings, slots: HashMap::default(), lod: 1.0, samples: Default::default(),
             hidden: HashMap::default(), selection: None, settled: None, morphs: HashMap::default(), clock: web_time::Instant::now() }
     }
 
@@ -575,6 +593,7 @@ impl ProceduralTerrain {
             let scale = self.lod * if v.sees_within(centre, radius, self.settings.cone_margin_deg.to_radians()) { 1.0 } else { self.settings.offscreen_factor };
             let px = v.pixels_per_radian / d;
             cell * px > self.settings.cell_pixels * scale || error * px > self.settings.error_pixels * scale
+                || v.shadow_needs_detail(self.sun, centre, radius, cell, error, &self.settings, self.lod)
         })
     }
 
@@ -788,6 +807,11 @@ impl ProceduralTerrain {
     /// Choose this frame's patches, build the new ones on the GPU and hide
     /// the ones no longer needed. Call once per frame before rendering.
     pub fn update(&mut self, gpu: &Gpu, renderer: &Renderer, views: &[TerrainView]) -> Result<Stats, String> {
+        let sun = renderer.terrain_shadow_sun();
+        if self.sun != sun {
+            self.sun = sun;
+            self.selection = None;
+        }
         let Plan { stats, changed, mut jobs, morph_jobs } = self.plan(views);
         // One job per slot: a sliding patch's rebuild replaces its plain build.
         if !morph_jobs.is_empty() {
@@ -1043,6 +1067,23 @@ mod tests {
             }
         }
         assert_eq!(topology.nodes, TerrainTopology::with_index(&leaves, root, true).nodes);
+    }
+
+    #[test]
+    fn ridge_casting_onto_a_near_receiver_uses_its_projected_shadow_error() {
+        let settings = Settings::default();
+        let receiver = Vec3::new(-23.52, 653.95, -125.20);
+        let sun = Vec3::new(0.6243382, 0.4694716, 0.6243382);
+        let ridge = receiver + 593.2 * sun;
+        for displacement in [0.0, 2.6] {
+            let pos = receiver + Vec3::Y * 1.7 - Vec3::Z * displacement;
+            let camera = Camera { pos, target: pos - Vec3::Z, fov_y: 1.0, near: 0.05 };
+            let view = TerrainView::new(&camera, 2560, 1440);
+            assert!(view.shadow_needs_detail(Some(sun), ridge, 30.0, 8.0, 1.0, &settings, 1.0));
+            assert!(!view.shadow_needs_detail(Some(sun), ridge, 8.0, 2.0, 0.5, &settings, 1.0));
+            assert!(!view.shadow_needs_detail(Some(sun), ridge + Vec3::X * 1500.0, 30.0, 8.0, 1.0, &settings, 1.0));
+            assert!(!view.shadow_needs_detail(None, ridge, 30.0, 8.0, 1.0, &settings, 1.0));
+        }
     }
 
     #[test]
