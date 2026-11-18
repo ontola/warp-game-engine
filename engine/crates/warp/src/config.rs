@@ -27,6 +27,9 @@ pub struct GameToml {
     pub min_players: usize,
     /// Seed of the `random` generator. `--seed` overrides it.
     pub seed: u64,
+    /// A new seed for every round played (`warp run` and New round in the
+    /// start menu); `--seed`, scripts and tests keep `seed`.
+    pub fresh_seed: bool,
     /// Entities alive at once (render slots reserved up front).
     pub max_entities: usize,
     /// Window size in pixels.
@@ -73,7 +76,7 @@ impl Default for HumanPool {
 
 impl Default for GameToml {
     fn default() -> Self {
-        GameToml { title: "Warp game".into(), id: String::new(), storage: false, tick_rate: 60.0, players: 1, split: true, bots: 0, min_players: 1, seed: 1, max_entities: 1024, size: [1280, 720], sky: "gradient".into(), steps: 200_000, memory_mb: 64, humans: Default::default(), hdr: None, split_layout: None }
+        GameToml { title: "Warp game".into(), id: String::new(), storage: false, tick_rate: 60.0, players: 1, split: true, bots: 0, min_players: 1, seed: 1, fresh_seed: false, max_entities: 1024, size: [1280, 720], sky: "gradient".into(), steps: 200_000, memory_mb: 64, humans: Default::default(), hdr: None, split_layout: None }
     }
 }
 

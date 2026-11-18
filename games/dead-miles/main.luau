@@ -61,8 +61,8 @@ local KNOBS = {
 	ghost = 12, -- seconds as a ghost before a new survivor arrives
 	revive = 2, -- seconds a teammate holds A to revive
 	search = 1.2, -- seconds to search a container
-	cam_height = 22, -- camera height over the group, m
-	cam_back = 7, -- camera distance behind (south of) the group, m
+	cam_height = 24, -- camera height over the group, m
+	cam_back = 0.6, -- camera distance behind (south of) the group, m (near 0: straight down)
 	fov = 33, -- camera field of view, degrees
 	torch = 2000, -- torch brightness, candela
 	lamp = 1000, -- street light brightness, candela
@@ -3667,6 +3667,58 @@ local function proj(pos, u)
 	return hud.project(pos)
 end
 
+-- A profile card: who someone is now and what their body is good for.
+local CARD_W, CARD_H = 360, 138
+local function profile_card(u, cx, cy, a, k)
+	local c = { u.color.x, u.color.y, u.color.z }
+	local cw, ch = CARD_W * k, CARD_H * k
+	hud.box(cx, cy, cw, ch, { 0.05, 0.05, 0.06, 0.85 * a })
+	hud.box(cx, cy, 4 * k, ch, { c[1], c[2], c[3], a })
+	hud.text(u.person.name, cx + 16 * k, cy + 8 * k, { size = 22 * k, width = cw - 24 * k, color = { 0.96, 0.94, 0.9, a } })
+	hud.text(u.person.before, cx + 16 * k, cy + 36 * k, { size = 14 * k, width = cw - 28 * k, color = { 0.78, 0.75, 0.7, a } })
+	hud.text(u.person.now, cx + 16 * k, cy + 56 * k, { size = 14 * k, width = cw - 28 * k, color = { 0.62, 0.6, 0.56, a } })
+	local stats = {
+		{ "legs", ((u.speed or 1) - 0.82) / 0.36 },
+		{ "arms", ((u.strength or 1) - 0.7) / 0.6 },
+		{ "breath", ((u.stamina_max or KNOBS.stamina) / KNOBS.stamina - 0.65) / 0.8 },
+	}
+	for i, st in stats do
+		local sx = cx + 16 * k + (i - 1) * 104 * k
+		hud.text(st[1], sx, cy + ch - 34 * k, { size = 13 * k, width = 90 * k, color = { 0.7, 0.68, 0.64, a } })
+		hud.box(sx, cy + ch - 16 * k, 90 * k, 5 * k, { 1, 1, 1, 0.12 * a })
+		hud.box(sx, cy + ch - 16 * k, 90 * k * math.clamp(st[2], 0.05, 1), 5 * k, { c[1], c[2], c[3], a })
+	end
+end
+
+-- The start menu (open, the game frozen): everyone's profile card under it.
+local function menu(top)
+	s = state.s
+	if not s then return end
+	local W, H = hud.size()
+	local k = H / 720
+	local list = {}
+	for _, u in s.survivors do
+		if not u.recruit and (u.person or u.state == "ghost") then table.insert(list, u) end
+	end
+	if #list == 0 then return end
+	local cw, ch, gap = CARD_W * k, CARD_H * k, 14 * k
+	local per = math.max(1, math.min(#list, math.floor((W - 40 * k + gap) / (cw + gap))))
+	for i, u in list do
+		local row, col = (i - 1) // per, (i - 1) % per
+		local in_row = math.min(per, #list - row * per)
+		local cx = (W - (in_row * cw + (in_row - 1) * gap)) / 2 + col * (cw + gap)
+		local cy = top + 24 * k + row * (ch + gap)
+		if u.person and u.state ~= "ghost" then
+			profile_card(u, cx, cy, 1, k)
+		else
+			hud.box(cx, cy, cw, ch, { 0.05, 0.05, 0.06, 0.6 })
+			hud.box(cx, cy, 4 * k, ch, { u.color.x, u.color.y, u.color.z, 0.5 })
+			hud.text(u.name, cx + 16 * k, cy + 8 * k, { size = 22 * k, width = cw - 24 * k, color = { 0.7, 0.68, 0.64, 1 } })
+			hud.text("waiting for someone to join", cx + 16 * k, cy + 40 * k, { size = 14 * k, width = cw - 28 * k, color = { 0.55, 0.53, 0.5, 1 } })
+		end
+	end
+end
+
 local function draw_over(W, H, k)
 	local t = s.over_t or 0
 	local function ramp(a, b) local x = math.clamp((t - a) / (b - a), 0, 1) return x * x * (3 - 2 * x) end
@@ -3804,27 +3856,12 @@ local function draw()
 				if u.card_t and u.person and not u.bot and u.state == "ok" then
 					local vx, vy, vw, vh = hud.view(u.id)
 					local a = math.min(1, u.card_t * 1.5, (7 - u.card_t) * 4)
-					local cw, ch = 360 * k, 138 * k
+					local cw, ch = CARD_W * k, CARD_H * k
 					-- People sharing a view stack their cards.
 					local key = math.floor(vx) .. ":" .. math.floor(vy)
 					cards[key] = (cards[key] or 0) + 1
 					local cx, cy = vx + 18 * k, vy + vh - (ch + 10 * k) * cards[key] - 8 * k
-					hud.box(cx, cy, cw, ch, { 0.05, 0.05, 0.06, 0.85 * a })
-					hud.box(cx, cy, 4 * k, ch, { c[1], c[2], c[3], a })
-					hud.text(u.person.name, cx + 16 * k, cy + 8 * k, { size = 22 * k, width = cw - 24 * k, color = { 0.96, 0.94, 0.9, a } })
-					hud.text(u.person.before, cx + 16 * k, cy + 36 * k, { size = 14 * k, width = cw - 28 * k, color = { 0.78, 0.75, 0.7, a } })
-					hud.text(u.person.now, cx + 16 * k, cy + 56 * k, { size = 14 * k, width = cw - 28 * k, color = { 0.62, 0.6, 0.56, a } })
-					local stats = {
-						{ "legs", ((u.speed or 1) - 0.82) / 0.36 },
-						{ "arms", ((u.strength or 1) - 0.7) / 0.6 },
-						{ "breath", ((u.stamina_max or KNOBS.stamina) / KNOBS.stamina - 0.65) / 0.8 },
-					}
-					for i, st in stats do
-						local sx = cx + 16 * k + (i - 1) * 104 * k
-						hud.text(st[1], sx, cy + ch - 34 * k, { size = 13 * k, width = 90 * k, color = { 0.7, 0.68, 0.64, a } })
-						hud.box(sx, cy + ch - 16 * k, 90 * k, 5 * k, { 1, 1, 1, 0.12 * a })
-						hud.box(sx, cy + ch - 16 * k, 90 * k * math.clamp(st[2], 0.05, 1), 5 * k, { c[1], c[2], c[3], a })
-					end
+					profile_card(u, cx, cy, a, k)
 				end
 				-- The talk card: who it is, what they say, the choices.
 				if u.talk then
@@ -4065,4 +4102,4 @@ local debug = {
 	end,
 }
 
-return { init = init, tick = tick, draw = draw, reload = reload, debug = debug, player_joined = player_joined, player_left = player_left, players_changed = players_changed }
+return { init = init, tick = tick, draw = draw, menu = menu, reload = reload, debug = debug, player_joined = player_joined, player_left = player_left, players_changed = players_changed }

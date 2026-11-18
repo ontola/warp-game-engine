@@ -55,6 +55,17 @@ pub struct Overrides {
     pub bots: Option<usize>,
     pub seed: Option<u64>,
     pub sky: Option<String>,
+    /// Played for real (not a script or test): `fresh_seed` applies.
+    pub fresh: bool,
+}
+
+/// A seed nobody chose: the clock, mixed with the last one.
+fn fresh_seed(last: u64) -> u64 {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
+    let mut x = now ^ last.rotate_left(17) ^ 0x9e37_79b9_7f4a_7c15;
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    (x ^ (x >> 31)) % 1_000_000_000 + 1
 }
 
 pub struct LuaGame {
@@ -75,6 +86,8 @@ pub struct LuaGame {
     /// The `logs` tool's buffer (usable while `live` is out serving).
     live_logs: Option<live::Logs>,
     seed: u64,
+    /// A new seed each New round (`fresh_seed`, played for real).
+    fresh: bool,
     default_sky: SkyChoice,
     /// Print log lines to stdout (off for tests that read `logs()`).
     pub echo: bool,
@@ -139,6 +152,8 @@ impl LuaGame {
             cfg.bots = b;
         }
         if let Some(s) = over.seed { cfg.seed = s; }
+        let fresh = over.fresh && over.seed.is_none() && cfg.fresh_seed;
+        if fresh { cfg.seed = fresh_seed(0); }
         let default_sky = SkyChoice::parse(over.sky.as_deref().unwrap_or(&cfg.sky))?;
         let sounds_dir = dir.join("sounds");
         let mut bank = Bank::new(sounds_dir.is_dir().then_some(sounds_dir));
@@ -172,7 +187,7 @@ impl LuaGame {
         let mut host = Host::new(Limits { memory: cfg.memory_mb << 20, steps: cfg.steps }, move |lua, base| api::register(lua, base, shared))?;
         host.ignore(NOT_MODULES);
         if single.is_none() { host.enable_libraries(); }
-        let mut g = LuaGame { dir: dir.to_path_buf(), single: single.clone(), seed: cfg.seed, cfg, host, core, inited: BTreeSet::new(), light: Lighting::default(), applied_sky: None, sky_upload: None,
+        let mut g = LuaGame { dir: dir.to_path_buf(), single: single.clone(), seed: cfg.seed, fresh, cfg, host, core, inited: BTreeSet::new(), light: Lighting::default(), applied_sky: None, sky_upload: None,
             log: VecDeque::new(), live: None, live_logs: None, default_sky, echo: true, party: None, menu: None, menu_stick: 0.0, running_for: 0, ready_due: false, windowed: false, polls: 0, next_id: 1, quit: false, surface: GameSurface::new(dir), trial: None, editor_pages: Default::default() };
         g.surface.install();
         let people: Vec<SeatInfo> = (0..g.cfg.players).map(|i| SeatInfo { seat: i, name: format!("Player {}", i + 1), color: None, bot: false, couch: None })
@@ -428,6 +443,16 @@ impl LuaGame {
 
     pub fn menu_open(&self) -> bool { self.menu.is_some() }
 
+    /// Where the start menu's title starts and its last item ends, in
+    /// pixels: centred, or high up when the game draws under it (`menu`).
+    fn menu_layout(&self, size: [u32; 2]) -> (f32, f32) {
+        let s = (size[1] as f32 / 720.0).max(0.5);
+        let n = self.menu_items().len() as f32;
+        let centre = if self.host.has("menu") { size[1] as f32 * 0.26 } else { size[1] as f32 * 0.5 };
+        let top = centre - (64.0 + 56.0 * n) * s * 0.5;
+        (top, top + (96.0 + 56.0 * n) * s)
+    }
+
     pub fn open_menu(&mut self) { self.menu = Some(0); self.menu_stick = 0.0; }
 
     fn close_menu(&mut self) { self.menu = None; }
@@ -436,7 +461,10 @@ impl LuaGame {
         self.close_menu();
         match item {
             MenuItem::Resume => {}
-            MenuItem::NewRound => self.restart(),
+            MenuItem::NewRound => {
+                if self.fresh { self.seed = fresh_seed(self.seed); }
+                self.restart()
+            }
             MenuItem::Quit => self.quit = true,
         }
     }
@@ -768,8 +796,11 @@ impl LuaGame {
         let mut list = HudDrawList::new(size);
         let full = [0.0, 0.0, size[0] as f32, size[1] as f32];
         let rgba = |c: [f32; 4]| c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
-        // The menu hides the game's HUD so nothing shows through it.
-        let items = if self.menu.is_some() { Vec::new() } else { self.core().hud.clone() };
+        let s = (size[1] as f32 / 720.0).max(0.5);
+        // The menu hides the game's HUD so nothing shows through it; what a
+        // `menu` hook drew goes over the menu's backdrop.
+        if self.menu.is_some() { list.rect(full, [0.02, 0.02, 0.05, 0.72], full); }
+        let items = self.core().hud.clone();
         for (k, item) in items.iter().enumerate() {
             match item {
                 HudItem::Box { rect, color } => list.rect(*rect, *color, full),
@@ -779,13 +810,11 @@ impl LuaGame {
                 }),
             }
         }
-        let s = (size[1] as f32 / 720.0).max(0.5);
         // The start menu over the whole screen: the title, then the items.
         if let Some(sel) = self.menu {
-            let (w, h) = (size[0] as f32, size[1] as f32);
-            list.rect(full, [0.02, 0.02, 0.05, 0.72], full);
+            let w = size[0] as f32;
             let items = self.menu_items();
-            let top = h * 0.5 - (64.0 + 56.0 * items.len() as f32) * s * 0.5;
+            let top = self.menu_layout(size).0;
             list.text.push(TextRun { id: 20_000, text: self.cfg.title.clone(), position: [0.0, top], bounds: full, font_size: 56.0 * s, color: [255, 255, 255, 255],
                 font: FontFace::Title, align: render::hud::TextAlign::Center, width: w });
             for (i, item) in items.iter().enumerate() {
@@ -1009,7 +1038,14 @@ impl Game for LuaGame {
             c.hud.clear();
             c.phase = Phase::Draw;
         }
-        self.hook("draw", || Ok(mlua::MultiValue::new()));
+        // With the start menu open a game may draw under its items (its
+        // `menu(y)` hook, y where the free space starts) instead of its HUD.
+        if self.menu.is_some() {
+            let below = self.menu_layout(frame.size).1;
+            self.hook("menu", || Ok(mlua::MultiValue::from_vec(vec![Value::Number(below as f64)])));
+        } else {
+            self.hook("draw", || Ok(mlua::MultiValue::new()));
+        }
         self.core().phase = Phase::Sim;
         self.attach_plants();
         self.update_sky();

@@ -11,6 +11,7 @@ players = 1
 bots = 1
 min_players = 2
 seed = 11
+fresh_seed = true # a new world and new people every round played
 sky = "night:clear"
 hdr = true
 # A few chunks of land, up to a few hundred zombies of twelve boxes each, effects.
