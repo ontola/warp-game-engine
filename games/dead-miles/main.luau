@@ -37,6 +37,12 @@ for _, name in libraries("content/encounters") do
 	table.insert(ENCOUNTERS, e)
 end
 
+-- The story: what people say on the way (content/talk) and what happens
+-- at the camp at night (content/camp).
+local tell = { TALKS = {}, NIGHTS = {} }
+for _, name in libraries("content/talk") do table.insert(tell.TALKS, require(name)) end
+for _, name in libraries("content/camp") do table.insert(tell.NIGHTS, require(name)) end
+
 -- @knobs
 local KNOBS = {
 	walk = 3.4, -- survivor jog, m/s (the everyday pace)
@@ -1751,6 +1757,10 @@ local function die(u)
 	table.insert(s.corpses, { fig = u.fig, t = 20, pos = u.pos })
 	u.fig = nil
 	count("deaths")
+	if u.person then
+		local name = u.person.first or string.match(u.person.name, "^(%S+)") or u.person.name
+		s.fallen_names = if s.fallen_names then s.fallen_names .. " and " .. name else name
+	end
 	if u.recruit then
 		u.state = "gone"
 		return
@@ -2096,6 +2106,248 @@ local function standing_count()
 end
 
 -- Night camp: everyone at the fire. Eat, the dead wander off, a new day.
+----------------------------------------------------------------------------
+-- The story: who they are, what they say on the way, what happens at night.
+-- Its own dice (s.tale), so telling it never moves the land or the fights.
+
+tell.ORIGINS = { "the clinic at Velmar Bay", "a research lab outside Kessel", "the quarantine ward in Marrowby", "a cargo ship in Harrowgate harbour", "the army hospital at Graswijk" }
+
+function tell.tale(n)
+	s.tale = ((s.tale or 7) * 1103515245 + 12345) % 2147483648
+	return (s.tale // 65536) % n + 1
+end
+
+function tell.first_of(u)
+	local p = u and u.person
+	if p then return p.first or string.match(p.name, "^(%S+)") or p.name end
+	return (u and u.name) or "someone"
+end
+
+-- {a}, {b}: first names; {a_who}, {a_lost}, {a_from}: whom a lost, their
+-- name, where a is from; {days}: days since it got out; {fallen}: the dead
+-- of today.
+function tell.fill(text, a, b)
+	text = string.gsub(text, "{days}", tostring((s.days_since or 30) + s.day - 1))
+	text = string.gsub(text, "{fallen}", s.fallen_names or "them")
+	return (string.gsub(text, "{([ab])_?(%a*)}", function(who, key)
+		local u = if who == "a" then a else (b or a)
+		if key == "" then return tell.first_of(u) end
+		local p = u and u.person
+		if key == "who" then return (p and p.who) or "family" end
+		if key == "lost" then return (p and p.lost) or "them" end
+		if key == "from" then return (p and p.from) or "home" end
+		return nil
+	end))
+end
+
+function tell.intro_lines()
+	local days = s.days_since
+	local lines = {
+		{ big = days .. " DAYS", small = "since it got out of " .. tell.ORIGINS[tell.tale(#tell.ORIGINS)] .. ".", t = 5 },
+	}
+	for _, u in s.survivors do
+		local p = u.person
+		if p and #lines < 5 then
+			table.insert(lines, { big = p.name .. ", from " .. (p.from or "nowhere"), small = p.before .. " Lost a " .. (p.who or "friend") .. ", " .. (p.lost or "someone") .. ".", t = 4.5 })
+		end
+	end
+	table.insert(lines, { small = "The radio says the boats still leave from the coast. The coast is east.", t = 4 })
+	table.insert(lines, { small = "In the day the dead are restless. You walk by night.", t = 4 })
+	return lines
+end
+
+function tell.start_story()
+	local h = 0
+	for _, z in s.zombies do h += z.pos.x * 3.1 + z.pos.z * 7.7 end
+	s.days_since = 18 + math.floor(hash01(h, #s.zombies, 9) * 40)
+	s.tale = math.floor(hash01(h, 3, 4) * 2147483000)
+	s.chat_cd = 40
+	s.intro = { t = 0, lines = tell.intro_lines() }
+	-- The intro says who they are: no cards over it.
+	for _, u in s.survivors do u.card_t = nil end
+end
+
+function tell.intro_step(dt, input)
+	local it = s.intro
+	if not it then return end
+	it.t += dt
+	-- A skips the black opening.
+	local first = it.lines[1].t
+	if it.t < first and it.t > 0.6 then
+		for _, u in s.survivors do
+			local i = not u.bot and input[u.id]
+			if i and i.pressed.south then it.t = first end
+		end
+	end
+	local total = 0
+	for _, l in it.lines do total += l.t end
+	if it.t > total then s.intro = nil end
+end
+
+function tell.calm_round(p, r)
+	for _, z in s.zombies do
+		if z.state ~= "dead" and z.state ~= "sleep" and dist(z.pos, p) < r then return false end
+	end
+	return true
+end
+
+-- Talk on the way: when it is quiet, two of them say a few things to each
+-- other (or one, alone, to nobody). Anything coming cuts it short.
+function tell.say(u, text)
+	local d = 2.4 + #text * 0.055
+	u.say = { text = text, t = d, max = d }
+end
+
+function tell.chat_step(dt)
+	if s.intro then return end
+	local c = s.chat
+	if c then
+		local line = c.lines[c.i]
+		local u = line and c.who[line[1]]
+		if c.i > 0 and not (u and u.state == "ok" and tell.calm_round(u.pos, 9)) then
+			if u then u.say = nil end
+			s.chat = nil
+			s.chat_cd = 30
+			return
+		end
+		c.t -= dt
+		if u and u.say then u.say.t -= dt end
+		if c.t > 0 then return end
+		if u then u.say = nil end
+		c.i += 1
+		line = c.lines[c.i]
+		if not line then
+			s.chat = nil
+			s.chat_cd = 50 + tell.tale(50)
+			return
+		end
+		u = c.who[line[1]]
+		if not u then
+			s.chat = nil
+			return
+		end
+		local text = tell.fill(line[2], c.who.a, c.who.b)
+		tell.say(u, text)
+		c.t = u.say.max + 0.35
+		return
+	end
+	s.chat_cd = (s.chat_cd or 40) - dt
+	if s.chat_cd > 0 then return end
+	s.chat_cd = 6
+	local folks = {}
+	for _, u in s.survivors do
+		if u.state == "ok" and u.person and not u.talk then table.insert(folks, u) end
+	end
+	if #folks == 0 then return end
+	local a = folks[tell.tale(#folks)]
+	if not tell.calm_round(a.pos, 14) then return end
+	local b, bd = nil, 8
+	for _, u in folks do
+		if u ~= a and dist(u.pos, a.pos) < bd then b, bd = u, dist(u.pos, a.pos) end
+	end
+	s.talked = s.talked or {}
+	local pool = {}
+	for _, t in tell.TALKS do
+		local n = t.people or 2
+		if not s.talked[t.id] and (t.min_day or 1) <= s.day and ((n == 1) == (b == nil)) then table.insert(pool, t) end
+	end
+	if #pool == 0 then return end
+	local t = pool[tell.tale(#pool)]
+	s.talked[t.id] = true
+	s.chat = { lines = t.lines, i = 0, t = 0, who = { a = a, b = b } }
+end
+
+-- The camp at night: one thing happens, sometimes with a choice.
+function tell.pick_night()
+	local folks = {}
+	for _, u in s.survivors do
+		if in_body(u) and u.person then table.insert(folks, u) end
+	end
+	if #folks == 0 then return nil end
+	local a = folks[tell.tale(#folks)]
+	local b = nil
+	if #folks > 1 then
+		b = folks[tell.tale(#folks - 1)]
+		if b == a then b = folks[#folks] end
+	end
+	s.nights = s.nights or {}
+	local pool, total = {}, 0
+	for _, e in tell.NIGHTS do
+		local ok = (e.min_day or 1) <= s.day - 1 and not s.nights[e.id] and (e.people or 1) <= #folks
+		if e.fallen and not s.fallen_names then ok = false end
+		if e.alone and #folks > 1 then ok = false end
+		for item, n in e.needs or {} do
+			if (s[item] or 0) < n then ok = false end
+		end
+		if ok then
+			table.insert(pool, e)
+			total += e.weight or 1
+		end
+	end
+	if total <= 0 then return nil end
+	local r = (tell.tale(1000) - 0.5) / 1000 * total
+	local pick = pool[#pool]
+	for _, e in pool do
+		r -= e.weight or 1
+		if r <= 0 then pick = e break end
+	end
+	s.nights[pick.id] = true
+	return { e = pick, a = a, b = b, stage = "tell", t = 0, i = 1, text = tell.fill(pick.text, a, b) }
+end
+
+function tell.night_apply(n, res)
+	local function who(w)
+		if w == "all" then
+			local out = {}
+			for _, u in s.survivors do
+				if in_body(u) then table.insert(out, u) end
+			end
+			return out
+		end
+		local u = if w == "b" then (n.b or n.a) else n.a
+		return { u }
+	end
+	for item, k in res.gain or {} do
+		s[item] = (s[item] or 0) + k
+		count("gained_" .. item, k)
+	end
+	for item, k in res.lose or {} do s[item] = math.max(0, (s[item] or 0) - k) end
+	if res.injure then
+		for _, u in who(res.injure) do u.injured = true end
+	end
+	if res.heal then
+		for _, u in who(res.heal) do u.injured = false end
+	end
+	if res.dawn then s.dawn = res.dawn end
+	if res.calm then s.dir = { mode = "calm", t = res.calm, spawn_t = 8 } end
+	n.after = tell.fill(res.text or "", n.a, n.b)
+	n.stage, n.t = "after", 0
+	count("nights")
+end
+
+function tell.night_choose(n, c)
+	if c.cost then
+		if not has(c.cost) then
+			sfx("click", s.camp_used)
+			return
+		end
+		for item, k in c.cost do s[item] -= k end
+	end
+	local res = c
+	if c.results then
+		local total = 0
+		for _, r in c.results do total += r.weight or 1 end
+		local roll = random.range(0, total)
+		res = c.results[#c.results]
+		for _, r in c.results do
+			roll -= r.weight or 1
+			if roll <= 0 then res = r break end
+		end
+	end
+	sfx("pickup", s.camp_used, { pitch = 0.8 })
+	tell.night_apply(n, res)
+end
+
 local function make_camp()
 	count("camps")
 	local mouths = 0
@@ -2138,7 +2390,7 @@ local function make_camp()
 		end
 	end
 	s.phase = "camp"
-	s.camp_t = 4
+	s.camp_t = 3
 	s.camp_short = short
 	s.pressure = 0
 	s.dir = { mode = "calm", t = 20, spawn_t = 8 }
@@ -2147,6 +2399,10 @@ local function make_camp()
 	s.camp_used = s.camp
 	s.camp = nil
 	sfx("revive", s.camp_used, { pitch = 0.7 })
+	s.chat = nil
+	for _, u in s.survivors do u.say = nil end
+	s.night = tell.pick_night()
+	s.fallen_names = nil
 end
 
 local function nearest_stranger(u)
@@ -3885,9 +4141,56 @@ local function tick(dt, input)
 	ambience_step(dt)
 	if s.phase == "camp" then
 		s.camp_t -= dt
-		if s.camp_t <= 0 then
+		local n = s.night
+		local function done()
 			s.phase = "play"
 			s.time_now = nil
+			s.night = nil
+			-- Chased out of the camp: the dead are right behind.
+			if s.dawn and s.camp_used then
+				for i = 1, s.dawn do
+					local p = s.camp_used + v(-random.range(9, 14), 0, random.range(-3, 3))
+					spawn_zombie(if i % 4 == 0 then "runner" else "shambler", p, "investigate", flat(s.camp_used))
+				end
+				noise(s.camp_used, 16, 0.3)
+			end
+			s.dawn = nil
+		end
+		if s.camp_t > 0 then return end
+		if not n then
+			done()
+			return
+		end
+		n.t += dt
+		local people, up, down, ok = false, false, false, false
+		for _, u in s.survivors do
+			local i = not u.bot and input[u.id]
+			if i then
+				people = true
+				up = up or i.pressed.up
+				down = down or i.pressed.down
+				ok = ok or i.pressed.south
+			end
+		end
+		ok = ok and n.t > 0.8
+		if n.stage == "tell" then
+			local choices = n.e.choices
+			if choices then
+				if up then n.i = (n.i - 2) % #choices + 1 end
+				if down then n.i = n.i % #choices + 1 end
+				if not people and n.t > 4 then
+					-- A room of bots takes what it can afford.
+					for i, c in choices do
+						if has(c.cost) then n.i = i break end
+					end
+					ok = true
+				end
+				if ok then tell.night_choose(n, choices[n.i]) end
+			elseif ok or n.t > (if people then 16 else 4) then
+				tell.night_apply(n, n.e.result or {})
+			end
+		elseif ok or n.t > (if people then 12 else 3) then
+			done()
 		end
 		return
 	end
@@ -3915,6 +4218,12 @@ local function tick(dt, input)
 		return
 	end
 
+	if not s.story then
+		s.story = true
+		tell.start_story()
+	end
+	tell.intro_step(dt, input)
+	tell.chat_step(dt)
 	camera_step(dt)
 	if game.tick() % 4 == 0 then blocks_step() end
 	interiors_step(dt)
@@ -4344,6 +4653,99 @@ local function draw_over(W, H, k)
 	end
 end
 
+-- Words broken into lines no wider than width.
+function tell.wrap(text, size, width)
+	local lines, line = {}, ""
+	for word in string.gmatch(text, "%S+") do
+		local try = if line == "" then word else line .. " " .. word
+		if line ~= "" and hud.measure(try, size) > width then
+			table.insert(lines, line)
+			line = word
+		else
+			line = try
+		end
+	end
+	if line ~= "" then table.insert(lines, line) end
+	return lines
+end
+
+function tell.text_block(text, x, y, width, size, color, gap)
+	local lines = tell.wrap(text, size, width)
+	for i, l in lines do
+		hud.text(l, x, y + (i - 1) * size * (gap or 1.35), { size = size, width = width, align = "center", color = color })
+	end
+	return y + #lines * size * (gap or 1.35)
+end
+
+-- The night at the camp: what happens, the choice, what came of it.
+function tell.draw_night(n, W, H, k)
+	local a = math.clamp(n.t / 0.8, 0, 1)
+	local width = math.min(W * 0.62, 780 * k)
+	local x = (W - width) / 2
+	hud.text("NIGHT " .. (s.day - 1) .. "   " .. math.floor(s.route) .. " m", 0, H * 0.16, { size = 22 * k, align = "center", width = W, color = { 0.72, 0.69, 0.63, 1 } })
+	local y = H * 0.26
+	if n.stage == "tell" then
+		y = tell.text_block(n.text, x, y, width, 27 * k, { 0.95, 0.93, 0.88, a })
+		local choices = n.e.choices
+		if choices then
+			y += 28 * k
+			for i, c in choices do
+				local sel = i == n.i
+				local afford = has(c.cost)
+				if sel then hud.box(x + width * 0.2, y - 4 * k, width * 0.6, 34 * k, { 1, 1, 1, 0.1 * a }) end
+				local label = tell.fill(c.label, n.a, n.b)
+				if c.cost then
+					for item, q in c.cost do label = label .. "  -" .. q .. " " .. item end
+				end
+				icons.text(label, 0, y, { size = 23 * k, align = "center", width = W, color = if not afford then "#7a746c" elseif sel then "#ffffff" else "#c8c0b4", dim = not afford })
+				y += 38 * k
+			end
+			button_row(W / 2, H * 0.84, { { "A", "choose" } }, k, a)
+		elseif n.t > 0.8 then
+			button_row(W / 2, H * 0.84, { { "A", "go on" } }, k, a)
+		end
+	else
+		y = tell.text_block(n.text, x, y, width, 22 * k, { 0.6, 0.58, 0.54, 1 })
+		y += 24 * k
+		tell.text_block(n.after, x, y, width, 27 * k, { 0.98, 0.86, 0.62, a })
+		if n.t > 0.8 then button_row(W / 2, H * 0.84, { { "A", "morning" } }, k, a) end
+	end
+end
+
+-- The opening: black, the day and how it began, then who they are as
+-- words over the first street.
+function tell.draw_intro(W, H, k)
+	local it = s.intro
+	local t, at = it.t, 0
+	local cur, from = nil, 0
+	for i, l in it.lines do
+		if t >= at and t < at + l.t then cur, from = i, at end
+		at += l.t
+	end
+	local first = it.lines[1].t
+	local black = if t < first then 1 else math.clamp(1 - (t - first) / 1.5, 0, 1)
+	if black > 0 then hud.box(0, 0, W, H, { 0, 0, 0, black }) end
+	if not cur then return end
+	local l = it.lines[cur]
+	local lt = t - from
+	local a = math.clamp(lt / 0.6, 0, 1) * math.clamp((l.t - lt) / 0.6, 0, 1)
+	local width = math.min(W * 0.7, 820 * k)
+	if cur == 1 then
+		hud.text(l.big, 0, H * 0.36, { size = 64 * k, align = "center", width = W, color = { 0.96, 0.94, 0.9, a } })
+		tell.text_block(l.small, (W - width) / 2, H * 0.36 + 84 * k, width, 26 * k, { 0.78, 0.75, 0.7, a })
+		return
+	end
+	local y = H * 0.7
+	hud.box(0, y - 18 * k, W, 120 * k, { 0, 0, 0, 0.55 * a })
+	if l.big then
+		hud.text(l.big, 0, y, { size = 30 * k, align = "center", width = W, color = { 0.96, 0.94, 0.9, a } })
+		y += 42 * k
+	else
+		y += 18 * k
+	end
+	tell.text_block(l.small, (W - width) / 2, y, width, 21 * k, { 0.82, 0.79, 0.74, a })
+end
+
 local function draw()
 	s = state.s
 	if not s or not s.cam then return end
@@ -4358,12 +4760,22 @@ local function draw()
 	end
 
 	if s.phase == "camp" then
-		hud.box(0, 0, W, H, { 0.02, 0.02, 0.03, 0.85 })
+		hud.box(0, 0, W, H, { 0.02, 0.02, 0.03, if s.night and s.camp_t <= 0 then 0.94 else 0.85 })
+		if s.night and s.camp_t <= 0 then
+			tell.draw_night(s.night, W, H, k)
+			return
+		end
 		hud.text("NIGHT " .. (s.day - 1), 0, H * 0.38, { size = 64 * k, align = "center", width = W, color = "#f4efe6" })
 		hud.text(math.floor(s.route) .. " m walked", 0, H * 0.38 + 78 * k, { size = 26 * k, align = "center", width = W, color = "#b8b0a0" })
 		if s.camp_short > 0 then
 			icons.text("not enough food", 0, H * 0.38 + 118 * k, { size = 22 * k, align = "center", width = W, color = "#ff8a6a" })
 		end
+		return
+	end
+
+	-- The black opening: nothing over it.
+	if s.intro and s.intro.t < s.intro.lines[1].t then
+		tell.draw_intro(W, H, k)
 		return
 	end
 
@@ -4453,6 +4865,19 @@ local function draw()
 				if u.popup then
 					icons.text(u.popup.text, px - 100 * k, py - 140 * k - (1.8 - u.popup.t) * 20 * k, { size = 20 * k, align = "center", width = 200 * k, color = u.popup.color })
 				end
+				if u.say then
+					local sa = math.clamp((u.say.max - u.say.t) / 0.3, 0, 1) * math.clamp(u.say.t / 0.4, 0, 1)
+					local size, width = 18 * k, 300 * k
+					local lines = tell.wrap(u.say.text, size, width)
+					local lh = size * 1.3
+					local top = py - 118 * k - #lines * lh
+					local wide = 0
+					for _, l in lines do wide = math.max(wide, hud.measure(l, size)) end
+					hud.box(px - wide / 2 - 10 * k, top - 6 * k, wide + 20 * k, #lines * lh + 10 * k, { 0, 0, 0, 0.55 * sa })
+					for i, l in lines do
+						hud.text(l, px - width / 2, top + (i - 1) * lh, { size = size, width = width, align = "center", color = { 0.96, 0.93, 0.86, sa } })
+					end
+				end
 				if not u.bot and u.state == "ok" and not u.talk then
 					if u.tip then
 						button_row(px, free_y(px, py - 112 * k), u.tip.row, k, math.min(1, u.tip.t * 2))
@@ -4513,7 +4938,7 @@ local function draw()
 			if sx then hud.box(sx - 4 * k, sy - 4 * k, 8 * k, 8 * k, "#f2e6b0") end
 		end
 	end
-
+	if s.intro then tell.draw_intro(W, H, k) end
 end
 
 local function player_joined(p)
@@ -4703,6 +5128,39 @@ local debug = {
 	end,
 	-- debug.event("radio"): that encounter a few metres ahead of the first
 	-- survivor, to look at or test it.
+	-- debug.night("robbed"): make camp here now, with that night (or any);
+	-- debug.chat("names"): that talk starts now; debug.intro(): the opening again.
+	night = function(id)
+		s = state.s
+		s.camp = s.survivors[1].pos
+		make_camp()
+		if id then
+			for _, e in tell.NIGHTS do
+				if e.id == id then
+					s.night = s.night or { a = s.survivors[1], b = s.survivors[2], stage = "tell", t = 0, i = 1 }
+					s.night.e, s.night.text = e, tell.fill(e.text, s.night.a, s.night.b)
+				end
+			end
+		end
+		return if s.night then s.night.e.id else "no night"
+	end,
+	chat = function(id)
+		s = state.s
+		local a, b = s.survivors[1], s.survivors[2]
+		for _, t in tell.TALKS do
+			if t.id == id then
+				s.chat = { lines = t.lines, i = 0, t = 0, who = { a = a, b = b } }
+				s.intro = nil
+				return "talking"
+			end
+		end
+		return "no talk " .. tostring(id)
+	end,
+	intro = function()
+		s = state.s
+		s.intro = { t = 0, lines = tell.intro_lines() }
+		return "intro"
+	end,
 	event = function(id)
 		s = state.s
 		local e = nil
