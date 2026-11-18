@@ -25,7 +25,9 @@ pub struct Cache {
     /// Urgency the GPU last asked for each page with (projected pixel error
     /// of the cut waiting on it, x16; camera x4). Uploads go most urgent first.
     priority:Vec<u32>,index:Arena,cell:Arena,splat:Arena,pending:Option<Pending>,budget:Budget,
-    pub buffers:[wgpu::Buffer;4], // levels, indices + brick descriptors, cells, splats (two logical headers + pool)
+    pub buffers:[wgpu::Buffer;4], // levels (= buffers[1], from level_offset), indices + brick descriptors, cells, splats (two logical headers + pool)
+    /// Byte offset of the level headers inside the index buffer.
+    pub level_offset:u64,
     publication:Vec<(bool,u32)>,dirty:BTreeSet<usize>,cleared:Vec<usize>,wanted:BTreeSet<usize>,frame:u64,
     feedback:Vec<Feedback>,last_feedback:u64,stats:Stats,
 }
@@ -55,12 +57,16 @@ impl Cache {
             pages.iter().enumerate().filter(|(i,_)|pinned[*i]).map(|(_,p)|p.cells.len()as u64).sum::<u64>(),
             pages.iter().enumerate().filter(|(i,_)|pinned[*i]).map(|(_,p)|p.splats.len()as u64).sum::<u64>()];
         if (0..3).any(|i|pinned_sizes[i]>capacities[i]as u64) {return Err("pinned voxel ancestors exceed physical cache budget".into());}
-        let sizes=[pages.len()as u64*32,capacities[0]as u64*4,capacities[1]as u64*64,(2*pages.len()as u64+capacities[2]as u64)*8];
+        // Level headers follow the index arena in its buffer (voxel_forest.wgsl
+        // volume_level_*), from the next 256-byte boundary.
+        let level_offset=(capacities[0]as u64*4).div_ceil(256)*256;
+        let sizes=[pages.len()as u64*32,level_offset+pages.len()as u64*32,capacities[1]as u64*64,(2*pages.len()as u64+capacities[2]as u64)*8];
         if sizes.iter().any(|&s|s>gpu.device.limits().max_storage_buffer_binding_size as u64) {return Err("voxel cache exceeds device buffer limit".into());}
-        let buffers=std::array::from_fn(|i|gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("bounded voxel asset arena"),size:sizes[i].max(176),usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false}));
+        let buffers:[wgpu::Buffer;4]=std::array::from_fn(|i|gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("bounded voxel asset arena"),size:sizes[i].max(176),usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false}));
+        let mut buffers=buffers;buffers[0]=buffers[1].clone();
         let last_requested=vec![0;deps.len()];let finer=vec![Vec::new();deps.len()];
         let priority=vec![0;deps.len()];
-        let mut this=Self {finer,source:None,source_wanted:BTreeSet::from([0]),capacities,last_requested,priority,resident:vec![None;pages.len()],pages,deps,pinned,index:Arena::new(capacities[0]),cell:Arena::new(capacities[1]),splat:Arena::new(capacities[2]),pending:None,budget,buffers,publication:Vec::new(),dirty:BTreeSet::new(),cleared:Vec::new(),wanted:BTreeSet::new(),frame:0,feedback:Vec::new(),last_feedback:0,stats:Stats {allocated_bytes:sizes.iter().map(|s|(*s).max(176)).sum(),..Default::default()}};
+        let mut this=Self {level_offset,finer,source:None,source_wanted:BTreeSet::from([0]),capacities,last_requested,priority,resident:vec![None;pages.len()],pages,deps,pinned,index:Arena::new(capacities[0]),cell:Arena::new(capacities[1]),splat:Arena::new(capacities[2]),pending:None,budget,buffers,publication:Vec::new(),dirty:BTreeSet::new(),cleared:Vec::new(),wanted:BTreeSet::new(),frame:0,feedback:Vec::new(),last_feedback:0,stats:Stats {allocated_bytes:sizes.iter().map(|s|(*s).max(176)).sum(),..Default::default()}};
         this.publication=vec![(true,1);this.deps.len()];
         for id in 0..this.pages.len() {this.clear_header(gpu,id);}
         this.dirty.extend(0..this.pages.len());
@@ -101,7 +107,7 @@ impl Cache {
         // Data first, logical headers last. A partially uploaded page is never
         // marked resident and cannot be selected by any camera/shadow consumer.
         if p.cursor==begin && remaining>=48 {
-            gpu.queue.write_buffer(&self.buffers[0],p.id as u64*32,bytemuck::bytes_of(&p.level));
+            gpu.queue.write_buffer(&self.buffers[0],self.level_offset+p.id as u64*32,bytemuck::bytes_of(&p.level));
             gpu.queue.write_buffer(&self.buffers[3],p.id as u64*8,bytemuck::cast_slice(&[2*self.pages.len()as u32+p.resident.splat.range.start,p.splats.len()as u32]));
             let page=&self.pages[p.id];
             gpu.queue.write_buffer(&self.buffers[3],(self.pages.len()+p.id)as u64*8,bytemuck::cast_slice(&[p.resident.index.range.start+page.indices.len()as u32,page.splat_bricks.len()as u32]));
@@ -119,7 +125,7 @@ impl Cache {
     /// whose finest page is out) but has no cells and no bricks: that empty
     /// range is how the sun pass sees it is not resident.
     fn clear_header(&self,gpu:&Gpu,id:usize) {
-        gpu.queue.write_buffer(&self.buffers[0],id as u64*32,bytemuck::bytes_of(&self.pages[id].level));
+        gpu.queue.write_buffer(&self.buffers[0],self.level_offset+id as u64*32,bytemuck::bytes_of(&self.pages[id].level));
         gpu.queue.write_buffer(&self.buffers[3],id as u64*8,bytemuck::cast_slice(&[0u32,0]));
         gpu.queue.write_buffer(&self.buffers[3],(self.pages.len()+id)as u64*8,bytemuck::cast_slice(&[0u32,0]));
     }
@@ -272,7 +278,7 @@ mod tests {
                 if cache.publication[target].0 {break;}
             }
             assert!(cache.publication[target].0,"requested page eventually becomes resident");
-            let raw=read(&cache.buffers[0]);let level:GpuLevel=bytemuck::pod_read_unaligned(&raw[target*32..target*32+32]);
+            let raw=read(&cache.buffers[0]);let at=cache.level_offset as usize+target*32;let level:GpuLevel=bytemuck::pod_read_unaligned(&raw[at..at+32]);
             // One occupied brick: the directory entry points at [mask, mask, first cell].
             let raw=read(&cache.buffers[1]);let word=|i:usize|->u32{bytemuck::pod_read_unaligned(&raw[i*4..][..4])};
             assert_eq!(level.dims_offset[3]>>30,3);let record=word((level.dims_offset[3]&0x3fff_ffff)as usize)as usize;

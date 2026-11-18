@@ -8,10 +8,15 @@ struct VolumeTree {
 };
 // proxy: x first whole-plant proxy tree (Scene::voxel_proxies trail the
 // forest), y its pixel error.
-// tile_span: x first word of the tile candidates in volume_stats, y their word count.
+// tile_span: x first word of the tile candidates in volume_stats, y their word count,
+// z first word of the level headers in volume_indices, w the level count.
 struct VolumeConfig { size_count: vec4<u32>, march: vec4<f32>, dispatch: vec4<u32>, proxy: vec4<f32>, tile_span: vec4<u32> };
-@group(2) @binding(0) var<storage,read> volume_levels: array<VolumeLevel>;
+// Grid indices (from 0) and the level headers (8 words each, from word
+// volume_config.tile_span.z) in one read-only binding.
 @group(2) @binding(1) var<storage,read> volume_indices: array<u32>;
+fn volume_level_origin(i:u32)->vec4<f32> {let b=volume_config.tile_span.z+i*8u;return bitcast<vec4<f32>>(vec4<u32>(volume_indices[b],volume_indices[b+1u],volume_indices[b+2u],volume_indices[b+3u]));}
+fn volume_level_dims(i:u32)->vec4<u32> {let b=volume_config.tile_span.z+i*8u+4u;return vec4<u32>(volume_indices[b],volume_indices[b+1u],volume_indices[b+2u],volume_indices[b+3u]);}
+fn volume_level_at(i:u32)->VolumeLevel {return VolumeLevel(volume_level_origin(i),volume_level_dims(i));}
 @group(2) @binding(2) var<storage,read> volume_cells: array<PackedVolumeCell>;
 @group(2) @binding(3) var<storage,read> volume_trees: array<VolumeTree>;
 // Counters (from 0) and the tile candidates (from volume_config.tile_span.x), one atomic binding.
@@ -234,10 +239,10 @@ fn volume_sample_level(level:VolumeLevel,local:vec3<f32>,direction:VolumeDirecti
 // cell's material, and opposing normal lobes must not cancel to a flat normal.
 fn volume_sample_local(tree:VolumeTree,local:vec3<f32>,direction:VolumeDirection,lod:f32)->VolumeSample {
     let lower=u32(floor(lod));
-    var a=volume_sample_level(volume_levels[tree.identity.y+lower],local,direction);
+    var a=volume_sample_level(volume_level_at(tree.identity.y+lower),local,direction);
     let blend=fract(lod);
     if blend<=0.0 || lower+1u>=tree.identity.z {return a;}
-    let b=volume_sample_level(volume_levels[tree.identity.y+lower+1u],local,direction);
+    let b=volume_sample_level(volume_level_at(tree.identity.y+lower+1u),local,direction);
     return volume_blend_mips(a,b,blend);
 }
 
@@ -277,7 +282,7 @@ fn volume_projected_cell(tree:VolumeTree,direction:vec3<f32>)->vec2<f32> {
     let jx=(row_x-ndc.x*row_w)*(0.5*f32(volume_config.size_count.x));
     let jy=(row_y-ndc.y*row_w)*(0.5*f32(volume_config.size_count.y));
     let pixel_scale=sqrt(dot(jx,jx)+dot(jy,jy))/depth_rate;
-    let diameter=volume_levels[tree.identity.y].origin_cell.w*1.73205081*stretch;
+    let diameter=volume_level_origin(tree.identity.y).w*1.73205081*stretch;
     return vec2<f32>(diameter*pixel_scale,0.5*diameter/depth_rate);
 }
 fn volume_ray(index:u32,leave:f32,direction:vec3<f32>)->VolumeRay {
@@ -289,10 +294,10 @@ fn volume_ray(index:u32,leave:f32,direction:vec3<f32>)->VolumeRay {
     let scale=length(local_direction);
     let angular=volume_direction(local_direction/max(scale,1e-8));
     let identity=(index<<12u)|angular.indices.x|(angular.indices.y<<4u)|(angular.indices.z<<8u);
-    var lod_step=vec4<f32>(0.0,volume_levels[tree.identity.y].origin_cell.w*0.5/max(scale,1e-8),0.0,0.0);
+    var lod_step=vec4<f32>(0.0,volume_level_origin(tree.identity.y).w*0.5/max(scale,1e-8),0.0,0.0);
     if volume_config.march.w>0.0 {
         let projected=volume_projected_cell(tree,direction);
-        lod_step=vec4<f32>(projected.x,volume_levels[tree.identity.y].origin_cell.w*0.5/max(scale,1e-8),projected.y,0.0);
+        lod_step=vec4<f32>(projected.x,volume_level_origin(tree.identity.y).w*0.5/max(scale,1e-8),projected.y,0.0);
     }
     return VolumeRay(vec4<f32>(local_origin,leave),vec4<f32>(local_direction,scale),
         angular.weights,identity,vec2<f32>(-1.0,0.0),lod_step);
@@ -325,8 +330,8 @@ fn volume_index(level:VolumeLevel,coord:vec3<i32>)->u32 {
 }
 fn volume_empty_brick_level(ray:VolumeRay,t:f32,relative:u32)->vec2<f32> {
     let tree=volume_trees[ray.identity>>12u];
-    let fine=volume_levels[tree.identity.y+relative];
-    let coarse=volume_levels[tree.identity.y+min(relative+2u,tree.identity.z-1u)];
+    let fine=volume_level_at(tree.identity.y+relative);
+    let coarse=volume_level_at(tree.identity.y+min(relative+2u,tree.identity.z-1u));
     let ratio=coarse.origin_cell.w/fine.origin_cell.w;
     let grid=(ray.origin_exit.xyz+ray.direction_scale.xyz*t-fine.origin_cell.xyz)/fine.origin_cell.w-0.5;
     let rate=ray.direction_scale.xyz/fine.origin_cell.w;
@@ -663,7 +668,7 @@ fn volume_stream_ray(index:u32,leave:f32,direction:vec3<f32>)->VolumeRay {
     let local_direction=vec3<f32>(dot(tree.inverse[0],d),dot(tree.inverse[1],d),dot(tree.inverse[2],d));
     let scale=length(local_direction);let angular=volume_direction(local_direction/max(scale,1e-8));
     let identity=(index<<12u)|angular.indices.x|(angular.indices.y<<4u)|(angular.indices.z<<8u);
-    var lod_step=vec4<f32>(0.0,volume_levels[tree.identity.y].origin_cell.w*0.5/max(scale,1e-8),0.0,0.0);
+    var lod_step=vec4<f32>(0.0,volume_level_origin(tree.identity.y).w*0.5/max(scale,1e-8),0.0,0.0);
     if volume_config.march.w>0.0 && volume_selection_at(index).w!=1u {
         let projected=volume_projected_cell(tree,direction);lod_step.x=projected.x;lod_step.z=projected.y;
     }
@@ -1174,7 +1179,7 @@ fn volume_splat_tree(index:u32,level:u32) {
     volume_splats[base]=bitcast<vec4<u32>>(owner.r0);
     volume_splats[base+1u]=bitcast<vec4<u32>>(owner.r1);
     volume_splats[base+2u]=bitcast<vec4<u32>>(owner.r2);
-    volume_splats[base+3u]=bitcast<vec4<u32>>(volume_levels[tree.identity.y+level].origin_cell);
+    volume_splats[base+3u]=bitcast<vec4<u32>>(volume_level_origin(tree.identity.y+level));
 }
 fn volume_splat_first()->u32 {return VOLUME_SPLAT_HEADER+volume_config.size_count.w*4u;}
 
@@ -1186,7 +1191,7 @@ struct VolumeSplatCell { local:vec3<f32>,centre:vec3<f32>,radius:f32,size:f32 };
 struct VolumeSplatPose { r0:vec4<f32>,r1:vec4<f32>,r2:vec4<f32>,grid:vec4<f32>,radius:f32,scale:f32,appearance:u32 };
 fn volume_splat_pose(index:u32,level:u32)->VolumeSplatPose {
     let tree=volume_trees[index];
-    let grid=volume_levels[tree.identity.y+level].origin_cell;
+    let grid=volume_level_origin(tree.identity.y+level);
     let owner=instances[tree.identity.x];
     let r0=owner.r0;let r1=owner.r1;let r2=owner.r2;
     let scale=length(vec3<f32>(r0.x,r1.x,r2.x));
@@ -1302,7 +1307,7 @@ fn volume_cull_queue_capacity()->u32 {
 }
 fn volume_splat_limit()->u32 {return arrayLength(&volume_splats)-volume_cull_queue_capacity();}
 fn volume_splat_brick_table(index:u32,level:u32)->vec2<u32> {
-    return volume_splat_cells[arrayLength(&volume_levels)+volume_trees[index].identity.y+level];
+    return volume_splat_cells[volume_config.tile_span.w+volume_trees[index].identity.y+level];
 }
 // Brick b of a table: its cells (first, count in volume_splat_cells) and its
 // packed origin coordinate.
@@ -1321,7 +1326,7 @@ fn volume_hzb_view()->mat4x4<f32> {
 
 fn volume_brick_hidden(index:u32, level:u32, packed:u32, view_proj:mat4x4<f32>)->bool {
     let tree=volume_trees[index];
-    let grid=volume_levels[tree.identity.y+level].origin_cell;
+    let grid=volume_level_origin(tree.identity.y+level);
     let coord=vec3<f32>(f32(packed&1023u),f32((packed>>10u)&1023u),f32(packed>>20u));
     // Transform the envelope of cell centres, then add the billboard's
     // WORLD-space support. Local padding is unsafe for nonuniform/sheared trees.
@@ -1530,7 +1535,7 @@ fn volume_sun_splats_impl(index:u32,lane:u32,damaged:bool) {
             if wanted {
                 let tree=volume_trees[index];
                 let owner=instances[tree.identity.x];
-                let finest=volume_levels[tree.identity.y].origin_cell.w*length(vec3<f32>(owner.r0.x,owner.r1.x,owner.r2.x));
+                let finest=volume_level_origin(tree.identity.y).w*length(vec3<f32>(owner.r0.x,owner.r1.x,owner.r2.x));
                 let ceiling=select(min(tree.identity.z-1u,selected.y),tree.identity.z-1u,volume_proxy(index));
                 level=u32(clamp(floor(log2(max(sun.w/max(finest,1e-6),1e-8))),0.0,f32(ceiling)));
                 // A paged slot only holds its selected mip and the coarser
@@ -1573,9 +1578,9 @@ fn volume_sun_texel(p:vec3<f32>)->f32 {
 // marches that many levels coarser (fewer steps, softer; A/B only).
 override VOXEL_SELF_SHADOW_COARSER: u32 = 0u;
 fn volume_self_transmittance(tree:VolumeTree,grid:vec4<f32>,p:vec3<f32>,sun:vec3<f32>)->f32 {
-    let finest=volume_levels[tree.identity.y].origin_cell.w;
+    let finest=volume_level_origin(tree.identity.y).w;
     let index=min(u32(round(log2(max(grid.w/finest,1.0))))+VOXEL_SELF_SHADOW_COARSER,tree.identity.z-1u);
-    let level=volume_levels[tree.identity.y+index];
+    let level=volume_level_at(tree.identity.y+index);
     let local=vec3<f32>(dot(tree.inverse[0],vec4<f32>(p,1.0)),dot(tree.inverse[1],vec4<f32>(p,1.0)),dot(tree.inverse[2],vec4<f32>(p,1.0)));
     let d=normalize(vec3<f32>(dot(tree.inverse[0].xyz,sun),dot(tree.inverse[1].xyz,sun),dot(tree.inverse[2].xyz,sun)));
     let direction=volume_direction(d);
