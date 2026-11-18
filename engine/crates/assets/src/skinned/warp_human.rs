@@ -23,6 +23,9 @@ pub(super) struct FaceRig {
 }
 
 const LID_RANGE: f32 = 0.016;
+// How far the lids rest open past the cooked neutral, as a share of a full
+// closure (the cooked opening is narrow: half-asleep up close).
+const LID_OPEN: f32 = 0.35;
 
 // Normalized hm08 joint positions (unit body height), each chain with the
 // point its last joint's segment ends at.
@@ -60,7 +63,7 @@ impl Character {
             palette[face.first+i] = head * Mat4::from_rotation_translation(gaze, pivot - gaze*pivot);
         }
         for (i, axis) in [Vec3::X, -Vec3::X, Vec3::Y, -Vec3::Y, Vec3::Z, -Vec3::Z].into_iter().enumerate() {
-            palette[face.first+2+i] = head * Mat4::from_translation(face.scale * axis * (LID_RANGE * blink));
+            palette[face.first+2+i] = head * Mat4::from_translation(face.scale * axis * (LID_RANGE * (blink * (1. + LID_OPEN) - LID_OPEN)));
         }
     }
 
