@@ -393,7 +393,12 @@ impl LuaGame {
             match ev {
                 party::Ev::Prepare(seats) => {
                     self.seat_all(&seats, true);
+                    // Honest progress past the shell's 75 %: the match's own
+                    // set-up (init), then its people and scene (draw).
+                    if self.windowed { self.loading(80, "setting up the match"); }
+                    let t = std::time::Instant::now();
                     self.restart();
+                    if self.windowed { self.say(format!("{} loading: match set up in {} ms", app::manners::stamp(), t.elapsed().as_millis())); }
                     // In a window, ready once a frame of the new match is
                     // drawn: the scene is built then, so the host never shows
                     // a game still loading. Headless, at once.
@@ -1013,8 +1018,12 @@ impl Game for LuaGame {
         let mut surface_line = None;
         let added = std::mem::take(&mut c.world.added);
         let mut late = None;
+        let loading = self.ready_due;
+        let mut steps: Vec<String> = Vec::new();
         // Warp Humans join the scene before its first renderer.
         if !c.humans.is_empty() && !c.humans.attached() && c.humans.error().is_none() {
+            if loading && let Some(p) = self.party.as_mut() { p.loading(88, "dressing the people"); }
+            let t = std::time::Instant::now();
             let c = &mut *c;
             match c.humans.attach(&mut c.world.scene, u64::from(frame.gpu.limits.max_storage_buffer_binding_size)) {
                 Ok(note) => if let Some(note) = note { late = Some(note); },
@@ -1022,8 +1031,11 @@ impl Game for LuaGame {
                 Err(e) => c.humans.set_error(Some(format!("humans: {e}"))),
             }
             c.world.rebuild = true;
+            steps.push(format!("people {} ms", t.elapsed().as_millis()));
         }
         if std::mem::take(&mut c.world.rebuild) || frame.renderer().is_none() {
+            if loading && let Some(p) = self.party.as_mut() { p.loading(93, "building the scene"); }
+            let t = std::time::Instant::now();
             // A look first seen after the start stalls the game while the
             // renderer is rebuilt: name it so it can be warmed in init.
             if frame.renderer().is_some() && !added.is_empty() {
@@ -1037,6 +1049,7 @@ impl Game for LuaGame {
                 frame.set_scene(&c.world.scene, &light);
             }
             self.sky_upload = None;
+            steps.push(format!("scene {} ms", t.elapsed().as_millis()));
         } else {
             if self.surface.pending() {
                 let gpu = frame.gpu;
@@ -1064,6 +1077,7 @@ impl Game for LuaGame {
         drop(c);
         if let Some(line) = surface_line { self.say(line); }
         if let Some(line) = late { self.say(line); }
+        if loading && !steps.is_empty() { self.say(format!("{} loading: {}", app::manners::stamp(), steps.join(", "))); }
         let hud = self.hud(frame.size);
         if std::mem::take(&mut self.ready_due) && let Some(p) = self.party.as_mut() { p.ready(); }
         Ok(Draw { cameras, light, hud })

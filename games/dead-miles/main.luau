@@ -490,7 +490,7 @@ local BLOOD_MAX = 90
 local function blood_drop(at, r)
 	s.blood = s.blood or {}
 	local look = BLOOD[random.int(1, #BLOOD)]
-	local id = world.spawn("sphere", { pos = v(at.x, 0.012 + #s.blood % 7 * 0.0012, at.z), size = v(r * random.range(0.8, 1.25), 0.012, r * random.range(0.8, 1.25)), rot = v(0, random.range(0, math.pi), 0), color = look.color, roughness = look.roughness, solid = false, tag = "deco" })
+	local id = world.spawn("sphere", { pos = v(at.x, 0.07 + #s.blood % 7 * 0.004, at.z), size = v(r * random.range(0.8, 1.25), 0.012, r * random.range(0.8, 1.25)), rot = v(0, random.range(0, math.pi), 0), color = look.color, roughness = look.roughness, solid = false, tag = "deco" })
 	table.insert(s.blood, id)
 	if #s.blood > BLOOD_MAX then world.remove(table.remove(s.blood, 1)) end
 end
