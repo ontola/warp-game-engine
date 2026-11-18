@@ -118,9 +118,11 @@ vehicle contacts. F12 now records flight position, velocity and orientation.
 
 EMP reaches 100 metres in 3D, leaves its owner immune, and disables only nearby
 cruise missiles. Hit ships short-circuit with fading blue-white arcs. Firing it
-sends a digital blast along the road: a glitching shell plus a wall of glowing
-data blocks that sweeps out to the 100 m range in half a second. The carried EMP
-is a dish with four prongs, a cyan core and two crossed field rings.
+sends a translucent shockwave curtain along the road (scanlines, flickering
+filaments, glitch bands, a hot seam on the asphalt and a fainter echo) that
+sweeps out to the 100 m range in half a second. The carried EMP is a pulse
+generator: a base, a spine wrapped by three stacked glowing field coils and an
+emitter cap.
 Pickups come one per row, cycling left, centre and right lanes, and rows are
 spaced 1750 metres apart (about a quarter of the old three per 1300 m); each
 pickup is emissive and carries a pulsing violet halo. Catch-up weighting is

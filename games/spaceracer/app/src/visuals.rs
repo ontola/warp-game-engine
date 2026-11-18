@@ -316,7 +316,7 @@ fn pickup_mesh(scene: &mut Scene, material: u32) -> usize {
 /// The EMP pod: a dark emitter dish with four prongs around a bright cyan
 /// core held in two crossed field rings.
 fn emp_mesh(scene: &mut Scene, metal: u32) -> usize {
-    let field = material(scene, [0.18, 0.7, 1.], 0.3, 70.);
+    let field = material(scene, [0.2, 0.75, 1.], 0.3, 45.);
     let mut body = Primitive { material: metal, ..Default::default() };
     let mut glow = Primitive { material: field, ..Default::default() };
     let add = |p: &mut Primitive, shape: Primitive, scale: Vec3, rot: Quat, pos: Vec3| {
@@ -329,18 +329,20 @@ fn emp_mesh(scene: &mut Scene, metal: u32) -> usize {
         }
         p.indices.extend(shape.indices.into_iter().map(|i| i + offset));
     };
-    add(&mut body, primitives::cylinder(metal, 0.75, 1., 20), Vec3::new(1., 0.28, 1.), Quat::IDENTITY, Vec3::new(0., -0.1, 0.));
-    add(&mut body, primitives::cylinder(metal, 0.3, 0.45, 12), Vec3::new(1., 0.35, 1.), Quat::IDENTITY, Vec3::new(0., 0.2, 0.));
-    for k in 0..4 {
-        let a = std::f32::consts::FRAC_PI_4 + k as f32 * std::f32::consts::FRAC_PI_2;
-        let out = Vec3::new(a.cos(), 0., a.sin());
-        let tilt = Quat::from_axis_angle(Vec3::Y.cross(out).normalize(), -0.35);
-        add(&mut body, primitives::cube(metal), Vec3::new(0.12, 0.95, 0.12), tilt, out * 0.82 + Vec3::Y * 0.45);
-        add(&mut glow, primitives::sphere(field, 6, 8), Vec3::splat(0.14), Quat::IDENTITY, out * 0.98 + Vec3::Y * 0.92);
+    // A compact pulse generator: a squat base, a central spine wrapped by
+    // three stacked field coils on three support fins, and an emitter cap.
+    add(&mut body, primitives::cylinder(metal, 0.55, 0.72, 24), Vec3::new(1., 0.26, 1.), Quat::IDENTITY, Vec3::new(0., 0.05, 0.));
+    add(&mut body, primitives::cylinder(metal, 0.16, 0.22, 16), Vec3::new(1., 1.05, 1.), Quat::IDENTITY, Vec3::new(0., 0.68, 0.));
+    for k in 0..3 {
+        let a = k as f32 * std::f32::consts::TAU / 3.;
+        let rot = Quat::from_rotation_y(-a);
+        add(&mut body, primitives::cube(metal), Vec3::new(0.2, 0.42, 0.035), rot, Vec3::new(a.cos(), 0., a.sin()) * 0.3 + Vec3::Y * 0.62);
     }
-    add(&mut glow, primitives::sphere(field, 10, 14), Vec3::splat(0.3), Quat::IDENTITY, Vec3::Y * 0.75);
-    add(&mut glow, primitives::torus(field, 0.07, 24, 6), Vec3::splat(0.62), Quat::from_rotation_x(1.1), Vec3::Y * 0.75);
-    add(&mut glow, primitives::torus(field, 0.07, 24, 6), Vec3::splat(0.62), Quat::from_rotation_z(1.1), Vec3::Y * 0.75);
+    for (radius, y) in [(0.5, 0.36), (0.42, 0.62), (0.34, 0.88)] {
+        add(&mut glow, primitives::torus(field, 0.12, 28, 8), Vec3::new(radius, radius * 0.9, radius), Quat::IDENTITY, Vec3::Y * y);
+    }
+    add(&mut body, primitives::cylinder(metal, 0.3, 0.38, 20), Vec3::new(1., 0.1, 1.), Quat::IDENTITY, Vec3::Y * 1.17);
+    add(&mut glow, primitives::cylinder(field, 0.2, 0.26, 20), Vec3::new(1., 0.05, 1.), Quat::IDENTITY, Vec3::Y * 1.24);
     scene.add_mesh(&render::cluster::ClusterMesh::build(&[body.part(), glow.part()]))
 }
 fn weapon_mesh(scene: &mut Scene, kind: usize, metal: u32, glow: u32) -> usize {
