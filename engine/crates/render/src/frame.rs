@@ -2245,7 +2245,7 @@ impl Renderer {
                 .expect("invalid weighted skinning scene"))
         };
         let hair = skinning.as_ref().filter(|_| !scene.hair_grooms.is_empty()).map(|s| {
-            std::sync::Mutex::new(crate::humans::PlayerStrands::new(gpu, &scene.hair_grooms,
+            std::sync::Mutex::new(crate::humans::PlayerStrands::new(gpu, &scene.hair_grooms, &scene.hair_strands,
                 &scene.skinning.actors, &instances, s.palette_buffer()))
         });
         let debris = scene.debris.map(|spec| crate::debris::DebrisRenderer::new(gpu, spec, &instances));

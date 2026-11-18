@@ -14,6 +14,8 @@ struct Bone {
 // Two eye pivots and six signed translation axes reproduce the sparse lid
 // target through ordinary GPU skinning. All eight inherit the animated head.
 pub(super) struct FaceRig {
+    /// Grown hair (warp_hair), empty for the crowd's fitted grooms.
+    pub(super) strands: std::sync::Arc<Vec<[f32; 4]>>,
     first: usize,
     pub(super) head: usize,
     eyes: [Vec3; 2],
@@ -290,7 +292,10 @@ impl Character {
                 tint: Vec3::from_array(hair.to_array().map(srgb_to_linear)).extend(1.).to_array(),
                 info: [0,0,person.hair_style(),(person.face_phase()*16777216.) as u32],
             };
-            FaceRig { first, head, eyes, scale, phase: person.face_phase(), groom }
+            // Hair grown from the seed out of this person's own scalp.
+            let cut = warp_hair::Cut::new((person.face_phase() * 16777216.) as u32);
+            let strands = std::sync::Arc::new(warp_hair::strands(&body, &indices, eye_midpoint(&body), skull, cut));
+            FaceRig { strands, first, head, eyes, scale, phase: person.face_phase(), groom }
         });
         let skin = |v: &BodyVertex| {
             let p = v.position;
@@ -360,9 +365,12 @@ impl Character {
                 }
             }
             let uv = if v.material == 6 {
+                // A fitted person's eyes are drawn into a free patch of
+                // their own face texture; others share the eye tile.
+                let ([cu, cv], half) = if native { warp_skin::EYE_PATCH } else { ([0.5; 2], 1.) };
                 [
-                    (0.5 + v.normal.x * 0.46).clamp(0.001, 0.999),
-                    (0.5 - v.normal.y * 0.46).clamp(0.001, 0.999),
+                    cu + (v.normal.x * 0.46).clamp(-0.499, 0.499) * half,
+                    cv - (v.normal.y * 0.46).clamp(-0.499, 0.499) * half,
                 ]
             } else {
                 v.uv
@@ -376,17 +384,12 @@ impl Character {
                 inf,
             )
         };
-        // The cooked grooms carry loose triangles along the hairline that
-        // break up a distant crowd's outline. A fitted person has strands
-        // there up close, and the loose triangles read as saw teeth.
-        let mut shared = vec![0u8; body.len()];
-        for &i in &indices {
-            shared[i as usize] = shared[i as usize].saturating_add(1);
-        }
         let mut groups = BTreeMap::<u32, Vec<u32>>::new();
         for tri in indices.chunks_exact(3) {
             let a = &body[tri[0] as usize];
-            if native && a.material >= 20 && tri.iter().all(|&i| shared[i as usize] == 1) {
+            // A fitted person's hair is grown strands; the crowd's groom
+            // meshes stay with the crowd.
+            if native && a.material >= 20 {
                 continue;
             }
             let tag = if a.material == 3
@@ -418,10 +421,38 @@ impl Character {
             }
         }
         let skinned: Vec<_> = body.iter().map(skin).collect();
+        // A fitted person is seen up close: their own skin and eyes, grown
+        // from the seed over the painted face they share.
+        let own_skin = native.then(|| {
+            let seed = (person.face_phase() * 16777216.) as u32;
+            let tile = person.face_tile();
+            let maps = warp_skin::face(
+                &body,
+                &indices,
+                eye_midpoint(&body),
+                &shared_tiles()[tile],
+                CHEEKS[tile],
+                warp_skin::Traits::new(seed, skin_color.dot(Vec3::new(0.3, 0.6, 0.1))),
+                // The face's tint multiplies this back to the hair's dark.
+                (hair * 0.42 * CHEEKS[tile] / skin_color.max(Vec3::splat(0.05))).min(Vec3::ONE),
+                render::frame::TEXTURE_SIZE as usize,
+            );
+            (
+                format!("warp-human-skin-{tile}-{seed:06x}"),
+                std::sync::Arc::new(maps.albedo),
+                maps.normal,
+            )
+        });
         let surfaces = groups
             .into_iter()
             .map(|(tag, mut indices)| {
                 let mut surface = surface(person, tag, skin_color, hair, brows);
+                if let (Some((name, albedo, normal)), warp_skin::FACE | 6) = (&own_skin, tag) {
+                    surface.texture = Some((name.clone(), albedo.clone()));
+                    // Both surfaces name the one texture; whichever is added first
+                    // brings its normal map (flat over the eyes).
+                    surface.normal = Some(normal.clone());
+                }
                 let mut remap = vec![u32::MAX; body.len()];
                 for index in &mut indices {
                     let source = *index as usize;
@@ -473,6 +504,24 @@ impl Character {
     }
 }
 
+/// The cheek colour of each painted face tile (sRGB).
+const CHEEKS: [Vec3; 3] = [
+    Vec3::new(0.855, 0.659, 0.541),
+    Vec3::new(0.894, 0.741, 0.639),
+    Vec3::new(0.353, 0.224, 0.149),
+];
+
+/// The point between a body's eyes, in its normalized units.
+fn eye_midpoint(body: &[BodyVertex]) -> Vec3 {
+    let mut lo = Vec3::splat(f32::INFINITY);
+    let mut hi = Vec3::splat(f32::NEG_INFINITY);
+    for v in body.iter().filter(|v| v.material == 6) {
+        lo = lo.min(v.position);
+        hi = hi.max(v.position);
+    }
+    (lo + hi) * 0.5
+}
+
 fn ramp(lo: f32, hi: f32, x: f32) -> f32 {
     let t = ((x - lo) / (hi - lo)).clamp(0., 1.);
     t * t * (3. - 2. * t)
@@ -480,11 +529,7 @@ fn ramp(lo: f32, hi: f32, x: f32) -> f32 {
 
 fn surface(person: &Instance, tag: u32, skin: Vec3, hair: Vec3, brows: Vec3) -> Surface {
     let face = person.face_tile();
-    let cheek = [
-        Vec3::new(0.855, 0.659, 0.541),
-        Vec3::new(0.894, 0.741, 0.639),
-        Vec3::new(0.353, 0.224, 0.149),
-    ][face];
+    let cheek = CHEEKS[face];
     let (tint, tile) = match tag {
         12 => (Vec3::from(person.shirt_color()), Some(8 + person.outfit())),
         14 => (
@@ -535,6 +580,11 @@ fn surface(person: &Instance, tag: u32, skin: Vec3, hair: Vec3, brows: Vec3) -> 
             alpha_mode: if cutout { "MASK".into() } else { String::new() },
         },
     }
+}
+
+/// One tile of the shared appearance atlas.
+pub(super) fn tile(i: usize) -> std::sync::Arc<image::RgbaImage> {
+    shared_tiles()[i].clone()
 }
 
 fn shared_tiles() -> &'static [std::sync::Arc<image::RgbaImage>; 12] {
