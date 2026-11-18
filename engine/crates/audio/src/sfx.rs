@@ -81,11 +81,33 @@ pub fn decode_ogg(b: &[u8]) -> Result<Clip, String> {
     Ok(Clip(resample(&mono, rate, SAMPLE_RATE).into()))
 }
 
-/// Load a WAV or Ogg Vorbis file (by its contents).
+/// Decode a FLAC stream to a mono clip at `SAMPLE_RATE`.
+pub fn decode_flac(b: &[u8]) -> Result<Clip, String> {
+    let mut r = claxon::FlacReader::new(std::io::Cursor::new(b)).map_err(|e| format!("flac: {e}"))?;
+    let info = r.streaminfo();
+    let channels = info.channels.max(1) as usize;
+    let scale = 1.0 / (1u64 << (info.bits_per_sample.clamp(1, 32) - 1)) as f32;
+    let mut mono = Vec::with_capacity(info.samples.unwrap_or(0) as usize);
+    let mut frame = Vec::with_capacity(channels);
+    for s in r.samples() {
+        frame.push(s.map_err(|e| format!("flac: {e}"))? as f32 * scale);
+        if frame.len() == channels {
+            mono.push(frame.iter().sum::<f32>() / channels as f32);
+            frame.clear();
+        }
+    }
+    Ok(Clip(resample(&mono, info.sample_rate as f32, SAMPLE_RATE).into()))
+}
+
+/// Decode WAV, Ogg Vorbis or FLAC (by its contents).
+pub fn decode_any(b: &[u8]) -> Result<Clip, String> {
+    if b.starts_with(b"OggS") { decode_ogg(b) } else if b.starts_with(b"fLaC") { decode_flac(b) } else { decode_wav(b) }
+}
+
+/// Load a WAV, Ogg Vorbis or FLAC file (by its contents).
 pub fn load_clip(path: &std::path::Path) -> Result<Clip, String> {
     let b = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let r = if b.starts_with(b"OggS") { decode_ogg(&b) } else { decode_wav(&b) };
-    r.map_err(|e| format!("{}: {e}", path.display()))
+    decode_any(&b).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Linear resampling (enough for effects; clips are short).

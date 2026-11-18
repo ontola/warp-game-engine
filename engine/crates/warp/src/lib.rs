@@ -17,6 +17,7 @@ pub mod luajson;
 pub mod party;
 pub mod plants;
 pub mod ragdoll;
+pub mod samples;
 pub mod sky;
 pub mod sounds;
 pub mod starter;

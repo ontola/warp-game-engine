@@ -8,6 +8,7 @@
 //!   warp serve DIR [--live [PORT]] [--seconds T] [--size WxH] [--sky SKY] [--seed N]
 //!   warp check DIR [--ticks N]
 //!   warp audio render FILE.luau [options] | check FILES | units
+//!   warp samples DIR [--bundle] [--credits]
 //!   warp new DIR [--title TITLE]
 //!
 //! See engine/docs/warp-cli.md.
@@ -39,6 +40,12 @@ const USAGE: &str = "warp: run a game made of Luau scripts, synth patches and as
   warp inspect F12.json [--pixel X Y | --preview]
   warp relight F12.json --without CONTROL [--pixel X Y] [--reference X Y] [--out DIR]
       compare Sideways driving, inspect a captured pixel or isolate a lighting effect (developer checkout, Python and Pillow)
+  warp samples DIR [--bundle] [--credits]
+      fetch the recordings samples.lock lists into the cache (--bundle: into DIR/samples for a package;
+      --credits: print who made them). `warp run` fetches missing ones in the background.
+  warp samples DIR [--bundle] [--credits]
+      fetch the recordings samples.lock lists into the cache (--bundle: into DIR/samples for a package;
+      --credits: print who made them). `warp run` fetches missing ones in the background.
   warp new DIR [--title TITLE]
       write a starter game (warp new GAME.luau: the same game in one file)
 
@@ -99,6 +106,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         Some("check") => check(&args),
         Some("audio") => audio::cli::run(args[1..].to_vec()).map_err(|e| match e.strip_prefix("usage: ") { Some(u) => format!("usage: warp audio {u}"), None => e }),
         Some("new") => new(&args),
+        Some("samples") => samples(&args),
         None => match bundled() {
             Some(game) => play(&["run".to_string(), game.display().to_string()]),
             None => { println!("{USAGE}"); Ok(()) }
@@ -137,9 +145,21 @@ fn load_game(dir: &Path, args: &[String], sound: Option<audio::synth::SoundSende
     LuaGame::load_with_storage(dir, &over, sound, location)
 }
 
+fn samples(args: &[String]) -> Result<(), String> {
+    let dir = dir(args)?;
+    let game = if dir.is_file() { dir.parent().unwrap_or(Path::new(".")).to_path_buf() } else { dir };
+    let lock = warp::samples::read(&game)?.ok_or_else(|| format!("{}: no {}", game.display(), warp::samples::LOCK))?;
+    if args.iter().any(|a| a == "--credits") { print!("{}", warp::samples::credits(&lock)); return Ok(()); }
+    let into = args.iter().any(|a| a == "--bundle").then(|| game.join("samples"));
+    let n = warp::samples::fetch(&game, into.as_deref(), &mut |l| println!("{l}"))?;
+    println!("samples: {} files listed, {n} fetched{}", lock.file.len(), into.map(|d| format!(" into {}", d.display())).unwrap_or_default());
+    Ok(())
+}
+
 fn play(args: &[String]) -> Result<(), String> {
     println!("{} warp: starting", app::manners::stamp());
     let dir = dir(args)?;
+    warp::samples::fetch_later(if dir.is_file() { dir.parent().unwrap_or(Path::new(".")) } else { &dir });
     // The speakers, with the synth mixer for the device's channel layout.
     let mut sender = None;
     let speaker = app::sound::open(|rate, channels| {

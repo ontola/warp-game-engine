@@ -1,0 +1,643 @@
+# Recorded sounds for Dead Miles (engine/docs/audio.md, "Recorded samples").
+# Text only: `warp run` / `warp samples .` fetch each file from the public
+# Freesound CC0 mirror on Hugging Face into a cache and check its sha256.
+# CC0 only (no attribution required); the credits are a courtesy.
+
+[source.freesound]
+rows = "https://datasets-server.huggingface.co/rows?dataset=MoamenElSayed/freesound-commercial-50k&config=default&split=train"
+id_field = "freesound_id"
+revision = "ac5aed8cf1aeb97b26a375f24794d42e15f97163"
+about = "https://huggingface.co/datasets/MoamenElSayed/freesound-commercial-50k (Freesound sounds, rows with license 0 = CC0)"
+
+[file.deranged_zombie]
+source = "freesound"
+row = 102
+id = 341516
+sha256 = "67d65cb936522018a09d610122e957eda8c29b9edb2519be973fea4c12a26071"
+title = "Deranged Zombie"
+author = "Massivecarcrash"
+license = "CC0-1.0"
+link = "https://freesound.org/s/341516/"
+
+[file.sick_zombie]
+source = "freesound"
+row = 10345
+id = 341518
+sha256 = "78c33d7f543ded68990c2a9af98148113dc016f8cb3275f52ea7d2a57e5fd35c"
+title = "Sick Zombie"
+author = "Massivecarcrash"
+license = "CC0-1.0"
+link = "https://freesound.org/s/341518/"
+
+[file.zombie_sounds]
+source = "freesound"
+row = 12840
+id = 554250
+sha256 = "1f8bd5ab004db48f03bf8dc0ce2914397b923a83ffaee5647918f32c8daaca31"
+title = "Zombie Sounds"
+author = "theajoeheh"
+license = "CC0-1.0"
+link = "https://freesound.org/s/554250/"
+
+[file.zombie_growl_02]
+source = "freesound"
+row = 32919
+id = 204820
+sha256 = "e7180b6f82d1db80f7012c71d7fed4e80bc20af46012980280e68dc47e73c65b"
+title = "Zombie Growl 02"
+author = "junkfood2121"
+license = "CC0-1.0"
+link = "https://freesound.org/s/204820/"
+
+[file.zombie_roar_3]
+source = "freesound"
+row = 25197
+id = 143999
+sha256 = "fbbf5bad051e56399b1a9869e90ab04d46495f230a18d067f469a80a35163ac2"
+title = "Zombie Roar 3"
+author = "ArriGD"
+license = "CC0-1.0"
+link = "https://freesound.org/s/143999/"
+
+[file.zombie_roar_7]
+source = "freesound"
+row = 21522
+id = 144003
+sha256 = "13e7f448131642e264ec548256d23656db4b3a5b79019f4b5668d86e6d1ba4eb"
+title = "Zombie Roar 7"
+author = "ArriGD"
+license = "CC0-1.0"
+link = "https://freesound.org/s/144003/"
+
+[file.monster_sound]
+source = "freesound"
+row = 5989
+id = 522068
+sha256 = "f471f150bd42b45c414f77b8d4381071cddbb984fa7fe0cae1be662eddfe7471"
+title = "MonsterSound"
+author = "Garlovisuals"
+license = "CC0-1.0"
+link = "https://freesound.org/s/522068/"
+
+[file.grunido_zombie]
+source = "freesound"
+row = 26420
+id = 378551
+sha256 = "f956fb83b3cabc3a2bb6ef2c67e21d5dc553cab7a2a05812c787067e2882fb47"
+title = "gru\u00f1ido zombie"
+author = "rdpipo7777"
+license = "CC0-1.0"
+link = "https://freesound.org/s/378551/"
+
+[file.zombie_eating_flesh]
+source = "freesound"
+row = 13054
+id = 236331
+sha256 = "16e08e17d415b5a85e399b35642ff79479367e8717902f59cf3dd5ea6e52d884"
+title = "ZombieEatingFlesh"
+author = "Sclolex"
+license = "CC0-1.0"
+link = "https://freesound.org/s/236331/"
+
+[file.chewing_zombie]
+source = "freesound"
+row = 48223
+id = 339191
+sha256 = "4387f1b91fedbf0066d7c045dbc6c17ce0ac26d0f3ef21f9f70327110acf476a"
+title = "Chewing Zombie wav"
+author = "shillsuqat"
+license = "CC0-1.0"
+link = "https://freesound.org/s/339191/"
+
+[file.monster_eating]
+source = "freesound"
+row = 35333
+id = 533868
+sha256 = "a3e68ab0e0988e8efb936c8cf676d1a41aef37cc0fd2806d6bee3b45f68f7b13"
+title = "Monster / Alien Eating"
+author = "EchoCinematics"
+license = "CC0-1.0"
+link = "https://freesound.org/s/533868/"
+
+[file.gore_hit_5]
+source = "freesound"
+row = 26939
+id = 587265
+sha256 = "7f604829460aaee1e662e4574a62c43e28a1bdf9358506a5bb953a5c138ed7e1"
+title = "gore hit 5"
+author = "rubberduckie"
+license = "CC0-1.0"
+link = "https://freesound.org/s/587265/"
+
+[file.stabs]
+source = "freesound"
+row = 38878
+id = 259542
+sha256 = "b8de3ea416fc7bb0245102ca3581f89c1191975cd54e98f4665fd0921221ab05"
+title = "stabs"
+author = "nicktermer"
+license = "CC0-1.0"
+link = "https://freesound.org/s/259542/"
+
+[file.squeaky_car_door]
+source = "freesound"
+row = 13061
+id = 262325
+sha256 = "fd45f4f721243041d8894ec3b54670ce9fe49050dac3c7d2507a51ca4762e68d"
+title = "Squeaky Car Door"
+author = "coltures"
+license = "CC0-1.0"
+link = "https://freesound.org/s/262325/"
+
+[file.car_door_close]
+source = "freesound"
+row = 29550
+id = 629315
+sha256 = "b879eaa1842c44efdc6cd125241bfdc2e8879cbd63222a5c586c492a0ebad181"
+title = "car door close from outside"
+author = "greatsoundstube"
+license = "CC0-1.0"
+link = "https://freesound.org/s/629315/"
+
+[file.glass_shards_5]
+source = "freesound"
+row = 39833
+id = 221533
+sha256 = "c21b8c1924dddb3bc9362027a6776bc5b008ee260d12d8a0df86c39bc7300595"
+title = "Glass Shards 5"
+author = "unfa"
+license = "CC0-1.0"
+link = "https://freesound.org/s/221533/"
+
+[file.glass_jar_shards]
+source = "freesound"
+row = 38802
+id = 447676
+sha256 = "5596cc8a113323b5089b35cf18930fc0f4471ba6dd5db1088042191f67ddf02f"
+title = "glass - baby food jar - shards shaken in glass terrarium 15"
+author = "Anthousai"
+license = "CC0-1.0"
+link = "https://freesound.org/s/447676/"
+
+[file.steps_concrete]
+source = "freesound"
+row = 38819
+id = 441251
+sha256 = "83f6d5ad6e24b9205066e2117a43680a12f10c89cea99ef03cdd47bb6a8da9f3"
+title = "Steps in Empty Room on Concrete"
+author = "axanbod"
+license = "CC0-1.0"
+link = "https://freesound.org/s/441251/"
+
+[file.night_crickets]
+source = "freesound"
+row = 49737
+id = 167304
+sha256 = "a1da63275fe459142600b89203b0161d57f78ffb62959670d1a9e52ed00acbc5"
+title = "Night crickets Loopable"
+author = "2887679652"
+license = "CC0-1.0"
+link = "https://freesound.org/s/167304/"
+
+[file.wind_howling_02]
+source = "freesound"
+row = 2963
+id = 113174
+sha256 = "09f13bdf7b69ec25e3a7d636fc29eaffc47aebf2548ada11d461c71436d5d767"
+title = "wind howling 02"
+author = "Fasolt"
+license = "CC0-1.0"
+link = "https://freesound.org/s/113174/"
+
+[file.scary_night]
+source = "freesound"
+row = 18821
+id = 201736
+sha256 = "93fd6018e7e8338457142f40375234c67723903c3696cb4e87aa31b05b53d339"
+title = "scary night ambience"
+author = "DZ_Irhabi"
+license = "CC0-1.0"
+link = "https://freesound.org/s/201736/"
+
+[file.eerie_ambience_2]
+source = "freesound"
+row = 26911
+id = 522564
+sha256 = "5f7a7fb7c44f2083d020fe8f8f86d06a28c43dda19d94c76db9850099332edfb"
+title = "eerie ambience 2"
+author = "SamsterBirdies"
+license = "CC0-1.0"
+link = "https://freesound.org/s/522564/"
+
+[file.zombie_death_1]
+source = "freesound"
+row = 27503
+id = 555412
+sha256 = "6ac23de68ddb1cdaff7188d2f436c5c3fc6adb072ee6ab7b94b8b52bd556930e"
+title = "Zombie Death 1"
+author = "tonsil5"
+license = "CC0-1.0"
+link = "https://freesound.org/s/555412/"
+
+[[sample]]
+name = "groan.1"
+file = "deranged_zombie"
+from = 1.05
+to = 2.76
+db = 1.4
+
+[[sample]]
+name = "groan.2"
+file = "deranged_zombie"
+from = 3.31
+to = 4.33
+db = 0.3
+
+[[sample]]
+name = "groan.3"
+file = "deranged_zombie"
+from = 5.2
+to = 6.55
+db = 0.3
+
+[[sample]]
+name = "groan.4"
+file = "deranged_zombie"
+from = 8.24
+to = 9.56
+db = -1.6
+
+[[sample]]
+name = "groan.5"
+file = "deranged_zombie"
+from = 10.8
+to = 12.43
+db = -2.4
+
+[[sample]]
+name = "groan.6"
+file = "deranged_zombie"
+from = 16.98
+to = 18.77
+db = -1.7
+
+[[sample]]
+name = "groan.7"
+file = "deranged_zombie"
+from = 23.69
+to = 25.37
+db = -4.8
+
+[[sample]]
+name = "groan.8"
+file = "sick_zombie"
+from = 6.11
+to = 6.73
+db = 2.4
+
+[[sample]]
+name = "groan.9"
+file = "sick_zombie"
+from = 7.79
+to = 8.53
+db = 2.5
+
+[[sample]]
+name = "groan.10"
+file = "sick_zombie"
+from = 9.72
+to = 10.82
+db = 3.3
+
+[[sample]]
+name = "groan.11"
+file = "sick_zombie"
+from = 14.51
+to = 15.69
+db = 2.3
+
+[[sample]]
+name = "groan.12"
+file = "sick_zombie"
+from = 16.31
+to = 17.2
+db = -1.4
+
+[[sample]]
+name = "groan.13"
+file = "zombie_sounds"
+from = 0.62
+to = 4.36
+db = 0.8
+
+[[sample]]
+name = "groan.14"
+file = "zombie_sounds"
+from = 4.58
+to = 7.05
+db = 3.0
+
+[[sample]]
+name = "groan.15"
+file = "zombie_sounds"
+from = 7.96
+to = 10.13
+db = 1.3
+
+[[sample]]
+name = "groan.16"
+file = "zombie_growl_02"
+from = 0.05
+to = 3.48
+db = -5.6
+
+[[sample]]
+name = "groan.17"
+file = "zombie_roar_3"
+from = 0
+to = 0.99
+db = -8.7
+
+[[sample]]
+name = "groan.18"
+file = "zombie_roar_7"
+from = 0
+to = 1.48
+db = 6.8
+
+[[sample]]
+name = "groan.19"
+file = "monster_sound"
+from = 0
+to = 4.0
+db = 6.2
+
+[[sample]]
+name = "groan.20"
+file = "grunido_zombie"
+from = 6.22
+to = 7.15
+db = 1.5
+
+[[sample]]
+name = "groan.21"
+file = "grunido_zombie"
+from = 7.67
+to = 8.38
+db = -3.0
+
+[[sample]]
+name = "feed.1"
+file = "zombie_eating_flesh"
+from = 0.09
+to = 0.88
+db = -0.1
+
+[[sample]]
+name = "feed.2"
+file = "zombie_eating_flesh"
+from = 1.26
+to = 2.28
+db = 0.2
+
+[[sample]]
+name = "feed.3"
+file = "zombie_eating_flesh"
+from = 2.84
+to = 3.36
+db = 0.0
+
+[[sample]]
+name = "feed.4"
+file = "zombie_eating_flesh"
+from = 3.63
+to = 4.41
+db = -0.1
+
+[[sample]]
+name = "feed.5"
+file = "chewing_zombie"
+from = 2.22
+to = 3.46
+db = 4.0
+
+[[sample]]
+name = "feed.6"
+file = "chewing_zombie"
+from = 3.76
+to = 5.34
+db = 0.4
+
+[[sample]]
+name = "feed.7"
+file = "chewing_zombie"
+from = 5.61
+to = 6.4
+db = 1.5
+
+[[sample]]
+name = "feed.8"
+file = "chewing_zombie"
+from = 8.26
+to = 8.99
+db = -0.1
+
+[[sample]]
+name = "feed.9"
+file = "monster_eating"
+from = 0
+to = 3.0
+db = 5.4
+
+[[sample]]
+name = "feed.10"
+file = "monster_eating"
+from = 3.5
+to = 6.5
+db = 7.6
+
+[[sample]]
+name = "feed.11"
+file = "monster_eating"
+from = 7
+to = 10
+db = 5.6
+
+[[sample]]
+name = "splat.1"
+file = "gore_hit_5"
+from = 0.11
+to = 1.03
+db = -7.6
+
+[[sample]]
+name = "splat.2"
+file = "stabs"
+from = 0
+to = 0.53
+db = -7.7
+
+[[sample]]
+name = "splat.3"
+file = "stabs"
+from = 1.5
+to = 1.81
+db = -10.2
+
+[[sample]]
+name = "splat.4"
+file = "stabs"
+from = 2.72
+to = 2.98
+db = -9.9
+
+[[sample]]
+name = "splat.5"
+file = "stabs"
+from = 3.98
+to = 4.25
+db = -10.4
+
+[[sample]]
+name = "splat.6"
+file = "stabs"
+from = 5.17
+to = 5.46
+db = -11.0
+
+[[sample]]
+name = "car_door.1"
+file = "squeaky_car_door"
+from = 7.42
+to = 8.9
+db = 8.1
+
+[[sample]]
+name = "car_door.2"
+file = "squeaky_car_door"
+from = 11.04
+to = 11.91
+db = 9.5
+
+[[sample]]
+name = "car_door.3"
+file = "car_door_close"
+from = 1.64
+to = 2.92
+db = 0.7
+
+[[sample]]
+name = "car_glass.1"
+file = "glass_shards_5"
+from = 0.62
+to = 1.2
+db = 7.2
+
+[[sample]]
+name = "car_glass.2"
+file = "glass_jar_shards"
+from = 0
+to = 0.5
+db = 0.5
+
+[[sample]]
+name = "step.1"
+file = "steps_concrete"
+from = 1.5
+to = 1.87
+db = 19.6
+
+[[sample]]
+name = "step.2"
+file = "steps_concrete"
+from = 7.06
+to = 7.55
+db = 11.8
+
+[[sample]]
+name = "step.3"
+file = "steps_concrete"
+from = 7.66
+to = 8.09
+db = 18.7
+
+[[sample]]
+name = "step.4"
+file = "steps_concrete"
+from = 9.69
+to = 10.18
+db = 13.6
+
+[[sample]]
+name = "step.5"
+file = "steps_concrete"
+from = 10.33
+to = 10.67
+db = 19.5
+
+[[sample]]
+name = "step.6"
+file = "steps_concrete"
+from = 12.27
+to = 12.69
+db = 19.0
+
+[[sample]]
+name = "step.7"
+file = "steps_concrete"
+from = 13.5
+to = 13.88
+db = 19.6
+
+[[sample]]
+name = "step.8"
+file = "steps_concrete"
+from = 14.11
+to = 14.49
+db = 18.6
+
+[[sample]]
+name = "step.9"
+file = "steps_concrete"
+from = 14.75
+to = 15.19
+db = 15.4
+
+[[sample]]
+name = "zdeath.1"
+file = "zombie_death_1"
+from = 0
+to = 0.692
+db = 6.6
+
+[[sample]]
+name = "bed_crickets"
+file = "night_crickets"
+from = 0
+to = 30.0
+db = -13.4
+loop = true
+
+[[sample]]
+name = "bed_wind"
+file = "wind_howling_02"
+from = 0
+to = 32.5
+db = -2.0
+loop = true
+
+[[sample]]
+name = "bed_night"
+file = "scary_night"
+from = 0
+to = 34.6
+db = 2.8
+loop = true
+
+[[sample]]
+name = "bed_dread"
+file = "eerie_ambience_2"
+from = 0
+to = 20.9
+db = -1.8
+loop = true

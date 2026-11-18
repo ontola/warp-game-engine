@@ -15,14 +15,78 @@ pub struct Bank {
     files: HashMap<PathBuf, (SystemTime, u64)>,
     /// The last load error per file, while its previous sounds stay loaded.
     pub errors: BTreeMap<String, String>,
+    /// The game folder, for `samples.lock` (see crate::samples).
+    game: Option<PathBuf>,
+    lock_stamp: Option<(SystemTime, u64)>,
+    /// Recorded sounds by group (`groan` holds `groan.1`, `groan.2` ...);
+    /// a group replaces the synth patch of its name.
+    pub sampled: BTreeMap<String, Vec<Arc<CompiledPatch>>>,
+    /// Listed files not fetched yet (their sha256).
+    waiting: Vec<String>,
+    decoded: HashMap<String, Arc<[f32]>>,
+    picks: std::cell::Cell<u32>,
+    last: std::cell::RefCell<HashMap<String, u32>>,
 }
 
 impl Bank {
     pub fn new(dir: Option<PathBuf>) -> Self { Bank { dir, ..Default::default() } }
 
+    /// Also play the recordings the game folder's `samples.lock` names.
+    pub fn with_samples(mut self, game: &std::path::Path) -> Self { self.game = Some(game.to_path_buf()); self }
+
+    /// (Re)build the sampled sounds when the lock changed or a file arrived.
+    fn scan_samples(&mut self, out: &mut Vec<String>) {
+        let Some(game) = self.game.clone() else { return };
+        let path = game.join(crate::samples::LOCK);
+        let stamp = std::fs::metadata(&path).ok().map(|m| (m.modified().unwrap_or(SystemTime::UNIX_EPOCH), m.len()));
+        let arrived = self.waiting.iter().any(|sha| crate::samples::find(&game, sha).is_some());
+        if stamp == self.lock_stamp && !arrived { return; }
+        self.lock_stamp = stamp;
+        let lock = match crate::samples::read(&game) {
+            Ok(Some(l)) => l,
+            Ok(None) => { self.sampled.clear(); self.waiting.clear(); return; }
+            Err(e) => { out.push(format!("{e} (keeping the last good version)")); self.errors.insert(crate::samples::LOCK.into(), e); return; }
+        };
+        self.errors.remove(crate::samples::LOCK);
+        let mut sampled: BTreeMap<String, Vec<Arc<CompiledPatch>>> = BTreeMap::new();
+        let mut waiting = Vec::new();
+        let mut decoded = HashMap::new();
+        for s in &lock.sample {
+            let sha = &lock.file[&s.file].sha256;
+            let all = match decoded.get(sha).or_else(|| self.decoded.get(sha)).cloned() {
+                Some(a) => a,
+                None => match crate::samples::find(&game, sha) {
+                    None => { if !waiting.contains(sha) { waiting.push(sha.clone()); } continue; }
+                    Some(p) => match audio::sfx::load_clip(&p) {
+                        Ok(c) => c.0,
+                        Err(e) => { out.push(format!("samples: {}: {e}", s.file)); continue; }
+                    },
+                },
+            };
+            decoded.insert(sha.clone(), all.clone());
+            let patch = crate::samples::patch(&s.name, crate::samples::cut(&all, s).into(), s.looping);
+            match patch.compile() {
+                Ok(p) => sampled.entry(crate::samples::group(&s.name).to_string()).or_default().push(Arc::new(p)),
+                Err(e) => out.push(format!("samples: {}: {e}", s.name)),
+            }
+        }
+        let n: usize = sampled.values().map(Vec::len).sum();
+        out.push(format!("{}: {n} recorded sounds in {} groups{}", crate::samples::LOCK, sampled.len(), if waiting.is_empty() { String::new() } else { format!(" ({} files not fetched yet: the synth versions play)", waiting.len()) }));
+        self.sampled = sampled;
+        self.waiting = waiting;
+        self.decoded = decoded;
+    }
+
+    /// Whether `sound.play(name)` plays something (a patch or a recording).
+    pub fn has(&self, name: &str) -> bool { self.patches.contains_key(name) || self.is_sampled(name) }
+
+    /// Whether `name` plays a recording (it then takes only `rate` and `gain`).
+    pub fn is_sampled(&self, name: &str) -> bool { self.sampled.contains_key(name) || self.sampled.get(crate::samples::group(name)).is_some_and(|v| v.iter().any(|p| p.name == name)) }
+
     /// Load new and changed files; returns one line per load or error.
     pub fn scan(&mut self) -> Vec<String> {
         let mut out = Vec::new();
+        self.scan_samples(&mut out);
         let Some(dir) = &self.dir else { return out };
         let Ok(rd) = std::fs::read_dir(dir) else { return out };
         let mut files: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "luau") && !p.to_string_lossy().ends_with(".d.luau")).collect();
@@ -72,7 +136,26 @@ impl Bank {
         }
     }
 
-    pub fn get(&self, name: &str) -> Option<Arc<CompiledPatch>> { self.patches.get(name).cloned() }
+    /// A recording of the group (a different variant each time), else the
+    /// synth patch.
+    pub fn get(&self, name: &str) -> Option<Arc<CompiledPatch>> {
+        if let Some(v) = self.sampled.get(name).filter(|v| !v.is_empty()) {
+            let k = self.picks.get();
+            self.picks.set(k.wrapping_add(1));
+            // Never the same variant twice in a row.
+            let n = v.len() as u32;
+            let i = if n > 1 { (k.wrapping_mul(2654435761) >> 7) % (n - 1) } else { 0 };
+            let last = self.last_pick(name);
+            let i = if n > 1 && i >= last { i + 1 } else { i };
+            self.set_last_pick(name, i);
+            return Some(v[i as usize % v.len()].clone());
+        }
+        if let Some(p) = self.sampled.get(crate::samples::group(name)).and_then(|v| v.iter().find(|p| p.name == name)) { return Some(p.clone()); }
+        self.patches.get(name).cloned()
+    }
+
+    fn last_pick(&self, name: &str) -> u32 { self.last.borrow().get(name).copied().unwrap_or(u32::MAX) }
+    fn set_last_pick(&self, name: &str, i: u32) { self.last.borrow_mut().insert(name.to_string(), i); }
 
     /// A loaded patch, or an error that lists the loaded ones.
     pub fn find(&self, name: &str) -> Result<Arc<CompiledPatch>, String> {
@@ -128,7 +211,11 @@ impl SoundOut {
     /// script behaves the same in `warp check`).
     pub fn play(&mut self, name: &str, params: &[(String, f32)], at: Option<[f32; 3]>, db: f32, pitch: f32, tick: u64) -> Result<u32, String> {
         let patch = self.bank.find(name)?;
-        check_params(&patch, params)?;
+        // A recording stands in for a synth patch: its parameters do not apply.
+        let sampled = self.bank.is_sampled(name);
+        let params: Vec<(String, f32)> = if sampled { params.iter().filter(|(n, _)| n == "rate" || n == "gain").cloned().collect() } else { params.to_vec() };
+        let params = &params[..];
+        if !sampled { check_params(&patch, params)?; }
         let id = self.next;
         self.next = self.next.wrapping_add(1).max(1);
         self.played += 1;

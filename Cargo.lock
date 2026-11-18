@@ -334,6 +334,7 @@ dependencies = [
 name = "audio"
 version = "0.1.0"
 dependencies = [
+ "claxon",
  "lewton",
  "mlua",
  "serde",
@@ -643,6 +644,12 @@ dependencies = [
  "crypto-common 0.1.7",
  "inout",
 ]
+
+[[package]]
+name = "claxon"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4bfbf56724aa9eca8afa4fcfadeb479e722935bb2a0900c2d37e0cc477af0688"
 
 [[package]]
 name = "cli"
@@ -6631,6 +6638,7 @@ dependencies = [
  "script",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "toml",
  "tungstenite",
 ]
