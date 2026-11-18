@@ -45,6 +45,8 @@ local KNOBS = {
 	run = 1.75, -- sprinting (hold LT) is this much faster than the jog
 	sprint_cost = 0.33, -- stamina a second of sprinting costs (of an average person's: about 3 s flat out)
 	blown = 0.3, -- after sprinting yourself empty, the stamina you need back before you can sprint again
+	spent = 4.5, -- seconds spent after running out of breath: a slow walk, slow swings, panting
+	spent_walk = 0.45, -- walking speed while spent
 	run_noise = 6, -- how far the dead hear you run, m
 	car_noise = 9, -- how far they hear you rummage through a car, m
 	limp = 0.72, -- share of that speed while injured
@@ -523,6 +525,13 @@ local function blood_drop(at, r)
 	if #s.blood > BLOOD_MAX then world.remove(table.remove(s.blood, 1)) end
 end
 
+-- Blood in the air: dark wet drops drawn out by their speed, falling
+-- fast. Never bright: under the lamps it should read as near black.
+local BLOOD_AIR = { shape = "sphere", color = "#2c0605", roughness = 0.3, emissive = 0 }
+local function blood_spray(at, n, power, size)
+	fx.burst(at, { shape = BLOOD_AIR.shape, color = BLOOD_AIR.color, roughness = BLOOD_AIR.roughness, emissive = 0, count = n, speed = power, life = 0.45, size = size or 0.06, stretch = 0.03, gravity = 16 })
+end
+
 -- A splat at `at`, flung along `away`: one pool and drops trailing off.
 local function blood_splat(at, away, size)
 	blood_drop(at + away * (0.2 * size), 0.28 * size)
@@ -531,7 +540,7 @@ local function blood_splat(at, away, size)
 		local side = v(-away.z, 0, away.x) * random.range(-0.35, 0.35) * f
 		blood_drop(at + away * (0.35 + f) + side, random.range(0.05, 0.12) * size)
 	end
-	fx.burst(v(at.x, 1.05, at.z), { color = "#6a1410", count = math.floor(6 + 8 * size), speed = 2.5 + 2 * size, life = 0.45, size = 0.07 + 0.03 * size, gravity = 12 })
+	blood_spray(v(at.x + away.x * 0.25, 1.15, at.z + away.z * 0.25), math.floor(5 + 6 * size), 2.5 + 2 * size, 0.05 + 0.025 * size)
 end
 
 local function kill_zombie(z, away, strength)
@@ -543,7 +552,7 @@ local function kill_zombie(z, away, strength)
 	body.ragdoll(z.fig, away * (2.2 + 1.6 * (strength or 1)))
 	body.lie(z.fig, z.pos, z.yaw, true, true)
 	blood_splat(z.pos, away, 1.6 + (strength or 1) * 0.4)
-	fx.burst(v(z.pos.x, 0.8, z.pos.z), { color = "#5a1e18", count = 10, speed = 3, life = 0.5, size = 0.1, gravity = 9 })
+	blood_spray(v(z.pos.x, 0.8, z.pos.z), 8, 3, 0.08)
 	sfx("splat", z.pos, { pitch = random.range(0.85, 1.15) })
 	count("kills")
 	s.kills += 1
@@ -1495,7 +1504,7 @@ local function hurt(u, from)
 	if d > 0.01 then u.vel = away / d * 4 end
 	rumble(u, 0.5, 0.25)
 	sfx("hurt", u.pos)
-	fx.burst(v(u.pos.x, 1.1, u.pos.z), { color = "#8a1a14", count = 6, speed = 2.5, life = 0.35, size = 0.08, gravity = 9 })
+	blood_spray(v(u.pos.x, 1.1, u.pos.z), 6, 2.5, 0.06)
 	if not u.injured then
 		u.injured = true
 		count("injuries")
@@ -1606,6 +1615,16 @@ end
 
 -- kind: "light" (RB: quick, cheap, light) or "heavy" (RT: slow, charged
 -- while held at the top of the wind-up).
+-- Run out of breath: for a while you can only walk slowly, every blow is
+-- slow and weak, and you pant.
+local function exhaust(u)
+	if (u.spent or 0) > 0 then return end
+	u.spent = KNOBS.spent
+	u.pant_t = 0
+	popup(u, "out of breath", "#c8c0b4")
+	rumble(u, 0.2, 0.2)
+end
+
 local function swing(u, kind)
 	u.swing_kind = kind
 	local w = swing_stats(u)
@@ -1615,15 +1634,13 @@ local function swing(u, kind)
 	local winded = u.stamina < cost
 	local len = w.cd * (if light then 0.55 else 1) * (1 + 1.6 * tired ^ 1.4)
 	u.swing_power = 1 - 0.35 * tired
-	if winded then
-		if (u.winded_t or 0) <= 0 then
-			popup(u, "out of breath", "#c8c0b4")
-			u.winded_t = 1.2
-		end
-		len *= 1.5
+	if winded then exhaust(u) end
+	if (u.spent or 0) > 0 then
+		len *= 2.2
 		u.swing_power = 0.4
 	end
 	u.stamina = math.max(0, u.stamina - cost)
+	if u.stamina <= 0 then exhaust(u) end
 	u.breath_t = 0.7
 	u.swing_len = math.min(3.2, len)
 	u.cd_melee = u.swing_len
@@ -2157,23 +2174,29 @@ local function act(u, it, dt)
 	-- Sprinting is short: it burns stamina fast, and once you are blown
 	-- you jog until you have your breath back.
 	if u.blown and u.stamina >= KNOBS.blown * u.stamina_max then u.blown = nil end
-	local running = it.run and not busy and not u.injured and m > 0.5 and not u.blown and u.cd_melee <= 0
+	-- Spent: panting, a slow walk until the breath is back.
+	if (u.spent or 0) > 0 then
+		u.spent -= dt
+		u.pant_t -= dt
+		if u.pant_t <= 0 then
+			u.pant_t = 0.85
+			sfx("pant", u.pos, { pitch = random.range(0.93, 1.07) })
+		end
+	end
+	local spent = (u.spent or 0) > 0
+	local running = it.run and not busy and not u.injured and m > 0.5 and not u.blown and u.cd_melee <= 0 and not spent
 	if running then
 		u.stamina = math.max(0, u.stamina - dt * KNOBS.sprint_cost * KNOBS.stamina)
 		u.breath_t = math.max(u.breath_t, 0.5)
 		if u.stamina <= 0 then
 			u.blown = true
-			if (u.winded_t or 0) <= 0 then
-				popup(u, "out of breath", "#c8c0b4")
-				u.winded_t = 1.2
-			end
-			sfx("swing", u.pos, { pitch = 0.55, db = -10 })
+			exhaust(u)
 		end
 	elseif u.breath_t <= 0 then
 		u.stamina = math.min(u.stamina_max, u.stamina + dt * KNOBS.breath * KNOBS.stamina)
 	end
 	-- Worn out, even the jog drags.
-	local worn = 1 - 0.25 * math.clamp((tiredness(u) - 0.6) / 0.4, 0, 1)
+	local worn = if spent then KNOBS.spent_walk else 1 - 0.25 * math.clamp((tiredness(u) - 0.6) / 0.4, 0, 1)
 	local speed = KNOBS.walk * (u.speed or 1) * worn * (if busy then 0 else (if u.charging then 0.35 elseif u.cd_melee > 0.2 then 0.5 else 1)) * (if u.injured then KNOBS.limp else 1) / (1 + KNOBS.grab * grabs) * (if running then KNOBS.run else 1)
 	-- Running is heard: footfalls every so often.
 	u.run_t = (u.run_t or 0) - dt
@@ -2216,7 +2239,7 @@ local function act(u, it, dt)
 	local moved = dist(before, u.pos) / dt
 	-- Out of breath shows: bent over and heaving once half the breath is gone.
 	local tired = tiredness(u)
-	body.tired(u.fig, if tired > 0.4 then math.min(1, (tired - 0.4) / 0.55) ^ 1.2 else 0)
+	body.tired(u.fig, if (u.spent or 0) > 0 then 1 elseif tired > 0.4 then math.min(1, (tired - 0.4) / 0.55) ^ 1.2 else 0)
 	local coil = 0
 	if u.cd_melee > 0 and u.swing > 0 and u.swing_len then
 		local p = math.clamp(1 - u.cd_melee / u.swing_len, 0, 1)
@@ -2328,7 +2351,7 @@ local function eat(z, m, speed)
 			body.hit(z.fig, ahead * -random.range(1.3, 2.2))
 			local at = m.pos + v(random.range(-0.45, 0.45), 0, random.range(-0.45, 0.45))
 			blood_drop(at, random.range(0.08, 0.22))
-			fx.burst(v(m.pos.x + ahead.x * -0.25, 0.35, m.pos.z + ahead.z * -0.25), { color = "#7a1410", count = 5, speed = 1.8, life = 0.45, size = 0.06, gravity = 9 })
+			blood_spray(v(m.pos.x + ahead.x * -0.25, 0.35, m.pos.z + ahead.z * -0.25), 5, 1.8, 0.05)
 			if random.chance(0.35) then sfx("splat", m.pos, { pitch = random.range(0.55, 0.8) }) end
 			if random.chance(0.2) then sfx("groan", z.pos, { pitch = random.range(0.65, 0.9) }) end
 			if m.state == "down" then
@@ -3094,7 +3117,8 @@ function warm_all()
 	end
 	world.warm("outline16", { color = "#f2e6b0", emissive = 0.12 })
 	for _, w in HELD do world.warm("cube", { color = w.color, metal = w.metal, roughness = w.roughness or 0.6 }) end
-	for _, c in { "#5a1e18", "#6a2a20", "#8a1a14", "#6a1410" } do world.warm("cube", { color = c, emissive = 0.06 }) end
+	for _, c in { "#6a2a20" } do world.warm("cube", { color = c, emissive = 0.06 }) end
+	world.warm(BLOOD_AIR.shape, { color = BLOOD_AIR.color, roughness = BLOOD_AIR.roughness, emissive = 0 })
 	-- A breaking weapon bursts into bits of its own colour.
 	for _, w in HELD do world.warm("cube", { color = w.color, emissive = 0.06 }) end
 	world.warm("cube", { color = "#fff2c0", emissive = 0.6 })
