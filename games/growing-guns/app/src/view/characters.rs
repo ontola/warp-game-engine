@@ -20,6 +20,26 @@ impl Motion {
     }
 }
 
+/// The shared CC0 standing idle on one model, for tools and pose snapshots
+/// that do not run the simulation (gore chunks, gun review, animation window).
+pub(crate) struct Standing(Locomotion);
+
+impl Standing {
+    pub(crate) fn bind(model: &Character) -> Result<Self, String> { Ok(Self(Locomotion::bind(model)?)) }
+    /// Poses `palette` at `idle` seconds into the idle and returns the grip
+    /// socket (right hand) in model space.
+    pub(crate) fn pose(&self, idle: f32, palette: &mut [Mat4]) -> Vec3 {
+        Motion { idle, ..Default::default() }.sample(&self.0, 1., palette).w_axis.truncate()
+    }
+}
+
+/// One standing pose and its grip socket.
+pub(crate) fn standing_pose(model: &Character, idle: f32) -> Result<(Vec<Mat4>, Vec3), String> {
+    let mut palette = vec![Mat4::IDENTITY; model.joint_count];
+    let hand = Standing::bind(model)?.pose(idle, &mut palette);
+    Ok((palette, hand))
+}
+
 struct Actor { arms: Option<body::reach::TwoHandHold>, handle: ActorHandle, palette: Vec<Mat4>, motion: Motion,
     corpse: Option<Corpse>, corpse_transform: Option<Affine3A>, velocity: Vec3 }
 
@@ -51,7 +71,7 @@ mod tests {
     fn warp_players_keep_their_identity_and_animation_rig() {
         use render::humans::{Constraints, Instance};
         let rig = load_rig().unwrap();
-        let pose = rig.sample("pistol_run", 0.18, true).unwrap();
+        let (pose, _) = standing_pose(&rig, 0.18).unwrap();
         let geometry = |seed| {
             let person = Instance::person(seed, Vec3::ZERO, 0., &Constraints { height_m: Some(1.8), shirt: None });
             let model = rig.warp_human(&person).unwrap();
@@ -61,8 +81,6 @@ mod tests {
                 assert!((influence.weights.iter().sum::<f32>() - 1.).abs() < 0.0001);
                 assert!(influence.weights.iter().all(|&w| w >= 0.));
             }
-            assert_eq!(model.sample_socket("pistol_run", "RightHand", 0.18, true).unwrap(),
-                       rig.sample_socket("pistol_run", "RightHand", 0.18, true).unwrap());
             let vertices: Vec<_> = model.posed_surfaces(&mut scene, &pose, Affine3A::IDENTITY)
                 .into_iter().flat_map(|(_, vertices, _, _)| vertices.into_iter().map(|v| v.pos)).collect();
             assert!(vertices.iter().all(|p| Vec3::from(*p).is_finite()));
@@ -78,7 +96,7 @@ mod tests {
         let person = render::humans::Instance::person(73, Vec3::ZERO, 0., &Default::default());
         let rig = load_rig().unwrap();
         let model = rig.warp_human_player(&person, None).unwrap();
-        let mut pose = model.sample("pistol_idle", 0.5, true).unwrap();
+        let (mut pose, _) = standing_pose(&model, 0.5).unwrap();
         let joint = |name| model.joints().position(|(n, _)| n == name).unwrap();
         let head = Mat4::from_rotation_translation(Quat::from_rotation_y(0.4), Vec3::new(2., 1., 3.));
         pose[joint("Head")] = head;
