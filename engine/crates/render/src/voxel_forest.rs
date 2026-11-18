@@ -400,6 +400,10 @@ pub(crate) struct VoxelRenderer {
     count: u32,
     /// GPU-owned root pairs: one camera range, one shadow range; shared branch prefix.
     consumer_roots: u32,
+    /// First word of the level headers in the index binding (data[1]).
+    level_base: u32,
+    /// Level headers in the catalog (the splat headers follow per level).
+    level_count: u32,
     /// Scene::voxel_far_distance_m; written as config march.y.
     far: f32,
     /// Scene::voxel_proxies and voxel_proxy_pixels: config proxy.
@@ -434,7 +438,7 @@ fn data_bindings(temporal: bool) -> Vec<(u32, wgpu::BindingType)> {
     let storage=|read_only|wgpu::BindingType::Buffer {ty:wgpu::BufferBindingType::Storage {read_only},has_dynamic_offset:false,min_binding_size:None};
     let uniform=wgpu::BindingType::Buffer {ty:wgpu::BufferBindingType::Uniform,has_dynamic_offset:false,min_binding_size:None};
     let output=|format|wgpu::BindingType::StorageTexture {access:wgpu::StorageTextureAccess::WriteOnly,format,view_dimension:wgpu::TextureViewDimension::D2};
-    let mut entries=vec![(0,storage(true)),(1,storage(true)),(2,storage(true)),(3,storage(true)),
+    let mut entries=vec![(1,storage(true)),(2,storage(true)),(3,storage(true)),
         (5,storage(false)),(6,output(wgpu::TextureFormat::Rgba16Float)),
         (7,uniform),(8,storage(false)),(9,storage(true)),(12,storage(true)),
         (14,storage(true)),(15,storage(false)),
@@ -745,9 +749,18 @@ impl VoxelRenderer {
                     usage: wgpu::BufferUsages::STORAGE,
                 })
         };
+        let level_offset=page_cache.as_ref().map_or_else(||(forest.indices.len()as u64*4).max(4).div_ceil(256)*256,|c|c.level_offset);
+        let mut indices_and_levels=Vec::new();
+        if page_cache.is_none() {
+            let levels:&[u8]=bytemuck::cast_slice(&forest.levels);indices_and_levels=vec![0u8;level_offset as usize+levels.len()];
+            indices_and_levels[..forest.indices.len()*4].copy_from_slice(bytemuck::cast_slice(&forest.indices));indices_and_levels[level_offset as usize..].copy_from_slice(levels);
+        }
+        let level_base=(level_offset/4)as u32;
         let data = [
-            page_cache.as_ref().map(|c|c.buffers[0].clone()).unwrap_or_else(||upload("voxel levels", bytemuck::cast_slice(&forest.levels))),
-            page_cache.as_ref().map(|c|c.buffers[1].clone()).unwrap_or_else(||upload("voxel indices", bytemuck::cast_slice(&forest.indices))),
+            // Indices from 0 and the level headers from level_base (words): one
+            // binding (voxel_forest.wgsl volume_level_*). data[0] is unbound.
+            page_cache.as_ref().map(|c|c.buffers[1].clone()).unwrap_or_else(||upload("voxel indices and levels", &indices_and_levels)),
+            page_cache.as_ref().map(|c|c.buffers[1].clone()).unwrap_or_else(||upload("voxel indices and levels", &indices_and_levels)),
             page_cache.as_ref().map(|c|c.buffers[2].clone()).unwrap_or_else(||upload("voxel cells", bytemuck::cast_slice(&crate::foliage_volume_data::packed_cells(&forest.cells)))),
             gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("voxel trees"),
@@ -967,6 +980,7 @@ impl VoxelRenderer {
             bin_count,
             count: forest.instances.len() as u32,
             consumer_roots: scene.gpu_forest.as_ref().map_or(0,|f|f.roots.len()as u32),
+            level_base,level_count:forest.levels.len()as u32,
             far,
             proxies,
             proxy_pixels: scene.voxel_proxy_pixels,
@@ -1011,7 +1025,7 @@ impl VoxelRenderer {
             return Err("proxy update exceeds reserved whole-plant range".into());
         }
         for (i,t) in trees.iter().enumerate() {
-            if t.meta[0] != self.owners[first as usize+i] || (t.meta[1] as u64 + t.meta[2] as u64) * std::mem::size_of::<crate::foliage_volume_data::GpuLevel>() as u64 > self.data[0].size() || t.meta[2] == 0 ||
+            if t.meta[0] != self.owners[first as usize+i] || (t.meta[1] as u64 + t.meta[2] as u64) * std::mem::size_of::<crate::foliage_volume_data::GpuLevel>() as u64 > self.data[1].size()-u64::from(self.level_base)*4 || t.meta[2] == 0 ||
                 !t.inverse.iter().flatten().chain(t.bounds_min.iter()).chain(t.bounds_max.iter()).all(|x| x.is_finite()) {
                 return Err("invalid proxy owner, levels or transform".into());
             }
@@ -1148,7 +1162,7 @@ impl VoxelRenderer {
                     dispatch: [u32::from(self.active_tiles), 0, interval_stream.map_or(0,|s|s.header_word),
                         interval_stream.map_or(0,|s|s.pixel_slots)],
                     proxy: [(self.count - self.proxies) as f32, self.proxy_pixels, self.proxy_pixels_from, self.consumer_roots as f32],
-                    layout: [(tiles_at / 4) as u32, (tiles_bytes / 4) as u32, 0, 0],
+                    layout: [(tiles_at / 4) as u32, (tiles_bytes / 4) as u32, self.level_base, self.level_count],
                 }),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
@@ -1160,10 +1174,6 @@ impl VoxelRenderer {
         let mut entries=vec![
                 wgpu::BindGroupEntry {binding:20,resource:wgpu::BindingResource::TextureView(hzb.as_ref().map_or(&empty_hzb, |h| &h.view))},
                 wgpu::BindGroupEntry {binding:12,resource:self.brick_catalog.as_entire_binding()},
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.data[0].as_entire_binding(),
-                },
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: self.data[1].as_entire_binding(),
@@ -2149,8 +2159,9 @@ mod tests {
             let count = super::data_bindings(temporal).iter().filter(|(_, ty)| matches!(ty,
                 wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { .. }, .. })).count();
             // Reduced scene: instances, wind, terrain hierarchy, foliage pages.
-            // The tile candidates live inside the counters binding.
-            assert_eq!(count + 4, if temporal { 15 } else { 14 });
+            // The tile candidates live inside the counters binding, the level
+            // headers inside the index binding.
+            assert_eq!(count + 4, if temporal { 14 } else { 13 });
         }
         assert!(super::shader_source().contains("const VOLUME_MASK_WORD: u32 = 36u;"));
         assert!(super::shader_source().contains("const VOLUME_CULL_WORD: u32 = 26u;"));
