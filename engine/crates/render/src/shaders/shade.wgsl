@@ -1764,6 +1764,13 @@ fn sky_irradiance(n: vec3<f32>) -> vec3<f32> {
 var<private> sun_receiver_tri: array<vec3<f32>,3>;
 var<private> sun_receiver_tri_set: bool;
 var<private> sun_receiver_error: f32;
+// Metres along the sun by which the shaded skin triangle, being flat, can
+// lie behind the rounded surface its vertex normals describe: its longest
+// edge times how far its own facing of the sun departs from its vertices'.
+// Skin in the sun's way within this is the mesh's facets, not the person.
+var<private> skin_facet_slack: f32;
+// Half of what that triangle spans along the sun, metres.
+var<private> skin_facet_reach: f32;
 fn shadow_cross2(a:vec2<f32>,b:vec2<f32>)->f32 { return a.x*b.y-a.y*b.x; }
 fn shadow_triangle_contains(q:vec2<f32>,a:vec2<f32>,b:vec2<f32>,c:vec2<f32>,orientation:f32)->bool {
     return shadow_cross2(b-a,q-a)*orientation>=0.0
@@ -2037,8 +2044,18 @@ fn near_level_weight(k: i32, p: vec3<f32>) -> f32 {
     if c.z < 0.0 || c.z > 1.0 { return 0.0; }
     return 1.0 - smoothstep(light.near_shadow.y, 0.95, length(c.xy));
 }
+// Half extent of sun clipmap level k in metres, from its projection: the
+// levels need not double (frame.rs CLOSE_LADDER).
+fn near_level_extent(k: i32) -> f32 {
+    let m = near_level_projection(k);
+    return 1.0 / max(length(vec3<f32>(m[0].x, m[1].x, m[2].x)), 1e-12);
+}
+// World size of one of its texels.
+fn near_level_texel(k: i32) -> f32 {
+    return 2.0 * near_level_extent(k) / f32(textureDimensions(near_shadow_tex).x);
+}
 fn near_level_visibility(k: i32, p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32 {
-    let texel = light.near_shadow.x * f32(1 << u32(k));
+    let texel = near_level_texel(k);
     return shadow_filter_layer(near_shadow_tex, k, near_level_projection(k), texel, p, n, plane_n);
 }
 // Voxel cell size the sun map that shades p splats (frame.rs
@@ -2048,8 +2065,9 @@ fn sun_voxel_cell(p: vec3<f32>) -> f32 {
     let levels = select(0, i32(light.near_levels.x), light.near_shadow.z > 0.5);
     for (var k = 0; k < levels; k++) {
         if near_level_weight(k, p) > 0.5 {
-            // near_levels.z: the clipmap's first level (frame.rs clipmap_base).
-            let level = k + i32(light.near_levels.z);
+            // The doubling ladder's level this one stands for (frame.rs
+            // extent_level): 24 m is its first.
+            let level = i32(max(round(log2(near_level_extent(k) / 24.0)), 0.0));
             return 0.25 * pow(1.41421356, f32(level)) * select(1.0, 1.42, level >= 3);
         }
     }
@@ -2673,12 +2691,13 @@ const HAIR_ROUGHNESS: f32 = 0.6;
 // How far the diffuse term wraps past the terminator per channel: red light
 // travels furthest under skin (pre-integrated skin, approximated).
 const SKIN_WRAP: vec3<f32> = vec3<f32>(0.42, 0.16, 0.09);
-// Mean free path of light in skin per channel, metres (Jensen et al. 2001,
-// skin1: 3.67, 1.37, 0.68 mm), for light passing through thin parts.
+// How far light diffuses through skin per channel, metres (Jensen et al.
+// 2001, skin1: 3.67, 1.37, 0.68 mm), for light passing through thin parts:
+// an ear glows, a cheek two centimetres behind the nose's shadow does not.
+// (Four times this, to make up for the coarse sun map's texel of margin, lit
+// whole cheeks orange once the map was fine enough to measure them.)
+const SKIN_FACET: f32 = 1.5;
 const SKIN_PATH: vec3<f32> = vec3<f32>(0.00367, 0.00137, 0.00068);
-// Light diffuses sideways as it passes, so a thin part transmits more than
-// the straight path suggests: paths are this many mean free paths long.
-const SKIN_SPREAD: f32 = 4.0;
 
 // x: skin share, y: hair share. SKIN alone: all skin; HAIR alone: all hair.
 // SKIN|HAIR: the albedo alpha says per texel, 0 hair, 0.5 skin, 1 neither
@@ -2699,10 +2718,11 @@ fn skin_hair_shares(flags: u32, alpha: f32) -> vec2<f32> {
 // round p are blended, so the result follows the surface and not the map's
 // grid (one nearest texel printed its squares on a cheek turned from the
 // sun). Shadow-map depth is only accurate to about a texel, which is added
-// so that silhouette texels never glow; none where the map does not cover p.
+// by `margin` texels so that silhouette texels never glow; none where the map
+// does not cover p. w: the map's texel in metres at p.
 // The maps are read directly (not passed as arguments): shaders that
 // include this file declare them differently.
-fn sun_through_skin(p: vec3<f32>) -> vec3<f32> {
+fn sun_through_skin(p: vec3<f32>, plane_n: vec3<f32>, reach: f32, margin: f32, slack: f32) -> vec4<f32> {
     var projection = light.shadow_view_proj;
     var world_texel = light.sky.w;
     // The finest sun clipmap level that covers p, else the shared map.
@@ -2712,13 +2732,13 @@ fn sun_through_skin(p: vec3<f32>) -> vec3<f32> {
         if near_level_weight(k, p) > 0.5 {
             level = k;
             projection = near_level_projection(k);
-            world_texel = light.near_shadow.x * f32(1 << u32(k));
+            world_texel = near_level_texel(k);
             break;
         }
     }
     let c = projection * vec4<f32>(p, 1.0);
     let uv = c.xy * vec2<f32>(0.5, -0.5) + 0.5;
-    if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || c.z < 0.0 || c.z > 1.0 { return vec3<f32>(0.0); }
+    if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || c.z < 0.0 || c.z > 1.0 { return vec4<f32>(0.0, 0.0, 0.0, 1e9); }
     var size = vec2<i32>(textureDimensions(shadow_tex));
     if level >= 0 { size = vec2<i32>(textureDimensions(near_shadow_tex)); }
     let q = uv * vec2<f32>(size) - 0.5;
@@ -2726,21 +2746,50 @@ fn sun_through_skin(p: vec3<f32>) -> vec3<f32> {
     let f = fract(q);
     let row_z = vec3<f32>(projection[0].z, projection[1].z, projection[2].z);
     let metres = 1.0 / max(length(row_z), 1e-12);
-    var through = vec3<f32>(0.0);
-    for (var i = 0; i < 4; i++) {
-        let corner = vec2<i32>(i & 1, i >> 1);
-        let texel = clamp(base + corner, vec2<i32>(0), size - 1);
-        var occluder: f32;
-        if level >= 0 {
-            occluder = textureLoad(near_shadow_tex, texel, level, 0);
-        } else {
-            occluder = textureLoad(shadow_tex, texel, 0);
-        }
-        let thickness = max(c.z - occluder, 0.0) * metres + world_texel * 1.5;
-        let w = mix(1.0 - f, f, vec2<f32>(corner));
-        through += w.x * w.y * exp(-vec3<f32>(thickness) / (SKIN_PATH * SKIN_SPREAD));
+    // Sixteen taps over a disc of 1.8 texels: skin
+    // spreads light sideways over millimetres, and a shadow's edge drawn
+    // from fewer taps shows the map's grid as teeth where the surface runs
+    // along the sun. Each tap compares the map with the receiver's own
+    // plane there, so a lit slope is not in its own way. The plane is the
+    // surface only as far as the triangle reaches along the sun (`reach`,
+    // metres): where the taps would leave that, they close up along the
+    // slope and stay spread across it.
+    var slope = vec2<f32>(0.0);
+    let facing = dot(plane_n, row_z);
+    if dot(plane_n, light.sun_dir.xyz) > 0.0 && abs(facing) > 1e-12 {
+        let row_x = vec3<f32>(projection[0].x, projection[1].x, projection[2].x);
+        let row_y = vec3<f32>(projection[0].y, projection[1].y, projection[2].y);
+        let per_clip = -vec2<f32>(dot(plane_n, row_x) / dot(row_x, row_x), dot(plane_n, row_y) / dot(row_y, row_y)) * dot(row_z, row_z) / facing;
+        slope = per_clip * vec2<f32>(2.0, -2.0) / vec2<f32>(size) * metres;
     }
-    return through;
+    let steep = length(slope);
+    let downhill = slope / max(steep, 1e-12);
+    let squeeze = 1.0 - min(1.0, reach / max(steep * 1.8, 1e-12));
+    var through = vec3<f32>(0.0);
+    for (var i = 0; i < 16; i++) {
+        // A golden-angle spiral: closed up along any slope, its taps still
+        // lie at sixteen different places across it (a square lattice
+        // leaves four, and the edge shows as four bands).
+        let turn = f32(i) * 2.39996323;
+        var offset = 1.8 * sqrt((f32(i) + 0.5) / 16.0) * vec2<f32>(cos(turn), sin(turn));
+        offset -= downhill * dot(downhill, offset) * squeeze;
+        let at = q + offset;
+        let cell = vec2<i32>(floor(at));
+        let t = at - vec2<f32>(cell);
+        var d: array<f32, 4>;
+        for (var k = 0; k < 4; k++) {
+            let texel = clamp(cell + vec2<i32>(k & 1, k >> 1), vec2<i32>(0), size - 1);
+            if level >= 0 {
+                d[k] = textureLoad(near_shadow_tex, texel, level, 0);
+            } else {
+                d[k] = textureLoad(shadow_tex, texel, 0);
+            }
+        }
+        let occluder = mix(mix(d[0], d[1], t.x), mix(d[2], d[3], t.x), t.y);
+        let thickness = max((c.z - occluder) * metres + dot(slope, offset) + world_texel * margin - slack, 0.0);
+        through += exp(-vec3<f32>(thickness) / SKIN_PATH) / 16.0;
+    }
+    return vec4<f32>(through, world_texel);
 }
 
 // Kajiya-Kay strand highlight around tangent t, normalised so that its
@@ -2754,8 +2803,8 @@ fn strand_lobe(t: vec3<f32>, h: vec3<f32>, exponent: f32) -> f32 {
 // Sun radiance off skin and hair, already weighted by their shares; the
 // caller keeps (1 - skin - hair) of the plain response. `shadow` is the
 // sun's visibility, `sun_open` the sun's illuminance without it.
-fn skin_hair_direct(albedo: vec3<f32>, n: vec3<f32>, surface_n: vec3<f32>, v: vec3<f32>, l: vec3<f32>,
-    p: vec3<f32>, uv: vec2<f32>, up: vec3<f32>, ahead: vec3<f32>, shadow: f32, sun_open: vec3<f32>,
+fn skin_hair_direct(albedo: vec3<f32>, n: vec3<f32>, surface_n: vec3<f32>, geo_n: vec3<f32>, v: vec3<f32>, l: vec3<f32>,
+    p: vec3<f32>, uv: vec2<f32>, up: vec3<f32>, ahead: vec3<f32>, shadow: f32, far_shadow: f32, sun_open: vec3<f32>,
     skin: f32, hair: f32) -> vec3<f32> {
     let ndl = dot(n, l);
     var out = vec3<f32>(0.0);
@@ -2763,19 +2812,29 @@ fn skin_hair_direct(albedo: vec3<f32>, n: vec3<f32>, surface_n: vec3<f32>, v: ve
         // Diffuse: per-channel wrap, and a penumbra that lets red through
         // first (the shadow's own edge scatters under the skin too).
         let wrapped = clamp((vec3<f32>(ndl) + SKIN_WRAP) / (1.0 + SKIN_WRAP), vec3<f32>(0.0), vec3<f32>(1.0));
-        let soft = pow(vec3<f32>(clamp(shadow, 0.0, 1.0)), vec3<f32>(0.5, 0.85, 1.0));
+        var soft = pow(vec3<f32>(clamp(shadow, 0.0, 1.0)), vec3<f32>(0.5, 0.85, 1.0));
+        // Where the sun map is fine enough to measure skin, the sun's
+        // visibility is how much skin lies in its way: none on the lit
+        // side, a sliver just past the terminator (which lets the wrap
+        // through, red furthest), centimetres in a cast shadow. A lit or
+        // dark test of the flat triangles cut the wrapped light off in
+        // steps along a cheek. `far_shadow`: what lies beyond the fine map.
+        let front = sun_through_skin(p, geo_n * select(-1.0, 1.0, dot(geo_n, surface_n) >= 0.0), skin_facet_reach, -0.25, skin_facet_slack);
+        let fine = 1.0 - smoothstep(0.004, 0.010, front.w);
+        soft = mix(soft, front.rgb * far_shadow, fine);
+        let lit = dot(soft, vec3<f32>(0.2126, 0.7152, 0.0722));
         var rad = albedo / PI * sun_open * soft * wrapped * wrapped;
         // Transmission: light entering the sunlit side of thin parts (ears,
         // nostrils, fingers) leaves through the far side, reddened by the
         // path through the skin. Thickness from the sun shadow map.
         let back = clamp(-dot(surface_n, l), 0.0, 1.0);
         if back > 0.0 {
-            rad += albedo / PI * sun_open * sun_through_skin(p) * back * 0.6;
+            rad += albedo / PI * sun_open * sun_through_skin(p, vec3<f32>(0.0), 0.0, 1.5, 0.0).rgb * back * 0.6;
         }
         // Two specular lobes: a thin oily sheen over the broader skin.
         let f0 = vec3<f32>(0.028);
         let spec = mix(ggx(n, v, l, min(SKIN_ROUGHNESS * 1.3, 1.0), f0), ggx(n, v, l, SKIN_ROUGHNESS * 0.6, f0), 0.3);
-        rad += sun_open * shadow * spec;
+        rad += sun_open * lit * spec;
         out += rad * skin;
     }
     if hair > 0.0 {
@@ -3119,6 +3178,21 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     sun_receiver_tri_set=true;
     sun_receiver_error=cl.own_error*inst.scale;
     let m = material(cl.material);
+    skin_facet_slack = 0.0;
+    skin_facet_reach = 0.0;
+    if FEATURE_SKIN_HAIR && (m.flags & 0x40000000u) != 0u {
+        let outward = geo_n * select(-1.0, 1.0, dot(geo_n, n) >= 0.0);
+        let facing = dot(outward, light.sun_dir.xyz);
+        var turn = 0.0;
+        for (var k = 0u; k < 3u; k++) {
+            let v = vi[k];
+            let nk = normalize(xform_dir(inst, vec3<f32>(vertex_f32(v + 3u), vertex_f32(v + 4u), vertex_f32(v + 5u))));
+            turn = max(turn, abs(dot(nk, light.sun_dir.xyz) - facing));
+        }
+        let sun_side = vec3<f32>(dot(p0, light.sun_dir.xyz), dot(p1, light.sun_dir.xyz), dot(p2, light.sun_dir.xyz));
+        skin_facet_reach = 0.5 * (max(sun_side.x, max(sun_side.y, sun_side.z)) - min(sun_side.x, min(sun_side.y, sun_side.z)));
+        skin_facet_slack = max(length(p1 - p0), max(length(p2 - p1), length(p0 - p2))) * turn * SKIN_FACET;
+    }
     // Two-sided cards and backfaces face the viewer.
     if dot(n, dir) > 0.0 && (m.flags & 8u) != 0u && (m.flags & 64u) == 0u {
         n = -n;
@@ -3523,6 +3597,15 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     }
     let terrain_error=select(0.0,world_visibility.params.z,(m.flags&6u)!=0u);
     var shadow = 1.0;
+    // Sun visibility past the fine sun maps round p (skin_hair_direct).
+    var far_shadow = 1.0;
+    if FEATURE_SKIN_HAIR && skin > 0.0 && sun_visibility_required() {
+        if light.near_levels.y < 0.5 {
+            far_shadow = shadow_filter(shadow_tex, light.shadow_view_proj, light.sky.w, p + light.sun_dir.xyz * 3.0, surface_n, geo_n);
+        }
+        if FEATURE_WORLD_TERRAIN { far_shadow = min(far_shadow, world_terrain_sun_visibility(p, surface_n, terrain_error)); }
+        far_shadow = mix(1.0, far_shadow, light.sun_color.w);
+    }
     if sun > 0.0 || needles || (gi.vol_dims.w != 0u && (gi.vol_dims.w & 4u) == 0u) || coat > 0.0 || rough_m < 0.55 || skin + hair > 0.0 {
         var s_map = shadow_at_surface(p, surface_n * sign(dot(surface_n, l) + 1e-4), geo_n, terrain_error);
         // Forest ground past the sharp sun maps: each drawn tree's own
@@ -3539,7 +3622,9 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     }
     if FEATURE_GRASS_SHADE && shadow > 0.0 && (m.flags & 70u) != 0u {shadow*=mix(1.0,grass_sun_transmittance_receiver(p,l,(m.flags & 2u)!=0u),light.sun_color.w);}
     // Cloud shadows (sky_volume): the same weather field the clouds are drawn from.
-    shadow *= cloud_sun_transmittance(p, l, light.clouds, light.cloud_motion);
+    let cloud_shadow = cloud_sun_transmittance(p, l, light.clouds, light.cloud_motion);
+    shadow *= cloud_shadow;
+    far_shadow *= cloud_shadow;
     // Base layer: Lambert plus GGX, metals tint their reflection.
     let v = -dir;
     let ndv = max(dot(n, v), 1e-4);
@@ -3639,7 +3724,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
             let sun_open=light.sun_color.rgb*light.sun_dir.w*meadow_edge.y*field_sun;
             let up=normalize(vec3<f32>(inst.r0.y,inst.r1.y,inst.r2.y));
             let ahead=normalize(vec3<f32>(inst.r0.z,inst.r1.z,inst.r2.z));
-            let sh=skin_hair_direct(base*(1.0-metal),n,surface_n,v,l,p,uv,up,ahead,shadow,sun_open,skin,hair);
+            let sh=skin_hair_direct(base*(1.0-metal),n,surface_n,geo_n,v,l,p,uv,up,ahead,shadow,far_shadow,sun_open,skin,hair);
             direct=direct*(1.0-skin-hair)+sh;
         }
         // Authored diffuse room return; retain crevice and contact occlusion.

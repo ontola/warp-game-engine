@@ -114,6 +114,32 @@ fn near_levels_for(clipmap: bool) -> usize {
 }
 /// Half extent of clipmap level `k` (metres).
 fn near_level_extent(k: usize) -> f32 { NEAR_SHADOW_EXTENT * (1u32 << k) as f32 }
+/// Half extents of the clipmap's levels in a scene with skin, seen from the
+/// ground (base 0): people are looked at from a metre away, where the
+/// doubling ladder's first level (24 m, 2.3 cm a texel) draws the shadow of
+/// a nose in steps as wide as the nose. Two finer levels (2.9 mm and 1.2 cm
+/// a texel) come before the doubling ladder, which then ends two levels
+/// sooner (768 m of eight).
+const CLOSE_LADDER: [f32; NEAR_LEVELS_MAX] = [3.0, 12.0, 24.0, 48.0, 96.0, 192.0, 384.0, 768.0];
+/// Half extent of level `k` of a clipmap whose first level is `base`
+/// (clipmap_base); `close` selects CLOSE_LADDER near the ground.
+fn clipmap_extent(k: usize, base: usize, close: bool) -> f32 {
+    if close && base == 0 { CLOSE_LADDER[k.min(NEAR_LEVELS_MAX - 1)] } else { near_level_extent(k + base) }
+}
+/// Centre of a clipmap level finer than the doubling ladder's first: ahead
+/// of the camera, at what it looks at when that is near, so that the level's
+/// full-weight core (0.45 of its half extent) lies in view and not half
+/// behind the camera. `ahead` is off when the game set its own lighting focus.
+fn close_level_centre(centre: Vec3, cam: &Camera, extent: f32, ahead: bool) -> Vec3 {
+    if !ahead || extent >= NEAR_SHADOW_EXTENT { return centre; }
+    let to = cam.target - cam.pos;
+    let reach = to.length();
+    if !(reach > 1e-4) { return centre; }
+    centre + to / reach * reach.min(0.45 * extent)
+}
+/// The doubling ladder's level that a half extent stands for (levels finer
+/// than its first count as the first): what near_level_voxel_m takes.
+fn extent_level(extent: f32) -> usize { (extent / NEAR_SHADOW_EXTENT).log2().round().max(0.0) as usize }
 /// Finest voxel cell level `k` splats: half a pixel's growth per level.
 /// Level 0 redraws every frame, level 1 every other frame, level 2 every
 /// fourth and level 3 every eighth (on different frames): at most two levels
@@ -4796,7 +4822,11 @@ impl Renderer {
         // level of every view has a damage slot).
         let clipmap_frame = self.sun_clipmap && sun_needed && near_enabled
             && clipmap_slot(views.len().max(1) - 1, self.near_levels() - 1) < crate::shadow_damage::MAX_MAPS;
-        // Level k of view v covers near_level_extent(k + bases[v]).
+        // People up close need sun texels far finer than the ladder's first,
+        // with or without the clipmap (the separate maps' levels: 3, 12, 24, 48 m).
+        let clipmap_close = self.shade_features.skin_hair && !crate::switches::SUN_CLOSE.off();
+        let close_ahead = clipmap_close && self.lighting_focus.lock().unwrap().is_empty() && diagnostic_sun.is_empty() && !self.legacy_light_lookahead;
+        // Level k of view v covers clipmap_extent(k, bases[v], clipmap_close).
         let clipmap_bases: Vec<usize> = {
             let mut kept = self.clipmap_bases.lock().unwrap();
             let bases: Vec<usize> = views.iter().enumerate().map(|(vi, view)| {
@@ -4837,7 +4867,7 @@ impl Renderer {
                     for k in 0..self.near_levels() {
                         let level_grid = clipmap_level_grid(clipmap_frame, k);
                         part_animation_views.push(AnimationView {
-                            view_projection:sun_projection(center,near_level_extent(k + clipmap_bases[vi]),level_grid),
+                            view_projection:{let e=clipmap_extent(k, clipmap_bases[vi], clipmap_close);sun_projection(close_level_centre(center,&view.cam,e,close_ahead),e,level_grid)},
                             viewport:[NEAR_SHADOW_SIZE;2],
                         });
                     }
@@ -5309,7 +5339,7 @@ impl Renderer {
         // grid every pass below uses.
         let near_vps: Vec<[Mat4; NEAR_LEVELS_MAX]> = views.iter().enumerate().map(|(vi, view)| {
             let centre = if !diagnostic_sun.is_empty() {anchors[vi]} else if self.legacy_light_lookahead {view.cam.target} else {focus[vi]};
-            std::array::from_fn(|k| sun_projection(centre, near_level_extent(k + clipmap_bases[vi]), clipmap_level_grid(clipmap_frame, k)))
+            std::array::from_fn(|k| {let e=clipmap_extent(k, clipmap_bases[vi], clipmap_close);sun_projection(close_level_centre(centre,&view.cam,e,close_ahead), e, clipmap_level_grid(clipmap_frame, k))})
         }).collect();
         let near_cached = clipmap_frame;
         // Clipmap levels that redraw their damaged tiles this frame.
@@ -5537,7 +5567,7 @@ impl Renderer {
                 let voxel_casters=self.voxel_forest.as_ref().is_some_and(|f|f.casts_sun())&&!near_sun_source();
                 let mut layer0 = None;
                 for k in 0..self.near_levels() {
-                    let extent = near_level_extent(k + clipmap_bases[vi]);
+                    let extent = clipmap_extent(k, clipmap_bases[vi], clipmap_close);
                     let targets = if k == 0 { &near.targets } else { &near.outer[k - 1] };
                     if near_cached && !level_drawn[vi][k] {
                         // Deferred: retained depth, drawn with this projection.
@@ -5552,7 +5582,7 @@ impl Renderer {
                     let level_damage = if near_cached {shadow_damage.as_ref().map(|d|d.raster_bind(clipmap_slot(vi,k)).clone())} else {None};
                     near.drawn[k].set(Some(near_vp));
                     let mut near_uniform=view_uniform(
-                        near_vp, sun_eye(near_centre), NEAR_SHADOW_SIZE as f32 / (2.0 * extent),
+                        near_vp, sun_eye(close_level_centre(near_centre,cam,extent,close_ahead)), NEAR_SHADOW_SIZE as f32 / (2.0 * extent),
                         [light.lod_pixels * near_shadow_lod(), 1.0, 1.0, self.shadow_capacity as f32], [NEAR_SHADOW_SIZE as f32; 4], light.alpha_cut);
                     configure_sun_terrain_error(&mut near_uniform,self.sun_terrain_error);
                     near_uniform.fog_cull[3]=if self.sun_surface_source{1.0}else{0.0};
@@ -5571,7 +5601,7 @@ impl Renderer {
                             .map(|name|self.query.as_ref().map(|(qs,_,_)|{let i=timestamp_pair(&mut ts);names.push(name);(qs,i)}));
                         forest.render_sun(gpu,&mut enc,&self.voxel_scene_bind,&targets.foliage_selection,crate::voxel_forest::SunSplatView {
                             damage:level_damage.as_ref(),depth:&texture_view,view_proj:near_vp,planes:near_uniform.planes,direction:light.sun_dir,
-                            texel_m:sun_voxel_m(2.0*extent/NEAR_SHADOW_SIZE as f32,near_level_voxel_m(k + clipmap_bases[vi])),map_size:NEAR_SHADOW_SIZE},times)?;
+                            texel_m:sun_voxel_m(2.0*extent/NEAR_SHADOW_SIZE as f32,near_level_voxel_m(extent_level(extent))),map_size:NEAR_SHADOW_SIZE},times)?;
                     }
                     if k == 0 {
                         view_light.near_shadow_view_proj = near_vp.to_cols_array_2d();
@@ -5593,11 +5623,11 @@ impl Renderer {
             let shadow_v = if near_cached {
                 let outer = self.near_levels() - 1;
                 view_light.shadow_view_proj = near_vps[vi][outer].to_cols_array_2d();
-                view_light.sky[3] = 2.0 * near_level_extent(outer + clipmap_bases[vi]) / NEAR_SHADOW_SIZE as f32;
+                view_light.sky[3] = 2.0 * clipmap_extent(outer, clipmap_bases[vi], clipmap_close) / NEAR_SHADOW_SIZE as f32;
                 view_light.near_levels[0] = outer as f32;
                 view_light.near_levels[1] = 1.0;
                 // Level 0's texel and the base level (shade.wgsl sun_voxel_cell).
-                view_light.near_shadow[0] *= (1u32 << clipmap_bases[vi]) as f32;
+                view_light.near_shadow[0] = 2.0 * clipmap_extent(0, clipmap_bases[vi], clipmap_close) / NEAR_SHADOW_SIZE as f32;
                 view_light.near_levels[2] = clipmap_bases[vi] as f32;
                 near_shadows[vi].layers[outer].clone()
             } else { shadow_v.clone() };
