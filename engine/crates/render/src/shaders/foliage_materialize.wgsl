@@ -26,7 +26,11 @@ fn branch_at(i:u32)->Branch {let b=i*18u;return Branch(array<vec4<f32>,3>(table_
 fn representation_at(i:u32)->vec4<u32> {return tables[state.tables.x+i];}
 fn proxy_at(i:u32)->Volume {return table_volume(state.tables.y+i*6u);}
 @group(0) @binding(5) var<storage,read> slots:array<Slot>;
-@group(0) @binding(6) var<storage,read> fallback:array<u32>;
+// The selector's per-tree demand (vec4 per record, from 0) and fallback words
+// (from vec4 state.roots.z) in one read-only binding (Region::per_tree).
+@group(0) @binding(6) var<storage,read> per_tree:array<vec4<u32>>;
+fn publication_at(i:u32)->vec4<u32> {return per_tree[i];}
+fn fallback_at(t:u32)->u32 {return per_tree[state.roots.z+t/4u][t%4u];}
 @group(0) @binding(8) var<storage,read_write> sources:array<Source>;
 @group(0) @binding(9) var<storage,read_write> volumes:array<Volume>;
 // Choices (2 per slot, from 0, read by the cull and shadow damage as their
@@ -39,7 +43,7 @@ fn pose_row(b:u32)->vec4<f32> {return bitcast<vec4<f32>>(vec4<u32>(choices[b],ch
 fn root_pose_at(i:u32)->array<vec4<f32>,3> {let b=state.roots.y+i*12u;return array<vec4<f32>,3>(pose_row(b),pose_row(b+4u),pose_row(b+8u));}
 fn set_pose_row(b:u32,r:vec4<f32>) {let u=bitcast<vec4<u32>>(r);choices[b]=u.x;choices[b+1u]=u.y;choices[b+2u]=u.z;choices[b+3u]=u.w;}
 fn set_root_pose(i:u32,m:array<vec4<f32>,3>) {let b=state.roots.y+i*12u;set_pose_row(b,m[0]);set_pose_row(b+4u,m[1]);set_pose_row(b+8u,m[2]);}
-@group(0) @binding(11) var<storage,read> root_publication:array<vec4<u32>>; // branch count, consumer roles, direct representation+1, fault
+// publication_at: branch count, consumer roles, direct representation+1, fault.
 // Frame-local shared ancestry, bounded by selected slots and cooked depth.
 struct PoseEntry {key:atomic<u32>,pad0:u32,pad1:u32,pad2:u32,rows:array<vec4<f32>,3>};
 @group(0) @binding(13) var<storage,read_write> pose_cache:array<PoseEntry>;
@@ -183,17 +187,17 @@ fn materialize(@builtin(global_invocation_id) id:vec3<u32>) {
    sources[original.identity.x].sphere.w=-1.;return;
   }
   let m=root_pose_at(tree);let delta=multiply(m,original.inverse);
-  let roles=root_publication[tree].y&768u;
+  let roles=publication_at(tree).y&768u;
   var histories:array<u32,2>;var changed=false;
   let previous=history_at(tree);var epoch=previous.z&128u;
   for(var consumer=0u;consumer<2u;consumer++) {
    let publication=tree+consumer*state.counts.z;let role=256u<<consumer;
-   let direct=root_publication[publication].z;
+   let direct=publication_at(publication).z;
    var volume=bounds(original,delta,original.low.xyz,original.high.xyz);volume.inverse=inverse(m);
    var history=0u;
    // Consumer deadlines fall back only that consumer. Physical publication
    // faults (low bits) still suppress both partial cuts atomically.
-   if (fallback[tree]&(role|7u))!=0u && (roles&role)!=0u {history=0xffffffffu;}
+   if (fallback_at(tree)&(role|7u))!=0u && (roles&role)!=0u {history=0xffffffffu;}
    else if direct!=0u {
     let rep=representation_at(direct-1u);let branch=branch_at(rep.x);
     volume=bounds(branch.volume,m,branch.low.xyz,branch.high.xyz);volume.inverse=inverse(m);

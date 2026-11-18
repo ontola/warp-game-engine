@@ -127,6 +127,15 @@ impl Region {
             usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC});
         (Region {buffer:buffer.clone(),offset:0,size:nodes.len()as u64},Region {buffer,offset:at,size:trees.len()as u64})
     }
+    /// Per-tree demand (two Demand records per tree: camera, shadow) from 0 and
+    /// the fallback words from the next 256-byte boundary. Refine, select and
+    /// residency bind each range; materialize binds both read-only.
+    fn per_tree(gpu:&Gpu,trees:u32)->(Region,Region) {
+        let demand=trees as u64*32;let at=demand.div_ceil(256)*256;
+        let buffer=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("forest root demand and fallbacks"),size:at+trees as u64*4,
+            usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
+        (Region {buffer:buffer.clone(),offset:0,size:demand},Region {buffer,offset:at,size:trees as u64*4})
+    }
     fn selected(gpu:&Gpu,capacity:u32,trees:u32)->(Region,Region,Region) {
         let align=|n:u64|n.div_ceil(256)*256;
         let records=capacity as u64*16;let consumers=align(records);let direct=consumers+align(capacity as u64*4);
@@ -168,12 +177,12 @@ pub struct Selector {
     /// Separate indirect arguments: deferred dispatch at 0, consumer dispatch at 12.
     pub arguments:wgpu::Buffer,
     /// One u32 per instance, reset each frame. See module consumer contract.
-    pub fallback:wgpu::Buffer,
+    pub fallback:Region,
     /// Camera whole-tree representation + 1 (shadow when outside all cameras).
     /// Full independent publications are held in demand; this is a diagnostic compatibility map.
     pub direct:Region,
     children:wgpu::Buffer,work:[wgpu::Buffer;2],pub(crate) levels:u32,
-    pub(crate) demand:wgpu::Buffer,bucket_cost:wgpu::Buffer,
+    pub(crate) demand:Region,bucket_cost:wgpu::Buffer,
     layout:wgpu::BindGroupLayout,first:wgpu::ComputePipeline,second:wgpu::ComputePipeline,finish:wgpu::ComputePipeline,
     pub(crate) count:u32,capacity:u32,deferred_capacity:u32,
     pub(crate) refiner:crate::foliage_refine::Refiner,
@@ -260,14 +269,15 @@ impl Selector {
             // (foliage_refine.wgsl binds it whole as `selected`); each other pass
             // binds its own 256-byte-aligned range.
             let (records,record_consumers,direct)=Region::selected(gpu,capacity,instances.len()as u32);
+            let (demand,fallback)=Region::per_tree(gpu,instances.len()as u32);
             let (_nodes,_instances)=Region::catalog(gpu,bytemuck::cast_slice(&uploaded),bytemuck::cast_slice(instances));
             let refiner=crate::foliage_refine::Refiner::new(gpu,work_capacity,[(record_consumers.offset/4)as u32,(direct.offset/4)as u32,(_instances.offset/16)as u32,nodes.len()as u32]);let counters=refiner.state.clone();
             Self {source_cluster_budget:std::sync::atomic::AtomicU32::new(DEFAULT_SOURCE_CLUSTER_BUDGET),seed_visibility:storage("foliage current seed visibility",instances.len()as u64*4),seed_classifier:crate::foliage_seed_visibility::Visibility::new(gpu),refiner,asset_pages:upload("foliage asset publication",bytemuck::cast_slice(&asset_state)),asset_requests:storage("foliage compact asset demand",16+page_count as u64*16),asset_state:std::sync::Mutex::new(asset_state),pinned_pages,compact_assets:make("compact_asset_requests"),children:upload("shared foliage child spans",bytemuck::cast_slice(&children)),work:[storage("unused legacy frontier A",24),storage("unused legacy frontier B",24)],levels,
                 _nodes,_instances,uniform,
                 records,record_consumers,deferred:storage("deferred foliage subtrees",deferred_capacity as u64*8),
-                counters,arguments:storage("foliage indirect arguments",24),fallback:storage("foliage root fallbacks",instances.len()as u64*4),
+                counters,arguments:storage("foliage indirect arguments",24),fallback,
                 direct,
-                demand:storage("forest root demand",instances.len()as u64*32),bucket_cost:storage("forest priority costs",(instances.len().div_ceil(256)as u64+1)*128),first:make("first"),second:make("second"),finish:make("finish"),layout,count:instances.len()as u32,capacity,deferred_capacity,binds:Default::default()}
+                demand,bucket_cost:storage("forest priority costs",(instances.len().div_ceil(256)as u64+1)*128),first:make("first"),second:make("second"),finish:make("finish"),layout,count:instances.len()as u32,capacity,deferred_capacity,binds:Default::default()}
         })
     }
     /// Publish at a frame boundary, after the associated data upload is ordered
@@ -289,11 +299,11 @@ impl Selector {
     }
     fn bind(&self,gpu:&Gpu,hzb:&wgpu::TextureView)->wgpu::BindGroup {self.bind_work(gpu,hzb,0)}
     fn bind_work(&self,gpu:&Gpu,hzb:&wgpu::TextureView,front:usize)->wgpu::BindGroup {
-        let buffers=[self.uniform.as_entire_binding(),self._nodes.buffer.as_entire_binding(),self.records.binding(),self.deferred.as_entire_binding(),self.counters.as_entire_binding(),self.fallback.as_entire_binding()];
+        let buffers=[self.uniform.as_entire_binding(),self._nodes.buffer.as_entire_binding(),self.records.binding(),self.deferred.as_entire_binding(),self.counters.as_entire_binding(),self.fallback.binding()];
         let mut entries=buffers.into_iter().zip([0u32,1,3,4,5,6]).map(|(resource,binding)|wgpu::BindGroupEntry {binding,resource}).collect::<Vec<_>>();
         entries.push(wgpu::BindGroupEntry {binding:7,resource:wgpu::BindingResource::TextureView(hzb)});
         entries.push(wgpu::BindGroupEntry {binding:8,resource:self.direct.binding()});
-        entries.push(wgpu::BindGroupEntry {binding:9,resource:self.demand.as_entire_binding()});
+        entries.push(wgpu::BindGroupEntry {binding:9,resource:self.demand.binding()});
         entries.push(wgpu::BindGroupEntry {binding:10,resource:self.bucket_cost.as_entire_binding()});
         entries.push(wgpu::BindGroupEntry {binding:11,resource:self.work[front].as_entire_binding()});
         entries.push(wgpu::BindGroupEntry {binding:12,resource:self.work[1-front].as_entire_binding()});
@@ -309,7 +319,7 @@ impl Selector {
         if !vp.is_finite() || !previous_vp.is_finite() || size.contains(&0) || !error.is_finite() || error<0. {return Err("invalid foliage selection view".into());}
         gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&Uniform {consumers:[Consumer::zeroed();32],consumer_count:[0;4],vp:vp.to_cols_array(),previous_vp:previous_vp.to_cols_array(),
             pixels:[size[0]as f32,size[1]as f32,error,0.],counts:[self.count,self.capacity,self.deferred_capacity,u32::from(history_valid)],catalog:[(self._instances.offset/16)as u32,0,0,0]}));
-        enc.clear_buffer(&self.counters,0,Some(64));enc.clear_buffer(&self.fallback,0,None);self.direct.clear(enc);self.record_consumers.clear(enc);
+        enc.clear_buffer(&self.counters,0,Some(64));self.fallback.clear(enc);self.direct.clear(enc);self.record_consumers.clear(enc);
         let bind=self.bind(gpu,hzb);let mut pass=enc.begin_compute_pass(&Default::default());
         pass.set_bind_group(0,&bind,&[]);pass.set_pipeline(&self.first);pass.dispatch_workgroups(self.count.div_ceil(64),1,1);
         pass.set_pipeline(&self.finish);pass.dispatch_workgroups(1,1,1);drop(pass);
@@ -362,7 +372,7 @@ impl Selector {
         }
         gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&Uniform {consumers,consumer_count:[views.len()as u32,branch_budget,raster_budget[0],raster_budget[1]],
             vp:views[0].projection.view_projection.to_cols_array(),previous_vp:views[0].projection.view_projection.to_cols_array(),pixels:[0.,0.,error,self.source_cluster_budget.load(std::sync::atomic::Ordering::Relaxed) as f32],counts:[self.count,self.capacity,self.deferred_capacity,u32::from(current.is_some())],catalog:[(self._instances.offset/16)as u32,0,0,0]}));
-        enc.clear_buffer(&self.counters,0,Some(64));enc.clear_buffer(&self.fallback,0,None);self.direct.clear(enc);self.record_consumers.clear(enc);
+        enc.clear_buffer(&self.counters,0,Some(64));self.fallback.clear(enc);self.direct.clear(enc);self.record_consumers.clear(enc);
         let binds=[self.bind_work(gpu,empty_depth,0),self.bind_work(gpu,empty_depth,1)];
         mark(enc,2);
         self.refiner.encode(gpu,enc,self);
@@ -410,17 +420,17 @@ mod tests {
   for (camera,shadow) in [(128,1),(1,128),(128,128),(1,1),(128,1)] {
    let mut enc=gpu.device.create_command_encoder(&Default::default());
    selector.union_consumers_budget(&gpu,&mut enc,&[ConsumerView::camera(view(camera)),ConsumerView::shadow(view(shadow))],1.,8,[100;2],&empty).unwrap();gpu.queue.submit([enc.finish()]);
-   let count=read(&gpu,&selector.counters)[0]as usize;let records=selector.records.read(&gpu);let roles=selector.record_consumers.read(&gpu);let roots=read(&gpu,&selector.demand);
+   let count=read(&gpu,&selector.counters)[0]as usize;let records=selector.records.read(&gpu);let roles=selector.record_consumers.read(&gpu);let roots=selector.demand.read(&gpu);
    for (consumer,size) in [camera,shadow].into_iter().enumerate() {
     let mut cut=records.chunks_exact(4).take(count).zip(&roles).filter(|(_,role)|**role&(256<<consumer)!=0).map(|(r,_)|r[1]).collect::<Vec<_>>();
     if roots[consumer*4+2]!=0 {cut.push(0);}
     cut.sort();assert_eq!(cut,if size==1 {vec![0]}else{vec![1,2]},"consumer {consumer} at {size} pixels must not inherit the other consumer's detail");
    }
-   assert_eq!(read(&gpu,&selector.fallback),[0]);
+   assert_eq!(selector.fallback.read(&gpu),[0]);
   }
   selector.publish_asset_pages(&gpu,&[(1,false,2)]).unwrap();
   let mut enc=gpu.device.create_command_encoder(&Default::default());selector.union_consumers(&gpu,&mut enc,&[ConsumerView::camera(view(128)),ConsumerView::shadow(view(1))],1.,8,&empty).unwrap();gpu.queue.submit([enc.finish()]);
-  let roots=read(&gpu,&selector.demand);assert_eq!((roots[2],roots[6]),(1,1),"missing child preserves a complete resident ancestor for each consumer");assert_eq!(read(&gpu,&selector.counters)[0],0);
+  let roots=selector.demand.read(&gpu);assert_eq!((roots[2],roots[6]),(1,1),"missing child preserves a complete resident ancestor for each consumer");assert_eq!(read(&gpu,&selector.counters)[0],0);
  }
  #[test]
  #[ignore="exclusive GPU error-driven cut oracle"]
@@ -434,11 +444,11 @@ mod tests {
   let cut=|slots:u32|{
    let mut enc=gpu.device.create_command_encoder(&Default::default());
    selector.union_consumers_budget(&gpu,&mut enc,&[ConsumerView::camera(view(128)),ConsumerView::shadow(view(1))],1.,slots,[100;2],&empty).unwrap();gpu.queue.submit([enc.finish()]);
-   let count=read(&gpu,&selector.counters)[0]as usize;let records=selector.records.read(&gpu);let roles=selector.record_consumers.read(&gpu);let roots=read(&gpu,&selector.demand);
+   let count=read(&gpu,&selector.counters)[0]as usize;let records=selector.records.read(&gpu);let roles=selector.record_consumers.read(&gpu);let roots=selector.demand.read(&gpu);
    let mut camera=records.chunks_exact(4).take(count).zip(&roles).filter(|(_,role)|**role&256!=0).map(|(r,_)|r[1]).collect::<Vec<_>>();
    if roots[2]!=0 {camera.push(0);}camera.sort();
    let shadow_root=roots[6]!=0;let state=read(&gpu,&selector.refiner.state)[(crate::foliage_refine::STATE_OFFSET/4) as usize..].to_vec();
-   assert_eq!(read(&gpu,&selector.fallback),[0]);assert_eq!(state[15],0,"no faults");
+   assert_eq!(selector.fallback.read(&gpu),[0]);assert_eq!(state[15],0,"no faults");
    (camera,shadow_root,f32::from_bits(state[79]))
   };
   let (camera,shadow,scale)=cut(8);
@@ -508,15 +518,15 @@ mod tests {
    let mut enc=gpu.device.create_command_encoder(&Default::default());
    selector.union_consumers_budget_depth(&gpu,&mut enc,&views,1.,4,[100;2],&clear,Some(&[camera])).unwrap();gpu.queue.submit([enc.finish()]);
    assert_eq!(read(&gpu,&selector.seed_visibility),[u32::from(visible)]);
-   let demand=read(&gpu,&selector.demand);assert_eq!(demand[1],512|if visible{256}else{0});
-   assert_eq!(read(&gpu,&selector.fallback),[0]);
+   let demand=selector.demand.read(&gpu);assert_eq!(demand[1],512|if visible{256}else{0});
+   assert_eq!(selector.fallback.read(&gpu),[0]);
   }
   // The second camera sees the root. The first one's depth cannot suppress it.
   let cameras=[CameraDepth {projection:Mat4::IDENTITY,pyramid:&blocked},CameraDepth {projection:Mat4::IDENTITY,pyramid:&clear}];
   let views=[ConsumerView::camera(view),ConsumerView::camera(view),ConsumerView::shadow(view)];
   let mut enc=gpu.device.create_command_encoder(&Default::default());
   selector.union_consumers_budget_depth(&gpu,&mut enc,&views,1.,4,[100;2],&clear,Some(&cameras)).unwrap();gpu.queue.submit([enc.finish()]);
-  assert_eq!(read(&gpu,&selector.demand)[1],768);
+  assert_eq!(selector.demand.read(&gpu)[1],768);
   let mut enc=gpu.device.create_command_encoder(&Default::default());
   assert!(selector.union_consumers_budget_depth(&gpu,&mut enc,&views,1.,4,[100;2],&clear,Some(&cameras[..1])).is_err());
   // An unrelated camera looking away must not resurrect a hidden root.
@@ -525,19 +535,19 @@ mod tests {
   let cameras_away=[CameraDepth {projection:Mat4::IDENTITY,pyramid:&blocked},CameraDepth {projection:away,pyramid:&clear}];
   let mut enc=gpu.device.create_command_encoder(&Default::default());
   selector.union_consumers_budget_depth(&gpu,&mut enc,&views_away,1.,4,[100;2],&clear,Some(&cameras_away)).unwrap();gpu.queue.submit([enc.finish()]);
-  assert_eq!(read(&gpu,&selector.demand)[1],512);
+  assert_eq!(selector.demand.read(&gpu)[1],512);
   let views_four=[ConsumerView::camera(view),ConsumerView::camera(view),views_away[1],ConsumerView::camera(view),ConsumerView::shadow(view)];
   for visible in [true,false] {
    let cameras_four=[CameraDepth {projection:Mat4::IDENTITY,pyramid:&blocked},CameraDepth {projection:Mat4::IDENTITY,pyramid:&blocked},CameraDepth {projection:away,pyramid:&clear},CameraDepth {projection:Mat4::IDENTITY,pyramid:if visible {&clear}else{&blocked}}];
    let mut enc=gpu.device.create_command_encoder(&Default::default());selector.union_consumers_budget_depth(&gpu,&mut enc,&views_four,1.,4,[100;2],&clear,Some(&cameras_four)).unwrap();gpu.queue.submit([enc.finish()]);
-   assert_eq!(read(&gpu,&selector.demand)[1],512|if visible {256}else{0});
+   assert_eq!(selector.demand.read(&gpu)[1],512|if visible {256}else{0});
   }
   // Wind envelope crossing the near plane must fail open, even with full depth.
   trees[0].scale[1]=1.;selector._instances.write(&gpu,0,bytemuck::cast_slice(&trees));
   let mut enc=gpu.device.create_command_encoder(&Default::default());
   let views=[ConsumerView::camera(view),ConsumerView::shadow(view)];
   selector.union_consumers_budget_depth(&gpu,&mut enc,&views,1.,4,[100;2],&clear,Some(&[CameraDepth {projection:Mat4::IDENTITY,pyramid:&blocked}])).unwrap();gpu.queue.submit([enc.finish()]);
-  assert_eq!(read(&gpu,&selector.demand)[1],768);
+  assert_eq!(selector.demand.read(&gpu)[1],768);
  }
  #[test]
  #[ignore="exclusive GPU forced-root priority fixture"]
@@ -552,7 +562,7 @@ mod tests {
   for _ in 0..3 {
    let mut enc=gpu.device.create_command_encoder(&Default::default());
    selector.union_consumers_budget(&gpu,&mut enc,&views,0.01,2,[201;2],&empty).unwrap();gpu.queue.submit([enc.finish()]);
-   assert_eq!(selector.direct.read(&gpu),[1,2]);assert_eq!(read(&gpu,&selector.fallback),[0,0]);
+   assert_eq!(selector.direct.read(&gpu),[1,2]);assert_eq!(selector.fallback.read(&gpu),[0,0]);
    assert_eq!(read(&gpu,&selector.refiner.state)[(crate::foliage_refine::STATE_OFFSET/4) as usize..].to_vec()[1],201);
   }
  }
@@ -568,7 +578,7 @@ mod tests {
   let views=[ConsumerView::camera(crate::part_wind::AnimationView {view_projection:Mat4::IDENTITY,viewport:[128;2]})];
   for _ in 0..3 {
    let mut enc=gpu.device.create_command_encoder(&Default::default());selector.union_consumers_budget(&gpu,&mut enc,&views,0.01,4,[6;2],&empty).unwrap();gpu.queue.submit([enc.finish()]);
-   assert_eq!(selector.direct.read(&gpu),[1,4]);assert_eq!(read(&gpu,&selector.fallback),[0,0]);
+   assert_eq!(selector.direct.read(&gpu),[1,4]);assert_eq!(selector.fallback.read(&gpu),[0,0]);
    let state=read(&gpu,&selector.refiner.state)[(crate::foliage_refine::STATE_OFFSET/4) as usize..].to_vec();assert_eq!(state[1],6);assert_eq!(state[15],0);
   }
  }
@@ -590,7 +600,7 @@ mod tests {
    let mut enc=gpu.device.create_command_encoder(&Default::default());
    selector.union_consumers_budget(&gpu,&mut enc,&views,0.01,4,[10;2],&empty).unwrap();gpu.queue.submit([enc.finish()]);
    assert_eq!(selector.direct.read(&gpu),[2,0],"camera refinement must retry after sibling cut refunds seven splats");
-   assert_eq!(read(&gpu,&selector.fallback),[0,0]);
+   assert_eq!(selector.fallback.read(&gpu),[0,0]);
    let state=read(&gpu,&selector.refiner.state)[(crate::foliage_refine::STATE_OFFSET/4) as usize..].to_vec();assert_eq!(&state[..3],&[4,7,7]);assert_eq!(state[15],0);
    assert!(state[28]>0,"retry must reuse immutable proposal work");
    let count=read(&gpu,&selector.counters)[0]as usize;
@@ -619,7 +629,7 @@ mod tests {
    let state=read(&gpu,&selector.refiner.state)[(crate::foliage_refine::STATE_OFFSET/4) as usize..].to_vec();assert_eq!(state[15],0,"active queue must fit");assert!(state[29]<=2,"bounded dormant storage");
    let count=read(&gpu,&selector.counters)[0]as usize;
    let mut cut=selector.records.read(&gpu).chunks_exact(4).take(count).map(|r|r[1]).collect::<Vec<_>>();cut.sort();
-   let roles=selector.record_consumers.read(&gpu);let records=selector.records.read(&gpu);let demand=read(&gpu,&selector.demand);
+   let roles=selector.record_consumers.read(&gpu);let records=selector.records.read(&gpu);let demand=selector.demand.read(&gpu);
    for (consumer,leaves) in [(256u32,vec![12u32]),(512u32,vec![2,5,8,11,12])] {
     let mut coverage=vec![0;leaves.len()];
     let mut cover=|node:u32|{for (j,&leaf) in leaves.iter().enumerate(){if node<=leaf && leaf<nodes[node as usize].links[1]{coverage[j]+=1;}}};
@@ -627,7 +637,7 @@ mod tests {
     if demand[if consumer==256 {2}else{6}]!=0 {cover(0);}
     assert!(coverage.iter().all(|&n|n==1),"complete nonoverlapping consumer {consumer}: {coverage:?}, cut {cut:?}");
    }
-   assert_eq!(read(&gpu,&selector.fallback),[0]);assert_eq!(selector.direct.read(&gpu),[0]);
+   assert_eq!(selector.fallback.read(&gpu),[0]);assert_eq!(selector.direct.read(&gpu),[0]);
   }
  }
  #[test]
@@ -646,7 +656,7 @@ mod tests {
    let mut cut=selector.records.read(&gpu).chunks_exact(4).take(count).map(|r|r[1]).collect::<Vec<_>>();cut.sort();
    let mut audit=gpu.device.create_command_encoder(&Default::default());selector.refiner.audit(&gpu,&mut audit,&selector);gpu.queue.submit([audit.finish()]);
    let state=read(&gpu,&selector.refiner.state)[(crate::foliage_refine::STATE_OFFSET/4) as usize..].to_vec();
-   let roles=selector.record_consumers.read(&gpu);let records=selector.records.read(&gpu);let demand=read(&gpu,&selector.demand);
+   let roles=selector.record_consumers.read(&gpu);let records=selector.records.read(&gpu);let demand=selector.demand.read(&gpu);
    let mut consumer_cuts=[Vec::new(),Vec::new()];
    for (consumer,part) in consumer_cuts.iter_mut().enumerate() {
     for (r,&role) in records.chunks_exact(4).take(count).zip(&roles){if role&(256<<consumer)!=0{part.push(r[1]);}}
@@ -659,7 +669,7 @@ mod tests {
    assert_eq!(state[48],parents(&consumer_cuts[0]));assert_eq!(state[53],0);assert_eq!(&state[25..28],&[0,0,0]);
    let mut cut=consumer_cuts[0].clone();if cut==[0]{cut.clear();}
    assert!(state[0]<=slots && state[1]<=cap && state[2]<=cap,"reservation {state:?}");assert_eq!(state[15],0);
-   assert_eq!(counters[3],0);assert_eq!(read(&gpu,&selector.fallback),[0]);
+   assert_eq!(counters[3],0);assert_eq!(selector.fallback.read(&gpu),[0]);
    // Replaying a selected parent's proposal must preserve all live cut state.
    let before_pages=read(&gpu,&selector.asset_pages);
    let trace=selector.refiner.trace_proposals(&gpu,&selector,&[[0,1,256,0]]).unwrap();
@@ -670,7 +680,7 @@ mod tests {
    assert_eq!(read(&gpu,&selector.asset_pages),before_pages);
    assert_eq!(read(&gpu,&selector.counters)[..16],counters[..16]);
    assert_eq!(selector.records.read(&gpu),records);
-   assert_eq!(read(&gpu,&selector.demand),demand);
+   assert_eq!(selector.demand.read(&gpu),demand);
    cut
   };
   for _ in 0..4 {
@@ -698,13 +708,13 @@ mod tests {
   };
   selector.publish_asset_pages(&gpu,&[(2,false,1)]).unwrap();
   assert_eq!(draw(16),[1,5,6],"only the missing subtree coarsens; its sibling keeps detail");
-  assert_eq!(read(&gpu,&selector.fallback),[0]);assert_eq!(selector.direct.read(&gpu),[0]);
+  assert_eq!(selector.fallback.read(&gpu),[0]);assert_eq!(selector.direct.read(&gpu),[0]);
   let requests=read(&gpu,&selector.asset_requests);assert!(requests[4..4+requests[0]as usize*4].chunks_exact(4).any(|r|r[0]==2 && r[1]==0));
   selector.publish_asset_pages(&gpu,&[(2,true,2)]).unwrap();assert_eq!(draw(16),[2,3,5,6]);
   selector.publish_asset_pages(&gpu,&[(1,false,1)]).unwrap();assert!(draw(16).is_empty());
   assert_eq!(selector.direct.read(&gpu),[1],"missing immediate child retains whole resident root");
   selector.publish_asset_pages(&gpu,&[(1,true,2),(3,false,1)]).unwrap();assert_eq!(draw(16),[1,5,6]);
-  assert_eq!(draw(2),[1,4]);assert_eq!(read(&gpu,&selector.fallback),[0],"budget retains both complete intermediate parents");
+  assert_eq!(draw(2),[1,4]);assert_eq!(selector.fallback.read(&gpu),[0],"budget retains both complete intermediate parents");
   selector.publish_asset_pages(&gpu,&[(3,true,2)]).unwrap();assert_eq!(draw(16),[2,3,5,6]);
  }
  #[test]
@@ -720,7 +730,7 @@ mod tests {
   let state=read(&gpu,&selector.refiner.state)[(crate::foliage_refine::STATE_OFFSET/4) as usize..].to_vec();assert_eq!(state[15],0);assert_eq!(state[69],12,"10-work intermediate must refund to6; cached other root may use complete6-work endpoint");
   let count=read(&gpu,&selector.counters)[0]as usize;assert_eq!(count,4);
   let mut cut=selector.records.read(&gpu).chunks_exact(4).take(count).map(|r|(r[0],r[1])).collect::<Vec<_>>();cut.sort();
-  assert_eq!(cut,[(0,2),(0,3),(1,2),(1,3)]);assert_eq!(read(&gpu,&selector.fallback),[0,0]);
+  assert_eq!(cut,[(0,2),(0,3),(1,2),(1,3)]);assert_eq!(selector.fallback.read(&gpu),[0,0]);
  }
  #[test]
  #[ignore="exclusive GPU source work budget and consumer multiplicity"]
@@ -741,7 +751,7 @@ mod tests {
    for r in records.chunks_exact(4).take(count) {cost+=(nodes[r[1]as usize].links[3]>>8)*views as u32;}
    let state=read(&gpu,&selector.refiner.state)[(crate::foliage_refine::STATE_OFFSET/4) as usize..].to_vec();assert_eq!(state[15],0);assert_eq!(state[69],cost);assert!(cost<=budget);
    assert_eq!(count,expected,"source cost must apply collectively and to every view, budget={budget} views={views}");
-   assert_eq!(read(&gpu,&selector.fallback),[0,0],"retain complete root for unaffordable source detail");
+   assert_eq!(selector.fallback.read(&gpu),[0,0],"retain complete root for unaffordable source detail");
   }
  }
  #[test]
@@ -787,7 +797,7 @@ mod tests {
   let mut per_root=vec![Vec::new();128];
   for r in selector.records.read(&gpu).chunks_exact(4).take(count) {per_root[r[0]as usize].push(r[1]);}
   for cut in &mut per_root {cut.sort();assert_eq!(cut,&[2,3,5,6],"complete source endpoint must not wait128 budget-release waves");}
-  assert!(read(&gpu,&selector.fallback).iter().all(|&x|x==0));
+  assert!(selector.fallback.read(&gpu).iter().all(|&x|x==0));
  }
  #[test]
  #[ignore="exclusive GPU branching splat-cost barrier fixture"]
@@ -805,7 +815,7 @@ mod tests {
    selector.union_consumers_budget(&gpu,&mut enc,&consumers,0.01,slots,[5;2],&empty).unwrap();gpu.queue.submit([enc.finish()]);
    let count=read(&gpu,&selector.counters)[0]as usize;let state=read(&gpu,&selector.refiner.state)[(crate::foliage_refine::STATE_OFFSET/4) as usize..].to_vec();
    assert_eq!(state[15],0);assert!(state[0]<=slots && state[1]<=5);
-   assert_eq!(read(&gpu,&selector.fallback),[0]);
+   assert_eq!(selector.fallback.read(&gpu),[0]);
    let mut cut=selector.records.read(&gpu).chunks_exact(4).take(count).map(|r|r[1]).collect::<Vec<_>>();cut.sort();cut
   };
   for _ in 0..3 {assert_eq!(draw(4),[2,3,5,6],"affordable complete source cut must bypass temporary splat barrier");}
@@ -848,7 +858,7 @@ mod tests {
   let views=[crate::part_wind::AnimationView {view_projection:Mat4::IDENTITY,viewport:[128;2]}];
   let mut enc=gpu.device.create_command_encoder(&Default::default());queued.union(&gpu,&mut enc,&views,0.01,1024,&empty).unwrap();gpu.queue.submit([enc.finish()]);
   let counts=read(&gpu,&queued.counters);assert_eq!(counts[0],193*4);assert_eq!(counts[11],0);
-  assert!(read(&gpu,&queued.fallback).iter().all(|&f|f==0));
+  assert!(queued.fallback.read(&gpu).iter().all(|&f|f==0));
   let cut=|s:&Selector|{let mut r=s.records.read(&gpu).chunks_exact(4).take(772).map(|r|r.to_vec()).collect::<Vec<_>>();r.sort();r};
   assert_eq!(cut(&serial),cut(&queued));
  }
@@ -865,7 +875,7 @@ mod tests {
    let mut enc=gpu.device.create_command_encoder(&Default::default());
    selector.union_consumers(&gpu,&mut enc,&views,100.,4,&empty).unwrap();gpu.queue.submit([enc.finish()]);
    assert_eq!(read(&gpu,&selector.counters)[0],expected);
-   assert_eq!(read(&gpu,&selector.fallback),[0]);
+   assert_eq!(selector.fallback.read(&gpu),[0]);
   }
  }
  #[test]
@@ -880,9 +890,9 @@ mod tests {
   for _ in 0..2 {
    let mut enc=gpu.device.create_command_encoder(&Default::default());
    selector.union_consumers(&gpu,&mut enc,&consumers,0.01,2,&empty).unwrap();gpu.queue.submit([enc.finish()]);
-   let demand=read(&gpu,&selector.demand);assert_eq!(demand[1]&768,768);assert_eq!(demand[5]&768,512);assert_eq!(demand[9]&768,0);
+   let demand=selector.demand.read(&gpu);assert_eq!(demand[1]&768,768);assert_eq!(demand[5]&768,512);assert_eq!(demand[9]&768,0);
    assert_eq!(demand[0],2);assert_eq!(demand[4],0);assert_eq!(demand[8],0);
-   assert_eq!(read(&gpu,&selector.fallback),[0,0,0]);
+   assert_eq!(selector.fallback.read(&gpu),[0,0,0]);
    assert_eq!(selector.direct.read(&gpu),[0,91,0],"shadow-only root retains its complete coarse representation");
    assert_eq!(read(&gpu,&selector.counters)[0],2);
    assert_eq!(read(&gpu,&selector.refiner.state)[(crate::foliage_refine::STATE_OFFSET/4) as usize..].to_vec()[15],0,"free ancestor publication does not require a dormant wake");
@@ -898,7 +908,7 @@ mod tests {
   let mut enc=gpu.device.create_command_encoder(&Default::default());
   selector.union(&gpu,&mut enc,&views,0.01,65538,&empty).unwrap();gpu.queue.submit([enc.finish()]);
   let counts=read(&gpu,&selector.counters);assert_eq!(counts[0],65538);assert_eq!(counts[11],0);
-  assert!(read(&gpu,&selector.fallback).iter().all(|&f|f==0));
+  assert!(selector.fallback.read(&gpu).iter().all(|&f|f==0));
   let mut hits=vec![0;32769];
   for r in selector.records.read(&gpu).chunks_exact(4) {hits[r[0]as usize]+=1;}
   assert!(hits.iter().all(|&n|n==2));
@@ -928,7 +938,7 @@ mod tests {
     let mut enc=gpu.device.create_command_encoder(&Default::default());
     selector.union(&gpu,&mut enc,&views,if coarse{10000.}else{0.01},4096,&empty).unwrap();
     gpu.queue.submit([enc.finish()]);
-    let counts=read(&gpu,&selector.counters);let fallback=read(&gpu,&selector.fallback);let direct=selector.direct.read(&gpu);
+    let counts=read(&gpu,&selector.counters);let fallback=selector.fallback.read(&gpu);let direct=selector.direct.read(&gpu);
     let mut actual=selector.records.read(&gpu).chunks_exact(4).take(counts[0]as usize).filter(|r|fallback[r[0]as usize]==0).map(|r|r.to_vec()).collect::<Vec<_>>();actual.sort();
     if coarse {
      assert_eq!(counts[0],0);assert_eq!(counts[7],193);assert_eq!(counts[11],0);
@@ -956,7 +966,7 @@ mod tests {
    let mut enc=gpu.device.create_command_encoder(&Default::default());
    selector.union(&gpu,&mut enc,&views,0.0001,2,&hzb).unwrap();
    residency.encode(&mut enc);gpu.queue.submit([enc.finish()]);
-   let counts=read(&gpu,&selector.counters);let f=read(&gpu,&selector.fallback);
+   let counts=read(&gpu,&selector.counters);let f=selector.fallback.read(&gpu);
    assert_eq!(counts[0],2);assert!(f.iter().all(|&v|v==0));
    let direct=selector.direct.read(&gpu);assert!(direct[..1024].iter().all(|&v|v==91));assert_eq!(direct[1024],0);
    let records=selector.records.read(&gpu);assert_eq!(records[0],1024);assert_eq!(records[4],1024);
@@ -977,7 +987,7 @@ mod tests {
    selector.second(&gpu,&mut enc,if current_blocked {&blocked}else{&empty});
    let residency=crate::foliage_residency::Residency::new(&gpu,&selector,4096).unwrap();
    residency.encode(&mut enc);gpu.queue.submit([enc.finish()]);
-   let c=read(&gpu,&selector.counters);let f=read(&gpu,&selector.fallback);let records=selector.records.read(&gpu);
+   let c=read(&gpu,&selector.counters);let f=selector.fallback.read(&gpu);let records=selector.records.read(&gpu);
    let slots=read(&gpu,&residency.slots);let mappings=read(&gpu,&residency.request_slots);
    for (r,&slot) in records.chunks_exact(4).take(c[0].min(capacity)as usize).zip(&mappings) {
     if f[r[0]as usize]!=0 {assert_eq!(slot,NONE);}

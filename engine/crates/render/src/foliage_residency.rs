@@ -83,7 +83,7 @@ impl Residency {
                 label: Some("GPU branch residency"), entries: &entries,
             });
             // Bindings 7 (free list) and 10 (record consumers) live inside 6 and 1.
-            let buffers = [uniform.as_entire_binding(), selector.records.buffer.as_entire_binding(), selector.counters.as_entire_binding(), selector.fallback.as_entire_binding(),
+            let buffers = [uniform.as_entire_binding(), selector.records.buffer.as_entire_binding(), selector.counters.as_entire_binding(), selector.fallback.binding(),
                 slots.as_entire_binding(), table.as_entire_binding(), request_slots.as_entire_binding(), counters.as_entire_binding(), selector.asset_pages.as_entire_binding(),consumer_union.as_entire_binding()];
             let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("GPU branch residency"), layout: &layout,
@@ -153,9 +153,9 @@ mod tests {
         select.records.write(&gpu,0,bytemuck::cast_slice(requests));
         gpu.queue.write_buffer(&select.counters,0,bytemuck::cast_slice(&[requests.len()as u32]));
         gpu.queue.write_buffer(&select.arguments,12,bytemuck::cast_slice(&[(requests.len()as u32).div_ceil(64),1,1]));
-        let mut enc=gpu.device.create_command_encoder(&Default::default());enc.clear_buffer(&select.fallback,0,None);
+        let mut enc=gpu.device.create_command_encoder(&Default::default());select.fallback.clear(&mut enc);
         resident.encode(&mut enc);gpu.queue.submit([enc.finish()]);
-        (read(gpu,&resident.slots),read(gpu,&resident.request_slots),read(gpu,&select.fallback))
+        (read(gpu,&resident.slots),read(gpu,&resident.request_slots),select.fallback.read(gpu))
     }
     #[test]
     #[ignore="exclusive GPU residency fixture"]
@@ -241,12 +241,12 @@ mod tests {
         let gpu=Gpu::new().unwrap();let select=selector(&gpu);let resident=Residency::new(&gpu,&select,8).unwrap();let key=[1,2,12,4];
         select.record_consumers.write(&gpu,0,bytemuck::cast_slice(&[256u32,512]));run(&gpu,&select,&resident,&[key,key]);
         for failure in [512u32,256,1,0] {
-            gpu.queue.write_buffer(&select.fallback,4,bytemuck::cast_slice(&[failure]));
+            select.fallback.write(&gpu,4,bytemuck::cast_slice(&[failure]));
             let mut enc=gpu.device.create_command_encoder(&Default::default());resident.encode(&mut enc);gpu.queue.submit([enc.finish()]);
             let slots=read(&gpu,&resident.slots);let published=slots.chunks_exact(8).filter(|s|s[6]!=0).collect::<Vec<_>>();
             if failure==1 {assert!(published.is_empty(),"physical allocation failure invalidates both consumers");}
             else {assert_eq!(published.len(),1);assert_eq!(published[0][7]&768,768&!failure);}
-            assert_eq!(read(&gpu,&select.fallback)[1],failure);
+            assert_eq!(select.fallback.read(&gpu)[1],failure);
         }
     }
     #[test]
