@@ -117,13 +117,13 @@ fn ramp(lo: f32, hi: f32, v: f32) -> f32 {
 pub struct Rig {
     pub character: Character,
     lib: Library,
-    bound: Bound,
     /// Rig joint index of each capture bone.
     joint: [usize; BONES],
-    /// Each bone's rig bind position, and the move from the rig's bind
-    /// (a T-pose) to the captures' rest (arms down) that the poses start from.
-    bind: [Vec3; BONES],
-    to_rest: [Mat4; BONES],
+    /// The rig's own skeleton (a broad-shouldered T-pose): the legs every
+    /// person shares, and the cycles fitted to them.
+    skeleton: Skeleton,
+    /// The captures' rest pose, from the library's own skeleton.
+    capture: [Vec3; BONES],
     walk: Cycle,
     jog: Cycle,
     /// Flat out: above jogging speed the legs and arms pump.
@@ -158,14 +158,58 @@ impl Rig {
             let a = ual["joints"][name].as_array().ok_or_else(|| format!("humans: ual.json has no joint {name}"))?;
             Ok(Vec3::new(a[0].as_f64().unwrap_or(0.0) as f32, a[1].as_f64().unwrap_or(0.0) as f32, a[2].as_f64().unwrap_or(0.0) as f32))
         };
-        // Turn each rig segment onto the capture's direction, keeping its length.
+        let mut capture = [Vec3::ZERO; BONES];
+        for (bone, _) in JOINTS { capture[bone as usize] = rest_of(bone)?; }
+        let skeleton = Skeleton::new(bind, &capture);
+        let bound = &skeleton.bound;
+        let find = |n: &str| lib.clip(n).ok_or_else(|| format!("humans: no capture {n}"));
+        let walk = Cycle::fit(&lib, bound, find("Walk_Loop")?)?;
+        let jog = Cycle::fit(&lib, bound, find("Jog_Fwd_Loop")?)?;
+        let sprint = Cycle::fit(&lib, bound, find("Sprint_Loop")?)?;
+        let idle = find("Idle_Loop")?;
+        let crouch = Cycle::fit(&lib, bound, find("Crouch_Fwd_Loop")?)?;
+        let crouch_idle = find("Crouch_Idle_Loop")?;
+        let mut clips = BTreeMap::new();
+        for (pose, clip) in [("attack", "Sword_Attack"), ("punch", "Punch_Cross"), ("jab", "Punch_Jab"), ("hit", "Hit_Chest"), ("hit_head", "Hit_Head"), ("dead", "Death01"), ("down", "Death01"), ("cast", "Spell_Simple_Shoot"), ("roll", "Roll")] {
+            clips.insert(pose, find(clip)?);
+        }
+        Ok(Rig { character, lib, joint, skeleton, capture, walk, jog, sprint, idle, crouch, crouch_idle, clips })
+    }
+
+    /// A person's skeleton: the rig's with the spine, head and arms where
+    /// that person's body has them (`Character::warp_human_joints`).
+    fn skeleton_of(&self, person: &render::humans::Instance) -> Result<Skeleton, String> {
+        let joints = self.character.warp_human_joints(person)?;
+        Ok(Skeleton::new(std::array::from_fn(|b| joints[self.joint[b]].1.w_axis.truncate()), &self.capture))
+    }
+}
+
+/// One body's joints under the shared captures.
+struct Skeleton {
+    /// Each bone's bind position (what the palette moves), and the move from
+    /// the bind (arms out or half down) to the captures' rest (arms down)
+    /// that the poses start from.
+    bind: [Vec3; BONES],
+    to_rest: [Mat4; BONES],
+    bound: Bound,
+}
+
+impl Skeleton {
+    fn new(bind: [Vec3; BONES], capture: &[Vec3; BONES]) -> Self {
+        // Turn each arm and leg segment onto the capture's direction, keeping
+        // its length. The trunk, neck and collarbones stand as the body has
+        // them: both rests are upright, and where one skeleton puts a joint
+        // along the spine or how its collarbone points says nothing about
+        // the pose (turning them hunched the back and raised the shoulders).
+        let limb = |b: Bone| !matches!(b, Bone::Pelvis | Bone::Spine1 | Bone::Spine2 | Bone::Spine3 | Bone::Neck | Bone::Head | Bone::ClavicleL | Bone::ClavicleR);
         let mut turn = [Quat::IDENTITY; BONES];
         for (bone, _) in JOINTS {
             let b = bone as usize;
             turn[b] = match child(bone) {
-                Some(c) if bone != Bone::Pelvis => {
+                _ if !limb(bone) => Quat::IDENTITY,
+                Some(c) => {
                     let rig = (bind[c as usize] - bind[b]).normalize_or_zero();
-                    let cap = (rest_of(c)? - rest_of(bone)?).normalize_or_zero();
+                    let cap = (capture[c as usize] - capture[b]).normalize_or_zero();
                     if rig == Vec3::ZERO || cap == Vec3::ZERO { Quat::IDENTITY } else { Quat::from_rotation_arc(rig, cap) }
                 }
                 _ => bone.parent().map_or(Quat::IDENTITY, |p| turn[p as usize]),
@@ -181,22 +225,9 @@ impl Rig {
         }
         let to_rest: [Mat4; BONES] = std::array::from_fn(|b| Mat4::from_translation(rest[b]) * Mat4::from_quat(turn[b]) * Mat4::from_translation(-bind[b]));
         let spots: Vec<(Bone, [f32; 3])> = JOINTS.iter().map(|(bone, _)| (*bone, rest[*bone as usize].to_array())).collect();
-        let bound = Bound::from_joints(&spots);
-        let find = |n: &str| lib.clip(n).ok_or_else(|| format!("humans: no capture {n}"));
-        let walk = Cycle::fit(&lib, &bound, find("Walk_Loop")?)?;
-        let jog = Cycle::fit(&lib, &bound, find("Jog_Fwd_Loop")?)?;
-        let sprint = Cycle::fit(&lib, &bound, find("Sprint_Loop")?)?;
-        let idle = find("Idle_Loop")?;
-        let crouch = Cycle::fit(&lib, &bound, find("Crouch_Fwd_Loop")?)?;
-        let crouch_idle = find("Crouch_Idle_Loop")?;
-        let mut clips = BTreeMap::new();
-        for (pose, clip) in [("attack", "Sword_Attack"), ("punch", "Punch_Cross"), ("jab", "Punch_Jab"), ("hit", "Hit_Chest"), ("hit_head", "Hit_Head"), ("dead", "Death01"), ("down", "Death01"), ("cast", "Spell_Simple_Shoot"), ("roll", "Roll")] {
-            clips.insert(pose, find(clip)?);
-        }
-        Ok(Rig { character, lib, bound, joint, bind, to_rest, walk, jog, sprint, idle, crouch, crouch_idle, clips })
+        Skeleton { bind, to_rest, bound: Bound::from_joints(&spots) }
     }
 
-    /// A bone's rig bind position (what the palette moves).
     fn rest(&self, b: Bone) -> Vec3 { self.bind[b as usize] }
 }
 
@@ -255,6 +286,9 @@ struct Pool {
     zombie: bool,
     /// Fitted people (empty without a renderer).
     models: Vec<Character>,
+    /// Each of the pool's people's skeleton, made when first asked (the
+    /// simulation poses the same bodies with or without a renderer).
+    skeletons: OnceLock<Vec<Skeleton>>,
     /// One actor per slot, in the scene's skinning order.
     actors: Vec<ActorHandle>,
     used: Vec<bool>,
@@ -288,9 +322,31 @@ fn hash(a: u64, b: u64) -> u64 {
     x ^ (x >> 29)
 }
 
+impl Pool {
+    /// The pool's `k`th person, from its seed and name.
+    fn person(&self, name: &str, k: usize) -> render::humans::Instance {
+        let seed = hash(hash(self.cfg.seed, name.bytes().fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64))), k as u64);
+        let [lo, hi] = self.cfg.height;
+        let height = lo + (hi - lo) * ((seed >> 11) % 1000) as f32 / 1000.0;
+        let shirt = self.cfg.shirt.as_deref().and_then(parse_rgb);
+        render::humans::Instance::person(seed, Vec3::ZERO, 0.0, &render::humans::Constraints { height_m: Some(height), shirt })
+    }
+
+    /// The skeleton of the person in `slot`.
+    fn skeleton<'a>(&'a self, rig: &'a Rig, name: &str, slot: usize) -> &'a Skeleton {
+        let all = self.skeletons.get_or_init(|| (0..self.cfg.variety.max(1)).filter_map(|k| rig.skeleton_of(&self.person(name, k)).ok()).collect());
+        all.get(slot % self.cfg.variety.max(1)).unwrap_or(&rig.skeleton)
+    }
+}
+
 impl Humans {
+    /// The skeleton `p` is posed on.
+    fn skeleton<'a>(&'a self, rig: &'a Rig, p: &Person) -> &'a Skeleton {
+        self.pools.get(&p.pool).map_or(&rig.skeleton, |pool| pool.skeleton(rig, &p.pool, p.slot))
+    }
+
     pub fn new(cfg: &BTreeMap<String, HumanPool>) -> Self {
-        let pools = cfg.iter().map(|(name, c)| (name.clone(), Pool { zombie: c.style == "zombie", cfg: c.clone(), models: Vec::new(), actors: Vec::new(), used: vec![false; c.count], cap: c.count })).collect();
+        let pools = cfg.iter().map(|(name, c)| (name.clone(), Pool { zombie: c.style == "zombie", cfg: c.clone(), models: Vec::new(), skeletons: OnceLock::new(), actors: Vec::new(), used: vec![false; c.count], cap: c.count })).collect();
         Humans { pools, next: 1, ..Default::default() }
     }
 
@@ -382,8 +438,9 @@ impl Humans {
         let rig = Rig::shared()?;
         let zombie = self.pools.get(&p.pool).is_some_and(|pool| pool.zombie);
         let mut palette = vec![Mat4::IDENTITY; rig.character.joint_count];
-        pose(rig, p, zombie, 1.0, &mut palette);
-        self.dolls.fall(id, &rig.joint, &rig.bind, &palette, model_transform(p.pos, p.yaw), push)?;
+        let bind = self.skeleton(rig, p).bind;
+        pose(rig, self.skeleton(rig, p), p, zombie, 1.0, &mut palette);
+        self.dolls.fall(id, &rig.joint, &bind, &palette, model_transform(p.pos, p.yaw), push)?;
         Ok(true)
     }
 
@@ -406,13 +463,8 @@ impl Humans {
         for (name, pool) in &mut self.pools {
             if pool.models.is_empty() {
                 let skin = pool.cfg.skin.as_deref().and_then(parse_rgb);
-                let shirt = pool.cfg.shirt.as_deref().and_then(parse_rgb);
-                for k in 0..pool.cfg.variety {
-                    let seed = hash(hash(pool.cfg.seed, name.bytes().fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64))), k as u64);
-                    let [lo, hi] = pool.cfg.height;
-                    let height = lo + (hi - lo) * ((seed >> 11) % 1000) as f32 / 1000.0;
-                    let person = render::humans::Instance::person(seed, Vec3::ZERO, 0.0, &render::humans::Constraints { height_m: Some(height), shirt });
-                    pool.models.push(rig.character.warp_human_with_skin(&person, skin)?);
+                for k in 0..pool.cfg.variety.max(1) {
+                    pool.models.push(rig.character.warp_human_person(&pool.person(name, k), skin)?);
                 }
             }
         }
@@ -493,7 +545,7 @@ impl Humans {
             let turn = (p.yaw - p.prev_yaw + PI).rem_euclid(TAU) - PI;
             let yaw = p.prev_yaw + turn * alpha;
             let limp = doll_pose(rig, &self.dolls, *id, alpha, &mut self.palettes[k]);
-            if limp.is_none() { pose(rig, p, pool.zombie, alpha, &mut self.palettes[k]); }
+            if limp.is_none() { pose(rig, pool.skeleton(rig, &p.pool, p.slot), p, pool.zombie, alpha, &mut self.palettes[k]); }
             model.pose_face(&mut self.palettes[k], p.age);
             let h = pool.actors[p.slot];
             let at = model_transform(pos, yaw) * Affine3A::from_translation(limp.unwrap_or(Vec3::ZERO));
@@ -543,10 +595,11 @@ impl Humans {
         let zombie = self.pools.get(&p.pool).is_some_and(|pool| pool.zombie);
         let mut palette = vec![Mat4::IDENTITY; rig.character.joint_count];
         let limp = doll_pose(rig, &self.dolls, id, 1.0, &mut palette);
-        if limp.is_none() { pose(rig, p, zombie, 1.0, &mut palette); }
+        let skeleton = self.skeleton(rig, p);
+        if limp.is_none() { pose(rig, skeleton, p, zombie, 1.0, &mut palette); }
         let j = rig.joint[bone as usize];
         let lift = if bone == Bone::Head { 0.08 } else { 0.0 };
-        let local = palette[j].transform_point3(rig.rest(bone) + Vec3::new(0.0, lift, 0.0)) + limp.unwrap_or(Vec3::ZERO);
+        let local = palette[j].transform_point3(skeleton.rest(bone) + Vec3::new(0.0, lift, 0.0)) + limp.unwrap_or(Vec3::ZERO);
         Some(model_transform(p.pos, p.yaw).transform_point3(local))
     }
 }
@@ -557,7 +610,7 @@ fn doll_pose(rig: &Rig, dolls: &crate::ragdoll::Dolls, id: u32, alpha: f32, pale
     let deltas = dolls.deltas(id, alpha)?;
     let doll = dolls.dolls.get(&id)?;
     let hips = rig.joint[Bone::Pelvis as usize];
-    let centre = (deltas[0] * doll.palette[hips]).transform_point3(rig.rest(Bone::Pelvis)).with_y(0.0);
+    let centre = (deltas[0] * doll.palette[hips]).transform_point3(rig.skeleton.rest(Bone::Pelvis)).with_y(0.0);
     let back = Mat4::from_translation(-centre);
     for (bone, _) in JOINTS {
         let j = rig.joint[bone as usize];
@@ -579,7 +632,7 @@ fn turn(palette: &mut [Mat4], joints: &[usize], at: Vec3, q: Quat) {
     for &j in joints { palette[j] = m * palette[j]; }
 }
 
-fn pose(rig: &Rig, p: &Person, zombie: bool, alpha: f32, palette: &mut [Mat4]) {
+fn pose(rig: &Rig, body: &Skeleton, p: &Person, zombie: bool, alpha: f32, palette: &mut [Mat4]) {
     let g = Gait { phase: p.from.phase + (p.to.phase - p.from.phase) * alpha, speed: p.from.speed + (p.to.speed - p.from.speed) * alpha };
     let t = (p.prev_t + (p.t - p.prev_t) * alpha).clamp(0.0, 1.0);
     let moving = (g.speed / 0.6).clamp(0.0, 1.0);
@@ -588,7 +641,9 @@ fn pose(rig: &Rig, p: &Person, zombie: bool, alpha: f32, palette: &mut [Mat4]) {
         vec![Layer { clip: rig.crouch_idle, t: p.age, looped: true, w: 1.0 - moving }, rig.crouch.layer(g.phase, moving)]
     } else {
         vec![
-            Layer { clip: rig.idle, t: p.age, looped: true, w: 1.0 - moving },
+            // The capture's idle is a fighter's stance (feet wide, chest low):
+            // right for the stooped dead, not for someone standing around.
+            Layer { clip: if zombie { rig.idle } else { body::REST }, t: p.age, looped: true, w: 1.0 - moving },
             rig.walk.layer(g.phase, moving * w),
             rig.jog.layer(g.phase, moving * j),
             rig.sprint.layer(g.phase, moving * r),
@@ -602,22 +657,51 @@ fn pose(rig: &Rig, p: &Person, zombie: bool, alpha: f32, palette: &mut [Mat4]) {
         for l in &mut layers { l.w *= 1.0 - weight; }
         layers.push(Layer { clip, t: at, looped: false, w: weight });
     }
-    let pose = rig.bound.pose(&rig.lib, &layers);
-    for (bone, _) in JOINTS { palette[rig.joint[bone as usize]] = pose[bone as usize] * rig.to_rest[bone as usize]; }
+    let pose = body.bound.pose(&rig.lib, &layers);
+    for (bone, _) in JOINTS { palette[rig.joint[bone as usize]] = pose[bone as usize] * body.to_rest[bone as usize]; }
     let legs = p.prev_legs + (p.legs - p.prev_legs) * alpha;
     if legs.abs() > 0.01 && !matches!(p.pose.as_str(), "dead" | "down") {
         // Strafing: the hips and legs turn towards the walk, the waist
         // takes part of the twist, the chest keeps facing ahead.
-        let hips = palette[rig.joint[Bone::Pelvis as usize]].transform_point3(rig.rest(Bone::Pelvis));
+        let hips = palette[rig.joint[Bone::Pelvis as usize]].transform_point3(body.rest(Bone::Pelvis));
         let lower: Vec<usize> = [Bone::Pelvis, Bone::ThighL, Bone::CalfL, Bone::FootL, Bone::BallL, Bone::ThighR, Bone::CalfR, Bone::FootR, Bone::BallR].iter().map(|b| rig.joint[*b as usize]).collect();
         turn(palette, &lower, hips, Quat::from_rotation_y(legs));
-        let waist = palette[rig.joint[Bone::Spine1 as usize]].transform_point3(rig.rest(Bone::Spine1));
+        let waist = palette[rig.joint[Bone::Spine1 as usize]].transform_point3(body.rest(Bone::Spine1));
         turn(palette, &[rig.joint[Bone::Spine1 as usize]], waist, Quat::from_rotation_y(legs * 0.45));
     }
 
-    let at = |b: Bone, palette: &[Mat4]| palette[rig.joint[b as usize]].transform_point3(rig.rest(b));
+    let at = |b: Bone, palette: &[Mat4]| palette[rig.joint[b as usize]].transform_point3(body.rest(b));
     let arm = |left: bool| if left { [Bone::UpperArmL, Bone::LowerArmL, Bone::HandL] } else { [Bone::UpperArmR, Bone::LowerArmR, Bone::HandR] }.map(|b| rig.joint[b as usize]);
     let lying = matches!(p.pose.as_str(), "dead" | "down");
+
+    // Standing relaxed: nobody is a statue. The chest rises with each
+    // breath, the weight drifts from one leg to the other, the head looks
+    // about, and the arms hang with the elbows a little bent. Each person
+    // keeps their own time.
+    let still = (1.0 - moving) * if rig.clips.contains_key(p.pose.as_str()) { 0.15 } else { 1.0 };
+    if !zombie && p.pose != "crouch" && still > 0.01 {
+        let own = p.slot as f32 * 2.399;
+        let breath = (p.age * (1.25 + 0.2 * own.sin()) + own).sin();
+        let drift = (p.age * 0.31 + own * 1.7).sin();
+        let waist = at(Bone::Spine1, palette);
+        let upper: Vec<usize> = [Bone::Spine1, Bone::Spine2, Bone::Spine3, Bone::Neck, Bone::Head, Bone::ClavicleL, Bone::UpperArmL, Bone::LowerArmL, Bone::HandL, Bone::ClavicleR, Bone::UpperArmR, Bone::LowerArmR, Bone::HandR].iter().map(|b| rig.joint[*b as usize]).collect();
+        turn(palette, &upper, waist, Quat::from_rotation_z(still * 0.02 * drift));
+        let chest = at(Bone::Spine3, palette);
+        let ribs: Vec<usize> = [Bone::Spine3, Bone::Neck, Bone::Head, Bone::ClavicleL, Bone::UpperArmL, Bone::LowerArmL, Bone::HandL, Bone::ClavicleR, Bone::UpperArmR, Bone::LowerArmR, Bone::HandR].iter().map(|b| rig.joint[*b as usize]).collect();
+        turn(palette, &ribs, chest, Quat::from_rotation_x(-still * 0.012 * breath));
+        let neck = at(Bone::Neck, palette);
+        let glance = (p.age * 0.23 + own).sin() * (p.age * 0.071 + own * 0.6).sin();
+        turn(palette, &[rig.joint[Bone::Neck as usize], rig.joint[Bone::Head as usize]], neck, Quat::from_rotation_y(still * 0.22 * glance) * Quat::from_rotation_x(still * 0.012 * breath));
+        for left in [true, false] {
+            let side = if left { 1.0 } else { -1.0 };
+            let [upper, fore, hand] = arm(left);
+            let shoulder = at(if left { Bone::UpperArmL } else { Bone::UpperArmR }, palette);
+            // The capture's rest holds the arms a hand away from the hips.
+            turn(palette, &[upper, fore, hand], shoulder, Quat::from_rotation_z(-side * still * 0.10) * Quat::from_rotation_x(still * 0.04));
+            let elbow = at(if left { Bone::LowerArmL } else { Bone::LowerArmR }, palette);
+            turn(palette, &[fore, hand], elbow, Quat::from_rotation_x(-still * (0.22 + 0.02 * breath)));
+        }
+    }
 
     if zombie && !lying {
         // Stooped: the chest and head pitch forward over the hips, the head
@@ -776,6 +860,35 @@ mod tests {
     }
 
     #[test]
+    fn a_person_stands_upright_on_their_own_shoulders() {
+        let rig = Rig::shared().unwrap();
+        let mut cfg = BTreeMap::new();
+        cfg.insert("p".to_string(), HumanPool { count: 1, variety: 1, height: [1.8, 1.8], ..Default::default() });
+        let mut h = Humans::new(&cfg);
+        let a = h.spawn("p", Vec3::ZERO, 0.0).unwrap().unwrap();
+        for _ in 0..30 { h.tick(1.0 / 60.0); }
+        let at = |n: &str| h.joint(a, n).unwrap();
+        // The rig's own shoulders are 0.57 m apart; an adult's about 0.36 m.
+        let width = at("shoulder_l").distance(at("shoulder_r"));
+        assert!(width > 0.30 && width < 0.42, "shoulders {width} m apart");
+        // Head over the hips, hands by the thighs, feet under the hips.
+        let (head, hips) = (at("head"), at("hips"));
+        assert!((head.z - hips.z).abs() < 0.06, "head {head} over hips {hips}");
+        for hand in ["hand_l", "hand_r"] {
+            let p = at(hand);
+            assert!(p.y < hips.y && p.y > 0.6 && p.x.abs() < 0.36, "{hand} hangs by the thigh: {p}");
+        }
+        assert!(at("foot_l").distance(at("foot_r")) < 0.30, "feet under the hips");
+        // Standing still is not a statue: the chest breathes.
+        let mut palette = vec![Mat4::IDENTITY; rig.character.joint_count];
+        let mut p = h.people[&a].clone();
+        let chest = |p: &Person, palette: &mut Vec<Mat4>| { pose(rig, h.skeleton(rig, p), p, false, 1.0, palette); palette[rig.joint[Bone::Spine3 as usize]] };
+        let now = chest(&p, &mut palette);
+        p.age += 1.3;
+        assert!(chest(&p, &mut palette) != now);
+    }
+
+    #[test]
     fn the_rig_loads_and_walks() {
         let rig = Rig::shared().unwrap();
         assert!(rig.walk.metres > 0.5 && rig.walk.metres < 3.0, "a walk cycle covers {} m", rig.walk.metres);
@@ -802,7 +915,7 @@ mod tests {
             p.pose = pose.to_string();
             p.t = 0.5;
             let mut palette = vec![Mat4::IDENTITY; rig.character.joint_count];
-            super::pose(rig, &p, true, 0.5, &mut palette);
+            super::pose(rig, &rig.skeleton, &p, true, 0.5, &mut palette);
             assert!(palette.iter().all(|m| m.is_finite()), "{pose}");
         }
     }

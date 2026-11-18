@@ -97,4 +97,5 @@ moves the actual lid vertices with a shared sparse closure target. Players use
 two eye pivots and six lid translation axes in their GPU skin palettes. The
 same seeded timing drives both rigs. The existing skin atlas carries a sheen
 mask for forehead, nose and lips. Sun and stadium lamps determine eye highlights.
+Fitted people (players and Luau humans) rest their lids a third of a closure wider than the cooked neutral, which reads half-asleep up close; the crowd keeps the cooked opening.
 The rest of the face holds a neutral expression.
