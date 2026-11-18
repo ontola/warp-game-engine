@@ -612,7 +612,7 @@ impl Runtime {
         if let Some((q,i))=time {enc.write_timestamp(q,i);}
         // The machine's vegetation tier tightens the cut's budgets (never the
         // buffers): it can change between frames when the app steps it down.
-        let (error,slots,splats,source)=crate::vegetation_quality::apply(crate::vegetation_quality::tier(gpu).budgets(),self.error,self.slots,self.raster_budget,self.source_cluster_budget);
+        let (error,slots,splats,source)=crate::vegetation_quality::apply(crate::vegetation_quality::budgets(gpu),self.error,self.slots,self.raster_budget,self.source_cluster_budget);
         self.selector.set_source_cluster_budget(source)?;
         self.selector.union_consumers_marked(gpu,enc,views,error,slots,[splats;2],&self.empty_depth,depth,split)?;
         if let Some((q,i))=split {enc.write_timestamp(q,i+6);}

@@ -32,13 +32,15 @@ impl Tier {
     pub const ALL: [Tier; 3] = [Tier::Low, Tier::Medium, Tier::High];
     /// High leaves the scene's own budgets alone (terrain_fly: 2M source
     /// clusters, every slot, tuned on a desktop GPU at 1440p). The lower
-    /// tiers accept more pixel error and cut the needle reach and splat
-    /// count. The steps are first guesses, not yet timed per machine.
+    /// tiers save on pixel error, so voxels get coarser everywhere, and
+    /// keep the needle budget: cutting that one turns the trees next to the
+    /// camera into whole-plant proxies (RTX desktop, 1440p, 18 November:
+    /// half the needle budget saved 2.5 ms and hung balls in near crowns).
     pub fn budgets(self) -> Budgets {
         match self {
             Tier::High => Budgets { error_scale: 1.0, source_clusters: 2 << 20, splats: 16 << 20, slot_share: 1.0 },
-            Tier::Medium => Budgets { error_scale: 1.5, source_clusters: 1 << 20, splats: 8 << 20, slot_share: 0.5 },
-            Tier::Low => Budgets { error_scale: 2.5, source_clusters: 1 << 18, splats: 3 << 20, slot_share: 0.25 },
+            Tier::Medium => Budgets { error_scale: 1.5, source_clusters: 2 << 20, splats: 8 << 20, slot_share: 1.0 },
+            Tier::Low => Budgets { error_scale: 2.5, source_clusters: 1 << 20, splats: 4 << 20, slot_share: 0.5 },
         }
     }
     pub fn lower(self) -> Option<Tier> { (self != Tier::Low).then(|| Tier::ALL[self as usize - 1]) }
@@ -82,6 +84,19 @@ pub fn step_down() -> Option<Tier> {
     Some(lower)
 }
 
+/// The budgets in force: the tier's, or `KERN_VEGETATION_BUDGETS` (error
+/// scale, source clusters, splats, slot share) to try other steps without a
+/// rebuild.
+pub fn budgets(gpu: &crate::Gpu) -> Budgets {
+    static OVERRIDE: std::sync::OnceLock<Option<Budgets>> = std::sync::OnceLock::new();
+    OVERRIDE.get_or_init(|| crate::switches::VEGETATION_BUDGETS.get().and_then(|v| parse_budgets(&v))).unwrap_or_else(|| tier(gpu).budgets())
+}
+fn parse_budgets(text: &str) -> Option<Budgets> {
+    let mut parts = text.split(',').map(str::trim);
+    let b = Budgets { error_scale: parts.next()?.parse().ok()?, source_clusters: parts.next()?.parse().ok()?, splats: parts.next()?.parse().ok()?, slot_share: parts.next()?.parse().ok()? };
+    (parts.next().is_none() && b.error_scale.is_finite() && b.error_scale > 0.0 && b.slot_share > 0.0 && b.slot_share <= 1.0).then_some(b)
+}
+
 /// The scene's budgets under a tier: (error pixels, branch slots, splats, source clusters).
 pub fn apply(b: Budgets, error: f32, slots: u32, splats: u32, source_clusters: u32) -> (f32, u32, u32, u32) {
     let active = ((slots as f32 * b.slot_share) as u32).clamp(slots.min(1024), slots);
@@ -107,6 +122,8 @@ mod tests {
         // A small scene keeps its few slots at every tier.
         assert_eq!(apply(Tier::Low.budgets(), 1.0, 8, 100, 100).1, 8);
         assert_eq!(apply(Tier::High.budgets(), 1.0, 65_536, 8 << 20, 2 << 20), (1.0, 65_536, 8 << 20, 2 << 20));
+        assert_eq!(parse_budgets("2, 1000, 500,0.5"), Some(Budgets { error_scale: 2.0, source_clusters: 1000, splats: 500, slot_share: 0.5 }));
+        assert_eq!(parse_budgets("2,1000"), None); assert_eq!(parse_budgets("0,1,1,1"), None);
         assert_eq!(Tier::Low.lower(), None); assert_eq!(Tier::High.higher(), None);
     }
 }
