@@ -222,7 +222,7 @@ impl Gore {
 /// chunks (pelvis, left/right chest, arms, forearms, thighs, boots) and 3
 /// head/helmet chunks, each sealed with a raw flesh cap at open cut edges.
 fn build_character_gore(scene: &mut Scene, model: &Character, flesh: &[u32], model_idx: usize) -> CharacterGore {
-    let Some(palette) = model.sample("pistol_idle", 0.0, true).ok() else {
+    let Some((palette, _)) = super::characters::standing_pose(model, 0.0).ok() else {
         return CharacterGore::default();
     };
     let surfaces = model.posed_surfaces(scene, &palette, super::characters::model_transform(Vec3::ZERO, 0.0));

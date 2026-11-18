@@ -157,13 +157,10 @@ fn grip(args: &crate::Args) -> Result<(), String> {
     use std::path::Path;
 
     let model = crate::view::characters::preview_model(args.num("--seed", 3))?;
-    let clip = args.value("--clip").unwrap_or("pistol_idle");
     let time = args.num("--time", 0.25f32);
     let pitch = args.num("--pitch", 0.0f32).to_radians();
     if !pitch.is_finite() || !time.is_finite() { return Err("expected finite pitch and time".into()); }
-    let looped = clip != "pistol_jump";
-    let palette = model.sample(clip, time, looped)?;
-    let hand = model.sample_socket(clip, "RightHand", time, looped)?.w_axis.truncate();
+    let (palette, hand) = crate::view::characters::standing_pose(&model, time)?;
     let arms = body::reach::TwoHandHold::bind(model.joints()).ok_or("model needs two complete arms")?;
     let mut world = growing_guns::World::new(3, &[false]);
     let _scripts = crate::scripts::attach(&mut world)?;
@@ -195,7 +192,7 @@ fn grip(args: &crate::Args) -> Result<(), String> {
             if frame == 24 && rig.is_growing() { rig.update(1e-5); }
         }
         let apply = growth || frame == 1;
-        let label = if growth { format!("frame-{frame:03}") } else if apply { "grip".into() } else { "clip".into() };
+        let label = if growth { format!("frame-{frame:03}") } else if apply { "grip".into() } else { "idle".into() };
         let contacts = rig.contacts_at(1.0);
         let primary = contacts.primary;
         let (support, roll) = animation.pose(contacts, time + if growth { frame as f32 / 12.0 } else { 0.0 });
