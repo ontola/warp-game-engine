@@ -28,7 +28,7 @@ fn grown_fibre(vid:u32,first:u32)->Fibre {
     // Lit as part of a rounded head of hair, not as a lone cylinder.
     let normal=normalize(at.xyz-vec3<f32>(0.,.925,-.008));
     let t=f32(k)/9.;
-    let radius=mix(.00013,.00024,strand_hash(base))*(1.-.85*t*t);
+    let radius=mix(.00013,.00024,strand_hash(base))*(1.-.85*t*t*t*t);
     return Fibre(at.xyz,normal,cross(tangent,normal),tangent,at.w,side,radius);
 }
 @group(1) @binding(0) var<uniform> view:View;
