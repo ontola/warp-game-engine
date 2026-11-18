@@ -52,10 +52,36 @@ local NOW = {
 	"Never turns their back to a door.",
 }
 
--- A new person: { name, before, now }. pick(t) chooses one of t (the
--- game's own dice, so who people are does not change the land).
+-- Where they are from (made-up towns along the old line west).
+local FROM = {
+	"Eastwick", "Harrowgate", "Velde", "Oudeveen", "Marrowby", "Brakel", "Stonebridge",
+	"Lindholm", "Kessel", "Ashcombe", "Noordhoek", "Fairhaven", "Wendlebury", "Graswijk",
+}
+
+-- Who they lost: what they call them, in their own words, and a name to
+-- go with it.
+local MEN = { "Bram", "Dev", "Gus", "Ivo", "Kees", "Milo", "Otis", "Umar", "Wim", "Zeno", "Daan", "Joris", "Pim", "Sven", "Wout", "Teun", "Jasper", "Ruben" }
+local WOMEN = { "Anna", "Carla", "Fenna", "Hana", "Lena", "Noor", "Pia", "Rosa", "Tess", "Vera", "Yara", "Bea", "Femke", "Lot", "Nina", "Ruth", "Ilse", "Marit" }
+local ANY = { "Sam", "Quinn", "Jun", "Mo", "Eli", "Robin", "Kim", "Charlie" }
+local LOST = {
+	{ "husband", MEN }, { "wife", WOMEN }, { "daughter", WOMEN }, { "son", MEN },
+	{ "sister", WOMEN }, { "brother", MEN }, { "mother", WOMEN }, { "father", MEN },
+	{ "best friend", ANY }, { "twin", ANY }, { "grandmother", WOMEN }, { "little brother", MEN },
+	{ "little sister", WOMEN }, { "fiancée", WOMEN }, { "fiancé", MEN }, { "partner", ANY },
+}
+
+-- A new person: { name, first, before, now, from, who, lost }: who is
+-- whom they lost ("sister"), lost that one's name. pick(t) chooses one of t
+-- (the game's own dice, so who people are does not change the land).
 function M.roll(pick)
-	return { name = pick(FIRST) .. " " .. pick(LAST), before = pick(BEFORE), now = pick(NOW) }
+	local first = pick(FIRST)
+	local p = { name = first .. " " .. pick(LAST), first = first, before = pick(BEFORE), now = pick(NOW) }
+	p.from = pick(FROM)
+	local lost = pick(LOST)
+	p.who = lost[1]
+	p.lost = pick(lost[2])
+	if p.lost == first then p.lost = pick(lost[2]) end
+	return p
 end
 
 return M
