@@ -237,7 +237,7 @@ pub const JOINT_NAMES: &[(&str, Bone)] = &[("head", Bone::Head), ("neck", Bone::
     ("hand_l", Bone::HandL), ("hand_r", Bone::HandR), ("knee_l", Bone::CalfL), ("knee_r", Bone::CalfR), ("foot_l", Bone::FootL), ("foot_r", Bone::FootR)];
 
 /// The poses a game can ask for (`humans.set(id, {pose = ...})`).
-pub const POSES: &[&str] = &["walk", "idle", "crouch", "wave", "reach", "raise", "strike", "aim", "shove", "attack", "punch", "jab", "hit", "hit_head", "dead", "down", "cast", "roll"];
+pub const POSES: &[&str] = &["walk", "idle", "crouch", "feed", "rise", "wave", "reach", "raise", "strike", "aim", "shove", "attack", "punch", "jab", "hit", "hit_head", "dead", "down", "cast", "roll"];
 
 /// A person's gait between two ticks.
 #[derive(Clone, Copy, Default, Debug)]
@@ -411,7 +411,7 @@ impl Humans {
                 // Walking backwards plays the cycle backwards.
                 let sign = if back { -1.0 } else { 1.0 };
                 let [w, j, r] = blend(p.to.speed);
-                let metres = if p.pose == "crouch" { rig.crouch.metres } else { rig.walk.metres * w + rig.jog.metres * j + rig.sprint.metres * r };
+                let metres = if matches!(p.pose.as_str(), "crouch" | "feed") { rig.crouch.metres } else { rig.walk.metres * w + rig.jog.metres * j + rig.sprint.metres * r };
                 // A zombie drags shorter steps at the same pace.
                 let stride = if zombie { 0.7 } else { 1.0 };
                 p.to.phase += sign * distance / (metres * stride * (p.to.speed / 0.85).clamp(0.2, 1.0).sqrt()).max(0.05);
@@ -639,8 +639,19 @@ fn pose(rig: &Rig, body: &Skeleton, p: &Person, zombie: bool, alpha: f32, palett
     let t = (p.prev_t + (p.t - p.prev_t) * alpha).clamp(0.0, 1.0);
     let moving = (g.speed / 0.6).clamp(0.0, 1.0);
     let [w, j, r] = blend(g.speed);
-    let mut layers = if p.pose == "crouch" {
+    let mut layers = if matches!(p.pose.as_str(), "crouch" | "feed") {
         vec![Layer { clip: rig.crouch_idle, t: p.age, looped: true, w: 1.0 - moving }, rig.crouch.layer(g.phase, moving)]
+    } else if p.pose == "rise" {
+        // Getting up off the ground over t 0..1: from where the fall
+        // ended, up onto the knees, then upright.
+        let fall = rig.clips["dead"];
+        let knees = ramp(0.0, 0.6, t);
+        let up = ramp(0.45, 1.0, t);
+        vec![
+            Layer { clip: fall, t: rig.lib.get(fall).length, looped: false, w: 1.0 - knees },
+            Layer { clip: rig.crouch_idle, t: p.age, looped: true, w: knees * (1.0 - up) },
+            Layer { clip: if zombie { rig.idle } else { body::REST }, t: p.age, looped: true, w: up },
+        ]
     } else {
         vec![
             // The capture's idle is a fighter's stance (feet wide, chest low):
@@ -674,14 +685,14 @@ fn pose(rig: &Rig, body: &Skeleton, p: &Person, zombie: bool, alpha: f32, palett
 
     let at = |b: Bone, palette: &[Mat4]| palette[rig.joint[b as usize]].transform_point3(body.rest(b));
     let arm = |left: bool| if left { [Bone::UpperArmL, Bone::LowerArmL, Bone::HandL] } else { [Bone::UpperArmR, Bone::LowerArmR, Bone::HandR] }.map(|b| rig.joint[b as usize]);
-    let lying = matches!(p.pose.as_str(), "dead" | "down");
+    let lying = matches!(p.pose.as_str(), "dead" | "down") || (p.pose == "rise" && t < 0.35);
 
     // Standing relaxed: nobody is a statue. The chest rises with each
     // breath, the weight drifts from one leg to the other, the head looks
     // about, and the arms hang with the elbows a little bent. Each person
     // keeps their own time.
     let still = (1.0 - moving) * if rig.clips.contains_key(p.pose.as_str()) { 0.15 } else { 1.0 };
-    if !zombie && p.pose != "crouch" && still > 0.01 {
+    if !zombie && !matches!(p.pose.as_str(), "crouch" | "feed" | "rise") && still > 0.01 {
         let own = p.slot as f32 * 2.399;
         let breath = (p.age * (1.25 + 0.2 * own.sin()) + own).sin();
         let drift = (p.age * 0.31 + own * 1.7).sin();
@@ -715,6 +726,16 @@ fn pose(rig: &Rig, body: &Skeleton, p: &Person, zombie: bool, alpha: f32, palett
         let neck = at(Bone::Neck, palette);
         let sway = (p.age * 0.7).sin() * 0.15;
         turn(palette, &[rig.joint[Bone::Neck as usize], rig.joint[Bone::Head as usize]], neck, Quat::from_rotation_z(0.25 + sway) * Quat::from_rotation_x(0.15));
+    }
+
+    // Feeding: down on the haunches and doubled over what lies in front,
+    // the face in it.
+    if p.pose == "feed" {
+        let hips = at(Bone::Spine1, palette);
+        let upper: Vec<usize> = [Bone::Spine2, Bone::Spine3, Bone::Neck, Bone::Head, Bone::ClavicleL, Bone::UpperArmL, Bone::LowerArmL, Bone::HandL, Bone::ClavicleR, Bone::UpperArmR, Bone::LowerArmR, Bone::HandR].iter().map(|b| rig.joint[*b as usize]).collect();
+        turn(palette, &upper, hips, Quat::from_rotation_x(0.95));
+        let neck = at(Bone::Neck, palette);
+        turn(palette, &[rig.joint[Bone::Neck as usize], rig.joint[Bone::Head as usize]], neck, Quat::from_rotation_x(0.35));
     }
 
     // Out of breath: bent forward from the waist, the chest heaving with

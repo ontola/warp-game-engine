@@ -231,6 +231,23 @@ function M.pose(b, pose)
 	end
 end
 
+-- Getting up off the ground, t 0..1 (from lying, onto the knees, upright).
+-- A box figure lies until M.lie(.., false).
+function M.rise(b, t)
+	b.pose, b.t = "rise", t
+	if b.human then
+		humans.set(b.human, { pose = "rise", t = t })
+		place_eyes(b)
+	end
+end
+
+-- Where a joint of a human is now ("head", "chest", "hips", ...), or nil.
+function M.joint(b, name)
+	if not b.human then return nil end
+	if name == "head" then return humans.head(b.human) end
+	return humans.joint(b.human, name)
+end
+
 -- A fall in progress: call each tick while lying.
 function M.fall(b, dt)
 	if b.pose ~= "dead" then return end

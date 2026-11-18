@@ -540,6 +540,8 @@ local function view_dist(p)
 	return best
 end
 
+local hash01, gore_at -- below, with the blood
+
 local function spawn_zombie(kind, pos, mode, goal)
 	local z = {
 		kind = kind,
@@ -556,7 +558,28 @@ local function spawn_zombie(kind, pos, mode, goal)
 	local shirt = if kind == "runner" then "#6e3a36" else pick(ZOMBIE_SHIRTS)
 	z.fig = body.build(z.pos, z.yaw, { shirt = shirt, skin = pick(ZOMBIE_SKIN), pants = pick(ZOMBIE_PANTS), eyes = "#1a1a1a" }, if near_view(z.pos) then kind else nil)
 	z.pool = kind
-	if z.state == "sleep" then body.lie(z.fig, z.pos, z.yaw, true) end
+	if z.state == "sleep" then
+		body.lie(z.fig, z.pos, z.yaw, true)
+		gore_at(z.pos, 2)
+	end
+	table.insert(s.zombies, z)
+	return z
+end
+
+-- The truly dead: a body on the ground that never gets up. It looks just
+-- like one of the dead asleep, so every body in the street is a question.
+local function spawn_corpse(pos)
+	pos = collide(pos, RADIUS)
+	local h = function(salt) return hash01(pos.x, pos.z, salt) end
+	local runner = h(2) < 0.12
+	local kind = if runner then "runner" else "shambler"
+	local z = { kind = kind, corpse = true, pos = pos, yaw = h(3) * math.pi * 2 - math.pi, hp = 0, state = "dead", t = 1e6, knock = v(0, 0, 0), stuck = 0, side = 0 }
+	local function hp(list, salt) return list[math.floor(h(salt) * #list) % #list + 1] end
+	local shirt = if runner then "#6e3a36" else hp(ZOMBIE_SHIRTS, 4)
+	z.fig = body.build(pos, z.yaw, { shirt = shirt, skin = hp(ZOMBIE_SKIN, 5), pants = hp(ZOMBIE_PANTS, 6), eyes = "#1a1a1a" }, if near_view(pos) then kind else nil)
+	z.pool = kind
+	body.lie(z.fig, pos, z.yaw, true)
+	gore_at(pos, 3)
 	table.insert(s.zombies, z)
 	return z
 end
@@ -564,7 +587,8 @@ end
 local function wake(z, goal)
 	if z.state == "sleep" then
 		z.state = "rise"
-		z.t = random.range(0.6, 1.2)
+		z.t = 1 + random.range(0.6, 1.2)
+		z.rise_len = z.t
 		z.goal = goal
 		sfx("groan", z.pos, { pitch = random.range(0.8, 1.15) })
 	elseif z.state == "idle" or z.state == "wander" or z.state == "investigate" then
@@ -600,6 +624,29 @@ local function blood_drop(at, r)
 	local id = world.spawn("sphere", { pos = v(at.x, 0.052 + #s.blood % 5 * 0.002, at.z), size = v(r * random.range(0.8, 1.25), 0.003, r * random.range(0.8, 1.25)), rot = v(0, random.range(0, math.pi), 0), color = look.color, roughness = look.roughness, solid = false, tag = "deco" })
 	table.insert(s.blood, id)
 	if #s.blood > BLOOD_MAX then world.remove(table.remove(s.blood, 1)) end
+end
+
+-- Dressing that must not touch the game's dice (the land and the bot test
+-- stay the same): a number in 0..1 from a place and a salt.
+function hash01(x, z, salt)
+	local n = math.sin(x * 12.9898 + z * 78.233 + salt * 37.719) * 43758.5453
+	return n - math.floor(n)
+end
+
+-- Old blood where the dead lie: pools under and around a body, sometimes a
+-- smear where it was dragged. They stay until the group has left them behind.
+function gore_at(pos, amount)
+	s.stains = s.stains or {}
+	local n = 1 + math.floor(hash01(pos.x, pos.z, 1) * (amount + 1))
+	for i = 1, n do
+		local a, d = hash01(pos.x, pos.z, 10 + i) * math.pi * 2, if i == 1 then 0.3 else 0.5 + hash01(pos.x, pos.z, 20 + i) * 1.1
+		local r = (if i == 1 then 0.45 else 0.14) + hash01(pos.x, pos.z, 30 + i) * (if i == 1 then 0.3 else 0.2)
+		local long = if i == 2 and hash01(pos.x, pos.z, 5) < 0.4 then 2.6 else 1.1
+		local look = BLOOD[i % #BLOOD + 1]
+		local at = v(pos.x + math.cos(a) * d, 0.05 + i * 0.0015, pos.z + math.sin(a) * d)
+		local id = world.spawn("sphere", { pos = at, size = v(r * long, 0.003, r), rot = v(0, a, 0), color = look.color, roughness = look.roughness, solid = false, tag = "deco" })
+		table.insert(s.stains, { id = id, x = at.x })
+	end
 end
 
 -- Blood in the air: dark wet drops drawn out by their speed, falling
@@ -660,7 +707,8 @@ local function hurt_zombie(z, dmg, from, knock, facing)
 	blood_splat(z.pos, away, 0.6 + 0.4 * heavy)
 	if z.state == "sleep" then
 		z.state = "rise"
-		z.t = 0.5
+		z.t = 1
+		z.rise_len = 1
 	elseif z.state ~= "rise" then
 		-- A hit cancels a wind-up: hitting first is always a defence.
 		z.state = "stagger"
@@ -1073,9 +1121,11 @@ local function populate(c, day, in_day)
 	local band = BAND[c.band]
 	local scale = KNOBS.density * (1 + 0.15 * (day - 1)) * (if in_day >= 5 then 1.3 else 1)
 	local runners = math.min(0.35, 0.05 + 0.07 * (day - 1))
+	local sleepers = 0
 	for _, p in c.inside do
 		if random.chance(math.min(1, band.inside * scale)) then
 			spawn_zombie(if random.chance(runners) then "runner" else "shambler", p, "sleep")
+			sleepers += 1
 		end
 	end
 	local n = math.floor(random.int(band.outside[1], band.outside[2]) * scale)
@@ -1084,6 +1134,20 @@ local function populate(c, day, in_day)
 		local p = spot + v(random.range(-3, 3), 0, random.range(-2, 2))
 		local mode = if random.chance(band.sleep) then "sleep" else (if random.chance(0.5) then "idle" else "wander")
 		spawn_zombie(if random.chance(runners) then "runner" else "shambler", p, mode)
+		if mode == "sleep" then sleepers += 1 end
+	end
+	-- Most bodies in the street are only bodies: about four for every one
+	-- that is asleep, a couple even where none is.
+	local spots = {}
+	for _, q in c.outside do table.insert(spots, q) end
+	for _, q in c.inside do table.insert(spots, q) end
+	if #spots > 0 then
+		local n = math.min(9, 2 + sleepers * 3)
+		for i = 1, n do
+			local q = spots[(i * 7) % #spots + 1]
+			local jx, jz = hash01(q.x, q.z, 40 + i) * 6 - 3, hash01(q.x, q.z, 60 + i) * 4 - 2
+			spawn_corpse(q + v(jx, 0, jz))
+		end
 	end
 end
 
@@ -1219,6 +1283,11 @@ local function stream_land()
 			end
 		end
 		s.zombies = keep
+		local stains = {}
+		for _, st in s.stains or {} do
+			if st.x < s.min_x - 22 then world.remove(st.id) else table.insert(stains, st) end
+		end
+		s.stains = stains
 	end
 end
 
@@ -1676,6 +1745,8 @@ local function die(u)
 	drop_melee(u)
 	body.hold(u.fig, nil, HELD)
 	body.tint(u.fig, figure.CORPSE)
+	-- Whoever dies standing falls first.
+	if u.fig and u.fig.pose ~= "down" and u.fig.pose ~= "dead" then body.lie(u.fig, u.pos, u.yaw, true, true) end
 	-- The body stays a while; a human goes back to its pool later.
 	table.insert(s.corpses, { fig = u.fig, t = 20, pos = u.pos })
 	u.fig = nil
@@ -2513,6 +2584,10 @@ end
 -- jolting back with each bite, blood pooling. A downed survivor being eaten
 -- goes faster; hitting an eater gets it off. Eaters are slow to look up.
 local EATERS = 4
+-- Where each eater kneels: at which part of the body, on which side of it.
+-- When nobody is left standing, all of them come.
+local BITES = { { "chest", 1 }, { "hips", -1 }, { "chest", -1 }, { "hips", 1 }, { "head", 1 }, { "knee_l", -1 }, { "knee_r", 1 }, { "head", -1 } }
+local function eaters() return if s.phase == "over" then #BITES else EATERS end
 
 local function meal_ok(m)
 	if m.state then return m.state == "down" and m.fig ~= nil end
@@ -2528,7 +2603,7 @@ local function meal_for(z)
 	z.meal = nil
 	local best, bd = nil, range
 	local function try(m)
-		if meal_ok(m) and (m.n or 0) < EATERS then
+		if meal_ok(m) and (m.n or 0) < eaters() then
 			local d = dist(m.pos, z.pos)
 			if d < bd then best, bd = m, d end
 		end
@@ -2539,12 +2614,37 @@ local function meal_for(z)
 		best.n = (best.n or 0) + 1
 		z.meal = best
 		z.slot = random.range(-math.pi, math.pi)
+		-- The next free place round it.
+		best.taken = best.taken or {}
+		for i = 1, #BITES do
+			if not best.taken[i] or best.taken[i].meal ~= best or best.taken[i].state == "dead" then
+				best.taken[i] = z
+				z.slot_i = i
+				break
+			end
+		end
 	end
 	return best
 end
 
+-- Where z's mouth goes on meal m, and where it kneels for that.
+local function bite_at(m, z)
+	local b = BITES[((z.slot_i or 1) - 1) % #BITES + 1]
+	local fig = m.fig
+	local part = fig and body.joint(fig, b[1])
+	local head, hips = fig and body.joint(fig, "head"), fig and body.joint(fig, "hips")
+	if not (part and head and hips) then
+		return m.pos, m.pos + v(math.sin(z.slot), 0, math.cos(z.slot)) * 0.7
+	end
+	local ax, az = head.x - hips.x, head.z - hips.z
+	local l = math.max(0.01, math.sqrt(ax * ax + az * az))
+	ax, az = ax / l, az / l
+	local mouth = v(part.x, 0, part.z)
+	return mouth, mouth + v(-az, 0, ax) * (0.6 * b[2])
+end
+
 local function eat(z, m, speed)
-	local spot = m.pos + v(math.sin(z.slot), 0, math.cos(z.slot)) * 0.7
+	local mouth, spot = bite_at(m, z)
 	if z.state ~= "feed" then
 		z.state = "to_meal"
 		local to = waypoint(z.pos, spot) - z.pos
@@ -2559,12 +2659,16 @@ local function eat(z, m, speed)
 		if d > 0.05 then return to / d * speed end
 		return v(0, 0, 0)
 	end
-	local to = m.pos - z.pos
+	local to = mouth - z.pos
 	z.yaw = yaw_of(to)
-	if dist(m.pos, z.pos) > 1.3 then
+	if dist(mouth, z.pos) > 1.5 then
 		z.state = "to_meal"
 		return v(0, 0, 0)
 	end
+	-- Doubled over it, the face right in it: shuffle until the head is there.
+	local fix = v(0, 0, 0)
+	local head = body.joint(z.fig, "head")
+	if head then fix = v(mouth.x - head.x, 0, mouth.z - head.z) * 5 end
 	if z.t <= 0 then
 		-- In, then a yank back with a mouthful.
 		z.bite += 1
@@ -2576,9 +2680,9 @@ local function eat(z, m, speed)
 		else
 			z.t = random.range(0.5, 1.1)
 			body.hit(z.fig, ahead * -random.range(1.3, 2.2))
-			local at = m.pos + v(random.range(-0.45, 0.45), 0, random.range(-0.45, 0.45))
+			local at = mouth + v(random.range(-0.45, 0.45), 0, random.range(-0.45, 0.45))
 			blood_drop(at, random.range(0.08, 0.22))
-			blood_spray(v(m.pos.x + ahead.x * -0.25, 0.35, m.pos.z + ahead.z * -0.25), 5, 1.8, 0.05)
+			blood_spray(v(mouth.x + ahead.x * -0.25, 0.35, mouth.z + ahead.z * -0.25), 5, 1.8, 0.05)
 			if random.chance(0.35) then sfx("splat", m.pos, { pitch = random.range(0.55, 0.8) }) end
 			if random.chance(0.2) then sfx("groan", z.pos, { pitch = random.range(0.65, 0.9) }) end
 			sfx("feed", m.pos, { pitch = 0.85 + (game.tick() % 30) / 100, db = -5 })
@@ -2588,7 +2692,7 @@ local function eat(z, m, speed)
 			end
 		end
 	end
-	return v(0, 0, 0)
+	return fix
 end
 
 local function zombie_step(z, dt)
@@ -2634,6 +2738,7 @@ local function zombie_step(z, dt)
 	local move = v(0, 0, 0)
 	local arms = "reach"
 	if z.state == "rise" then
+		body.rise(z.fig, 1 - math.max(0, z.t) / (z.rise_len or 1))
 		if z.t <= 0 then
 			body.lie(z.fig, z.pos, z.yaw, false)
 			z.state = if target then "chase" else "investigate"
@@ -2803,7 +2908,7 @@ local function zombie_step(z, dt)
 					if o ~= z then
 						local dx, dz = z.pos.x - o.pos.x, z.pos.z - o.pos.z
 						local d2 = dx * dx + dz * dz
-						if d2 < 0.42 and d2 > 1e-6 then
+						if d2 < 0.42 and d2 > 1e-6 and z.state ~= "feed" then
 							local d = math.sqrt(d2)
 							push = push + v(dx / d, 0, dz / d) * (0.65 - d) * 6
 						end
@@ -2817,7 +2922,7 @@ local function zombie_step(z, dt)
 	local mv = vector.magnitude(move)
 	-- Knocked back (stagger, recover) they keep facing where they faced.
 	local pushed = z.state == "stagger" or z.state == "recover"
-	if mv > 0.3 and z.state ~= "strike" and not pushed then
+	if mv > 0.3 and z.state ~= "strike" and z.state ~= "feed" and not pushed then
 		z.yaw = yaw_of(move)
 		if dist(before, z.pos) < mv * dt * 0.25 then
 			z.stuck += dt
@@ -2832,7 +2937,7 @@ local function zombie_step(z, dt)
 	end
 	body.place(z.fig, z.pos, z.yaw)
 	if z.state == "feed" then
-		body.pose(z.fig, "crouch")
+		body.pose(z.fig, "feed")
 	else
 		body.animate(z.fig, dt, dist(before, z.pos) / dt, arms)
 	end
@@ -3476,9 +3581,9 @@ local function zombies_tick(dt)
 			end
 		end
 		for _, z in s.zombies do
-			if z.fig and not body.is_human(z.fig) and z.state ~= "dead" and near_view(z.pos) then
+			if z.fig and not body.is_human(z.fig) and (z.state ~= "dead" or z.corpse) and near_view(z.pos) then
 				z.fig.pool = z.pool
-				if not body.promote(z.fig) then
+				if not body.promote(z.fig) and not z.corpse then
 					local oldest = nil
 					for _, o in s.zombies do
 						if o.state == "dead" and o.pool == z.pool and o.fig and body.is_human(o.fig) and (oldest == nil or o.t < oldest.t) then oldest = o end
@@ -3653,9 +3758,9 @@ local function start_over()
 	for _, z in s.zombies do
 		if z.state ~= "dead" and dist(z.pos, focus) < 20 then near += 1 end
 	end
-	for i = near + 1, 4 do
+	for i = near + 1, 6 do
 		local a = random.range(-math.pi, math.pi)
-		local p = focus + v(math.sin(a), 0, math.cos(a)) * random.range(8, 11)
+		local p = focus + v(math.sin(a), 0, math.cos(a)) * random.range(6, 10)
 		spawn_zombie(if i == 4 then "runner" else "shambler", p, "investigate", flat(focus))
 	end
 end
@@ -3789,6 +3894,11 @@ local function tick(dt, input)
 	if s.phase == "over" then
 		s.over_t += dt
 		over_camera()
+		-- The last of them still fall all the way to the ground.
+		for _, u in s.survivors do
+			if u.state == "down" and u.fig then body.fall(u.fig, dt) end
+		end
+		for _, c in s.corpses do body.fall(c.fig, dt) end
 		zombies_tick(dt)
 		-- Only once the words are up does A start again; a room of bots
 		-- goes again on its own.
