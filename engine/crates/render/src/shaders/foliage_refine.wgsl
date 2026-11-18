@@ -706,7 +706,11 @@ fn fast_scale(roles:u32)->f32 {
 fn fast_source_scale()->f32 {return max(fast_scale_word(85u),fast_scale(256u));}
 // Shadow consumers may hold at most a quarter of the branch slots (state[81]
 // counts theirs): grass shadows otherwise took 78% of slots from the camera.
-fn fast_shadow_slots()->u32 {return limits().x/4u;}
+// Within that quarter the camera comes first: state[88] is what the pool
+// had left beyond the camera's slots last frame (fast_adapt). A whole-root
+// proxy still casts at the mip its sun texel wants, so a shadow slot buys
+// less than a camera slot.
+fn fast_shadow_slots()->u32 {return min(limits().x/4u,atomicLoad(&counters[STATE_BASE+88]));}
 // Booked camera splats per splat actually stored last frame (state[83]):
 // bookings bound every direction, alpha and pixel size conservatively, so
 // the camera may book this much past its splat buffer. 1 without feedback.
@@ -714,8 +718,10 @@ fn fast_splat_ratio()->f32 {let r=bitcast<f32>(atomicLoad(&counters[STATE_BASE+8
 fn fast_limits()->vec4<u32> {
  var cap=limits();cap.y=u32(min(f32(cap.y)*fast_splat_ratio(),4e9));return cap;
 }
-fn fast_reserve(delta:vec4<u32>,shadow:bool)->bool {
- let cap=fast_limits();var ok=true;var taken=vec4<u32>(0u);
+// 0: reserved. 1: a cap refused it. 2: only the shadow slot allowance did,
+// which is the camera's priority and no reason to coarsen the shadow cut.
+fn fast_reserve(delta:vec4<u32>,shadow:bool)->u32 {
+ let cap=fast_limits();var ok=true;var taken=vec4<u32>(0u);var refusal=1u;
  for(var k=0u;k<4u;k++) {
   if delta[k]==0u {continue;}
   let word=select(k,69u,k==3u);
@@ -725,13 +731,13 @@ fn fast_reserve(delta:vec4<u32>,shadow:bool)->bool {
  var own=false;
  if ok && shadow && delta.x!=0u {
   let before=atomicAdd(&counters[STATE_BASE+81],delta.x);own=true;
-  if before>fast_shadow_slots() || delta.x>fast_shadow_slots()-before {ok=false;}
+  if before>fast_shadow_slots() || delta.x>fast_shadow_slots()-before {ok=false;refusal=2u;}
  }
  if !ok {
   for(var k=0u;k<4u;k++) {if taken[k]!=0u {atomicSub(&counters[STATE_BASE+select(k,69u,k==3u)],taken[k]);}}
   if own {atomicSub(&counters[STATE_BASE+81],delta.x);}
  }
- return ok;
+ return select(refusal,0u,ok);
 }
 fn fast_refund(amount:vec4<u32>,shadow:bool) {
  for(var k=0u;k<4u;k++) {if amount[k]!=0u {atomicSub(&counters[STATE_BASE+select(k,69u,k==3u)],amount[k]);}}
@@ -855,7 +861,9 @@ fn fast_round_phase(at:u32,phase_late:bool)->vec4<u32> {
  if (task.z&256u)==0u && source_leaves {return task;}
  let old=work(task.x,task.y,task.z);
  let shadow=(task.z&256u)==0u;
- if !fast_reserve(replacement-min(replacement,old),shadow) {atomicAdd(&counters[STATE_BASE+17],1u);atomicAdd(&counters[STATE_BASE+select(select(75u,76u,(task.z&256u)!=0u),86u,!shadow && source_leaves)],1u);return task;}
+ let refusal=fast_reserve(replacement-min(replacement,old),shadow);
+ if refusal==2u {atomicAdd(&counters[STATE_BASE+17],1u);return task;}
+ if refusal!=0u {atomicAdd(&counters[STATE_BASE+17],1u);atomicAdd(&counters[STATE_BASE+select(select(75u,76u,(task.z&256u)!=0u),86u,!shadow && source_leaves)],1u);return task;}
  if shadow {atomicMax(&demand[task.x+view.counts.x].failed,atomicLoad(&counters[STATE_BASE+87])+1u);}
  let offset=atomicAdd(&counters[STATE_BASE+7],branching);let capacity=refine_layout.queue.z;
  if offset>capacity || branching>capacity-offset {
@@ -896,25 +904,23 @@ fn fast_round_phase(at:u32,phase_late:bool)->vec4<u32> {
  atomicStore(&counters[STATE_BASE+83],bitcast<u32>(ratio));atomicStore(&counters[STATE_BASE+84],atomicLoad(&counters[STATE_BASE+1]));
  let used=used_now();let cap=max(fast_limits(),vec4<u32>(1u));
  let f=vec4<f32>(used)/vec4<f32>(cap);
- // Slots are shared; splats are per class (y camera, z shadow).
- let shadow_slots=f32(atomicLoad(&counters[STATE_BASE+81]))/f32(max(fast_shadow_slots(),1u));
- // Source clusters (f.w) drive the camera's source scale alone (state[85]).
- // Shadows never book them, so they must not hold the shadow scale: a
- // source fill inside the dead band froze it wherever startup left it.
- let fills=vec2<f32>(max(f.x,f.y),max(shadow_slots,f.z));
- // The camera comes first in the shared slot pool: shadows give slots back
- // from the fill at which the camera would start refining again (0.85), and
- // take more only while the pool has room beyond that. A whole-root proxy
- // still casts at the level its sun texel wants, so a shadow slot buys less
- // than a camera slot.
- let pool=vec2<f32>(0.0,f.x);
+ // Slots are shared; splats are per class (y camera, z shadow). The shadow
+ // scale follows its splats alone: source clusters (f.w) are a budget shadows
+ // never book and froze it inside the dead band, and its slots are an
+ // allowance (below), not a reason to coarsen the proxies' sun mips too.
+ let fills=vec2<f32>(max(f.x,f.y),f.z);
  for(var c=0u;c<2u;c++) {
   let word=79u-c;var s=fast_scale_word(word);
   let blocked=atomicLoad(&counters[STATE_BASE+76u-c])!=0u;
-  if blocked || fills[c]>0.92 || pool[c]>0.85 {s=s*1.06;}
-  else if fills[c]<0.85 && pool[c]<0.78 {s=max(select(1.0,CAMERA_CUT_FLOOR,c==0u),s/1.02);}
+  if blocked || fills[c]>0.92 {s=s*1.06;}
+  else if fills[c]<0.85 {s=max(select(1.0,CAMERA_CUT_FLOOR,c==0u),s/1.02);}
   atomicStore(&counters[STATE_BASE+word],bitcast<u32>(min(s,1e5)));
  }
+ // Next frame's shadow slot allowance: what the pool holds below the fill at
+ // which the camera starts refining again (0.85), after the camera's slots.
+ let camera_slots=used.x-min(used.x,atomicLoad(&counters[STATE_BASE+81]));
+ let room=u32(0.85*f32(limits().x));
+ atomicStore(&counters[STATE_BASE+88],room-min(room,camera_slots));
  {
   var s=fast_scale_word(85u);let floor=fast_scale(256u);
   if atomicLoad(&counters[STATE_BASE+86])!=0u || f.w>0.92 {s=max(s,floor)*1.06;}
