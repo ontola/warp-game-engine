@@ -11,6 +11,7 @@
 -- doors for walkers), weapons lying around and places for zombies.
 
 local v = vector.create
+local mat = require("lib/mat")
 
 local M = {}
 
@@ -40,7 +41,20 @@ local LOOKS = {
 local CAR_COLORS = { "#6b2b2b", "#2f4d6b", "#5d6650", "#8a8478", "#3a3a40", "#7a5a2a" }
 local BURNT = { color = "#2a2624", roughness = 0.9 }
 local RUST = { "#6a4030", "#5a4a3a", "#4a5048", "#6a5a48" } -- wrecks left to rot
-local ROOFS = { "#3a3632", "#4a4640", "#433c36", "#2e2c2a" }
+local ROOFS = { "#5a5650", "#6a665e", "#4e4a44", "#625a50" } -- tar and gravel
+local TILES = { "#6a3226", "#5a2e24", "#3a3a3e", "#4a3a30" } -- roof tiles: terracotta, slate, brown
+local SIGNS = { "#6a2a24", "#2a4a5a", "#5a5a2a", "#3a3a3a" } -- faded shop fascias
+local FRAME = "#c8c2b4" -- window and door frames
+local KERB = "#9a968e"
+local DRAIN = "#26272a"
+local CANS = { "#8a2420", "#7a7d82", "#2a4a7a" }
+local BOTTLE = "#2a4a2a"
+local FALLEN = { "#6b4a22", "#5a3e1e", "#7a5a30" }
+local BARK = "#4a3e32"
+local LEAVES = { "#3c5a2c", "#4a6a32", "#56703a", "#5e6a30" }
+local DARK_LEAVES = { "#26401f", "#2f4a26", "#2a3f24" }
+local GLASS = "#202024"
+local HOLE = "#08080a"
 -- Set dressing (not solid), by name: every look is warmed in M.warm.
 local PROP = {
 	plank = "#6b4e37", board = "#8b6b4a", dark = "#161618", sandbag = "#8a7a5a", bag = "#1d1d1f",
@@ -55,36 +69,70 @@ function M.biome(day) return M.BIOMES[(day - 1) % #M.BIOMES + 1] end
 -- Every look the land uses, warmed in init.
 function M.warm()
 	for _, l in LOOKS do
-		for _, c in { l.ground, l.path, l.edge } do world.warm("cube", { color = c, roughness = 0.95 }) end
-		world.warm("cube", { color = l.ground, roughness = 1 })
-		for _, c in l.walls do world.warm("cube", { color = c, roughness = 0.95 }) end
-		for _, c in l.floors do world.warm("cube", { color = c, roughness = 0.95 }) end
+		for _, c in { l.ground, l.path, l.edge } do mat.warm("cube", { color = c, roughness = 0.95 }) end
+		mat.warm("cube", { color = l.ground, roughness = 1 })
+		for _, c in l.walls do mat.warm("cube", { color = c, roughness = 0.95 }) end
+		for _, c in l.floors do mat.warm("cube", { color = c, roughness = 0.95 }) end
 	end
-	for _, c in CAR_COLORS do world.warm("cube", { color = c, roughness = 0.4, metal = 0.3 }) end
-	world.warm("cube", { color = "#e8e8f0", roughness = 0.4, metal = 0.3 })
-	world.warm("cube", BURNT)
-	for _, c in RUST do world.warm("cube", { color = c, roughness = 0.9 }) end
-	for _, c in ROOFS do world.warm("cube", { color = c, roughness = 0.95 }) end
+	for _, c in CAR_COLORS do
+		mat.warm("cube", { color = c, roughness = 0.4, metal = 0.3 })
+		mat.warm("cube", { color = c, roughness = 0.95 })
+	end
+	mat.warm("cube", { color = "#e8e8f0", roughness = 0.95 })
+	mat.warm("cube", { color = "#e8e8f0", roughness = 0.4, metal = 0.3 })
+	mat.warm("cube", BURNT)
+	for _, c in RUST do mat.warm("cube", { color = c, roughness = 0.9 }) end
+	for _, c in ROOFS do mat.warm("cube", { color = c, roughness = 0.95 }) end
+	for _, c in DEBRIS do
+		mat.warm("cube", { color = c, roughness = 0.95 })
+		mat.warm("cube", { color = c, roughness = 0.9 })
+	end
 	for _, c in PROP do
-		world.warm("cube", { color = c, roughness = 0.9 })
-		world.warm("cube", { color = c, roughness = 0.95 })
-		world.warm("sphere", { color = c, roughness = 0.9 })
+		mat.warm("cube", { color = c, roughness = 0.9 })
+		mat.warm("cube", { color = c, roughness = 0.95 })
+		mat.warm("sphere", { color = c, roughness = 0.9 })
 	end
 
-	for _, c in CROP do world.warm("cube", { color = c, roughness = 0.95 }) end
+	for _, c in CROP do mat.warm("cube", { color = c, roughness = 0.95 }) end
 	for _, c in { "#2a2624", "#d8d0a0", "#4a3a2a", "#5a4632", "#202024", "#e8e8f0", "#1d3a8a", "#8b6b4a", "#6b4e37", "#7a7470", "#5f5a55", "#c9b25a", "#3a3632" } do
-		world.warm("cube", { color = c, roughness = 0.9 })
-		world.warm("cube", { color = c, roughness = 0.8 })
-		world.warm("cube", { color = c, roughness = 0.95 })
+		mat.warm("cube", { color = c, roughness = 0.9 })
+		mat.warm("cube", { color = c, roughness = 0.8 })
+		mat.warm("cube", { color = c, roughness = 0.95 })
 	end
-	for _, c in { "#3c5a2c", "#2f4a26", "#26401f", "#4a6a32" } do world.warm("sphere", { color = c, roughness = 0.9 }) end
-	world.warm("sphere", { color = "#7a7470", roughness = 0.9 })
-	world.warm("cube", { color = SHROUD, roughness = 1 })
-	world.warm("cube", { color = "#3a3a3c", roughness = 0.95 })
-	world.warm("sphere", { color = "#ff9a3a", emissive = 1.2, roughness = 0.9 })
-	world.warm("cube", { color = "#3a3d42", roughness = 0.6, metal = 0.6 })
-	world.warm("cube", { color = "#fff0c8", roughness = 0.9, emissive = 1.5 })
-	world.warm("cube", { color = "#4a4640", roughness = 0.9 })
+	for _, c in { "#3c5a2c", "#2f4a26", "#26401f", "#4a6a32" } do mat.warm("sphere", { color = c, roughness = 0.9 }) end
+	mat.warm("sphere", { color = "#7a7470", roughness = 0.9 })
+	mat.warm("cube", { color = SHROUD, roughness = 1 })
+	mat.warm("cube", { color = "#3a3a3c", roughness = 0.95 })
+	mat.warm("sphere", { color = "#ff9a3a", emissive = 1.2, roughness = 0.9 })
+	mat.warm("cube", { color = "#3a3d42", roughness = 0.6, metal = 0.6 })
+	mat.warm("cube", { color = "#fff0c8", roughness = 0.9, emissive = 1.5 })
+	mat.warm("cube", { color = "#4a4640", roughness = 0.9 })
+	-- Roofs, windows, shopfronts.
+	for _, c in TILES do mat.warm("cube", { color = c, roughness = 0.85, surface = mat.TILES }) end
+	for _, c in SIGNS do mat.warm("cube", { color = c, roughness = 0.7 }) end
+	mat.warm("cube", { color = FRAME, roughness = 0.8 })
+	for _, c in { "#7a7470", "#5f5a55", "#7a4a3a" } do mat.warm("cube", { color = c, roughness = 0.95 }) end
+	for _, c in { "#7a7d82", "#5f6266", "#5a5a5e" } do mat.warm("cube", { color = c, roughness = 0.6, metal = 0.5 }) end
+	mat.warm("sphere", { color = "#3a3d42", roughness = 0.6, metal = 0.6 })
+	mat.warm("cube", { color = "#6a3a2a", roughness = 0.9 })
+	-- Trees, kerbs, litter.
+	mat.warm("cube", { color = BARK, roughness = 0.95 })
+	mat.warm("cube", { color = BARK, roughness = 0.9 })
+	for _, c in LEAVES do mat.warm("sphere", { color = c, roughness = 0.9 }) end
+	for _, c in DARK_LEAVES do mat.warm("sphere", { color = c, roughness = 0.9 }) end
+	mat.warm("cube", { color = KERB, roughness = 0.95 })
+	mat.warm("cube", { color = DRAIN, roughness = 0.6, metal = 0.5 })
+	mat.warm("sphere", { color = DRAIN, roughness = 0.6, metal = 0.5 })
+	for _, c in CANS do mat.warm("cube", { color = c, roughness = 0.6, metal = 0.5 }) end
+	mat.warm("cube", { color = BOTTLE, roughness = 0.1 })
+	for _, c in FALLEN do mat.warm("cube", { color = c, roughness = 0.9 }) end
+	mat.warm("cube", { color = "#d8d0a0", roughness = 0.95 })
+	-- Cars.
+	for _, c in { GLASS, HOLE } do mat.warm("cube", { color = c, roughness = 0.1 }) end
+	mat.warm("cube", { color = "#2a2a2c", roughness = 0.7 })
+	for _, c in { "#d8d0a0", "#7a1a14" } do mat.warm("cube", { color = c, roughness = 0.3 }) end
+	for _, c in { "#202024", "#1d3a8a", "#8a1d1d" } do mat.warm("cube", { color = c, roughness = 0.4 }) end
+	mat.warm("sphere", { color = "#1a1a1a", roughness = 0.85 })
 end
 
 ----------------------------------------------------------------------------
@@ -100,7 +148,7 @@ local function box(c, x0, z0, x1, z1, h, look, tag)
 	if z1 < z0 then z0, z1 = z1, z0 end
 	z0 += ZC
 	z1 += ZC
-	local id = add(c, world.spawn("cube", {
+	local id = add(c, mat.spawn("cube", {
 		pos = v((x0 + x1) / 2, h / 2, (z0 + z1) / 2),
 		size = v(x1 - x0, h, z1 - z0),
 		color = look.color,
@@ -114,7 +162,7 @@ local function box(c, x0, z0, x1, z1, h, look, tag)
 end
 
 local function flat(c, x0, z0, x1, z1, y, color)
-	return add(c, world.spawn("cube", {
+	return add(c, mat.spawn("cube", {
 		pos = v((x0 + x1) / 2, y, (z0 + z1) / 2 + ZC),
 		size = v(math.abs(x1 - x0), 0.02, math.abs(z1 - z0)),
 		color = color,
@@ -129,7 +177,7 @@ local function deco(c, shape, pos, size, color, extra)
 	if extra then
 		for k, x in extra do o[k] = x end
 	end
-	return add(c, world.spawn(shape, o))
+	return add(c, mat.spawn(shape, o))
 end
 
 local function container(c, kind, x, z, w, d, h, color)
@@ -137,10 +185,65 @@ local function container(c, kind, x, z, w, d, h, color)
 	table.insert(c.containers, { kind = kind, x = x, z = z, rect = r, id = r.id, searched = false })
 end
 
+-- A tree: a solid trunk with a branch or two and a crown of several
+-- clumps; in the woods, darker and taller, the clumps in tiers.
 local function tree(c, x, z, dark)
-	box(c, x - 0.2, z - 0.2, x + 0.2, z + 0.2, 3.4, { color = "#5a4632" })
-	local col = if dark then (if random.chance(0.5) then "#26401f" else "#2f4a26") else (if random.chance(0.5) then "#3c5a2c" else "#4a6a32")
-	deco(c, "sphere", v(x, 3.6 + random.range(0, 0.8), z), random.range(1.8, 2.8), col)
+	local h = if dark then random.range(3.4, 4.6) else random.range(2.6, 3.6)
+	box(c, x - 0.16, z - 0.16, x + 0.16, z + 0.16, h, { color = BARK })
+	deco(c, "cube", v(x, 0.25, z), v(0.46, 0.5, 0.46), BARK, { rot = v(0, random.range(0, 1.5), 0) })
+	local ys = random.range(0, math.pi * 2)
+	for k = 1, random.int(1, 2) do
+		local a = ys + k * 2.4
+		local len = random.range(0.8, 1.3)
+		local d = v(math.cos(a), 0, math.sin(a))
+		deco(c, "cube", v(x, h - 0.6, z) + d * (len * 0.35) + v(0, len * 0.3, 0), v(0.1, len, 0.1), BARK,
+			{ rot = v(math.sin(a) * 0.8, 0, -math.cos(a) * 0.8) })
+	end
+	local cols = if dark then DARK_LEAVES else LEAVES
+	if dark then
+		-- Clumps round the top in no order, the highest smallest.
+		local r = random.range(1.5, 2.0)
+		deco(c, "sphere", v(x, h + 0.2, z), v(r * 1.8, r * 1.3, r * 1.8), cols[random.int(1, #cols)])
+		for _ = 1, random.int(3, 5) do
+			local a = random.range(0, math.pi * 2)
+			local up = random.range(-0.6, 1.4)
+			local s = r * random.range(0.5, 0.8) * (1 - up * 0.15)
+			local out = r * random.range(0.45, 0.9)
+			deco(c, "sphere", v(x + math.cos(a) * out, h + up, z + math.sin(a) * out), v(s * 2, s * 1.5, s * 2), cols[random.int(1, #cols)])
+		end
+	else
+		local r = random.range(1.1, 1.5)
+		deco(c, "sphere", v(x, h + 0.5, z), r * 2, cols[random.int(1, #cols)])
+		for _ = 1, random.int(2, 4) do
+			local a = random.range(0, math.pi * 2)
+			local s = r * random.range(0.55, 0.85)
+			deco(c, "sphere", v(x + math.cos(a) * r * 0.75, h + random.range(-0.1, 0.9), z + math.sin(a) * r * 0.75), s * 2, cols[random.int(1, #cols)])
+		end
+	end
+end
+
+-- The floor of a wood: bushes, a stump, ferns, drifts of dead leaves.
+local function undergrowth(c, x0, x1, za, zb, n)
+	if za > zb then za, zb = zb, za end
+	if x0 > x1 then x0, x1 = x1, x0 end
+	for _ = 1, n do
+		local x, z = random.range(x0, x1), random.range(za, zb)
+		local roll = random.float()
+		if roll < 0.45 then
+			local s = random.range(0.6, 1.3)
+			deco(c, "sphere", v(x, s * 0.25, z), v(s * 1.4, s * 0.7, s * 1.2), DARK_LEAVES[random.int(1, #DARK_LEAVES)])
+		elseif roll < 0.55 then
+			deco(c, "cube", v(x, 0.18, z), v(0.42, 0.36, 0.42), BARK, { rot = v(0, random.range(0, 1.5), 0) })
+		elseif roll < 0.75 then
+			for _ = 1, random.int(3, 5) do
+				deco(c, "sphere", v(x + random.range(-0.4, 0.4), 0.1, z + random.range(-0.4, 0.4)), v(0.5, 0.18, 0.5), LEAVES[random.int(1, #LEAVES)])
+			end
+		else
+			for _ = 1, random.int(5, 10) do
+				deco(c, "cube", v(x + random.range(-0.8, 0.8), 0.01, z + random.range(-0.8, 0.8)), v(0.1, 0.004, 0.07), FALLEN[random.int(1, #FALLEN)], { roughness = 0.9, rot = v(0, random.range(0, 3), 0) })
+			end
+		end
+	end
 end
 
 local function rock(c, x, z)
@@ -148,24 +251,82 @@ local function rock(c, x, z)
 	box(c, x - s / 2, z - s / 2, x + s / 2, z + s / 2, s * 0.6, { color = "#7a7470" })
 end
 
+-- A car in parts on an invisible root (its length along local x): a body
+-- with sills, a glass cabin under its roof, wheels, bumpers and lamps.
+-- o: color, burnt, rust (a rotted wreck), flipped, police, bare (no wheels).
+local function car_model(c, pos, yaw, o)
+	local root = add(c, world.spawn("cube", { pos = pos + v(0, 0, ZC), rot = v(if o.flipped then math.pi else 0, yaw, 0), size = 0.05, visible = false, solid = false }))
+	local function part(shape, at, size, color, extra)
+		local t = { pos = at, size = size, color = color, roughness = 0.9, solid = false, tag = "deco" }
+		if extra then for k, x in extra do t[k] = x end end
+		return mat.spawn(shape, t, root)
+	end
+	local paint = if o.burnt then BURNT.color else o.color
+	local pl = if o.burnt or o.rust then nil else { roughness = 0.4, metal = 0.3 }
+	-- (A flipped one is turned over on its root, which sits at roof height.)
+	local function at(x, y, z) return v(x, y, z) end
+	-- Body: a long low box, the bonnet and boot a step down from the waist.
+	part("cube", at(0, 0.55, 0), v(4.1, 0.56, 1.76), paint, pl)
+	part("cube", at(1.45, 0.86, 0), v(1.15, 0.08, 1.7), paint, pl)
+	part("cube", at(-1.6, 0.86, 0), v(0.85, 0.08, 1.7), paint, pl)
+	-- The cabin: glass all round (gone, on a burnt one), and the roof.
+	local glass = if o.burnt then HOLE else GLASS
+	part("cube", at(-0.2, 1.08, 0), v(2.0, 0.46, 1.58), glass, { roughness = 0.1 })
+	part("cube", at(-0.3, 1.33, 0), v(1.55, 0.07, 1.5), paint, pl)
+	-- Pillars between the windows.
+	for _, sx in { 0.78, -1.15 } do
+		part("cube", at(sx, 1.08, 0.77), v(0.08, 0.46, 0.06), paint, pl)
+		part("cube", at(sx, 1.08, -0.77), v(0.08, 0.46, 0.06), paint, pl)
+	end
+	-- Bumpers and lamps.
+	part("cube", at(2.08, 0.42, 0), v(0.14, 0.2, 1.74), "#2a2a2c", { roughness = 0.7 })
+	part("cube", at(-2.08, 0.42, 0), v(0.14, 0.2, 1.74), "#2a2a2c", { roughness = 0.7 })
+	if not o.burnt then
+		for _, sz in { 0.62, -0.62 } do
+			part("cube", at(2.06, 0.66, sz), v(0.06, 0.12, 0.32), "#d8d0a0", { roughness = 0.3 })
+			part("cube", at(-2.06, 0.66, sz), v(0.06, 0.12, 0.3), "#7a1a14", { roughness = 0.3 })
+		end
+	end
+	-- Wheels (sometimes taken).
+	if not o.bare then
+		for _, w in { v(1.32, 0.31, 0.8), v(1.32, 0.31, -0.8), v(-1.32, 0.31, 0.8), v(-1.32, 0.31, -0.8) } do
+			part("sphere", at(w.x, w.y, w.z), v(0.64, 0.64, 0.24), "#1a1a1a", { roughness = 0.85 })
+		end
+	end
+	if o.police then
+		part("cube", at(-0.3, 1.42, 0), v(0.3, 0.1, 1.1), "#202024", { roughness = 0.4 })
+		part("cube", at(-0.3, 1.43, 0.35), v(0.28, 0.1, 0.3), "#1d3a8a", { roughness = 0.4 })
+		part("cube", at(-0.3, 1.43, -0.35), v(0.28, 0.1, 0.3), "#8a1d1d", { roughness = 0.4 })
+		part("cube", at(0, 0.62, 0.885), v(3.2, 0.18, 0.01), "#1d3a8a", { roughness = 0.4 })
+		part("cube", at(0, 0.62, -0.885), v(3.2, 0.18, 0.01), "#1d3a8a", { roughness = 0.4 })
+	end
+	return root
+end
+
+-- Is the ground from x0,z0 to x1,z1 (chunk-local z) clear of anything
+-- solid placed so far?
+local function clear(c, x0, z0, x1, z1)
+	for _, r in c.rects do
+		if x0 < r.x1 and x1 > r.x0 and z0 + ZC < r.z1 and z1 + ZC > r.z0 then return false end
+	end
+	return true
+end
+
 local function car(c, x, z, police, yaw_x, burnt)
+	if not clear(c, x - 2.3, z - 1.2, x + 2.3, z + 1.2) then return end
 	local color = if police then "#e8e8f0" else CAR_COLORS[random.int(1, #CAR_COLORS)]
-	if burnt then
-		-- A burnt-out wreck: black shell, no glass, nothing left inside.
-		if yaw_x then box(c, x - 2.1, z - 0.92, x + 2.1, z + 0.92, 1.0, BURNT) else box(c, x - 0.92, z - 2.1, x + 0.92, z + 2.1, 1.0, BURNT) end
-		deco(c, "cube", v(x, 1.15, z), if yaw_x then v(1.8, 0.3, 1.5) else v(1.5, 0.3, 1.8), "#3a3632")
-		return
-	end
-	local r
-	if yaw_x then
-		r = box(c, x - 2.1, z - 0.92, x + 2.1, z + 0.92, 1.15, { color = color, roughness = 0.4, metal = 0.3 })
-		deco(c, "cube", v(x + 0.2, 1.45, z), v(2.1, 0.6, 1.6), "#202024")
-	else
-		r = box(c, x - 0.92, z - 2.1, x + 0.92, z + 2.1, 1.15, { color = color, roughness = 0.4, metal = 0.3 })
-		deco(c, "cube", v(x, 1.45, z + 0.2), v(1.6, 0.6, 2.1), "#202024")
-	end
-	if police then deco(c, "cube", v(x, 1.8, z), v(0.6, 0.12, 0.6), "#1d3a8a") end
-	table.insert(c.containers, { kind = if police then "police" else "car", x = x, z = z, rect = r, id = r.id, searched = false })
+	local w, d = if yaw_x then 2.1 else 0.92, if yaw_x then 0.92 else 2.1
+	local r = box(c, x - w, z - d, x + w, z + d, 1.3, { color = color })
+	world.set(r.id, { visible = false })
+	local root = car_model(c, v(x, 0, z), if yaw_x then random.range(-0.06, 0.06) else math.pi / 2 + random.range(-0.06, 0.06), { color = color, police = police, burnt = burnt, bare = burnt and random.chance(0.6) })
+	if burnt then return end
+	-- Shown once it has been gone through: a door hanging open, the boot up.
+	local side = if random.chance(0.5) then 1 else -1
+	local open = {
+		mat.spawn("cube", { pos = v(0.6 - 0.5 * math.cos(1.0), 0.78, side * (0.88 + 0.5 * math.sin(1.0))), rot = v(0, side * 1.0, 0), size = v(1.0, 0.62, 0.05), color = color, roughness = 0.4, metal = 0.3, solid = false, tag = "deco", visible = false }, root),
+		mat.spawn("cube", { pos = v(-1.85, 1.25, 0), rot = v(0, 0, -1.1), size = v(0.85, 0.06, 1.66), color = color, roughness = 0.4, metal = 0.3, solid = false, tag = "deco", visible = false }, root),
+	}
+	table.insert(c.containers, { kind = if police then "police" else "car", x = x, z = z, rect = r, id = r.id, searched = false, reveal = open })
 end
 
 -- Rubble: a few tumbled blocks of a wall's colour around a point.
@@ -343,7 +504,7 @@ local function building(c, x0, w, d, cols, rows, side, look, kinds, sleepers)
 		-- Fog of war: the room is dark until somebody is in it or looks in
 		-- through a door or a hole in the wall (main.luau lifts it).
 		local h = look.height[2] + 0.15
-		r.shroud = add(c, world.spawn("cube", { pos = v((r.x0 + r.x1) / 2, h / 2, (r.z0 + r.z1) / 2 + ZC), size = v(r.x1 - r.x0 - 0.2, h, r.z1 - r.z0 - 0.2), color = SHROUD, roughness = 1, solid = false, tag = "deco" }))
+		r.shroud = add(c, mat.spawn("cube", { pos = v((r.x0 + r.x1) / 2, h / 2, (r.z0 + r.z1) / 2 + ZC), size = v(r.x1 - r.x0 - 0.2, h, r.z1 - r.z0 - 0.2), color = SHROUD, roughness = 1, solid = false, tag = "deco" }))
 	end
 	table.insert(c.buildings, b)
 	return b
@@ -353,7 +514,7 @@ end
 -- boarded up and its windows dark or nailed shut. main.luau hides it (and
 -- shows a low cut-away in its place) when it would hide a survivor from
 -- the camera.
-local function closed(c, x0, w, d, side, look, h)
+local function closed(c, x0, w, d, side, look, h, style)
 	local zn = side * 4.6
 	local zf = side * (4.6 + d)
 	local z0, z1 = math.min(zn, zf), math.max(zn, zf)
@@ -363,37 +524,142 @@ local function closed(c, x0, w, d, side, look, h)
 	local function part(id) table.insert(blk.parts, id) return id end
 	local r = box(c, x0, z0, x1, z1, h, { color = color })
 	part(r.id)
-	-- The roof: a darker slab, a parapet edge and things on top.
-	local roof = ROOFS[random.int(1, #ROOFS)]
-	part(deco(c, "cube", v((x0 + x1) / 2, h + 0.03, (z0 + z1) / 2), v(w - 0.5, 0.06, d - 0.5), roof, { roughness = 0.95 }))
-	for _ = 1, random.int(1, 3) do
-		local s = random.range(0.6, 1.4)
-		part(deco(c, "cube", v(random.range(x0 + 1, x1 - 1), h + s * 0.35, random.range(z0 + 1, z1 - 1)), v(s, s * 0.7, s * random.range(0.7, 1.3)), PROP.fence))
-	end
-	if random.chance(look.ruin * 2) then
-		-- Part of the roof fell in: rubble on top.
-		for _ = 1, 4 do
-			local s = random.range(0.25, 0.6)
-			part(deco(c, "cube", v(random.range(x0 + 0.8, x1 - 0.8), h + s * 0.3, random.range(z0 + 0.8, z1 - 0.8)), v(s * 1.6, s * 0.6, s), color,
-				{ roughness = 0.95, rot = v(random.range(-0.4, 0.4), random.range(-math.pi, math.pi), 0) }))
+	local xm, zm = (x0 + x1) / 2, (z0 + z1) / 2
+	if style == "pitched" then
+		-- A gable roof of tiles, the ridge along the street, eaves over the
+		-- walls; a wedge under it closes the gable ends; a chimney.
+		local tile = TILES[random.int(1, #TILES)]
+		local pitch = random.range(0.5, 0.62)
+		local a = d / 2 + 0.35
+		local eave = h - 0.12
+		local ridge = eave + a * math.tan(pitch)
+		local len = a / math.cos(pitch) + 0.05
+		for _, sz in { 1, -1 } do
+			part(deco(c, "cube", v(xm, eave + a / 2 * math.tan(pitch) + 0.04, zm + sz * a / 2), v(w + 0.5, 0.09, len), tile,
+				{ roughness = 0.85, surface = mat.TILES, rot = v(sz * pitch, 0, 0) }))
 		end
+		local s2 = (ridge - 0.1 - h) * math.sqrt(2)
+		if s2 > 0.2 then
+			part(deco(c, "cube", v(xm, h, zm), v(w - 0.06, s2, s2), color, { roughness = 0.95, rot = v(math.pi / 4, 0, 0) }))
+		end
+		part(deco(c, "cube", v(xm, ridge + 0.03, zm), v(w + 0.5, 0.1, 0.18), tile, { roughness = 0.85, surface = mat.TILES }))
+		if random.chance(0.7) then
+			local cx = if random.chance(0.5) then x0 + random.range(0.8, 1.6) else x1 - random.range(0.8, 1.6)
+			local cz = zm + random.range(-0.4, 0.8) * a
+			local top = ridge + random.range(0.3, 0.7)
+			part(deco(c, "cube", v(cx, (h + top) / 2, cz), v(0.55, top - h, 0.55), "#7a4a3a", { roughness = 0.95 }))
+			part(deco(c, "cube", v(cx, top + 0.04, cz), v(0.68, 0.08, 0.68), "#5f5a55", { roughness = 0.95 }))
+		end
+		blk.h = ridge + 0.1
+	else
+		-- A flat roof: tar inside a parapet, and what stands on roofs:
+		-- air conditioners, vents, a water tank, a stair hut, a skylight.
+		local roof = ROOFS[random.int(1, #ROOFS)]
+		part(deco(c, "cube", v(xm, h + 0.03, zm), v(w - 0.3, 0.06, d - 0.3), roof, { roughness = 0.95 }))
+		local ph = random.range(0.35, 0.7)
+		local function wall_cap(cx, cz, sx, sz) part(deco(c, "cube", v(cx, h + ph / 2, cz), v(sx, ph, sz), color, { roughness = 0.95 })) end
+		wall_cap(xm, z0 + 0.12, w, 0.24)
+		wall_cap(xm, z1 - 0.12, w, 0.24)
+		wall_cap(x0 + 0.12, zm, 0.24, d - 0.48)
+		wall_cap(x1 - 0.12, zm, 0.24, d - 0.48)
+		-- Coping along the top of the parapet.
+		part(deco(c, "cube", v(xm, h + ph + 0.03, z1 - 0.12), v(w + 0.06, 0.06, 0.32), "#7a7470", { roughness = 0.95 }))
+		part(deco(c, "cube", v(xm, h + ph + 0.03, z0 + 0.12), v(w + 0.06, 0.06, 0.32), "#7a7470", { roughness = 0.95 }))
+		local function spot(m) return random.range(x0 + 0.6 + m, x1 - 0.6 - m), random.range(z0 + 0.6 + m, z1 - 0.6 - m) end
+		for _ = 1, random.int(1, 3) do
+			local x, z = spot(0.6)
+			local sx, sz = random.range(0.8, 1.3), random.range(0.6, 0.9)
+			part(deco(c, "cube", v(x, h + 0.35, z), v(sx, 0.6, sz), "#7a7d82", { roughness = 0.6, metal = 0.5 }))
+			part(deco(c, "sphere", v(x, h + 0.66, z), v(sz * 0.8, 0.05, sz * 0.8), "#3a3d42", { roughness = 0.6, metal = 0.6 }))
+		end
+		for _ = 1, random.int(1, 4) do
+			local x, z = spot(0.3)
+			local ht = random.range(0.4, 1.1)
+			part(deco(c, "cube", v(x, h + ht / 2, z), v(0.16, ht, 0.16), "#5f6266", { roughness = 0.6, metal = 0.5 }))
+			part(deco(c, "cube", v(x, h + ht + 0.03, z), v(0.28, 0.06, 0.28), "#5f6266", { roughness = 0.6, metal = 0.5 }))
+		end
+		if h > 7 and random.chance(0.5) then
+			local x, z = spot(1.2)
+			part(deco(c, "cube", v(x, h + 1.3, z), v(1.6, 1.4, 1.6), "#6a3a2a", { roughness = 0.9 }))
+			for _, o in { v(-0.6, 0, -0.6), v(0.6, 0, -0.6), v(-0.6, 0, 0.6), v(0.6, 0, 0.6) } do
+				part(deco(c, "cube", v(x + o.x, h + 0.3, z + o.z), v(0.1, 0.6, 0.1), "#3a3d42", { roughness = 0.6, metal = 0.6 }))
+			end
+		end
+		if random.chance(0.6) then
+			local x, z = spot(1.4)
+			part(deco(c, "cube", v(x, h + 1.1, z), v(2.2, 2.2, 1.8), color, { roughness = 0.95 }))
+			part(deco(c, "cube", v(x, h + 2.24, z), v(2.4, 0.08, 2.0), roof, { roughness = 0.95 }))
+		end
+		if random.chance(0.5) then
+			local x, z = spot(1)
+			part(deco(c, "cube", v(x, h + 0.2, z), v(1.4, 0.3, 1.0), "#5f6266", { roughness = 0.6, metal = 0.5 }))
+			part(deco(c, "cube", v(x, h + 0.36, z), v(1.25, 0.04, 0.85), GLASS, { roughness = 0.1 }))
+		end
+		if random.chance(look.ruin * 2) then
+			-- Part of the roof fell in: rubble on top.
+			for _ = 1, 4 do
+				local s = random.range(0.25, 0.6)
+				part(deco(c, "cube", v(random.range(x0 + 0.8, x1 - 0.8), h + s * 0.3, random.range(z0 + 0.8, z1 - 0.8)), v(s * 1.6, s * 0.6, s), color,
+					{ roughness = 0.95, rot = v(random.range(-0.4, 0.4), random.range(-math.pi, math.pi), 0) }))
+			end
+		end
+		blk.h = h + ph
 	end
-	-- The face towards the path: a boarded-up door and dark windows.
+	-- The face towards the path: a boarded-up door.
 	local fz = zn - side * 0.02
 	local dx = random.range(x0 + 1, x1 - 2)
 	part(deco(c, "cube", v(dx + 0.6, 1.05, fz), v(1.2, 2.1, 0.06), PROP.dark))
+	part(deco(c, "cube", v(dx + 0.6, 1.05, fz + side * 0.01), v(1.4, 2.25, 0.06), FRAME, { roughness = 0.8 }))
 	for k = 0, 2 do
 		part(deco(c, "cube", v(dx + 0.6, 0.5 + k * 0.6, fz - side * 0.04), v(1.5, 0.18, 0.05), if k % 2 == 0 then PROP.plank else PROP.board,
 			{ rot = v(0, 0, random.range(-0.25, 0.25)) }))
 	end
+	-- Windows on the faces the camera sees (south, +z) and the street face:
+	-- a frame, glass (or a dark hole), a cross bar, a sill; some boarded.
+	-- A ledge at every floor and a plinth along the foot.
 	local floors = math.max(1, math.floor(h / 3))
-	for f = 0, floors - 1 do
-		for x = x0 + 1, x1 - 1.4, 2.6 do
-			if math.abs(x - dx) > 1.6 or f > 0 then
-				local y = 1.7 + f * 3
-				part(deco(c, "cube", v(x + 0.5, y, fz), v(1, 1.1, 0.05), PROP.dark))
-				if random.chance(0.4) then
-					part(deco(c, "cube", v(x + 0.5, y, fz - side * 0.04), v(1.2, 0.16, 0.05), PROP.plank, { rot = v(0, 0, random.range(-0.5, 0.5)) }))
+	local faces = if side < 0 then { { z = z1, out = 1, door = true } } else { { z = z0, out = -1, door = true, simple = true }, { z = z1, out = 1 } }
+	for _, f in faces do
+		local fzz = f.z + f.out * 0.005
+		local function o(k) return fzz + f.out * k end
+		if not f.simple then
+			part(deco(c, "cube", v(xm, 0.25, o(0.02)), v(w + 0.04, 0.5, 0.04), "#5f5a55", { roughness = 0.95 }))
+			for fl = 1, floors - 1 do
+				part(deco(c, "cube", v(xm, fl * 3 + 0.05, o(0.05)), v(w + 0.1, 0.14, 0.1), "#7a7470", { roughness = 0.95 }))
+			end
+		end
+		local shop = style == "city" and not f.simple
+		if shop then
+			-- A shopfront: a roller shutter, half down or all, and a fascia.
+			local sx = random.range(x0 + 1, x1 - 4)
+			local sw = math.min(random.range(3, 5), x1 - 0.6 - sx)
+			local down = random.range(0.55, 1)
+			part(deco(c, "cube", v(sx + sw / 2, 2.6 - 2.4 * down / 2, o(0.03)), v(sw, 2.4 * down, 0.05), "#5a5a5e", { roughness = 0.6, metal = 0.5 }))
+			if down < 1 then part(deco(c, "cube", v(sx + sw / 2, (2.6 - 2.4 * down) / 2 + 0.1, o(0.01)), v(sw, 2.6 - 2.4 * down, 0.03), PROP.dark)) end
+			part(deco(c, "cube", v(sx + sw / 2, 2.85, o(0.06)), v(sw + 0.4, 0.5, 0.1), SIGNS[random.int(1, #SIGNS)], { roughness = 0.7 }))
+		end
+		for fl = 0, floors - 1 do
+			for x = x0 + 1, x1 - 1.4, 2.6 do
+				local skip = (f.door and fl == 0 and math.abs(x - dx) < 1.6) or (shop and fl == 0)
+				if not skip then
+					local y = 1.7 + fl * 3
+					local cx = x + 0.5
+					if f.simple then
+						part(deco(c, "cube", v(cx, y, o(0.02)), v(1, 1.1, 0.05), PROP.dark))
+					else
+						local broken = random.chance(0.35)
+						part(deco(c, "cube", v(cx, y, o(0.0)), v(1.16, 1.26, 0.05), FRAME, { roughness = 0.8 }))
+						part(deco(c, "cube", v(cx, y, o(0.015)), v(1.0, 1.1, 0.05), if broken then HOLE else GLASS, { roughness = 0.1 }))
+						if not broken then
+							part(deco(c, "cube", v(cx, y, o(0.04)), v(0.05, 1.1, 0.03), FRAME, { roughness = 0.8 }))
+							part(deco(c, "cube", v(cx, y + 0.12, o(0.04)), v(1.0, 0.05, 0.03), FRAME, { roughness = 0.8 }))
+						end
+						part(deco(c, "cube", v(cx, y - 0.62, o(0.06)), v(1.3, 0.07, 0.14), "#7a7470", { roughness = 0.95 }))
+						part(deco(c, "cube", v(cx, y + 0.66, o(0.03)), v(1.3, 0.12, 0.06), "#7a7470", { roughness = 0.95 }))
+						if random.chance(0.3) then
+							part(deco(c, "cube", v(cx, y + random.range(-0.3, 0.3), o(0.08)), v(1.25, 0.16, 0.04), PROP.plank, { rot = v(0, 0, random.range(-0.5, 0.5)) }))
+						end
+					end
 				end
 			end
 		end
@@ -410,7 +676,7 @@ local function closed(c, x0, w, d, side, look, h)
 		end
 	end
 	-- What main.luau shows instead when the block is in the way.
-	blk.cut = add(c, world.spawn("cube", { pos = v((x0 + x1) / 2, 0.45, (z0 + z1) / 2 + ZC), size = v(w, 0.9, d), color = color, roughness = 0.95, solid = false, tag = "deco", visible = false }))
+	blk.cut = add(c, mat.spawn("cube", { pos = v((x0 + x1) / 2, 0.45, (z0 + z1) / 2 + ZC), size = v(w, 0.9, d), color = color, roughness = 0.95, solid = false, tag = "deco", visible = false }))
 	table.insert(c.blocks, blk)
 	table.insert(c.buildings, blk)
 	return blk
@@ -418,18 +684,21 @@ end
 
 -- A dead car: rusted or burnt, parked crooked, sometimes on its roof.
 local function wreck(c, x, z)
+	if not clear(c, x - 2.4, z - 1.3, x + 2.4, z + 1.3) then return end
 	local yaw = random.range(-0.35, 0.35) + (if random.chance(0.5) then 0 else math.pi)
 	local burnt = random.chance(0.35)
 	local col = if burnt then BURNT.color else RUST[random.int(1, #RUST)]
 	local flipped = not burnt and random.chance(0.15)
-	local h = if flipped then 0.9 else 1.0
+	local h = if flipped then 0.9 else 1.3
 	-- Solid as a box around it; the look is turned.
 	local r = box(c, x - 2.2, z - 1.1, x + 2.2, z + 1.1, h, { color = col, roughness = 0.9 })
-	world.set(r.id, { rot = v(0, yaw, 0), size = v(4.0, h, 1.8) })
-	if not flipped then
-		deco(c, "cube", v(x, h + 0.25, z), v(1.9, 0.5, 1.5), if burnt then "#3a3632" else PROP.dark, { rot = v(0, yaw, 0) })
+	world.set(r.id, { visible = false })
+	car_model(c, v(x, if flipped then 1.45 else 0, z), yaw, { color = col, rust = true, burnt = burnt, flipped = flipped, bare = random.chance(if burnt then 0.7 else 0.3) })
+	if random.chance(0.4) then deco(c, "sphere", v(x + random.range(-3, 3), 0.12, z + random.range(-1.6, 1.6)), v(0.64, 0.24, 0.64), PROP.tyre) end
+	-- Glass and bits around it.
+	for _ = 1, random.int(2, 5) do
+		deco(c, "cube", v(x + random.range(-2.4, 2.4), 0.01, z + random.range(-1.4, 1.4)), v(random.range(0.05, 0.2), 0.01, random.range(0.05, 0.15)), GLASS, { roughness = 0.1, rot = v(0, random.range(0, 3), 0) })
 	end
-	if random.chance(0.4) then deco(c, "sphere", v(x + random.range(-3, 3), 0.15, z + random.range(-1.6, 1.6)), 0.55, PROP.tyre) end
 	if not burnt and random.chance(0.5) then
 		table.insert(c.containers, { kind = "car", x = x, z = z, rect = r, id = r.id, searched = false })
 	end
@@ -508,6 +777,7 @@ local function side_fill(c, biome, look, near, side, z0, z1)
 	elseif biome == "forest" then
 		for _ = 1, math.floor((z1 - z0) / 1.6) do tree(c, x(random.range(1.2, 12)), random.range(z0, z1), true) end
 		for _ = 1, math.floor((z1 - z0) / 8) do rock(c, x(random.range(1.5, 10)), random.range(z0, z1)) end
+		undergrowth(c, near + side * 1, near + side * 12, z0, z1, math.floor((z1 - z0) / 2.5))
 	else -- farm
 		box(c, x(0.4), z0, x(0.52), z1, 0.7, { color = "#8b6b4a" })
 		local crop = CROP[random.int(1, #CROP)]
@@ -529,7 +799,7 @@ local function lot(c, side, x0, x1, look, biome)
 			local bw = math.min(random.range(13, 18), span - 1)
 			building(c, x0 + (span - bw) / 2, bw, random.range(9, 11.5), 3, 2, side, look, { "kitchen", "closet", "closet", "kitchen" }, 1)
 		else
-			closed(c, bx, w, random.range(6, 8), side, look, random.range(3.6, 5.2))
+			closed(c, bx, w, random.range(6, 8), side, look, random.range(3.2, 4.2), "pitched")
 		end
 		-- A front hedge or fence, gapped, and trees behind.
 		if random.chance(0.5) then
@@ -550,6 +820,7 @@ local function lot(c, side, x0, x1, look, biome)
 		else
 			for _ = 1, random.int(6, 10) do tree(c, random.range(x0, x1), side * random.range(3.6, 13.5), true) end
 			for _ = 1, random.int(0, 2) do rock(c, random.range(x0, x1), side * random.range(3.6, 13)) end
+			undergrowth(c, x0, x1, side * 3.4, side * 13.5, random.int(5, 9))
 		end
 	elseif biome == "city" then
 		local w = math.min(random.range(11, 16), span - 1)
@@ -561,7 +832,7 @@ local function lot(c, side, x0, x1, look, biome)
 			local bw = math.min(random.range(17, 22), span - 1)
 			building(c, x0 + (span - bw) / 2, bw, random.range(11, 13.5), 4, 3, side, look, kinds, 2)
 		else
-			closed(c, bx, w, random.range(7, 9.4), side, look, random.range(6, 12))
+			closed(c, bx, w, random.range(7, 9.4), side, look, random.range(6, 12), "city")
 		end
 	else -- farm
 		local r = random.float()
@@ -571,7 +842,7 @@ local function lot(c, side, x0, x1, look, biome)
 			if random.chance(0.5) then
 				building(c, bx, w, random.range(8, 11), 3, 2, side, look, { "barn", "barn", "kitchen" }, 2)
 			else
-				closed(c, bx, w, random.range(7, 9), side, look, random.range(4.5, 6.5))
+				closed(c, bx, w, random.range(7, 9), side, look, random.range(4.2, 5.5), "pitched")
 			end
 		else
 			-- Crop rows behind a fence with a gap.
@@ -604,8 +875,12 @@ end
 local function lamp(c, x, side, city)
 	local z = side * 3.45
 	box(c, x - 0.09, z - 0.09, x + 0.09, z + 0.09, 4.2, { color = "#3a3d42", roughness = 0.6, metal = 0.6 })
+	-- A foot, the arm out over the road and the head round the bulb.
+	deco(c, "cube", v(x, 0.3, z), v(0.3, 0.6, 0.3), "#3a3d42", { roughness = 0.6, metal = 0.6 })
+	deco(c, "cube", v(x, 4.22, z - side * 0.3), v(0.07, 0.07, 0.6), "#3a3d42", { roughness = 0.6, metal = 0.6 })
+	deco(c, "cube", v(x, 4.24, z - side * 0.55), v(0.46, 0.1, 0.26), "#3a3d42", { roughness = 0.6, metal = 0.6 })
 	local lit = random.chance(if city then 0.25 else 0.45)
-	local bulb = deco(c, "cube", v(x, 4.15, z - side * 0.5), v(0.5, 0.14, 0.3), if lit then "#fff0c8" else "#4a4640", if lit then { emissive = 1.5 } else nil)
+	local bulb = deco(c, "cube", v(x, 4.17, z - side * 0.55), v(0.38, 0.05, 0.2), if lit then "#fff0c8" else "#4a4640", if lit then { emissive = 1.5 } else nil)
 	if lit then table.insert(c.lamps, { pos = v(x, 4, z - side * 0.5), flicker = random.chance(0.3), seed = random.range(0, 10), bulb = bulb }) end
 end
 
@@ -647,7 +922,7 @@ function M.chunk(index, day, in_day, zc, zc_prev)
 	local turn = zc ~= zc_prev
 	ZC = 0
 	local lo, hi = math.min(zc, zc_prev), math.max(zc, zc_prev)
-	add(c, world.spawn("cube", { pos = v((x0 + x1) / 2, -0.5, (lo + hi) / 2), size = v(M.CHUNK, 1, hi - lo + HZ * 2 + 30), color = look.ground, roughness = 1, solid = false, tag = "ground" }))
+	add(c, mat.spawn("cube", { pos = v((x0 + x1) / 2, -0.5, (lo + hi) / 2), size = v(M.CHUNK, 1, hi - lo + HZ * 2 + 30), color = look.ground, roughness = 1, solid = false, tag = "ground" }))
 	if turn then
 		-- The street that turns: from the old centre to the new one. Now
 		-- and then it is a crossroads: the street goes on past the corner
@@ -707,7 +982,7 @@ function M.chunk(index, day, in_day, zc, zc_prev)
 		end
 		-- Both sides of the street, where neither road's lots are: ground
 		-- to the west, and houses, ruins, trees or fields along it.
-		add(c, world.spawn("cube", { pos = v(x0 - 7, -0.51, (lo + hi) / 2), size = v(14, 1, hi - lo + HZ * 2), color = look.ground, roughness = 1, solid = false, tag = "ground" }))
+		add(c, mat.spawn("cube", { pos = v(x0 - 7, -0.51, (lo + hi) / 2), size = v(14, 1, hi - lo + HZ * 2), color = look.ground, roughness = 1, solid = false, tag = "ground" }))
 		local ea, eb = zc_prev - dir * HZ, zc - dir * HZ
 		if cross then
 			side_fill(c, biome, look, x0 + M.TURN + 1.2, 1, math.min(ea, zc_prev - dir * (half + 0.5)), math.max(ea, zc_prev - dir * (half + 0.5)))
@@ -736,6 +1011,37 @@ function M.chunk(index, day, in_day, zc, zc_prev)
 			flat(c, x0, -3.6, x1, -2.6, 0.008, look.edge)
 			flat(c, x0, 2.6, x1, 3.6, 0.008, look.edge)
 			for x = x0, x1 - 2, 4 do flat(c, x, -0.08, x + 2, 0.08, 0.009, "#d8d0a0") end
+		end
+	end
+	-- Kerbstones along the pavements, a drain now and then, a manhole.
+	local kerb = if biome == "city" then 3.2 elseif biome == "suburb" then 2.6 else nil
+	if kerb then
+		for _, sd in { -1, 1 } do
+			deco(c, "cube", v((x0 + x1) / 2, 0.05, sd * (kerb + 0.07)), v(x1 - x0, 0.1, 0.16), KERB, { roughness = 0.95 })
+			for x = x0 + random.range(1, 5), x1 - 1, random.range(7, 10) do
+				deco(c, "cube", v(x, 0.008, sd * (kerb - 0.25)), v(0.45, 0.012, 0.3), DRAIN, { roughness = 0.6, metal = 0.5 })
+			end
+		end
+		if random.chance(0.6) then
+			deco(c, "sphere", v(random.range(x0 + 2, x1 - 2), 0.0, random.range(-1.6, 1.6)), v(0.75, 0.02, 0.75), DRAIN, { roughness = 0.6, metal = 0.5 })
+		end
+	end
+	-- Litter on the road and the verges: paper, cans, bottles, leaves.
+	if biome ~= "forest" or random.chance(0.3) then
+		for _ = 1, random.int(6, if biome == "city" then 16 else 10) do
+			local x, z = random.range(x0, x1), random.range(-4.4, 4.4)
+			local roll = random.float()
+			if roll < 0.35 then
+				deco(c, "cube", v(x, 0.012, z), v(random.range(0.15, 0.3), 0.004, random.range(0.12, 0.22)), "#d8d0a0", { roughness = 0.95, rot = v(0, random.range(0, 3), 0) })
+			elseif roll < 0.55 then
+				deco(c, "cube", v(x, 0.035, z), v(0.12, 0.065, 0.065), CANS[random.int(1, #CANS)], { roughness = 0.6, metal = 0.5, rot = v(0, random.range(0, 3), 0) })
+			elseif roll < 0.65 then
+				deco(c, "cube", v(x, 0.04, z), v(0.24, 0.07, 0.07), BOTTLE, { roughness = 0.1, rot = v(0, random.range(0, 3), 0) })
+			else
+				for _ = 1, random.int(3, 7) do
+					deco(c, "cube", v(x + random.range(-0.5, 0.5), 0.01, z + random.range(-0.5, 0.5)), v(0.08, 0.004, 0.06), FALLEN[random.int(1, #FALLEN)], { roughness = 0.9, rot = v(0, random.range(0, 3), 0) })
+				end
+			end
 		end
 	end
 	if in_day == 0 then
@@ -788,11 +1094,6 @@ function M.chunk(index, day, in_day, zc, zc_prev)
 			for _ = 1, random.int(3, 6) do
 				local x, z = random.range(x0, x1), random.range(-HZ + 1, HZ - 1)
 				flat(c, x, z, x + random.range(0.2, 0.5), z + random.range(0.2, 0.4), 0.012, "#d8d0a0")
-			end
-			-- Cracks in the asphalt.
-			for _ = 1, random.int(1, 3) do
-				local x, z = random.range(x0, x1 - 3), random.range(-2.5, 2.5)
-				flat(c, x, z, x + random.range(1, 3), z + 0.06, 0.006, "#202024")
 			end
 		end
 		if biome == "forest" and random.chance(0.4) then
