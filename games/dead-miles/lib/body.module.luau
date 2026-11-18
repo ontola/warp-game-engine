@@ -37,6 +37,46 @@ local function place_weapon(b)
 	world.set(b.weapon, { pos = hand + d * (w.len / 2 - 0.02), rot = v(math.asin(math.clamp(-d.y, -1, 1)), math.atan2(d.x, d.z), 0) })
 end
 
+-- A torch in the left hand: a short dark body with a lit lens. It goes
+-- where the hand goes (the walk's bob and sway), pointed mostly where the
+-- body faces, and it settles with a little lag. b.torch_at and b.torch_dir
+-- are where its light starts and goes (nil for a box figure).
+M.TORCH_BODY = { color = "#2a2624", roughness = 0.5, metal = 0.5 }
+M.TORCH_LENS = { color = "#ffe6c0", emissive = 2, roughness = 0.3 }
+local function place_torch(b)
+	if not b.torch then return end
+	local hand = humans.joint(b.human, "hand_l")
+	local elbow = humans.joint(b.human, "elbow_l")
+	if not (hand and elbow) then return end
+	local arm = hand - elbow
+	local m = vector.magnitude(arm)
+	arm = if m > 1e-4 then arm / m else forward(b.yaw)
+	local f = forward(b.yaw)
+	local want = f * 2.2 + arm * 0.6 + v(0, -0.35, 0)
+	want = want / vector.magnitude(want)
+	local d = b.torch_dir or want
+	d = d + (want - d) * 0.3
+	d = d / vector.magnitude(d)
+	b.torch_dir = d
+	local rot = v(math.asin(math.clamp(-d.y, -1, 1)), math.atan2(d.x, d.z), 0)
+	world.set(b.torch, { pos = hand + d * 0.06, rot = rot })
+	world.set(b.lens, { pos = hand + d * 0.165, rot = rot })
+	b.torch_at = hand + d * 0.3
+end
+
+function M.torch(b, on)
+	on = on and b.human ~= nil and not b.hidden
+	if on and not b.torch then
+		b.torch = world.spawn("cube", { pos = b.pos, size = v(0.045, 0.045, 0.2), color = M.TORCH_BODY.color, roughness = M.TORCH_BODY.roughness, metal = M.TORCH_BODY.metal, solid = false, tag = "held" })
+		b.lens = world.spawn("cube", { pos = b.pos, size = v(0.06, 0.06, 0.03), color = M.TORCH_LENS.color, emissive = M.TORCH_LENS.emissive, roughness = M.TORCH_LENS.roughness, solid = false, tag = "held" })
+		place_torch(b)
+	elseif not on and b.torch then
+		world.remove(b.torch)
+		world.remove(b.lens)
+		b.torch, b.lens, b.torch_at, b.torch_dir = nil, nil, nil, nil
+	end
+end
+
 local function human_weapon(b)
 	if b.weapon then
 		world.remove(b.weapon)
@@ -92,6 +132,7 @@ end
 -- Swap a human for a box, freeing its place in the pool.
 function M.demote(b)
 	if not b.human then return end
+	M.torch(b, false)
 	humans.remove(b.human)
 	world.remove(b.eye)
 	b.human, b.eye = nil, nil
@@ -106,6 +147,7 @@ function M.place(b, pos, yaw)
 		humans.set(b.human, { pos = pos, yaw = yaw + math.pi })
 		place_eyes(b)
 		place_weapon(b)
+		place_torch(b)
 	elseif b.pose == "down" or b.pose == "dead" then
 		figure.lie(b.fig, pos, yaw, true)
 	else
@@ -124,6 +166,7 @@ function M.animate(b, dt, speed, arms, t)
 		b.pose, b.t = pose, t or 0
 		humans.set(b.human, { pose = pose, t = b.t })
 		place_weapon(b)
+		place_torch(b)
 	else
 		if arms == "attack" or arms == "punch" or arms == "jab" then arms = "swing_r" end
 		figure.animate(b.fig, dt, speed, arms, t)
@@ -241,6 +284,7 @@ function M.hide(b, hidden)
 end
 
 function M.remove(b)
+	M.torch(b, false)
 	if b.human then
 		humans.remove(b.human)
 		world.remove(b.eye)

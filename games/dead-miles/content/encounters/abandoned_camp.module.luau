@@ -10,7 +10,7 @@ return {
 	nobody = true,
 	verb = "look",
 	choices = {
-		{ label = "Take what's left and the advice", results = { { gain = { food = 1, battery = 20 }, bands = { "quiet", "quiet" }, text = "+1 food. The next streets should be quiet" } } },
+		{ label = "Take what's left and the advice", results = { { gain = { food = 1, batteries = 1 }, bands = { "quiet", "quiet" }, text = "+1 food. The next streets should be quiet" } } },
 		{ label = "Leave it", results = { { text = "..." } } },
 	},
 }
