@@ -415,7 +415,9 @@ impl World {
 
     fn from_segments(segments: Vec<Segment>, shapes: Vec<Vec2>, tracks: usize) -> Self {
         if segments.is_empty() {
-            return World { header: Header { size: [1, 1], cell: CELL, ..Default::default() }, segments, cells: vec![0, 0], items: Vec::new(), regions: None, shapes, zones: None, tracks };
+            // The corners follow the cells and items (shape_at) until
+            // bake places regions before them.
+            return World { header: Header { size: [1, 1], cell: CELL, shape_at: 2, ..Default::default() }, segments, cells: vec![0, 0], items: Vec::new(), regions: None, shapes, zones: None, tracks };
         }
         let (mut lo, mut hi) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
         for s in &segments {
@@ -443,11 +445,31 @@ impl World {
             items.extend_from_slice(l);
         }
         cells.push(items.len() as u32);
-        let header = Header { origin: origin.into(), cell: CELL, arms: MAX_ARMS as u32, size, segments: segments.len() as u32, ..Default::default() };
+        let shape_at = (cells.len() + items.len()) as u32;
+        let header = Header { origin: origin.into(), cell: CELL, arms: MAX_ARMS as u32, size, segments: segments.len() as u32, shape_at, ..Default::default() };
         World { header, segments, cells, items, regions: None, shapes, zones: None, tracks }
     }
 
     pub fn is_empty(&self) -> bool { self.segments.is_empty() }
+
+    /// The index buffer's words: cells, items, then regions, corners and
+    /// zones where the header says they start.
+    pub fn index_words(&self) -> Vec<u32> {
+        let mut index = self.cells.clone();
+        index.extend_from_slice(&self.items);
+        if let Some(r) = &self.regions {
+            debug_assert_eq!(index.len() as u32, self.header.region_at);
+            index.extend(r.words());
+        }
+        debug_assert_eq!(index.len() as u32, self.header.shape_at);
+        for c in &self.shapes { index.extend_from_slice(&[c.x.to_bits(), c.y.to_bits()]); }
+        if let Some(z) = &self.zones {
+            debug_assert_eq!(index.len() as u32, self.header.zone_at);
+            index.extend(z.words());
+        }
+        index.push(0);
+        index
+    }
 
     /// Most items any cell lists: the worst-case cost of one sample.
     pub fn busiest_cell(&self) -> u32 { self.cells.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(0) }
@@ -687,19 +709,7 @@ impl GpuWorld {
         let make = |label: &str, bytes: &[u8]| gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some(label), contents: bytes, usage: wgpu::BufferUsages::STORAGE });
         let segments: Vec<Segment> = if world.segments.is_empty() { vec![Segment::default()] } else { world.segments.clone() };
-        let mut index = world.cells.clone();
-        index.extend_from_slice(&world.items);
-        if let Some(r) = &world.regions {
-            debug_assert_eq!(index.len() as u32, world.header.region_at);
-            index.extend(r.words());
-        }
-        debug_assert_eq!(index.len() as u32, world.header.shape_at);
-        for c in &world.shapes { index.extend_from_slice(&[c.x.to_bits(), c.y.to_bits()]); }
-        if let Some(z) = &world.zones {
-            debug_assert_eq!(index.len() as u32, world.header.zone_at);
-            index.extend(z.words());
-        }
-        index.push(0);
+        let index = world.index_words();
         GpuWorld {
             header: make("world constraints header", bytemuck::bytes_of(&world.header)),
             segments: make("world constraints segments", bytemuck::cast_slice(&segments)),
@@ -910,6 +920,10 @@ mod tests {
             assert!((world.eval(150.0 + dx, -60.0 + dz, 0.0, 4, &style).pos.y - h).abs() < 1e-3);
         }
         let none = World::empty();
+        // Its GPU words line up with the header (a dev build of
+        // terrain_fly without constraints used to trip this).
+        assert_eq!(none.index_words().len(), 3);
+        assert_eq!(world.index_words().len(), world.cells.len() + world.items.len() + 1);
         for k in 0..200 {
             let (x, z) = (k as f32 * 13.7, k as f32 * -7.9);
             assert_eq!(none.eval(x, z, 1.0, 4, &style), terrain_field::eval(x, z, 1.0, 4, &style));
@@ -966,6 +980,7 @@ mod tests {
         let p = track.points[5];
         assert!((world.eval(p.x, p.z, 0.0, 4, &a).pos.y - p.y).abs() < 1e-3);
         assert_eq!(world.header.region_at as usize, world.cells.len() + world.items.len());
+        let _ = (world.index_words(), only.index_words());
     }
 
     /// A footprint is level inside its outline, whatever its shape, meets
@@ -977,6 +992,7 @@ mod tests {
         let plot = Footprint::rect(Vec2::new(300.0, 120.0), Vec2::new(40.0, 24.0), 0.6, 8.0, Some(55.0));
         let zone = Zone::new("residential", vec![Vec2::new(-200.0, -200.0), Vec2::new(500.0, -200.0), Vec2::new(500.0, 400.0)], 50.0);
         let world = Constraints { footprints: vec![Footprint { outline: l, feather: 8.0, height: None, bare: 1.0 }, plot], zones: vec![zone], ..Default::default() }.bake(3, &style);
+        let _ = world.index_words();
         let h = world.eval(10.0, 25.0, 0.0, 3, &style).pos.y;
         for (x, z) in [(1.0, 1.0), (59.0, 19.0), (19.0, 49.0), (40.0, 10.0)] {
             let s = world.eval(x, z, 0.0, 3, &style);
