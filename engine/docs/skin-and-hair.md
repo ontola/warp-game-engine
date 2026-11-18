@@ -30,7 +30,7 @@ code (`FEATURE_SKIN_HAIR`, [shade_features.rs](../crates/render/src/shade_featur
   from beyond the fine map (the shared map 3 m up the ray, world terrain,
   clouds) still apply.
 - A scene with skin gets fine sun levels round the camera: half extents of
-  3, 12 and 48 m, then doubling (`KERN_SUN_CLOSE=0` keeps the ladder from
+  3, 12 and 24 m, then doubling to 768 m (`KERN_SUN_CLOSE=0` keeps the ladder from
   24 m). The two finest are centred ahead of the camera unless the game
   set a lighting focus.
 - Sunlight passes through thin parts such as ears, nostrils and fingers. The

@@ -118,9 +118,9 @@ fn near_level_extent(k: usize) -> f32 { NEAR_SHADOW_EXTENT * (1u32 << k) as f32 
 /// ground (base 0): people are looked at from a metre away, where the
 /// doubling ladder's first level (24 m, 2.3 cm a texel) draws the shadow of
 /// a nose in steps as wide as the nose. Two finer levels (2.9 mm and 1.2 cm
-/// a texel) take the place of the 24 m and 3072 m ones; from 48 m on the
-/// levels are the doubling ladder's.
-const CLOSE_LADDER: [f32; NEAR_LEVELS_MAX] = [3.0, 12.0, 48.0, 96.0, 192.0, 384.0, 768.0, 1536.0];
+/// a texel) come before the doubling ladder, which then ends two levels
+/// sooner (768 m of eight).
+const CLOSE_LADDER: [f32; NEAR_LEVELS_MAX] = [3.0, 12.0, 24.0, 48.0, 96.0, 192.0, 384.0, 768.0];
 /// Half extent of level `k` of a clipmap whose first level is `base`
 /// (clipmap_base); `close` selects CLOSE_LADDER near the ground.
 fn clipmap_extent(k: usize, base: usize, close: bool) -> f32 {
@@ -4823,7 +4823,7 @@ impl Renderer {
         let clipmap_frame = self.sun_clipmap && sun_needed && near_enabled
             && clipmap_slot(views.len().max(1) - 1, self.near_levels() - 1) < crate::shadow_damage::MAX_MAPS;
         // People up close need sun texels far finer than the ladder's first,
-        // with or without the clipmap (the separate maps' levels: 3, 12, 48, 96 m).
+        // with or without the clipmap (the separate maps' levels: 3, 12, 24, 48 m).
         let clipmap_close = self.shade_features.skin_hair && !crate::switches::SUN_CLOSE.off();
         let close_ahead = clipmap_close && self.lighting_focus.lock().unwrap().is_empty() && diagnostic_sun.is_empty() && !self.legacy_light_lookahead;
         // Level k of view v covers clipmap_extent(k, bases[v], clipmap_close).

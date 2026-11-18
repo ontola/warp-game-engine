@@ -10,7 +10,7 @@ Two things together. The first sun level has 2.3 cm texels (24 m half extent at 
 
 ## What changed
 
-- Scenes with skin get sun levels of 3, 12, 48 m and doubling (`KERN_SUN_CLOSE`), the fine ones centred ahead of the camera. Without the clipmap the four levels are 3, 12, 48, 96 m instead of 24, 48, 96, 192 m.
+- Scenes with skin get sun levels of 3, 12, 24 m and doubling to 768 m (`KERN_SUN_CLOSE`; it was 24 m doubling to 3072 m), the fine ones centred ahead of the camera. Without the clipmap the four levels are 3, 12, 24, 48 m instead of 24, 48, 96, 192 m.
 - `sun_through_skin` in shade.wgsl measures the skin in the sun's way over sixteen taps; skin uses it for the sun's visibility where the map's texel is under 4 mm (fading out to 10 mm). See `engine/docs/skin-and-hair.md`.
 - `SKIN_SPREAD` (diffusion lengths times four) is gone: with texels fine enough to measure a cheek it lit whole cheeks orange.
 
@@ -24,4 +24,4 @@ Two things together. The first sun level has 2.3 cm texels (24 m half extent at 
 
 ## Cost and open
 
-64 texel reads per close skin pixel for the front, 64 more where the surface faces away. Not measured on a real GPU. Between 12 and 24 m the sun map is coarser than before in scenes with skin (4.7 cm against 2.3 cm a texel without the clipmap). A little texel-sized blockiness is left in the edge at 3.5x zoom. Hair strands cast no shadow yet.
+64 texel reads per close skin pixel for the front, 64 more where the surface faces away. Not measured on a real GPU. A little texel-sized blockiness is left in the edge at 3.5x zoom. Hair strands cast no shadow yet.
