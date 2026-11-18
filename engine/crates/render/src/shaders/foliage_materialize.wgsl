@@ -4,6 +4,8 @@ struct Branch {rest:array<vec4<f32>,3>,source:Source,volume:Volume,low:vec4<f32>
 struct Root {rows:array<vec4<f32>,3>,scale:vec4<f32>,info:vec4<u32>};
 struct Node {sphere:vec4<f32>,error:vec4<f32>,links:vec4<u32>};
 struct Slot {key:vec4<u32>,history:vec4<u32>};
+// roots.w: the asset publication epoch, copied in from asset_pages[0].w
+// right before the materialize pass (foliage_runtime.rs).
 struct State {wind:vec4<f32>,counts:vec4<u32>,catalog:vec4<u32>,tables:vec4<u32>,roots:vec4<u32>};
 @group(0) @binding(0) var<uniform> state:State;
 // The selector's hierarchy (nodes from 0) and roots (from vec4 state.catalog.x)
@@ -49,7 +51,6 @@ struct PoseEntry {key:atomic<u32>,pad0:u32,pad1:u32,pad2:u32,rows:array<vec4<f32
 @group(0) @binding(13) var<storage,read_write> pose_cache:array<PoseEntry>;
 @group(0) @binding(14) var<storage,read_write> pose_work:array<atomic<u32>>;
 @group(0) @binding(16) var<uniform> pose_level:vec4<u32>;
-@group(0) @binding(17) var<storage,read> asset_pages:array<vec4<u32>>;
 fn pose_hash(key:u32)->u32 {var h=key;h=(h^(h>>16u))*0x7feb352du;h=(h^(h>>15u))*0x846ca68bu;return (h^(h>>16u))&(arrayLength(&pose_cache)-1u);}
 fn pose_key(root:u32,branch:u32)->u32 {return root*state.counts.w+branch+1u;}
 fn pose_find(key:u32)->u32 {
@@ -209,12 +210,12 @@ fn materialize(@builtin(global_invocation_id) id:vec3<u32>) {
    volume.high.w=appearance_seed(tree,root.info.z);volumes[i+consumer*state.counts.z]=volume;
    histories[consumer]=history;
    let old=history_at(publication);let live_role=select(0u,role,history!=0u && (roles&role)!=0u);
-   changed=changed || old.w!=asset_pages[0].w || old.x!=history || old.y!=root.info.y || (live_role&~old.z)!=0u;
+   changed=changed || old.w!=state.roots.w || old.x!=history || old.y!=root.info.y || (live_role&~old.z)!=0u;
   }
   if changed {epoch^=128u;}
   for(var consumer=0u;consumer<2u;consumer++) {
    let role=256u<<consumer;let live_role=select(0u,role,histories[consumer]!=0u && (roles&role)!=0u);
-   set_history(tree+consumer*state.counts.z,vec4<u32>(histories[consumer],root.info.y,epoch|live_role,asset_pages[0].w));
+   set_history(tree+consumer*state.counts.z,vec4<u32>(histories[consumer],root.info.y,epoch|live_role,state.roots.w));
   }
   let owner=original.identity.x;var source=sources[owner];source.rows=m;
   source.flags=(source.flags&~128u)|epoch;

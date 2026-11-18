@@ -468,11 +468,11 @@ impl Runtime {
             let pose_dispatch=gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some("pose dispatch preparation"),layout:Some(&dispatch_pl),module:&dispatch_module,entry_point:Some("prepare"),compilation_options:Default::default(),cache:gpu.pipeline_cache()});
             let mut levels=vec![0u32;(max_depth as usize+1)*64];for d in 0..=max_depth {levels[d as usize*64]=d;}
             let levels=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some("immutable pose depth dispatch"),contents:bytemuck::cast_slice(&levels),usage:wgpu::BufferUsages::UNIFORM});
-            let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("GPU forest materialization"),entries:&(0..18).filter(|&binding|![2,4,7,11,12,15].contains(&binding)).map(|binding|wgpu::BindGroupLayoutEntry {
+            let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("GPU forest materialization"),entries:&(0..18).filter(|&binding|![2,4,7,11,12,15,17].contains(&binding)).map(|binding|wgpu::BindGroupLayoutEntry {
                 binding,visibility:wgpu::ShaderStages::COMPUTE,count:None,ty:wgpu::BindingType::Buffer {ty:if binding==0 || binding==16 {wgpu::BufferBindingType::Uniform}else{wgpu::BufferBindingType::Storage {read_only:binding<8 || binding==11 || binding==17}},has_dynamic_offset:binding==16,min_binding_size:None},
             }).collect::<Vec<_>>()});
             let buffers=[&uniform,&selector._instances.buffer,&selector._nodes.buffer,&tables,&tables,&residency.slots,&selector.fallback.buffer,&tables,instances,volumes,&choices,&selector.demand.buffer,&choices,&pose_cache,&pose_work,&choices,&levels,&selector.asset_pages];
-            let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("GPU forest materialization"),layout:&layout,entries:&buffers.iter().enumerate().filter(|&(i,_)|![2,4,7,11,12,15].contains(&i)).map(|(i,b)|wgpu::BindGroupEntry {binding:i as u32,resource:if i==16 {wgpu::BindingResource::Buffer(wgpu::BufferBinding {buffer:b,offset:0,size:std::num::NonZeroU64::new(16)})}else{b.as_entire_binding()}}).collect::<Vec<_>>()});
+            let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("GPU forest materialization"),layout:&layout,entries:&buffers.iter().enumerate().filter(|&(i,_)|![2,4,7,11,12,15,17].contains(&i)).map(|(i,b)|wgpu::BindGroupEntry {binding:i as u32,resource:if i==16 {wgpu::BindingResource::Buffer(wgpu::BufferBinding {buffer:b,offset:0,size:std::num::NonZeroU64::new(16)})}else{b.as_entire_binding()}}).collect::<Vec<_>>()});
             let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("GPU forest materialization"),bind_group_layouts:&[Some(&layout)],immediate_size:0});
             let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("GPU forest materialization"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_materialize.wgsl").into())});
             let pipeline=gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some("GPU forest materialization"),layout:Some(&pl),module:&module,entry_point:Some("materialize"),compilation_options:Default::default(),cache:gpu.pipeline_cache()});
@@ -664,6 +664,9 @@ impl Runtime {
         for depth in 1..=self.pose_depth {pass.set_bind_group(0,&self.bind,&[depth*256]);pass.dispatch_workgroups_indirect(&self.pose_args,depth as u64*12);}
         drop(pass);
         if let Some((q,i))=time {enc.write_timestamp(q,i+3);enc.write_timestamp(q,i+4);}
+        // The publication epoch (asset_pages[0].w) into State.roots.w, ordered
+        // with the page publication like the storage read it replaces.
+        enc.copy_buffer_to_buffer(&self.selector.asset_pages,12,&self.uniform,76,4);
         let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,&self.bind,&[0]);pass.set_pipeline(&self.pipeline);
         pass.dispatch_workgroups((self.slots+self.trees).div_ceil(64),1,1);drop(pass);
         if let Some((q,i))=time {enc.write_timestamp(q,i+5);}
