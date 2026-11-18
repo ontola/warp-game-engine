@@ -306,7 +306,7 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
 }
 
 pub struct Runtime {
-    selector:Selector,residency:Residency,uniform:wgpu::Buffer,bind:wgpu::BindGroup,
+    selector:Selector,residency:Residency,uniform:wgpu::Buffer,bind:wgpu::BindGroup,pose_bind:wgpu::BindGroup,
     pose_dispatch:wgpu::ComputePipeline,pose_dispatch_bind:wgpu::BindGroup,pose_args:wgpu::Buffer,
     pipeline:wgpu::ComputePipeline,pose_pipelines:[wgpu::ComputePipeline;3],pose_cache:wgpu::Buffer,pose_work:wgpu::Buffer,pose_depth:u32,branch_count:u32,empty_depth:wgpu::TextureView,
     pub choices:wgpu::Buffer,slots:u32,trees:u32,error:f32,raster_budget:u32,source_cluster_budget:u32,
@@ -405,7 +405,7 @@ impl Runtime {
         Self::with_pose_capacity(gpu,spec,instances,volumes,None)
     }
     fn with_pose_capacity(gpu:&Gpu,spec:&Spec,instances:&wgpu::Buffer,volumes:&wgpu::Buffer,capacity_override:Option<u32>)->Result<Self,String> {
-        if gpu.device.limits().max_storage_buffers_per_shader_stage<16 {return Err("GPU forest materialization requires 16 storage bindings".into());}
+        if gpu.device.limits().max_storage_buffers_per_shader_stage<crate::foliage_select::STORAGE_BUFFERS {return Err(format!("GPU forest requires {} storage buffers per stage",crate::foliage_select::STORAGE_BUFFERS));}
         let limits=gpu.device.limits();
         let raster_budget=crate::voxel_forest::bounded_splat_capacity(u64::from(spec.raster_budget),volumes.size()/96,
             u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size))as u32;
@@ -468,21 +468,27 @@ impl Runtime {
             let pose_dispatch=gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some("pose dispatch preparation"),layout:Some(&dispatch_pl),module:&dispatch_module,entry_point:Some("prepare"),compilation_options:Default::default(),cache:gpu.pipeline_cache()});
             let mut levels=vec![0u32;(max_depth as usize+1)*64];for d in 0..=max_depth {levels[d as usize*64]=d;}
             let levels=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some("immutable pose depth dispatch"),contents:bytemuck::cast_slice(&levels),usage:wgpu::BufferUsages::UNIFORM});
-            let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("GPU forest materialization"),entries:&(0..18).filter(|&binding|![2,4,7,11,12,15,17].contains(&binding)).map(|binding|wgpu::BindGroupLayoutEntry {
-                binding,visibility:wgpu::ShaderStages::COMPUTE,count:None,ty:wgpu::BindingType::Buffer {ty:if binding==0 || binding==16 {wgpu::BufferBindingType::Uniform}else{wgpu::BufferBindingType::Storage {read_only:binding<8 || binding==11 || binding==17}},has_dynamic_offset:binding==16,min_binding_size:None},
-            }).collect::<Vec<_>>()});
+            // Materialize and the shared pose passes each get a layout with
+            // only the storage buffers they read: 8 and 6 (engine/docs/browser.md).
             let buffers=[&uniform,&selector._instances.buffer,&selector._nodes.buffer,&tables,&tables,&residency.slots,&selector.fallback.buffer,&tables,instances,volumes,&choices,&selector.demand.buffer,&choices,&pose_cache,&pose_work,&choices,&levels,&selector.asset_pages];
-            let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("GPU forest materialization"),layout:&layout,entries:&buffers.iter().enumerate().filter(|&(i,_)|![2,4,7,11,12,15,17].contains(&i)).map(|(i,b)|wgpu::BindGroupEntry {binding:i as u32,resource:if i==16 {wgpu::BindingResource::Buffer(wgpu::BufferBinding {buffer:b,offset:0,size:std::num::NonZeroU64::new(16)})}else{b.as_entire_binding()}}).collect::<Vec<_>>()});
-            let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("GPU forest materialization"),bind_group_layouts:&[Some(&layout)],immediate_size:0});
+            let group=|label,bindings:&[u32]|{
+                let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some(label),entries:&bindings.iter().map(|&binding|wgpu::BindGroupLayoutEntry {
+                    binding,visibility:wgpu::ShaderStages::COMPUTE,count:None,ty:wgpu::BindingType::Buffer {ty:if binding==0 || binding==16 {wgpu::BufferBindingType::Uniform}else{wgpu::BufferBindingType::Storage {read_only:binding<8}},has_dynamic_offset:binding==16,min_binding_size:None},
+                }).collect::<Vec<_>>()});
+                let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some(label),layout:&layout,entries:&bindings.iter().map(|&i|wgpu::BindGroupEntry {binding:i,resource:if i==16 {wgpu::BindingResource::Buffer(wgpu::BufferBinding {buffer:buffers[i as usize],offset:0,size:std::num::NonZeroU64::new(16)})}else{buffers[i as usize].as_entire_binding()}}).collect::<Vec<_>>()});
+                let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some(label),bind_group_layouts:&[Some(&layout)],immediate_size:0});
+                (bind,pl)};
+            let (bind,pl)=group("layout forest materialize",&[0,1,3,5,6,8,9,10,13,16]);
+            let (pose_bind,pose_pl)=group("layout forest poses",&[0,1,3,5,10,13,14,16]);
             let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("GPU forest materialization"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_materialize.wgsl").into())});
             let pipeline=gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some("GPU forest materialization"),layout:Some(&pl),module:&module,entry_point:Some("materialize"),compilation_options:Default::default(),cache:gpu.pipeline_cache()});
-            let pose_pipelines=["prepare_root_poses","request_poses","evaluate_poses"].map(|entry|gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some(entry),layout:Some(&pl),module:&module,entry_point:Some(entry),compilation_options:Default::default(),cache:gpu.pipeline_cache()}));
+            let pose_pipelines=["prepare_root_poses","request_poses","evaluate_poses"].map(|entry|gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some(entry),layout:Some(&pose_pl),module:&module,entry_point:Some(entry),compilation_options:Default::default(),cache:gpu.pipeline_cache()}));
             let empty_depth=gpu.device.create_texture(&wgpu::TextureDescriptor {label:Some("GPU forest conservative depth"),size:wgpu::Extent3d {width:1,height:1,depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::R32Float,usage:wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&[]}).create_view(&Default::default());
             let publish_layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("forest population publish"),entries:&(0..4).map(|binding|wgpu::BindGroupLayoutEntry {binding,visibility:wgpu::ShaderStages::COMPUTE,count:None,ty:wgpu::BindingType::Buffer {ty:wgpu::BufferBindingType::Storage {read_only:binding==0},has_dynamic_offset:false,min_binding_size:None}}).collect::<Vec<_>>()});
             let publish_pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("forest population publish"),bind_group_layouts:&[Some(&publish_layout)],immediate_size:0});
             let publish_module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("forest population publish"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_publish.wgsl").into())});
             let publish_pipeline=gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some("forest population publish"),layout:Some(&publish_pl),module:&publish_module,entry_point:Some("publish"),compilation_options:Default::default(),cache:gpu.pipeline_cache()});
-            Self {pose_dispatch,pose_dispatch_bind,pose_args,pose_pipelines,pose_cache,pose_work,pose_depth:max_depth,branch_count:spec.branches.len()as u32,publish_pipeline,publish_layout,source_buffer:instances.clone(),population:std::sync::Mutex::new(std::sync::Arc::new(spec.population.clone())),templates:std::sync::Arc::new(spec.templates.clone()),proxy_owners:std::sync::Arc::new(spec.proxies.iter().map(|v|v.meta[0]).collect()),proxy_buffer:proxies,selector,residency,uniform,bind,pipeline,empty_depth,choices,slots:spec.slots,trees:spec.roots.len()as u32,error:spec.error,raster_budget,source_cluster_budget:spec.source_cluster_budget,wind:Default::default()}
+            Self {pose_dispatch,pose_dispatch_bind,pose_args,pose_pipelines,pose_cache,pose_work,pose_depth:max_depth,branch_count:spec.branches.len()as u32,publish_pipeline,publish_layout,source_buffer:instances.clone(),population:std::sync::Mutex::new(std::sync::Arc::new(spec.population.clone())),templates:std::sync::Arc::new(spec.templates.clone()),proxy_owners:std::sync::Arc::new(spec.proxies.iter().map(|v|v.meta[0]).collect()),proxy_buffer:proxies,selector,residency,uniform,bind,pose_bind,pipeline,empty_depth,choices,slots:spec.slots,trees:spec.roots.len()as u32,error:spec.error,raster_budget,source_cluster_budget:spec.source_cluster_budget,wind:Default::default()}
         })
     }
     pub fn set_wind(&self,state:&crate::wind::WindState)->Result<(),String>{*self.wind.lock().unwrap()=state.validated()?;Ok(())}
@@ -652,7 +658,7 @@ impl Runtime {
         // State.catalog.x: first vec4 of the roots in the selector's catalog buffer.
         gpu.queue.write_buffer(&self.uniform,32,bytemuck::cast_slice(&[(self.selector._instances.offset/16)as u32,0,0,0]));
         enc.clear_buffer(&self.pose_cache,0,None);enc.clear_buffer(&self.pose_work,0,Some(512));
-        let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,&self.bind,&[0]);
+        let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,&self.pose_bind,&[0]);
         pass.set_pipeline(&self.pose_pipelines[0]);pass.dispatch_workgroups(self.trees.div_ceil(64),1,1);
         pass.set_pipeline(&self.pose_pipelines[1]);pass.dispatch_workgroups(self.slots.div_ceil(64),1,1);
         drop(pass);
@@ -661,7 +667,7 @@ impl Runtime {
         drop(pass);
         let mut pass=enc.begin_compute_pass(&Default::default());
         pass.set_pipeline(&self.pose_pipelines[2]);
-        for depth in 1..=self.pose_depth {pass.set_bind_group(0,&self.bind,&[depth*256]);pass.dispatch_workgroups_indirect(&self.pose_args,depth as u64*12);}
+        for depth in 1..=self.pose_depth {pass.set_bind_group(0,&self.pose_bind,&[depth*256]);pass.dispatch_workgroups_indirect(&self.pose_args,depth as u64*12);}
         drop(pass);
         if let Some((q,i))=time {enc.write_timestamp(q,i+3);enc.write_timestamp(q,i+4);}
         // The publication epoch (asset_pages[0].w) into State.roots.w, ordered
@@ -1272,16 +1278,16 @@ impl Runtime {
         }
     }
     #[test]
-    #[ignore="exclusive GPU: forest pipeline layouts under a Mac storage-buffer limit"]
-    fn forest_layouts_under_mac_storage_limit() {
+    #[ignore="exclusive GPU: forest pipeline layouts under WebGPU's storage-buffer limit"]
+    fn forest_layouts_under_webgpu_storage_limit() {
         // Every pipeline layout counts every storage buffer its bind group
         // layouts declare, per stage, whatever an entry point reads. Build a
-        // forest scene on a device with the 10 storage buffers most Macs
-        // give and list what fails. Each layout split removes a name below;
-        // the list ends empty when the forest runs on Macs.
+        // forest scene on a device with WebGPU's default 8 storage buffers
+        // (Macs give 10) and list what fails. Each layout split removes a name
+        // below; the list ends empty when the forest runs in every browser.
         use super::*;
         use crate::vegetation_asset::CookedPlant;
-        crate::gpu::TEST_STORAGE_BUFFERS.with(|c| c.set(Some(10)));
+        crate::gpu::TEST_STORAGE_BUFFERS.with(|c| c.set(Some(8)));
         let gpu=Gpu::new().unwrap();
         crate::gpu::TEST_STORAGE_BUFFERS.with(|c| c.set(None));
         let errors=std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
@@ -1305,11 +1311,8 @@ impl Runtime {
             let text=panic.downcast_ref::<String>().cloned().or_else(||panic.downcast_ref::<&str>().map(|s|s.to_string())).unwrap_or_default();
             failures.push(format!("panic {}",text.split(": ").last().unwrap_or("").trim_matches('"')));
         }
-        // Known failures, removed one pipeline family at a time. The runtime
-        // still refuses below 16 storage buffers, so layouts built after it
-        // (refine, select, residency, materialize) are not reached yet.
-        let known:Vec<&str>=vec!["layout cached voxel sun splats","layout voxel forest","layout voxel sun splats",
-            "panic GPU forest materialization requires 16 storage bindings"];
+        // Known failures, removed one pipeline family at a time.
+        let known:Vec<&str>=vec!["layout cached voxel sun splats","layout voxel forest","layout voxel sun splats"];
         println!("{failures:#?}");
         assert_eq!(failures,known,"forest pipeline layouts over the Mac limit changed");
     }

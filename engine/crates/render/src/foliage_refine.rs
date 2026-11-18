@@ -6,7 +6,10 @@ use crate::{Gpu,foliage_select::Selector};
 /// one buffer: counters at 0, state from STATE_OFFSET (256-byte aligned).
 pub(crate) const STATE_OFFSET:u64=256;
 pub(crate) struct Refiner {
-    capacity:u32,proposals:wgpu::Buffer,parked:wgpu::Buffer,
+    capacity:u32,
+    /// Bound through `budget_bind`; tests write it directly.
+    #[cfg_attr(not(test),allow(dead_code))] proposals:wgpu::Buffer,
+    parked:wgpu::Buffer,
     /// Both work queues in one binding (two halves of `capacity` tasks) and,
     /// after them, the prefix blocks; `halves[front]` tells the shader which half
     /// is this round's (x), the next round's (y) and where the blocks start (w).
@@ -15,13 +18,15 @@ pub(crate) struct Refiner {
     /// Group 1, proposals and parked: only the budgeted admission reads them, so
     /// the error cut's pipelines stay within 8 storage buffers.
     budget_layout:wgpu::BindGroupLayout,budget_bind:wgpu::BindGroup,
-    pipelines:Vec<wgpu::ComputePipeline>,budget:Vec<bool>,
+    /// Budget pipelines are None on devices below BUDGET_STORAGE_BUFFERS,
+    /// which then always use the error cut.
+    pipelines:Vec<Option<wgpu::ComputePipeline>>,budget:Vec<bool>,
     binds:std::sync::Mutex<crate::frame::resource_cache::BindGroups<2>>,
     /// Last frame's working-round count (state[68]), kept for async readback.
     worked:wgpu::Buffer,rounds:std::sync::Mutex<Rounds>,
     /// Error-driven cut (default) instead of budgeted collective admission.
     /// `KERN_FOLIAGE_CUT=budget` selects the old admission for A/B.
-    fast:std::sync::atomic::AtomicBool,
+    fast:std::sync::atomic::AtomicBool,budgeted:bool,
 }
 /// How many refinement rounds to encode. Every round costs a fixed set of
 /// dispatches and barriers even when its work list is empty, and the hierarchy
@@ -81,11 +86,12 @@ impl Refiner {
             gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some(label),entries:&entries})};
         let layout=layout_of("foliage complete-cut refinement",&Self::BINDINGS);let budget_layout=layout_of("foliage budgeted admission",&[4,14]);
         let fast_pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("layout refine"),bind_group_layouts:&[Some(&layout)],immediate_size:0});
-        let budget_pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("layout refine budget"),bind_group_layouts:&[Some(&layout),Some(&budget_layout)],immediate_size:0});
+        let budgeted=gpu.device.limits().max_storage_buffers_per_shader_stage>=Self::BUDGET_STORAGE_BUFFERS;
+        let budget_pl=budgeted.then(||gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("layout refine budget"),bind_group_layouts:&[Some(&layout),Some(&budget_layout)],immediate_size:0}));
         let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("foliage incremental admission"),source:wgpu::ShaderSource::Wgsl(refine_source().into())});
         let budget:Vec<bool>=Self::ENTRIES.iter().map(|entry|Self::BUDGET.contains(entry)).collect();
-        let pipelines=Self::ENTRIES.iter().zip(&budget).map(|(&entry,&budget)|
-            gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some(entry),layout:Some(if budget {&budget_pl} else {&fast_pl}),module:&module,entry_point:Some(entry),compilation_options:Default::default(),cache:gpu.pipeline_cache()})).collect();
+        let pipelines=Self::ENTRIES.iter().zip(&budget).map(|(&entry,&budget)|(if budget {budget_pl.as_ref()} else {Some(&fast_pl)}).map(|pl|
+            gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some(entry),layout:Some(pl),module:&module,entry_point:Some(entry),compilation_options:Default::default(),cache:gpu.pipeline_cache()}))).collect();
         let (proposals,parked)=(storage("foliage active proposals",capacity as u64*96),storage("foliage dormant proposals",capacity as u64*112));
         let budget_bind=Self::budget_bind(gpu,&budget_layout,&proposals,&parked);
         // Two task halves, then 32 totals and 32 buckets per 256-task block (vec4s).
@@ -95,13 +101,13 @@ impl Refiner {
             halves:[[0u32,capacity,capacity,blocks,selected[0],selected[1],selected[2],selected[3]],[capacity,0,capacity,blocks,selected[0],selected[1],selected[2],selected[3]]].map(|h|{use wgpu::util::DeviceExt;gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some("foliage queue halves"),contents:bytemuck::cast_slice(&h),usage:wgpu::BufferUsages::UNIFORM})}),
             state:storage("foliage selection counters and refinement allocation",STATE_OFFSET+384),
             args:gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("foliage refinement indirect"),size:36,usage:wgpu::BufferUsages::INDIRECT|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false}),
-            pipelines,layout,binds:Default::default(),fast:std::sync::atomic::AtomicBool::new(Self::default_fast()),
+            pipelines,layout,binds:Default::default(),fast:std::sync::atomic::AtomicBool::new(Self::default_fast() || !budgeted),budgeted,
             worked:gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("foliage refinement rounds used"),size:4,usage:wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false}),
             rounds:std::sync::Mutex::new(Rounds {cameras:Vec::new(),stale:0,full:false,used:None,hint:None,encoded:0,frame:0,newest:0,slots:(0..2).map(|_|RoundSlot {buffer:gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("foliage refinement rounds readback"),size:4,usage:wgpu::BufferUsages::MAP_READ|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false}),encoded:0,frame:0,pending:None}).collect()})}
     }
     /// Tests keep the budgeted admission unless they ask for the error cut.
     fn default_fast()->bool {!cfg!(test) && !crate::switches::FOLIAGE_CUT.is("budget")}
-    pub(crate) fn set_error_cut(&self,on:bool) {self.fast.store(on,std::sync::atomic::Ordering::Relaxed);}
+    pub(crate) fn set_error_cut(&self,on:bool) {self.fast.store(on || !self.budgeted,std::sync::atomic::Ordering::Relaxed);}
     pub(crate) fn error_cut(&self)->bool {self.fast.load(std::sync::atomic::Ordering::Relaxed)}
     /// Reads finished round counts without waiting, starts a readback of the
     /// last encoded frame, and returns how many rounds to encode now.
@@ -158,6 +164,8 @@ impl Refiner {
     const BINDINGS:[u32;10]=[0,1,3,5,6,8,9,10,12,16];
     /// Pipeline order: encode() names pipelines by index.
     const ENTRIES:[&str;24]=["seed","start","prepare","propose","priority_scan","priority_totals","decide","output_scan","output_totals","apply","advance","drain","audit","wake_count","wake_prefix","wake_scatter","seed_scatter","fast_begin","fast_round","fast_advance","fast_adapt","fast_mode","fast_round_late","fast_drain"];
+    /// Storage buffers the budgeted admission's layout binds (group 0 and 1).
+    const BUDGET_STORAGE_BUFFERS:u32=10;
     /// Entry points that read proposals or parked (group 1).
     const BUDGET:[&str;9]=["propose","priority_scan","decide","output_scan","output_totals","apply","drain","wake_count","wake_scatter"];
     fn budget_bind(gpu:&Gpu,layout:&wgpu::BindGroupLayout,proposals:&wgpu::Buffer,parked:&wgpu::Buffer)->wgpu::BindGroup {
@@ -174,7 +182,7 @@ impl Refiner {
     }
     fn set(&self,pass:&mut wgpu::ComputePass,bind:&Binds,pipeline:usize) {
         pass.set_bind_group(0,&bind.shared,&[]);if self.budget[pipeline] {pass.set_bind_group(1,&bind.budget,&[]);}
-        pass.set_pipeline(&self.pipelines[pipeline]);
+        pass.set_pipeline(self.pipelines[pipeline].as_ref().expect("budgeted admission needs 10 storage buffers per stage"));
     }
     fn dispatch(&self,enc:&mut wgpu::CommandEncoder,bind:&Binds,pipeline:usize,groups:Option<u32>,offset:u64) {
         let mut pass=enc.begin_compute_pass(&Default::default());self.set(&mut pass,bind,pipeline);
