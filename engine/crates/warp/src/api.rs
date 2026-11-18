@@ -64,11 +64,22 @@ pub struct Player {
     pub cam_prev: Cam,
     /// The split-screen view this player looks through (people only).
     pub view: Option<usize>,
+    /// The GameNight face (`hud.face`): its sources and the composed art.
+    pub face_src: (String, String),
+    pub face: Option<std::sync::Arc<crate::face::Face>>,
 }
 
 impl Player {
     pub fn new(id: u32, name: String, color: Option<[f32; 3]>, bot: bool) -> Self {
-        Player { id, name, color: color.unwrap_or(PLAYER_COLORS[(id as usize - 1) % 4]), bot, seat: None, couch: None, cam: Cam::default(), cam_prev: Cam::default(), view: None }
+        Player { id, name, color: color.unwrap_or(PLAYER_COLORS[(id as usize - 1) % 4]), bot, seat: None, couch: None, cam: Cam::default(), cam_prev: Cam::default(), view: None, face_src: (String::new(), String::new()), face: None }
+    }
+
+    /// Recompose the face when the profile's skin or art changed.
+    pub fn set_face(&mut self, skin: &str, art: &str) {
+        let src = (skin.to_string(), art.to_string());
+        if self.face.is_some() && self.face_src == src { return; }
+        self.face = Some(std::sync::Arc::new(crate::face::compose(art, skin, self.color)));
+        self.face_src = src;
     }
 }
 
@@ -794,6 +805,22 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             let col = match col { Some(v) => color(&v, "hud.box colour")?, None => [0.0, 0.0, 0.0, 0.5] };
             lock(&core).hud.push(HudItem::Box { rect: [x, y, w, h], color: col });
             Ok(())
+        })),
+        ("face", f!(core, move |_, (id, x, y, size): (u32, f32, f32, f32)| {
+            let mut c = lock(&core);
+            let Some(p) = c.roster.iter_mut().find(|p| p.id == id) else { return Ok(false) };
+            if p.bot { return Ok(false); }
+            if p.face.is_none() { p.set_face("", ""); }
+            let face = p.face.clone().expect("face");
+            let [bx, by, bs, _] = face.bounds();
+            let k = size / bs.max(1) as f32;
+            for (r, col) in face.runs() {
+                if r[0] + r[2] <= bx as f32 || r[0] >= (bx + bs) as f32 || r[1] < by as f32 || r[1] >= (by + bs) as f32 { continue; }
+                let x0 = r[0].max(bx as f32);
+                let x1 = (r[0] + r[2]).min((bx + bs) as f32);
+                c.hud.push(HudItem::Box { rect: [x + (x0 - bx as f32) * k, y + (r[1] - by as f32) * k, (x1 - x0) * k + 0.5, k + 0.5], color: col });
+            }
+            Ok(true)
         })),
         ("size", f!(core, move |_, ()| { let s = lock(&core).screen; Ok((s[0], s[1])) })),
         ("measure", f!(core, move |_, (text, size): (Value, Option<f32>)| {

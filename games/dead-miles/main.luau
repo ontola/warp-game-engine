@@ -514,7 +514,7 @@ local function switch_hand(u)
 	if h == u.hand then return end
 	u.hand = h
 	load_hand(u)
-	popup(u, if h == 0 then "bare hands" else u.slots[h].kind, "#c8c0b4")
+	u.hand_t = 1.8 -- the row of what is carried shows under them
 	sfx("click", u.pos, { pitch = 0.8 })
 end
 
@@ -1429,6 +1429,17 @@ local function bot_intent(u)
 	end
 	if u.state == "down" then return it end
 	it.torch = dark() ~= u.torch and s.battery > 0
+	-- A sidekick's torch does what its person's does.
+	do
+		local h, hd = nil, math.huge
+		for _, o in humans do
+			if o ~= u and o.pos then
+				local d = dist(o.pos, u.pos)
+				if d < hd then h, hd = o, d end
+			end
+		end
+		if h then it.torch = (h.torch and s.battery > 0) ~= u.torch end
+	end
 
 	-- A sidekick: stays close to its person, a step behind, lets them lead
 	-- and plays it safe: it fights what comes at the two of them, not what
@@ -1480,11 +1491,24 @@ local function bot_intent(u)
 	if u.injured and s.meds > 0 then it.med = true end
 
 	-- Fight what is close or in the way; walk away from the rest.
-	local z, d = nearest_zombie(u.pos, if lead then 2.4 else 7, true)
-	-- One on its person: go and help.
+	-- With a person it only fights what is on top of one of them; the
+	-- rest it keeps away from, behind its person.
+	local z, d = nearest_zombie(u.pos, if lead then 1.7 else 7, true)
 	if lead and not z then
-		local lz, ld = nearest_zombie(lead.pos, 2.2, true)
-		if lz and dist(lz.pos, u.pos) < 5 then z, d = lz, dist(lz.pos, u.pos) end
+		local lz, ld = nearest_zombie(lead.pos, 1.5, true)
+		if lz and (lz.state == "hold" or ld < 1.2) and dist(lz.pos, u.pos) < 4 then z, d = lz, dist(lz.pos, u.pos) end
+	end
+	if lead and not z then
+		local nz, nd = nearest_zombie(u.pos, 4.5, true)
+		if nz then
+			local away = lead.pos - nz.pos
+			local m = math.max(0.1, vector.magnitude(away))
+			local spot = lead.pos + away / m * 1.3
+			it.mx, it.mz = steer(u, spot)
+			local to = nz.pos - u.pos
+			it.ax, it.az = to.x, to.z
+			return it
+		end
 	end
 	-- Not through a wall: one in the next room is no fight yet.
 	if z and d > 0.6 then
@@ -2080,6 +2104,10 @@ local function act(u, it, dt)
 	if u.tip then
 		u.tip.t -= dt
 		if u.tip.t <= 0 then u.tip = nil end
+	end
+	if u.hand_t then
+		u.hand_t -= dt
+		if u.hand_t <= 0 then u.hand_t = nil end
 	end
 	if u.popup then
 		u.popup.t -= dt
@@ -4060,6 +4088,11 @@ local function torches()
 				table.insert(spots, { pos = at, dir = d, color = warm, intensity = KNOBS.torch * p, range = 18 * (0.6 + 0.4 * p), angle = 28, inner = 12 })
 				table.insert(list, { pos = v(u.pos.x + f.x * 0.6, 1.6, u.pos.z + f.z * 0.6), color = warm, intensity = KNOBS.torch * 0.012 * p, range = 3 })
 			end
+			-- No torch: only a faint cold glow round them, enough to see
+			-- your own feet and not much more.
+			if dark() and not (u.torch and s.battery > 0) then
+				table.insert(list, { pos = v(u.pos.x, 2.2, u.pos.z), color = "#9fb4d8", intensity = 9, range = 3.2 })
+			end
 			if u.flash then table.insert(list, { pos = v(u.pos.x, 1.4, u.pos.z), color = "#ffd27a", intensity = 900, range = 14 }) end
 		end
 	end
@@ -4123,15 +4156,18 @@ local function proj(pos, u)
 end
 
 -- A profile card: who someone is now and what their body is good for.
-local CARD_W, CARD_H = 360, 138
+local CARD_W, CARD_H = 400, 138
 local function profile_card(u, cx, cy, a, k)
 	local c = { u.color.x, u.color.y, u.color.z }
 	local cw, ch = CARD_W * k, CARD_H * k
 	hud.box(cx, cy, cw, ch, { 0.05, 0.05, 0.06, 0.85 * a })
 	hud.box(cx, cy, 4 * k, ch, { c[1], c[2], c[3], a })
-	hud.text(u.person.name, cx + 16 * k, cy + 8 * k, { size = 22 * k, width = cw - 24 * k, color = { 0.96, 0.94, 0.9, a } })
-	hud.text(u.person.before, cx + 16 * k, cy + 36 * k, { size = 14 * k, width = cw - 28 * k, color = { 0.78, 0.75, 0.7, a } })
-	hud.text(u.person.now, cx + 16 * k, cy + 56 * k, { size = 14 * k, width = cw - 28 * k, color = { 0.62, 0.6, 0.56, a } })
+	-- Who plays them: their GameNight face, the character's name beside it.
+	local tx = cx + 16 * k
+	if not u.bot and u.id and hud.face(u.id, cx + 14 * k, cy + 10 * k, 54 * k) then tx = cx + 80 * k end
+	hud.text(u.person.name, tx, cy + 8 * k, { size = 22 * k, width = cw - (tx - cx) - 8 * k, color = { 0.96, 0.94, 0.9, a } })
+	hud.text(u.person.before, tx, cy + 36 * k, { size = 14 * k, width = cw - (tx - cx) - 12 * k, color = { 0.78, 0.75, 0.7, a } })
+	hud.text(u.person.now, tx, cy + 56 * k, { size = 14 * k, width = cw - (tx - cx) - 12 * k, color = { 0.62, 0.6, 0.56, a } })
 	local stats = {
 		{ "legs", ((u.speed or 1) - 0.82) / 0.36 },
 		{ "arms", ((u.strength or 1) - 0.7) / 0.6 },
@@ -4255,8 +4291,7 @@ local function draw()
 			if px then
 				local c = { u.color.x, u.color.y, u.color.z, 1 }
 				if u.state == "ok" then
-					-- A colour tag under the feet, a red cross when injured.
-					hud.box(px - 14 * k, py + 10 * k, 28 * k, 4 * k, c)
+					-- (No colour tag under the feet: the start menu shows who is who.)
 					-- Behind a building: an outline where they stand.
 					if u.behind then
 						local hx, hy = proj(v(u.pos.x, 1.8, u.pos.z), u)
@@ -4288,6 +4323,21 @@ local function draw()
 					local gx, gy = proj(v(u.pos.x, 1.4, u.pos.z), u)
 					if gx and not u.bot then
 						hud.text("waiting for someone to join", gx - 110 * k, gy + 22 * k, { size = 15 * k, align = "center", width = 220 * k, color = { 0.8, 0.85, 0.95, 0.8 } })
+					end
+				end
+				-- Just switched: what is carried, small, under them; the one
+				-- in hand lit and framed.
+				if u.hand_t and u.state == "ok" then
+					local a = math.min(1, u.hand_t * 3)
+					local sz, gap = 20 * k, 6 * k
+					local x0 = px - (3 * sz + 2 * gap) / 2
+					for i, slot in { u.slots[1] or false, u.slots[2] or false, "fists" } do
+						local kind = if slot == "fists" then "fists" elseif slot then slot.kind else nil
+						local bx = x0 + (i - 1) * (sz + gap)
+						local on = (i == 3 and u.hand == 0) or i == u.hand
+						hud.box(bx - 3 * k, py + 30 * k - 3 * k, sz + 6 * k, sz + 6 * k, if on then { 0.95, 0.92, 0.85, 0.9 * a } else { 0, 0, 0, 0.55 * a })
+						hud.box(bx - 1.5 * k, py + 30 * k - 1.5 * k, sz + 3 * k, sz + 3 * k, { 0.05, 0.05, 0.06, 0.85 * a })
+						if kind then icons.draw(kind, bx, py + 30 * k, sz, if on then a else 0.45 * a) end
 					end
 				end
 				if u.popup then

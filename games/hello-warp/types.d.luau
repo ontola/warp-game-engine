@@ -189,6 +189,10 @@ declare hud: {
 	text: (text: any, x: number, y: number, opts: { size: number?, color: Color?, align: ("left" | "center" | "right")?, width: number? }?) -> (),
 	-- A filled rectangle (default colour black at half alpha).
 	box: (x: number, y: number, w: number, h: number, color: Color?) -> (),
+	-- A person's GameNight face (their profile art on a head in their skin
+	-- colour; a plain face outside GameNight), size pixels square at x, y
+	-- (top left). false for a bot or an unknown id.
+	face: (player: number, x: number, y: number, size: number) -> boolean,
 	-- The output size in pixels.
 	size: () -> (number, number),
 	-- One line of text in the HUD font: its width and height in pixels.

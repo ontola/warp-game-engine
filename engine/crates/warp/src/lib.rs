@@ -9,6 +9,7 @@
 //! live control over MCP through the `live` crate.
 pub mod api;
 pub mod config;
+pub mod face;
 pub mod game;
 pub mod humans;
 mod editor_menus;
