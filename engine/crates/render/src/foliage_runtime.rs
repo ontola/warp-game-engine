@@ -309,9 +309,66 @@ pub struct Runtime {
     selector:Selector,residency:Residency,uniform:wgpu::Buffer,bind:wgpu::BindGroup,pose_bind:wgpu::BindGroup,
     pose_dispatch:wgpu::ComputePipeline,pose_dispatch_bind:wgpu::BindGroup,pose_args:wgpu::Buffer,
     pipeline:wgpu::ComputePipeline,pose_pipelines:[wgpu::ComputePipeline;3],pose_cache:wgpu::Buffer,pose_work:wgpu::Buffer,pose_depth:u32,branch_count:u32,empty_depth:wgpu::TextureView,
-    pub choices:wgpu::Buffer,slots:u32,trees:u32,error:f32,raster_budget:u32,source_cluster_budget:u32,
+    pub choices:wgpu::Buffer,history_at:u64,rep_kinds:Vec<RepKind>,slots:u32,trees:u32,error:f32,raster_budget:u32,source_cluster_budget:u32,
     wind:std::sync::Mutex<crate::wind::WindState>,
     population:std::sync::Mutex<std::sync::Arc<crate::foliage_population::Population>>,templates:std::sync::Arc<Vec<RootTemplate>>,publish_pipeline:wgpu::ComputePipeline,publish_layout:wgpu::BindGroupLayout,source_buffer:wgpu::Buffer,proxy_buffer:crate::foliage_select::Region,proxy_owners:std::sync::Arc<Vec<u32>>,
+}
+/// What one consumer draws for one tree: the root history (0 a branch cut,
+/// u32::MAX the emergency proxy, otherwise a direct whole-root representation
+/// + 1; 0 also when the consumer does not draw the root) and the cut's
+/// (node, representation) slots, sorted.
+#[derive(Clone,Default,PartialEq,Debug)]
+pub struct TreeCut {pub root:u32,pub parts:Vec<[u32;2]>}
+#[derive(Clone,Copy,PartialEq,Debug)]
+pub enum RepKind {Source,BranchVoxel(u32),RootVoxel(u32),RootSource}
+/// How a tree's drawn representation changed between two frames.
+#[derive(Clone,Copy,PartialEq,Eq,Hash,PartialOrd,Ord,Debug,serde::Serialize)]
+pub enum CutChange {
+    /// The tree starts or stops being drawn by this consumer.
+    Appear,Disappear,
+    /// To or from the emergency whole-root proxy (fallback: pages or deadline).
+    Fallback,
+    /// Whole-root direct representation to a branch cut or back.
+    WholeToCut,CutToWhole,
+    /// The whole-root voxel's mip.
+    WholeMip,
+    /// Same nodes; a voxel mip changed.
+    VoxelMip,
+    /// Same nodes; voxels to source needles or back.
+    VoxelSource,
+    /// The cut's node set changed (refined or coarsened branches).
+    Refine,
+}
+pub struct CutSnapshot {
+    /// Error-cut scales: camera (state[79]), shadow (state[78]), camera source (state[85]).
+    pub scale:[f32;3],
+    /// The refine allocation state words (foliage_refine.wgsl STATE_BASE..+96).
+    pub state:Vec<u32>,
+    /// Per tree: camera, shadow.
+    pub trees:Vec<[TreeCut;2]>,
+    /// Per tree: root position (the streamed GPU roots).
+    pub positions:Vec<[f32;3]>,
+}
+impl CutSnapshot {
+    /// The change from `a` to `b`, None when equal. A change of several kinds
+    /// at once reports the first that applies in this order: appear or
+    /// disappear, fallback, whole/cut, whole mip, refine, voxel/source, mip.
+    pub fn change(a:&TreeCut,b:&TreeCut,kinds:&[RepKind])->Option<CutChange> {
+        if a==b {return None;}
+        let drawn=|c:&TreeCut|c.root!=0 || !c.parts.is_empty();
+        if !drawn(a) {return Some(CutChange::Appear);}
+        if !drawn(b) {return Some(CutChange::Disappear);}
+        if (a.root==u32::MAX)!=(b.root==u32::MAX) {return Some(CutChange::Fallback);}
+        let whole=|c:&TreeCut|c.root!=0 && c.root!=u32::MAX;
+        match (whole(a),whole(b)) {
+            (true,false)=>return Some(CutChange::WholeToCut),(false,true)=>return Some(CutChange::CutToWhole),
+            (true,true) if a.root!=b.root=>return Some(CutChange::WholeMip),_=>{}
+        }
+        if a.parts.len()!=b.parts.len() || a.parts.iter().zip(&b.parts).any(|(x,y)|x[0]!=y[0]) {return Some(CutChange::Refine);}
+        let voxel=|rep:u32|matches!(kinds.get(rep as usize),Some(RepKind::BranchVoxel(_)|RepKind::RootVoxel(_)));
+        if a.parts.iter().zip(&b.parts).any(|(x,y)|voxel(x[1])!=voxel(y[1])) {return Some(CutChange::VoxelSource);}
+        Some(CutChange::VoxelMip)
+    }
 }
 #[derive(Debug,serde::Serialize)]
 pub struct ConsumerCounts {pub outside:u32,pub camera_only:u32,pub shadow_only:u32,pub both:u32}
@@ -428,6 +485,10 @@ impl Runtime {
         if (spec.slots as u64+spec.roots.len()as u64).div_ceil(64)>gpu.device.limits().max_compute_workgroups_per_dimension as u64 {
             return Err("GPU forest materialization exceeds dispatch capacity".into());
         }
+        let rep_kinds=spec.representations.iter().map(|rep|{
+            let whole=rep[3]==0 && spec.branches.get(rep[0]as usize).is_some_and(|b|b.info[0]==NONE);
+            match (rep[1]==1,whole) {(true,true)=>RepKind::RootVoxel(rep[2]),(true,false)=>RepKind::BranchVoxel(rep[2]),(false,true)=>RepKind::RootSource,(false,false)=>RepKind::Source}
+        }).collect::<Vec<_>>();
         let records=spec.slots.saturating_mul(4).max(spec.roots.len()as u32).max(1024);
         let selector=Selector::with_source_tables(gpu,&spec.nodes,&spec.source_tables,&spec.roots,records,records)?;
         selector.set_source_cluster_budget(spec.source_cluster_budget)?;
@@ -488,7 +549,7 @@ impl Runtime {
             let publish_pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("forest population publish"),bind_group_layouts:&[Some(&publish_layout)],immediate_size:0});
             let publish_module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("forest population publish"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_publish.wgsl").into())});
             let publish_pipeline=gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some("forest population publish"),layout:Some(&publish_pl),module:&publish_module,entry_point:Some("publish"),compilation_options:Default::default(),cache:gpu.pipeline_cache()});
-            Self {pose_dispatch,pose_dispatch_bind,pose_args,pose_pipelines,pose_cache,pose_work,pose_depth:max_depth,branch_count:spec.branches.len()as u32,publish_pipeline,publish_layout,source_buffer:instances.clone(),population:std::sync::Mutex::new(std::sync::Arc::new(spec.population.clone())),templates:std::sync::Arc::new(spec.templates.clone()),proxy_owners:std::sync::Arc::new(spec.proxies.iter().map(|v|v.meta[0]).collect()),proxy_buffer:proxies,selector,residency,uniform,bind,pose_bind,pipeline,empty_depth,choices,slots:spec.slots,trees:spec.roots.len()as u32,error:spec.error,raster_budget,source_cluster_budget:spec.source_cluster_budget,wind:Default::default()}
+            Self {pose_dispatch,pose_dispatch_bind,pose_args,pose_pipelines,pose_cache,pose_work,pose_depth:max_depth,branch_count:spec.branches.len()as u32,publish_pipeline,publish_layout,source_buffer:instances.clone(),population:std::sync::Mutex::new(std::sync::Arc::new(spec.population.clone())),templates:std::sync::Arc::new(spec.templates.clone()),proxy_owners:std::sync::Arc::new(spec.proxies.iter().map(|v|v.meta[0]).collect()),proxy_buffer:proxies,selector,residency,uniform,bind,pose_bind,pipeline,empty_depth,choices,history_at,rep_kinds,slots:spec.slots,trees:spec.roots.len()as u32,error:spec.error,raster_budget,source_cluster_budget:spec.source_cluster_budget,wind:Default::default()}
         })
     }
     pub fn set_wind(&self,state:&crate::wind::WindState)->Result<(),String>{*self.wind.lock().unwrap()=state.validated()?;Ok(())}
@@ -589,6 +650,41 @@ impl Runtime {
         Ok(())
     }
     /// Bytes in one consumer-class choice table; camera then shadow.
+    /// Offline diagnostic: what each tree draws this frame, per consumer
+    /// (camera, shadow), for finding what changes between frames. A
+    /// synchronous readback; never used to select or draw.
+    pub fn cut_snapshot(&self,gpu:&Gpu)->Result<CutSnapshot,String> {
+        let slot_bytes=u64::from(self.slots)*32;let history_bytes=u64::from(self.trees)*32;
+        let roots=&self.selector._instances;let root_bytes=u64::from(self.trees)*std::mem::size_of::<Instance>()as u64;
+        let inputs=[(&self.residency.slots,0,slot_bytes),(&self.choices,self.history_at,history_bytes),(&self.selector.refiner.state,crate::foliage_refine::STATE_OFFSET,96*4),(&roots.buffer,roots.offset,root_bytes)];
+        let output=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("forest cut snapshot"),size:inputs.iter().map(|i|i.2).sum(),usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
+        let mut enc=gpu.device.create_command_encoder(&Default::default());let mut offset=0;
+        for (buffer,from,len) in inputs {enc.copy_buffer_to_buffer(buffer,from,&output,offset,len);offset+=len;}
+        let submission=gpu.queue.submit([enc.finish()]);let(tx,rx)=std::sync::mpsc::sync_channel(1);
+        output.slice(..).map_async(wgpu::MapMode::Read,move|r|{let _=tx.send(r);});
+        gpu.device.poll(wgpu::PollType::Wait {submission_index:Some(submission),timeout:Some(std::time::Duration::from_secs(30))}).map_err(|e|e.to_string())?;
+        rx.recv().map_err(|e|e.to_string())?.map_err(|e|e.to_string())?;
+        let bytes=output.slice(..).get_mapped_range().map_err(|e|e.to_string())?;
+        let words:Vec<u32>=bytes.chunks_exact(4).map(bytemuck::pod_read_unaligned).collect();
+        let (slots,rest)=words.split_at(self.slots as usize*8);let (history,rest)=rest.split_at(self.trees as usize*8);let (state,roots)=rest.split_at(96);
+        let stride=std::mem::size_of::<Instance>()/4;
+        let positions=roots.chunks_exact(stride).map(|r|[f32::from_bits(r[3]),f32::from_bits(r[7]),f32::from_bits(r[11])]).collect();
+        let mut trees=vec![[TreeCut::default(),TreeCut::default()];self.trees as usize];
+        for (consumer,role) in [(0,256u32),(1,512)] {
+            for (tree,cut) in trees.iter_mut().enumerate() {
+                let h=&history[(tree+consumer*self.trees as usize)*4..][..4];
+                cut[consumer].root=if h[2]&role!=0 {h[0]}else{0};
+            }
+            for slot in slots.chunks_exact(8) {
+                if slot[6]==0 || slot[7]&role==0 {continue;}
+                if let Some(cut)=trees.get_mut(slot[0]as usize) {cut[consumer].parts.push([slot[1],slot[2]]);}
+            }
+        }
+        for cut in trees.iter_mut().flatten() {cut.parts.sort_unstable();}
+        Ok(CutSnapshot {scale:[f32::from_bits(state[79]),f32::from_bits(state[78]),f32::from_bits(state[85])],state:state.to_vec(),trees,positions})
+    }
+    /// Per representation: kind and voxel mip (CutSnapshot::change).
+    pub fn representation_kinds(&self)->&[RepKind] {&self.rep_kinds}
     pub(crate) fn choice_table_bytes(&self)->u64 {u64::from(self.slots)*4}
     pub fn diagnostics(&self,gpu:&Gpu)->Result<Diagnostics,String> {
         let inputs=[(&self.selector.counters,0,64u64),(&self.residency.counters,0,32),(&self.selector.fallback.buffer,self.selector.fallback.offset,self.trees as u64*4),(&self.choices,0,2*self.choice_table_bytes()),(&self.pose_work,0,268),(&self.selector.demand.buffer,self.selector.demand.offset,self.trees as u64*32),(&self.selector.refiner.state,crate::foliage_refine::STATE_OFFSET,384)];
@@ -1384,6 +1480,27 @@ impl Runtime {
     }
 }
 
+#[cfg(test)] mod cut_change_tests {
+    use super::{CutSnapshot,CutChange::*,RepKind::*,TreeCut};
+    #[test]
+    fn cut_changes_are_classified_by_kind() {
+        // Representations: 0 source, 1 and 2 branch voxel mips, 3 root voxel.
+        let kinds=[Source,BranchVoxel(0),BranchVoxel(1),RootVoxel(2)];
+        let cut=|root:u32,parts:&[[u32;2]]|TreeCut {root,parts:parts.to_vec()};
+        let change=|a:&TreeCut,b:&TreeCut|CutSnapshot::change(a,b,&kinds);
+        let none=cut(0,&[]);let branches=cut(0,&[[4,1],[5,1]]);
+        assert_eq!(change(&branches,&branches),None);
+        assert_eq!(change(&none,&branches),Some(Appear));
+        assert_eq!(change(&branches,&none),Some(Disappear));
+        assert_eq!(change(&cut(u32::MAX,&[]),&branches),Some(Fallback));
+        assert_eq!(change(&cut(4,&[]),&branches),Some(WholeToCut));
+        assert_eq!(change(&branches,&cut(4,&[])),Some(CutToWhole));
+        assert_eq!(change(&cut(4,&[]),&cut(5,&[])),Some(WholeMip));
+        assert_eq!(change(&branches,&cut(0,&[[4,1],[6,1]])),Some(Refine));
+        assert_eq!(change(&branches,&cut(0,&[[4,0],[5,1]])),Some(VoxelSource));
+        assert_eq!(change(&branches,&cut(0,&[[4,2],[5,1]])),Some(VoxelMip));
+    }
+}
 #[cfg(test)] mod profile_volume_tests {
     #[test] fn root_consumers_follow_allocation_sized_volume_ranges() {
         for slots in [1u32,4096,32768,65537] {

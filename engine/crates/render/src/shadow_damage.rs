@@ -68,6 +68,8 @@ pub(crate) struct Damage {
     /// KERN_SUN_DAMAGE_REPORT=1: last frame's masks, printed as dirty tile
     /// counts per slot on the next frame (blocking; diagnostics only).
     report:Option<(wgpu::Buffer,Vec<usize>)>,
+    /// Last encode_maps: per request, whether it redrew in full and its scroll (diagnostic).
+    pub last_force:Vec<(bool,[i32;2])>,
 }
 impl Damage {
     /// Counts: source instances, voxel instances, forest branch slots, first
@@ -121,7 +123,7 @@ impl Damage {
                 depth_stencil:Some(wgpu::DepthStencilState {format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:Some(true),depth_compare:Some(wgpu::CompareFunction::Always),stencil:Default::default(),bias:Default::default()}),
                 multisample:Default::default(),fragment:Some(wgpu::FragmentState {module:&scroll_module,entry_point:Some("fs"),compilation_options:Default::default(),targets:&[]}),multiview_mask:None,cache:gpu.pipeline_cache(),
             });
-            Self {scroll,scroll_layout,scroll_scratch:Vec::new(),scroll_uniform,clear,mask,uniform,bind,reset:pipeline("reset"),track:pipeline("track"),slots,counts,report:None}
+            Self {scroll,scroll_layout,scroll_scratch:Vec::new(),scroll_uniform,clear,mask,uniform,bind,reset:pipeline("reset"),track:pipeline("track"),slots,counts,report:None,last_force:Vec::new()}
         })
     }
     /// Run after source/voxel materialization. `epoch` covers asset/material,
@@ -158,7 +160,7 @@ impl Damage {
         let mut state=vec![0u8;STATE_BYTES];
         let mut write=|at:usize,words:&[u32]|state[at..at+4*words.len()].copy_from_slice(bytemuck::cast_slice(words));
         let mut requested=[false;MAX_MAPS];
-        let mut any_force=false;let mut scrolls=Vec::new();let mut drawn=Vec::with_capacity(maps.len());
+        let mut any_force=false;let mut scrolls=Vec::new();let mut drawn=Vec::with_capacity(maps.len());self.last_force.clear();
         for map in maps {
             let (vp,size)=(map.vp,map.size);
             if map.slot>=MAX_MAPS || requested[map.slot] {return Err("invalid shadow damage slot".into());}
@@ -172,7 +174,7 @@ impl Damage {
             let offset=offset.filter(|s|*s==[0,0] || !self.slots[map.slot].pending);
             let force=offset.is_none();let shift=offset.unwrap_or([0,0]);
             any_force|=force;
-            drawn.push(draw);
+            drawn.push(draw);self.last_force.push((force,shift));
             self.slots[map.slot].pending=!draw;
             let control=[u32::from(force),size,shift[0]as u32,shift[1]as u32];
             let at=32+map.slot*96;

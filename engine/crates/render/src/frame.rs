@@ -872,6 +872,11 @@ struct FeedbackSubmission<'a> {
     views: &'a mut Vec<PendingVisibility>,
 }
 
+/// One sun clipmap level's decision in a frame: whether its damage was
+/// deferred (staggered outer level), whether it drew, and its projection's
+/// translation (a change means the level scrolled).
+#[derive(Clone,Copy,Debug,serde::Serialize)]
+pub struct SunLevelLog {pub level:u32,pub deferred:bool,pub drawn:bool,pub force:bool,pub shift:[i32;2],pub origin:[f32;3]}
 #[derive(Debug, Default, Clone)]
 pub struct FrameStats {
     /// Experimental exact static/dynamic partition of the shared sun map.
@@ -1205,6 +1210,9 @@ pub struct Renderer {
     sun_clipmap:bool,
     /// Alpha cut and LOD the cached clipmap levels were drawn with.
     clipmap_policy:std::sync::Mutex<Option<(u32,u32)>>,
+    /// Last frame's sun clipmap levels of view 0: requested, drawn and their
+    /// projection (diagnostic; terrain_fly --dump-cut).
+    clipmap_log:std::sync::Mutex<Vec<SunLevelLog>>,
     /// First clipmap level per view (clipmap_base), kept between frames.
     clipmap_bases:std::sync::Mutex<Vec<usize>>,
     /// Coarse cached source maps must not shift steep leaf casters by metres.
@@ -2895,7 +2903,7 @@ impl Renderer {
             raster_depth, broadcast_raster, broadcast_view: std::sync::OnceLock::new(),
             raster_opaque,
             raster_sun_depth,
-            raster_cached_sun,sun_clipmap:sun_clipmap_requested() && shadow_damage.is_some() && static_sun.is_none(),clipmap_policy:std::sync::Mutex::new(None),clipmap_bases:std::sync::Mutex::new(Vec::new()),shadow_damage:std::sync::Mutex::new(shadow_damage),legacy_shadow_wind,
+            raster_cached_sun,sun_clipmap:sun_clipmap_requested() && shadow_damage.is_some() && static_sun.is_none(),clipmap_policy:std::sync::Mutex::new(None),clipmap_log:Default::default(),clipmap_bases:std::sync::Mutex::new(Vec::new()),shadow_damage:std::sync::Mutex::new(shadow_damage),legacy_shadow_wind,
             raster_far_sun_depth,
             raster_rsm,
             probes: crate::reflection_probes::Probes::new(gpu), probe_view: std::sync::OnceLock::new(),
@@ -3702,6 +3710,10 @@ impl Renderer {
         assert!(self.cluster_views.lock().unwrap().is_empty());
         self.occlusion=crate::occlusion::Resources::with_history_capacity(gpu,self.cluster_buckets,self.gpu_forest.is_some(),capacity);
     }
+    /// The GPU forest's runtime, for offline diagnostics (cut snapshots).
+    /// Last frame's sun clipmap levels (view 0); empty when no level was requested.
+    pub fn sun_clipmap_log(&self)->Vec<SunLevelLog> {self.clipmap_log.lock().unwrap().clone()}
+    pub fn gpu_forest_runtime(&self)->Option<&crate::foliage_runtime::Runtime> {self.gpu_forest.as_ref().map(|(forest,_)|forest)}
     pub fn gpu_forest_diagnostics(&self,gpu:&Gpu)->Result<Option<crate::foliage_runtime::Diagnostics>,String> {
         self.gpu_forest.as_ref().map(|(forest,_)|forest.diagnostics(gpu)).transpose()
     }
@@ -5341,6 +5353,8 @@ impl Renderer {
             }
             if draw_main_sun {maps[0].defer=false;}
             let drawn=damage.encode_maps(gpu,&mut enc,self.shader_generation,&maps)?;
+            *self.clipmap_log.lock().unwrap()=maps.iter().zip(&drawn).zip(&damage.last_force).filter(|((m,_),_)|m.slot>0 && m.slot<=NEAR_LEVELS_MAX)
+                .map(|((m,&drawn),&(force,shift))|SunLevelLog {level:(m.slot-1) as u32,deferred:m.defer,drawn,force,shift,origin:[m.vp.w_axis.x,m.vp.w_axis.y,m.vp.w_axis.z]}).collect();
             if draw_main_sun {damage.clear_tiles(&mut enc,&shadow_v);}
             for (map,&draw) in maps.iter().zip(&drawn) {
                 if map.slot==0 || !draw {continue;}

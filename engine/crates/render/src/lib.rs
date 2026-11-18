@@ -179,7 +179,7 @@ mod forest_bindings;
 #[cfg(test)]
 mod rock_mapping;
 
-pub use frame::{Camera, FrameStats, Lighting, Renderer, SplitLayout, ViewRect, split_rects, split_rects_with};
+pub use frame::{Camera, FrameStats, SunLevelLog, Lighting, Renderer, SplitLayout, ViewRect, split_rects, split_rects_with};
 pub use gpu::{Gpu, Stopwatch, write_png};
 pub use auto_exposure::AutoExposure;
 pub use scene::Scene;
