@@ -1,0 +1,176 @@
+{
+ "size": [
+  1280,
+  720
+ ],
+ "steps": [
+  {
+   "ticks": 30,
+   "note": "people settle into idle"
+  },
+  {
+   "cmd": "lua state.person = 1; state.view = 1",
+   "ticks": 4,
+   "capture": "p1-face.png"
+  },
+  {
+   "cmd": "lua state.person = 1; state.view = 7",
+   "ticks": 4,
+   "capture": "p1-crown.png"
+  },
+  {
+   "cmd": "lua state.person = 1; state.view = 8",
+   "ticks": 4,
+   "capture": "p1-back.png"
+  },
+  {
+   "cmd": "lua state.person = 1; state.view = 3",
+   "ticks": 4,
+   "capture": "p1-profile.png"
+  },
+  {
+   "cmd": "lua state.person = 2; state.view = 1",
+   "ticks": 4,
+   "capture": "p2-face.png"
+  },
+  {
+   "cmd": "lua state.person = 2; state.view = 7",
+   "ticks": 4,
+   "capture": "p2-crown.png"
+  },
+  {
+   "cmd": "lua state.person = 2; state.view = 8",
+   "ticks": 4,
+   "capture": "p2-back.png"
+  },
+  {
+   "cmd": "lua state.person = 2; state.view = 3",
+   "ticks": 4,
+   "capture": "p2-profile.png"
+  },
+  {
+   "cmd": "lua state.person = 3; state.view = 1",
+   "ticks": 4,
+   "capture": "p3-face.png"
+  },
+  {
+   "cmd": "lua state.person = 3; state.view = 7",
+   "ticks": 4,
+   "capture": "p3-crown.png"
+  },
+  {
+   "cmd": "lua state.person = 3; state.view = 8",
+   "ticks": 4,
+   "capture": "p3-back.png"
+  },
+  {
+   "cmd": "lua state.person = 3; state.view = 3",
+   "ticks": 4,
+   "capture": "p3-profile.png"
+  },
+  {
+   "cmd": "lua state.person = 4; state.view = 1",
+   "ticks": 4,
+   "capture": "p4-face.png"
+  },
+  {
+   "cmd": "lua state.person = 4; state.view = 7",
+   "ticks": 4,
+   "capture": "p4-crown.png"
+  },
+  {
+   "cmd": "lua state.person = 4; state.view = 8",
+   "ticks": 4,
+   "capture": "p4-back.png"
+  },
+  {
+   "cmd": "lua state.person = 4; state.view = 3",
+   "ticks": 4,
+   "capture": "p4-profile.png"
+  },
+  {
+   "cmd": "lua state.person = 5; state.view = 1",
+   "ticks": 4,
+   "capture": "p5-face.png"
+  },
+  {
+   "cmd": "lua state.person = 5; state.view = 7",
+   "ticks": 4,
+   "capture": "p5-crown.png"
+  },
+  {
+   "cmd": "lua state.person = 5; state.view = 8",
+   "ticks": 4,
+   "capture": "p5-back.png"
+  },
+  {
+   "cmd": "lua state.person = 5; state.view = 3",
+   "ticks": 4,
+   "capture": "p5-profile.png"
+  },
+  {
+   "cmd": "lua state.person = 6; state.view = 1",
+   "ticks": 4,
+   "capture": "p6-face.png"
+  },
+  {
+   "cmd": "lua state.person = 6; state.view = 7",
+   "ticks": 4,
+   "capture": "p6-crown.png"
+  },
+  {
+   "cmd": "lua state.person = 6; state.view = 8",
+   "ticks": 4,
+   "capture": "p6-back.png"
+  },
+  {
+   "cmd": "lua state.person = 6; state.view = 3",
+   "ticks": 4,
+   "capture": "p6-profile.png"
+  },
+  {
+   "cmd": "lua state.person = 7; state.view = 1",
+   "ticks": 4,
+   "capture": "p7-face.png"
+  },
+  {
+   "cmd": "lua state.person = 7; state.view = 7",
+   "ticks": 4,
+   "capture": "p7-crown.png"
+  },
+  {
+   "cmd": "lua state.person = 7; state.view = 8",
+   "ticks": 4,
+   "capture": "p7-back.png"
+  },
+  {
+   "cmd": "lua state.person = 7; state.view = 3",
+   "ticks": 4,
+   "capture": "p7-profile.png"
+  },
+  {
+   "cmd": "lua state.person = 8; state.view = 1",
+   "ticks": 4,
+   "capture": "p8-face.png"
+  },
+  {
+   "cmd": "lua state.person = 8; state.view = 7",
+   "ticks": 4,
+   "capture": "p8-crown.png"
+  },
+  {
+   "cmd": "lua state.person = 8; state.view = 8",
+   "ticks": 4,
+   "capture": "p8-back.png"
+  },
+  {
+   "cmd": "lua state.person = 8; state.view = 3",
+   "ticks": 4,
+   "capture": "p8-profile.png"
+  },
+  {
+   "expect": "/errors",
+   "equals": []
+  }
+ ]
+}

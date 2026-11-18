@@ -112,6 +112,9 @@ struct Texel {
     /// up, z out of the face.
     p: Vec3,
     n: Vec3,
+    /// How far the point travels when the eye closes, metres: most at the
+    /// rim of the upper lid.
+    lid: f32,
 }
 
 /// Rasterize the face triangles into the texture: the head position and
@@ -149,7 +152,8 @@ fn unwrap(body: &[BodyVertex], indices: &[u32], eyes: Vec3, size: usize) -> Vec<
                 }
                 let p = v[0].position * w0 + v[1].position * w1 + v[2].position * w2;
                 let n = v[0].normal * w0 + v[1].normal * w1 + v[2].normal * w2;
-                *slot = Some(Texel { p: (p - eyes) * METRES, n: n.normalize_or(Vec3::Z) });
+                let lid = v[0].lid_closure.length() * w0 + v[1].lid_closure.length() * w1 + v[2].lid_closure.length() * w2;
+                *slot = Some(Texel { p: (p - eyes) * METRES, n: n.normalize_or(Vec3::Z), lid: lid * METRES });
             }
         }
     }
@@ -267,6 +271,46 @@ fn bilinear(image: &RgbaImage, u: f32, v: f32) -> [f32; 4] {
 /// free in a corner (centre and half size, in UV).
 pub(super) const EYE_PATCH: ([f32; 2], f32) = ([0.914, 0.086], 0.066);
 
+/// Where a person's eyebrows grow and what the face texture holds there.
+#[derive(Clone, Copy)]
+pub(super) struct Brows {
+    /// The texture's colour for a brow hair (the face's tint multiplies it).
+    pub color: Vec3,
+    /// The box of the right and the left brow, metres from the eye midpoint.
+    pub spans: [(Vec3, Vec3); 2],
+}
+
+/// How much brow hair covers a point of the face, 0 to 1: single hairs a
+/// quarter of a millimetre wide, steep at the nose and lying outward along
+/// the arch, thinning to the tail.
+fn brow(p: Vec3, brows: &Brows, seed: u32) -> f32 {
+    let (lo, hi) = brows.spans[usize::from(p.x > 0.)];
+    if lo.x > hi.x || p.z < lo.z - 0.015 {
+        return 0.;
+    }
+    let (inner, outer) = (lo.x.abs().min(hi.x.abs()), lo.x.abs().max(hi.x.abs()));
+    let u = (p.x.abs() - inner) / (outer - inner).max(1e-4);
+    if !(-0.1..=1.1).contains(&u) {
+        return 0.;
+    }
+    let h = hi.y - lo.y;
+    let middle = lo.y + h * (0.40 + 0.25 * smooth(0., 0.65, u) - 0.35 * smooth(0.65, 1., u));
+    let half = (h * 0.5).max(0.0045) * (1. - 0.5 * u.clamp(0., 1.));
+    let body = smooth(1., 0.45, (p.y - middle).abs() / half.max(1e-4)) * smooth(-0.06, 0.06, u) * smooth(1.06, 0.82, u);
+    if body <= 0. {
+        return 0.;
+    }
+    let angle = (1.15 - 1.5 * u).clamp(-0.3, 1.15);
+    let (along, across) = (
+        p.x.abs() * angle.cos() + p.y * angle.sin(),
+        -p.x.abs() * angle.sin() + p.y * angle.cos(),
+    );
+    let side = if p.x > 0. { 7. } else { 0. };
+    let hairs = smooth(-0.25, 0.2, noise(Vec3::new(along / 0.004, across / 0.0003, side), 1., seed ^ 0xb20));
+    let thick = 0.75 + 0.25 * unit(hash(seed ^ 0xb21));
+    (body * (0.5 + 0.5 * hairs) * thick).clamp(0., 1.)
+}
+
 /// Iris colours (sRGB): brown is by far the most common, and the only one
 /// in dark skin; the lighter ones need fair skin.
 fn iris_color(traits: Traits) -> Vec3 {
@@ -314,10 +358,12 @@ fn eye(x: f32, y: f32, traits: Traits) -> Vec3 {
     let p = Vec3::new(x, y, 0.);
     let vessel = 1. - smooth(0.0, 0.10, noise(p * 4., 1., seed ^ 9).abs());
     let edge = smooth(1.2, 2.2, r);
-    let mut white = Vec3::new(0.86, 0.83, 0.80).lerp(Vec3::new(0.80, 0.62, 0.58), 0.55 * edge);
+    let mut white = Vec3::new(0.80, 0.77, 0.74).lerp(Vec3::new(0.76, 0.58, 0.54), 0.55 * edge);
     white = white.lerp(Vec3::new(0.72, 0.36, 0.32), 0.22 * vessel * smooth(1.05, 1.6, r));
     // The rim of the iris is soft: the cornea's edge overlaps the white.
-    iris.lerp(white, smooth(0.96, 1.10, r))
+    // The upper lid and its lashes shade the top of the eye.
+    let lid = 1. - 0.5 * smooth(0.02, 0.30, -y);
+    iris.lerp(white, smooth(0.96, 1.10, r)) * lid
 }
 
 /// Draw the eye into its patch of the face texture.
@@ -352,9 +398,11 @@ pub(super) fn face(
     cheek: Vec3,
     traits: Traits,
     under_hair: Vec3,
+    brows: Brows,
     size: usize,
 ) -> Maps {
     let texels = unwrap(body, indices, eyes, size);
+    let lid_travel = texels.iter().flatten().map(|t| t.lid).fold(1e-6f32, f32::max);
     let mut height = vec![0f32; size * size];
     let mut albedo = vec![[0u8; 4]; size * size];
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
@@ -381,6 +429,12 @@ pub(super) fn face(
                         // its shade.
                         let hair = super::warp_hair::scalp(t.p);
                         color = color.lerp(under_hair * 255., 0.7 * hair * hair);
+                        color = color.lerp(brows.color * 255., brow(t.p, &brows, traits.seed));
+                        // Lashes: a dark, broken line along the rim of the
+                        // upper lid, which travels furthest in a blink.
+                        let rim = smooth(0.80, 0.96, t.lid / lid_travel);
+                        let lashes = 0.55 + 0.45 * smooth(-0.3, 0.3, noise(Vec3::new(t.p.x / 0.0005, 0., 0.), 1., traits.seed ^ 0x1a5));
+                        color = color.lerp(Vec3::new(14., 10., 9.), 0.9 * rim * lashes);
                     }
                     let [r, g, b] = color.to_array().map(|c| c.clamp(0., 255.) as u8);
                     *out = [r, g, b, painted[3] as u8];
@@ -457,10 +511,10 @@ mod tests {
         let (body, indices, eyes) = fixture(7);
         let base = super::super::warp_human::tile(0);
         let cheek = Vec3::new(0.855, 0.659, 0.541);
-        let a = face(&body, &indices, eyes, &base, cheek, Traits::new(1, 0.8), Vec3::splat(0.2), 256);
-        let b = face(&body, &indices, eyes, &base, cheek, Traits::new(2, 0.8), Vec3::splat(0.2), 256);
+        let a = face(&body, &indices, eyes, &base, cheek, Traits::new(1, 0.8), Vec3::splat(0.2), Brows { color: Vec3::splat(0.1), spans: [(Vec3::splat(1.), Vec3::splat(-1.)); 2] }, 256);
+        let b = face(&body, &indices, eyes, &base, cheek, Traits::new(2, 0.8), Vec3::splat(0.2), Brows { color: Vec3::splat(0.1), spans: [(Vec3::splat(1.), Vec3::splat(-1.)); 2] }, 256);
         assert_ne!(a.albedo.as_raw(), b.albedo.as_raw());
-        assert_eq!(a.albedo.as_raw(), face(&body, &indices, eyes, &base, cheek, Traits::new(1, 0.8), Vec3::splat(0.2), 256).albedo.as_raw());
+        assert_eq!(a.albedo.as_raw(), face(&body, &indices, eyes, &base, cheek, Traits::new(1, 0.8), Vec3::splat(0.2), Brows { color: Vec3::splat(0.1), spans: [(Vec3::splat(1.), Vec3::splat(-1.)); 2] }, 256).albedo.as_raw());
         let bent = a.normal.pixels().filter(|p| p[0].abs_diff(128) > 2 || p[1].abs_diff(128) > 2).count();
         assert!(bent > 256 * 256 / 20, "relief bends the normals: {bent}");
         // The shading mask in the painted alpha survives (128 is skin).
@@ -490,7 +544,7 @@ mod tests {
         let base = super::super::warp_human::tile(person.face_tile());
         let traits = Traits { seed: 7, age: 0.6, freckles: 0.5, flush: 0.8, fair: 0.8 };
         let start = std::time::Instant::now();
-        let maps = face(&body, &indices, eyes, &base, Vec3::new(0.855, 0.659, 0.541), traits, Vec3::splat(0.2), 2048);
+        let maps = face(&body, &indices, eyes, &base, Vec3::new(0.855, 0.659, 0.541), traits, Vec3::splat(0.2), Brows { color: Vec3::splat(0.1), spans: [(Vec3::splat(1.), Vec3::splat(-1.)); 2] }, 2048);
         eprintln!("{:?}", start.elapsed());
         let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../build/human-skin");
         std::fs::create_dir_all(&out).unwrap();
