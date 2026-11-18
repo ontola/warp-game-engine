@@ -1168,16 +1168,26 @@ fn volume_splat_tree(index:u32,level:u32) {
 fn volume_splat_first()->u32 {return VOLUME_SPLAT_HEADER+volume_config.size_count.w*4u;}
 
 struct VolumeSplatCell { local:vec3<f32>,centre:vec3<f32>,radius:f32,size:f32 };
-fn volume_splat_cell(index:u32,level:u32,coord_bits:u32)->VolumeSplatCell {
+// What every cell of one tree at one level shares, read once per thread
+// instead of per cell (the cell loop is the largest vegetation pass): the
+// owner's pose, the level grid, a cell's bounding radius, the pose's x
+// scale and the tree's stable appearance id for the thinning hashes.
+struct VolumeSplatPose { r0:vec4<f32>,r1:vec4<f32>,r2:vec4<f32>,grid:vec4<f32>,radius:f32,scale:f32,appearance:u32 };
+fn volume_splat_pose(index:u32,level:u32)->VolumeSplatPose {
     let tree=volume_trees[index];
     let grid=volume_levels[tree.identity.y+level].origin_cell;
-    let coord=vec3<f32>(f32(coord_bits&1023u),f32((coord_bits>>10u)&1023u),f32(coord_bits>>20u));
-    let local=grid.xyz+(coord+0.5)*grid.w;
-    let point=vec4<f32>(local,1.0);
     let owner=instances[tree.identity.x];
     let r0=owner.r0;let r1=owner.r1;let r2=owner.r2;
-    let radius=0.5*grid.w*(length(vec3<f32>(r0.x,r1.x,r2.x))+length(vec3<f32>(r0.y,r1.y,r2.y))+length(vec3<f32>(r0.z,r1.z,r2.z)));
-    return VolumeSplatCell(local,vec3<f32>(dot(r0,point),dot(r1,point),dot(r2,point)),radius,grid.w);
+    let scale=length(vec3<f32>(r0.x,r1.x,r2.x));
+    let radius=0.5*grid.w*(scale+length(vec3<f32>(r0.y,r1.y,r2.y))+length(vec3<f32>(r0.z,r1.z,r2.z)));
+    let stable=tree.bounds_max.w;
+    return VolumeSplatPose(r0,r1,r2,grid,radius,scale,select(index,u32(max(stable-1.0,0.0)),stable>0.0));
+}
+fn volume_splat_cell(pose:VolumeSplatPose,coord_bits:u32)->VolumeSplatCell {
+    let coord=vec3<f32>(f32(coord_bits&1023u),f32((coord_bits>>10u)&1023u),f32(coord_bits>>20u));
+    let local=pose.grid.xyz+(coord+0.5)*pose.grid.w;
+    let point=vec4<f32>(local,1.0);
+    return VolumeSplatCell(local,vec3<f32>(dot(pose.r0,point),dot(pose.r1,point),dot(pose.r2,point)),pose.radius,pose.grid.w);
 }
 fn volume_splat_outside(cell:VolumeSplatCell,plane:vec4<f32>)->bool {
     return dot(plane.xyz,cell.centre)+plane.w < -cell.radius;
@@ -1200,16 +1210,14 @@ fn volume_camera_texel(p:vec3<f32>)->f32 {
     if w<=1e-4 {return 0.0;}
     return w/max(0.5*f32(volume_config.size_count.y)*length(row_y),1e-8);
 }
-fn volume_splat_append(index:u32,cell_ref:vec2<u32>,cell:VolumeSplatCell,toward:vec3<f32>,texel:f32) {
-    let stable=volume_trees[index].bounds_max.w;
-    let appearance=select(index,u32(max(stable-1.0,0.0)),stable>0.0);
+fn volume_splat_append(index:u32,pose:VolumeSplatPose,cell_ref:vec2<u32>,cell:VolumeSplatCell,toward:vec3<f32>,texel:f32) {
+    let appearance=pose.appearance;
     // Area thinning below keeps a cell with probability at most
     // max(area at alpha 1, 1/64): test that first and skip the cell fetch
     // for most cells of a far crown. Same hash, so the same cells survive.
     var area_one=0.0;var area_draw=1.0;
     if texel>0.0 {
-        let owner=instances[volume_trees[index].identity.x];
-        let side=cell.size*length(vec3<f32>(owner.r0.x,owner.r1.x,owner.r2.x))/texel;
+        let side=cell.size*pose.scale/texel;
         area_one=1.48711*side*side;
         area_draw=f32(volume_splat_hash((appearance*0x85ebca6bu)^(cell_ref.y*0xc2b2ae35u)^0x27d4eb2fu)>>8u)/16777216.0;
         if area_one<VOLUME_SPLAT_AREA_TARGET && area_draw>=max(area_one/VOLUME_SPLAT_AREA_TARGET,1.0/VOLUME_SPLAT_ALPHA_RANGE) {return;}
@@ -1355,13 +1363,13 @@ fn volume_splat_eye(index:u32)->vec3<f32> {
     return vec3<f32>(dot(tree.inverse[0],eye),dot(tree.inverse[1],eye),dot(tree.inverse[2],eye));
 }
 // Cells first..first+count of the splat catalog that pass the frustum.
-fn volume_splat_range(index:u32,level:u32,range:vec2<u32>,eye_local:vec3<f32>,first:u32,step:u32) {
+fn volume_splat_range(index:u32,pose:VolumeSplatPose,range:vec2<u32>,eye_local:vec3<f32>,first:u32,step:u32) {
     for(var i=first;i<range.y;i+=step) {
         let cell_ref=volume_splat_cells[range.x+i];
-        let cell=volume_splat_cell(index,level,cell_ref.y);
+        let cell=volume_splat_cell(pose,cell_ref.y);
         var inside=true;
         for(var p=0u;p<6u;p++) {inside=inside&&!volume_splat_outside(cell,view.planes[p]);}
-        if inside {volume_splat_append(index,cell_ref,cell,normalize(eye_local-cell.local),volume_camera_texel(cell.centre));}
+        if inside {volume_splat_append(index,pose,cell_ref,cell,normalize(eye_local-cell.local),volume_camera_texel(cell.centre));}
     }
 }
 
@@ -1394,6 +1402,7 @@ fn voxel_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation
     let level=workgroupUniformLoad(&volume_splat_level_shared);
     if level==VOLUME_SPLAT_NONE {return;}
     let tree=volume_trees[index];
+    let pose=volume_splat_pose(index,level);
     let eye_local=volume_splat_eye(index);
     if VOXEL_BRICK_CULL {
         // 64 bricks at a time: each lane tests one, then all lanes share
@@ -1429,13 +1438,13 @@ fn voxel_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation
                 var low=0u;var high=n;
                 while high-low>1u {let mid=(low+high)/2u;if volume_brick_starts[mid]<=j {low=mid;} else {high=mid;}}
                 let range=volume_brick_ranges[low];
-                volume_splat_range(index,level,vec2<u32>(range.x+j-volume_brick_starts[low],1u),eye_local,0u,1u);
+                volume_splat_range(index,pose,vec2<u32>(range.x+j-volume_brick_starts[low],1u),eye_local,0u,1u);
             }
             workgroupBarrier();
         }
         return;
     }
-    volume_splat_range(index,level,volume_splat_cells[tree.identity.y+level],eye_local,lane,64u);
+    volume_splat_range(index,pose,volume_splat_cells[tree.identity.y+level],eye_local,lane,64u);
 }
 // Between the passes, one thread: pass 2's records start after pass 1's
 // (header 11.z, read by the raster) and its dispatch covers the queue.
@@ -1458,7 +1467,7 @@ fn voxel_splat_retest(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invo
     let index=queued.x;let level=queued.y;
     let brick=volume_splat_brick(volume_splat_brick_table(index,level),queued.z);
     if volume_brick_hidden(index,level,brick.z,view.view_proj) {return;}
-    volume_splat_range(index,level,brick.xy,volume_splat_eye(index),0u,1u);
+    volume_splat_range(index,volume_splat_pose(index,level),brick.xy,volume_splat_eye(index),0u,1u);
 }
 // After pass 2, one thread: its draw arguments, and this frame's
 // view-projection for the pyramid next frame tests against.
@@ -1512,14 +1521,15 @@ fn volume_sun_splats_impl(index:u32,lane:u32,damaged:bool) {
     let d=vec4<f32>(sun.xyz,0.0);
     let toward=normalize(vec3<f32>(dot(tree.inverse[0],d),dot(tree.inverse[1],d),dot(tree.inverse[2],d)));
     let range=volume_splat_cells[tree.identity.y+level];
+    let pose=volume_splat_pose(index,level);
     for(var i=lane;i<range.y;i+=64u) {
         let cell_ref=volume_splat_cells[range.x+i];
-        let cell=volume_splat_cell(index,level,cell_ref.y);
+        let cell=volume_splat_cell(pose,cell_ref.y);
         var inside=true;
         for(var p=0u;p<6u;p++) {inside=inside&&!volume_splat_outside(cell,volume_splat_header(4u+p));}
         // No area thinning into the sun maps: filtered depth turned it into grain
         // and lost tree shadow density.
-        if inside {volume_splat_append(index,cell_ref,cell,toward,0.0);}
+        if inside {volume_splat_append(index,pose,cell_ref,cell,toward,0.0);}
     }
 }
 
