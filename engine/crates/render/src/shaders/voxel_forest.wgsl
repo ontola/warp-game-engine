@@ -1221,11 +1221,11 @@ fn volume_camera_texel(p:vec3<f32>)->f32 {
     return w/max(0.5*f32(volume_config.size_count.y)*length(row_y),1e-8);
 }
 // volume_sigma of a stored cell, reading only its three extinction values.
-// Loading and unpacking the whole 128-byte cell for this made splat
-// generation memory bound (RTX desktop, 1440p: 6.3 ms, 1.7 ms with this).
+// Loading and unpacking the whole cell for this made splat generation
+// memory bound (RTX desktop, 1440p: 6.3 ms, 1.7 ms with this).
 fn volume_cell_sigma(address:u32,d:VolumeDirection)->f32 {
     var value=0.0;
-    for(var k=0u;k<3u;k++) {let i=d.indices[k];value+=volume_cells[address].extinction[i/4u][i%4u]*d.weights[k];}
+    for(var k=0u;k<3u;k++) {let i=d.indices[k];value+=unpack2x16float(volume_cells[address].words[i/2u])[i%2u]*d.weights[k];}
     return max(value,0.0);
 }
 fn volume_splat_append(index:u32,pose:VolumeSplatPose,cell_ref:vec2<u32>,cell:VolumeSplatCell,toward:vec3<f32>,texel:f32) {

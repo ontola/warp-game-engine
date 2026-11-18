@@ -127,28 +127,50 @@ pub struct GpuCell {
     pub normals: [[f32; 4]; 6],
 }
 
-/// Storage form: full-precision colour/extinction, bounded normal moments in
-/// signed normalized16. Do not normalize centroids before packing: their length
-/// carries the distribution's concentration. Logical/cooked cells remain f32.
+/// Storage form, 64 bytes (sixteen words): fourteen extinction values as
+/// half floats (words 0..7, value `i` in word `i/2`, half `i%2`), colour and
+/// roughness as unorm16 (words 7, 8), six normal moments as snorm8 xyzw
+/// (words 9..15), one spare word. Do not normalize centroids before packing:
+/// their length carries the distribution's concentration. Logical/cooked
+/// cells remain f32.
 #[repr(C)]
 #[derive(Clone,Copy,Debug,Pod,Zeroable)]
-pub struct PackedCell {
-    pub albedo_rough:[f32;4],
-    pub extinction:[[f32;4];4],
-    pub normals:[[u32;2];6],
+pub struct PackedCell(pub [u32;16]);
+/// Nearest half float of a non-negative value. A positive value never packs
+/// to zero (an occupied direction stays occupied) and never to infinity.
+fn half(v:f32)->u32 {
+    if v.is_nan() {return 0x7e00;}
+    if v<=0. {return 0;}
+    let bits=v.min(65504.).to_bits();let e=((bits>>23)&0xff)as i32-112;let m=bits&0x7f_ffff;
+    if e<=0 {
+        if e< -10 {return 1;}
+        let shift=(14-e)as u32;return (((m|0x80_0000)+(1<<(shift-1)))>>shift).max(1);
+    }
+    ((((e as u32)<<10)|(m>>13))+((m>>12)&1)).min(0x7bff)
+}
+fn half_value(h:u32)->f32 {
+    let e=(h>>10)&31;let m=(h&0x3ff)as f32;
+    if e==0 {m*2f32.powi(-24)} else if e==31 {if m==0. {f32::INFINITY}else{f32::NAN}} else {(1.+m/1024.)*2f32.powi(e as i32-15)}
 }
 impl From<&GpuCell> for PackedCell {
     fn from(cell:&GpuCell)->Self {
-        let snorm=|v:f32|->u32 { (v.clamp(-1.0,1.0)*32767.0).round() as i16 as u16 as u32 };
-        Self {albedo_rough:cell.albedo_rough,extinction:cell.extinction,
-            normals:cell.normals.map(|n|[snorm(n[0])|(snorm(n[1])<<16),snorm(n[2])|(snorm(n[3])<<16)])}
+        let mut w=[0u32;16];
+        for i in 0..14 {w[i/2]|=half(cell.extinction[i/4][i%4])<<(16*(i%2));}
+        let unorm=|v:f32|(v.clamp(0.,1.)*65535.).round()as u32;
+        w[7]=unorm(cell.albedo_rough[0])|(unorm(cell.albedo_rough[1])<<16);w[8]=unorm(cell.albedo_rough[2])|(unorm(cell.albedo_rough[3])<<16);
+        let snorm=|v:f32|(v.clamp(-1.,1.)*127.).round()as i8 as u8 as u32;
+        for (i,n) in cell.normals.iter().enumerate() {w[9+i]=snorm(n[0])|(snorm(n[1])<<8)|(snorm(n[2])<<16)|(snorm(n[3])<<24);}
+        Self(w)
     }
 }
 impl PackedCell {
     pub fn decode(&self)->GpuCell {
-        let unpack=|w:u32|[(w as u16 as i16 as f32/32767.0).max(-1.0),((w>>16)as u16 as i16 as f32/32767.0).max(-1.0)];
-        GpuCell {albedo_rough:self.albedo_rough,extinction:self.extinction,
-            normals:self.normals.map(|n|{let a=unpack(n[0]);let b=unpack(n[1]);[a[0],a[1],b[0],b[1]]})}
+        let w=&self.0;let mut cell=GpuCell::zeroed();
+        for i in 0..14 {cell.extinction[i/4][i%4]=half_value((w[i/2]>>(16*(i%2)))&0xffff);}
+        let unorm=|v:u32|(v&0xffff)as f32/65535.;
+        cell.albedo_rough=[unorm(w[7]),unorm(w[7]>>16),unorm(w[8]),unorm(w[8]>>16)];
+        for i in 0..6 {cell.normals[i]=std::array::from_fn(|k|((w[9+i]>>(8*k))as u8 as i8 as f32/127.).max(-1.));}
+        cell
     }
 }
 pub fn packed_cells(cells:&[GpuCell])->Vec<PackedCell> {cells.iter().map(PackedCell::from).collect()}
@@ -903,23 +925,31 @@ mod packed_cell_tests {
         let bytes=read.slice(..).get_mapped_range().unwrap();
         for (raw,expected) in bytes.chunks_exact(176).zip(&packed) {
             let got:GpuCell=bytemuck::pod_read_unaligned(raw);let expected=expected.decode();
-            assert_eq!(got.albedo_rough,expected.albedo_rough);assert_eq!(got.extinction,expected.extinction);
+            for (a,b) in got.albedo_rough.iter().zip(&expected.albedo_rough){assert!((a-b).abs()<1e-7,"{a} != {b}");}
+            assert_eq!(got.extinction,expected.extinction);
             for (a,b) in got.normals.iter().flatten().zip(expected.normals.iter().flatten()){assert!((a-b).abs()<1e-7,"{a} != {b}");}
         }
         drop(bytes);read.unmap();
     }
     #[test]
     fn foliage_packed_moments_preserve_direction_length_and_optics() {
-        assert_eq!(std::mem::size_of::<PackedCell>(),128);
+        assert_eq!(std::mem::size_of::<PackedCell>(),64);
         let mut c=GpuCell::zeroed();c.albedo_rough=[0.11,0.75,0.31,0.9];
-        c.extinction=[[1e-15,1e8,0.0,7.5];4];
+        // Tiny and huge densities stay occupied and finite; ordinary ones keep 11 bits.
+        c.extinction=[[1e-15,1e8,0.0,7.5],[0.013,431.7,3e-6,65.],[0.5,1.,2.,1e-4],[19.3,0.75,0.,0.]];
+        let d=PackedCell::from(&c).decode();
+        for (a,b) in c.extinction.iter().flatten().zip(d.extinction.iter().flatten()) {
+            assert_eq!(*a==0.,*b==0.,"{a} -> {b}");assert!(b.is_finite());
+            if (1e-4..6e4).contains(a) {assert!((a-b).abs()<=a/2048.,"{a} -> {b}");}
+        }
+        assert_eq!(half_value(half(1e8)),65504.);assert_eq!(half(1e-15),1);assert_eq!(half(1.),0x3c00);assert_eq!(half(65519.),0x7bff);
         for sample in 0..4097 {
             let v=-1.0+sample as f32/2048.0;
             c.normals=std::array::from_fn(|i|[v,-v,v*0.31,(i as f32+1.0)/21.0]);
             let d=PackedCell::from(&c).decode();
-            assert_eq!(d.albedo_rough,c.albedo_rough);assert_eq!(d.extinction,c.extinction);
+            for (a,b) in c.albedo_rough.iter().zip(&d.albedo_rough) {assert!((a-b).abs()<=0.5/65535.+1e-7,"{a} -> {b}");}
             for (a,b) in c.normals.iter().flatten().zip(d.normals.iter().flatten()) {
-                assert!((a-b).abs()<=1.0/65534.0+1e-7,"{a} -> {b}");
+                assert!((a-b).abs()<=1.0/254.0+1e-6,"{a} -> {b}");
             }
         }
         c.normals[0]=[0.,-1.,1.,0.];assert_eq!(PackedCell::from(&c).decode().normals[0],c.normals[0]);

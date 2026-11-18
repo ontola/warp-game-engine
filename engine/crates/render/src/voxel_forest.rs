@@ -2195,7 +2195,7 @@ mod tests {
             if let naga::TypeInner::Struct {span,..}=&ty.inner {Some(*span)}else{None}
         }).unwrap();
         assert_eq!(span("VolumeCell"),176,"logical optics cell");
-        assert_eq!(span("PackedVolumeCell"),128,"packed storage ABI");
+        assert_eq!(span("PackedVolumeCell"),64,"packed storage ABI");
         assert_eq!(span("VolumeSample"),if antipodal_normals {112}else{160},"private reconstruction result actually shrinks");
         if antipodal_normals {
             assert!(source.contains("cell.normals[k*2u]"));
