@@ -1081,6 +1081,8 @@ const VOLUME_SPLAT_VERTICES: u32 = 6u;
 // of 0.25 halved the camera splat raster (terrain_fly high60 14 -> 7.6 ms,
 // Sideways' mixed forest likewise) with no visible change after TAA.
 const VOLUME_SPLAT_MIN_ALPHA: f32 = 0.5;
+// KERN_VOXEL_DISC_DEPTH: optical depth over the drawn disc's mean chord (voxel_forest.rs).
+const VOLUME_DISC_DEPTH: bool = true;
 fn volume_splat_hash(x:u32)->u32 {
     var h=x*747796405u+2891336453u;
     h=((h>>((h>>28u)+4u))^h)*277803737u;
@@ -1216,7 +1218,12 @@ fn volume_splat_append(index:u32,cell_ref:vec2<u32>,cell:VolumeSplatCell,toward:
     }
     // Optical depth of the mean chord through this cell along the view.
     let sigma=volume_sigma(unpack_volume_cell(volume_cells[cell_ref.x]),volume_direction(toward));
-    let alpha=1.0-exp(-sigma*cell.size/max(dot(abs(toward),vec3<f32>(1.0)),1.0));
+    // The splat is drawn as a disc of constant area 1.48711 cell^2 from every
+    // view (area_one), so the leaf area sigma*cell^3 spread over it gives a mean
+    // chord of cell/1.48711. The cube chord cell/L1 was for a projected cube and
+    // overstates coverage 1.18x (axis views) to 1.49x (diagonal) on the disc.
+    let chord=select(cell.size/max(dot(abs(toward),vec3<f32>(1.0)),1.0),cell.size/1.48711,VOLUME_DISC_DEPTH);
+    let alpha=1.0-exp(-sigma*chord);
     if alpha<1.0/255.0 {return;}
     // Faint cells are thinned to VOLUME_SPLAT_MIN_ALPHA: kept with
     // probability alpha/min by a hash stable per tree and cell (no flicker),
