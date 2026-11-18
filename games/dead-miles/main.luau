@@ -5,7 +5,8 @@
 -- risk. Melee weapons wear out, ammo is nearly gone, guns are loud, and
 -- the nights are long: torches eat batteries. A hit leaves you injured
 -- (you limp until a first aid kit), a second hit puts you down; a dead
--- survivor comes back in seconds as a ghost and then as a new survivor.
+-- survivor haunts the group as a ghost until a stranger joins or the camp
+-- at the end of the night: that new person is theirs, with stats of their own.
 -- The run ends only when nobody is standing.
 --
 -- Controls: left stick moves, right stick aims, RB (or X) a quick hit, RT a
@@ -25,6 +26,7 @@ local land = require("lib/land")
 local props = require("lib/props")
 local dog = require("lib/dog")
 local icons = require("lib/icons")
+local people = require("lib/people")
 local v = vector.create
 
 -- Every encounter file in content/encounters, in name order.
@@ -371,9 +373,22 @@ local function give_body(u, pos, look)
 	u.t = 0
 	u.melee, u.dur = "fists", nil
 	u.gun, u.gun_dur = nil, nil
-	-- Some people last longer than others.
+	-- Every person is different, and some are better than others: breath,
+	-- legs and arms are rolled for each new body.
 	u.stamina_max = KNOBS.stamina * pick({ 0.75, 0.9, 1, 1, 1.15, 1.35 })
 	u.stamina = u.stamina_max
+	-- Their own dice, so who people are does not move the land around.
+	s.dice = ((s.dice or 12345) * 1103515245 + 12345) % 2147483648
+	local d = s.dice
+	local function roll(t)
+		d = (d * 1103515245 + 12345) % 2147483648
+		return t[(d // 65536) % #t + 1]
+	end
+	u.speed = roll({ 0.88, 0.94, 1, 1, 1.06, 1.12 })
+	u.strength = roll({ 0.8, 0.9, 1, 1, 1.12, 1.25 })
+	-- Who this is: shown on a profile card for a few seconds.
+	u.person = people.roll(roll)
+	u.card_t = 7
 	u.cd_melee, u.cd_gun, u.cd_shove, u.swing, u.shove_t = 0, 0, 0, 0, 0
 	u.invul = 1
 	u.search_t, u.revive_t = 0, 0
@@ -385,6 +400,19 @@ local function give_body(u, pos, look)
 		world.remove(u.ghost_ent)
 		u.ghost_ent = nil
 	end
+end
+
+-- A few words for a new person's best and worst: "quick, strong", "slow,
+-- short of breath". Nothing for an average one.
+local function traits(u)
+	local out = {}
+	local function say(x, lo, hi, low, high)
+		if x <= lo then table.insert(out, low) elseif x >= hi then table.insert(out, high) end
+	end
+	say(u.speed or 1, 0.94, 1.06, "slow", "quick")
+	say(u.strength or 1, 0.9, 1.12, "weak", "strong")
+	say((u.stamina_max or KNOBS.stamina) / KNOBS.stamina, 0.9, 1.15, "short of breath", "tireless")
+	return table.concat(out, ", ")
 end
 
 local function new_survivor(p, i)
@@ -577,16 +605,40 @@ local function encounter_fits(e, where, biome, day)
 	return true
 end
 
+-- Whether a choice in this encounter can bring someone into the group.
+local function offers_join(e)
+	if e.joins == nil then
+		e.joins = false
+		for _, ch in e.choices or {} do
+			for _, r in ch.results or { ch } do
+				if r.join then e.joins = true end
+			end
+		end
+	end
+	return e.joins
+end
+
+-- Somebody died and waits for a new person.
+local function someone_waits()
+	for _, u in s.survivors do
+		if u.state == "ghost" then return true end
+	end
+	return false
+end
+
 local function choose_encounter(where, biome, day)
+	-- While somebody waits, people who might join turn up far more often.
+	local waits = someone_waits()
+	local function weight(e) return (e.weight or 1) * (if waits and offers_join(e) then 6 else 1) end
 	local total = 0
 	for _, e in ENCOUNTERS do
-		if encounter_fits(e, where, biome, day) then total += e.weight or 1 end
+		if encounter_fits(e, where, biome, day) then total += weight(e) end
 	end
 	if total <= 0 then return nil end
 	local r = random.range(0, total)
 	for _, e in ENCOUNTERS do
 		if encounter_fits(e, where, biome, day) then
-			r -= e.weight or 1
+			r -= weight(e)
 			if r <= 0 then return e end
 		end
 	end
@@ -701,6 +753,27 @@ end
 -- A stranger who joins: a recruit the bots' code drives, and the body a
 -- player takes over when theirs dies.
 local function recruit(st, u)
+	-- Somebody who died is waiting for a new person: this one is theirs.
+	local wait = nil
+	for _, o in s.survivors do
+		if o.state == "ghost" and (wait == nil or (wait.bot and not o.bot)) then wait = o end
+	end
+	if wait then
+		local e = encounter_of(st) or {}
+		give_body(wait, st.pos, e.look)
+		wait.melee = e.held or "fists"
+		wait.dur = MELEE[wait.melee] and MELEE[wait.melee].dur or nil
+		hold_weapon(wait)
+		wait.invul = 2
+		local t = traits(wait)
+		popup(wait, if t ~= "" then "a new life: " .. t else "a new life", "#f2e6b0")
+		fx.ring(v(wait.pos.x, 0.05, wait.pos.z), { radius = 1.5, life = 0.5, color = wait.color, emissive = 0.2 })
+		sfx("revive", wait.pos, { pitch = 0.8 })
+		drop_stranger(st)
+		count("rejoined")
+		game.log((wait.name or "Someone") .. " goes on as the stranger who joined")
+		return
+	end
 	s.recruits += 1
 	local r = {
 		id = 1000 + s.recruits,
@@ -966,7 +1039,7 @@ local function add_chunk()
 	if c.camp then s.camp = c.camp end
 	if index > 1 and in_day > 0 then populate(c, day, in_day) end
 	-- An encounter: in a room of a building, on the path or at the camp.
-	if index > 1 and (in_day == 0 or random.chance(KNOBS.encounters)) then
+	if index > 1 and (in_day == 0 or random.chance(if someone_waits() then 0.75 else KNOBS.encounters)) then
 		local open = {}
 		for _, b in c.buildings do
 			if #b.rooms > 0 then table.insert(open, b) end
@@ -1589,7 +1662,7 @@ local function swing_land(u)
 	if #hits == 0 then count("misses") end
 	local hit = 0
 	for i = 1, math.min(#hits, cleave) do
-		hurt_zombie(hits[i].z, w.dmg * power, u.pos, knock * (0.5 + 0.5 * math.min(1, u.swing_power or 1)), dir(u.yaw))
+		hurt_zombie(hits[i].z, w.dmg * power * (u.strength or 1), u.pos, knock * (0.5 + 0.5 * math.min(1, u.swing_power or 1)), dir(u.yaw))
 		hit += 1
 		count("melee_hits")
 	end
@@ -1819,7 +1892,10 @@ local function make_camp()
 			u.injured = true
 			body.lie(u.fig, u.pos, u.yaw, false)
 		elseif u.state == "ghost" then
-			u.t = 0
+			-- Someone at the camp joins whoever lost their person.
+			respawn(u)
+			u.pos = s.camp + v(random.range(-2.5, 2.5), 0, random.range(1.5, 3))
+			body.place(u.fig, u.pos, u.yaw)
 		end
 	end
 	for _, z in s.zombies do
@@ -1872,6 +1948,10 @@ local function act(u, it, dt)
 		u.popup.t -= dt
 		if u.popup.t <= 0 then u.popup = nil end
 	end
+	if u.card_t then
+		u.card_t -= dt
+		if u.card_t <= 0 then u.card_t = nil end
+	end
 	if u.state == "gone" then return end
 
 	if u.state == "ghost" then
@@ -1887,7 +1967,8 @@ local function act(u, it, dt)
 			noise(u.pos, 9, 0)
 			count("moans")
 		end
-		if u.t <= 0 and (u.lives > 0 or #s.survivors > 1) then respawn(u) end
+		-- No coming back on a timer: the next stranger who joins the group,
+		-- or the camp at the end of the night, gives you a new person.
 		return
 	end
 
@@ -2093,7 +2174,7 @@ local function act(u, it, dt)
 	end
 	-- Worn out, even the jog drags.
 	local worn = 1 - 0.25 * math.clamp((tiredness(u) - 0.6) / 0.4, 0, 1)
-	local speed = KNOBS.walk * worn * (if busy then 0 else (if u.charging then 0.35 elseif u.cd_melee > 0.2 then 0.5 else 1)) * (if u.injured then KNOBS.limp else 1) / (1 + KNOBS.grab * grabs) * (if running then KNOBS.run else 1)
+	local speed = KNOBS.walk * (u.speed or 1) * worn * (if busy then 0 else (if u.charging then 0.35 elseif u.cd_melee > 0.2 then 0.5 else 1)) * (if u.injured then KNOBS.limp else 1) / (1 + KNOBS.grab * grabs) * (if running then KNOBS.run else 1)
 	-- Running is heard: footfalls every so often.
 	u.run_t = (u.run_t or 0) - dt
 	if running and u.run_t <= 0 then
@@ -3447,6 +3528,7 @@ local function draw()
 
 	-- Button rows of people standing together stack instead of overlapping.
 	local rows_at = {}
+	local cards = {}
 	local function free_y(cx, y)
 		local moved = true
 		while moved do
@@ -3498,7 +3580,9 @@ local function draw()
 					bar(px - 30 * k, py + 12 * k, 60 * k, 6 * k, u.t / KNOBS.downed, "#ff4a3a")
 				elseif u.state == "ghost" then
 					local gx, gy = proj(v(u.pos.x, 1.4, u.pos.z), u)
-					if gx then bar(gx - 24 * k, gy + 26 * k, 48 * k, 4 * k, 1 - u.t / KNOBS.ghost, c) end
+					if gx and not u.bot then
+						hud.text("waiting for someone to join", gx - 110 * k, gy + 22 * k, { size = 15 * k, align = "center", width = 220 * k, color = { 0.8, 0.85, 0.95, 0.8 } })
+					end
 				end
 				if u.popup then
 					icons.text(u.popup.text, px - 100 * k, py - 140 * k - (1.8 - u.popup.t) * 20 * k, { size = 20 * k, align = "center", width = 200 * k, color = u.popup.color })
@@ -3516,6 +3600,33 @@ local function draw()
 							end
 							button_row(qx, free_y(qx, qy), row, k)
 						end
+					end
+				end
+				-- Who you are now: a profile card for a few seconds after a new
+				-- person, in the corner of your part of the screen.
+				if u.card_t and u.person and not u.bot and u.state == "ok" then
+					local vx, vy, vw, vh = hud.view(u.id)
+					local a = math.min(1, u.card_t * 1.5, (7 - u.card_t) * 4)
+					local cw, ch = 360 * k, 138 * k
+					-- People sharing a view stack their cards.
+					local key = math.floor(vx) .. ":" .. math.floor(vy)
+					cards[key] = (cards[key] or 0) + 1
+					local cx, cy = vx + 18 * k, vy + vh - (ch + 10 * k) * cards[key] - 8 * k
+					hud.box(cx, cy, cw, ch, { 0.05, 0.05, 0.06, 0.85 * a })
+					hud.box(cx, cy, 4 * k, ch, { c[1], c[2], c[3], a })
+					hud.text(u.person.name, cx + 16 * k, cy + 8 * k, { size = 22 * k, width = cw - 24 * k, color = { 0.96, 0.94, 0.9, a } })
+					hud.text(u.person.before, cx + 16 * k, cy + 36 * k, { size = 14 * k, width = cw - 28 * k, color = { 0.78, 0.75, 0.7, a } })
+					hud.text(u.person.now, cx + 16 * k, cy + 56 * k, { size = 14 * k, width = cw - 28 * k, color = { 0.62, 0.6, 0.56, a } })
+					local stats = {
+						{ "legs", ((u.speed or 1) - 0.82) / 0.36 },
+						{ "arms", ((u.strength or 1) - 0.7) / 0.6 },
+						{ "breath", ((u.stamina_max or KNOBS.stamina) / KNOBS.stamina - 0.65) / 0.8 },
+					}
+					for i, st in stats do
+						local sx = cx + 16 * k + (i - 1) * 104 * k
+						hud.text(st[1], sx, cy + ch - 34 * k, { size = 13 * k, width = 90 * k, color = { 0.7, 0.68, 0.64, a } })
+						hud.box(sx, cy + ch - 16 * k, 90 * k, 5 * k, { 1, 1, 1, 0.12 * a })
+						hud.box(sx, cy + ch - 16 * k, 90 * k * math.clamp(st[2], 0.05, 1), 5 * k, { c[1], c[2], c[3], a })
 					end
 				end
 				-- The talk card: who it is, what they say, the choices.
@@ -3662,6 +3773,28 @@ local debug = {
 			spawn_zombie("shambler", v((other.x0 + other.x1) / 2, 0, (other.z0 + other.z1) / 2), "idle")
 		end
 		return "in room at " .. math.floor(m.x) .. "," .. math.floor(m.z)
+	end,
+	-- debug.die(2): survivor 2 dies now; debug.join(): a stranger joins
+	-- (the person who waits gets them). To test the new-person flow.
+	die = function(i)
+		s = state.s
+		local u = s.survivors[i or 1]
+		if not u or not in_body(u) then return "no body" end
+		die(u)
+		return "died: " .. tostring(u.state)
+	end,
+	join = function()
+		s = state.s
+		local u = s.survivors[1]
+		local e = nil
+		for _, x in ENCOUNTERS do
+			if x.id == "joiner" then e = x end
+		end
+		if not e then return "no joiner" end
+		local st = { file = e.file, pos = u.pos + v(1.5, 0, 0), nobody = true, done = true, reach = 0 }
+		table.insert(s.strangers, st)
+		recruit(st, u)
+		return "joined"
 	end,
 	-- debug.apart(30): the last survivor 30 m further east, to split the screen.
 	apart = function(m)
