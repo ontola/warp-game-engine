@@ -1272,6 +1272,48 @@ impl Runtime {
         }
     }
     #[test]
+    #[ignore="exclusive GPU: forest pipeline layouts under a Mac storage-buffer limit"]
+    fn forest_layouts_under_mac_storage_limit() {
+        // Every pipeline layout counts every storage buffer its bind group
+        // layouts declare, per stage, whatever an entry point reads. Build a
+        // forest scene on a device with the 10 storage buffers most Macs
+        // give and list what fails. Each layout split removes a name below;
+        // the list ends empty when the forest runs on Macs.
+        use super::*;
+        use crate::vegetation_asset::CookedPlant;
+        crate::gpu::TEST_STORAGE_BUFFERS.with(|c| c.set(Some(10)));
+        let gpu=Gpu::new().unwrap();
+        crate::gpu::TEST_STORAGE_BUFFERS.with(|c| c.set(None));
+        let errors=std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
+        let sink=errors.clone();
+        gpu.device.on_uncaptured_error(std::sync::Arc::new(move |e: wgpu::Error| {
+            let text=e.to_string();
+            for line in text.lines() {
+                if let Some(rest)=line.split("create_pipeline_layout, label = '").nth(1) {sink.lock().unwrap().insert(format!("layout {}",rest.trim_end_matches("'")));}
+            }
+        }));
+        let source=crate::vegetation_asset::tests::aggregate_fixture();let config=crate::vegetation_asset::tests::aggregate_config();
+        let mut cooked=CookedPlant::cook_aggregate(&source,config).unwrap();cooked.cook_proxy(&source,config,3).unwrap();
+        let policy=crate::aggregate_lod::Policy {allow_sampled_optics:false,..Default::default()};
+        let tree=RootPlacement {up:Vec3::Y,pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0};
+        let mut scene=Scene::default();plant(&mut scene,std::slice::from_ref(&cooked),&[tree],1,policy).unwrap();
+        let light=crate::Lighting::default();
+        let built=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{crate::Renderer::new(&gpu,&scene,&light);}));
+        let _=gpu.device.poll(wgpu::PollType::Wait {submission_index:None,timeout:Some(std::time::Duration::from_secs(30))});
+        let mut failures:Vec<String>=errors.lock().unwrap().iter().cloned().collect();
+        if let Err(panic)=built {
+            let text=panic.downcast_ref::<String>().cloned().or_else(||panic.downcast_ref::<&str>().map(|s|s.to_string())).unwrap_or_default();
+            failures.push(format!("panic {}",text.split(": ").last().unwrap_or("").trim_matches('"')));
+        }
+        // Known failures, removed one pipeline family at a time. The runtime
+        // still refuses below 16 storage buffers, so layouts built after it
+        // (refine, select, residency, materialize) are not reached yet.
+        let known:Vec<&str>=vec!["layout cached voxel sun splats","layout voxel forest","layout voxel sun splats",
+            "panic GPU forest materialization requires 16 storage bindings"];
+        println!("{failures:#?}");
+        assert_eq!(failures,known,"forest pipeline layouts over the Mac limit changed");
+    }
+    #[test]
     #[ignore="exclusive GPU forest draw fixture"]
     fn gpu_forest_voxels_overflow_split_and_teleport() {
         use super::*;
