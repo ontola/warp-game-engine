@@ -458,8 +458,8 @@ impl Runtime {
             let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("GPU forest materialization"),entries:&(0..18).map(|binding|wgpu::BindGroupLayoutEntry {
                 binding,visibility:wgpu::ShaderStages::COMPUTE,count:None,ty:wgpu::BindingType::Buffer {ty:if binding==0 || binding==16 {wgpu::BufferBindingType::Uniform}else{wgpu::BufferBindingType::Storage {read_only:binding<8 || binding==11 || binding==17}},has_dynamic_offset:binding==16,min_binding_size:None},
             }).collect::<Vec<_>>()});
-            let buffers=[&uniform,&selector._instances,&selector._nodes,&branches,&reps,&residency.slots,&selector.fallback,&proxies,instances,volumes,&choices,&selector.demand,&root_history,&pose_cache,&pose_work,&root_poses,&levels,&selector.asset_pages];
-            let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("GPU forest materialization"),layout:&layout,entries:&buffers.iter().enumerate().map(|(i,b)|wgpu::BindGroupEntry {binding:i as u32,resource:if i==16 {wgpu::BindingResource::Buffer(wgpu::BufferBinding {buffer:b,offset:0,size:std::num::NonZeroU64::new(16)})}else{b.as_entire_binding()}}).collect::<Vec<_>>()});
+            let buffers=[&uniform,&selector._instances.buffer,&selector._nodes.buffer,&branches,&reps,&residency.slots,&selector.fallback,&proxies,instances,volumes,&choices,&selector.demand,&root_history,&pose_cache,&pose_work,&root_poses,&levels,&selector.asset_pages];
+            let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("GPU forest materialization"),layout:&layout,entries:&buffers.iter().enumerate().map(|(i,b)|wgpu::BindGroupEntry {binding:i as u32,resource:if i==16 {wgpu::BindingResource::Buffer(wgpu::BufferBinding {buffer:b,offset:0,size:std::num::NonZeroU64::new(16)})}else if i==1 {selector._instances.binding()}else if i==2 {selector._nodes.binding()}else{b.as_entire_binding()}}).collect::<Vec<_>>()});
             let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("GPU forest materialization"),bind_group_layouts:&[Some(&layout)],immediate_size:0});
             let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("GPU forest materialization"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_materialize.wgsl").into())});
             let pipeline=gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some("GPU forest materialization"),layout:Some(&pl),module:&module,entry_point:Some("materialize"),compilation_options:Default::default(),cache:gpu.pipeline_cache()});
@@ -487,8 +487,8 @@ impl Runtime {
             // Bound each upload even when every reserved root changes at once.
             for batch in changes.chunks(16384) {
             let upload=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some("forest population delta"),contents:bytemuck::cast_slice(batch),usage:wgpu::BufferUsages::STORAGE});
-            let buffers=[&upload,&self.selector._instances,&self.proxy_buffer,&self.source_buffer];
-            let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("forest population publish"),layout:&self.publish_layout,entries:&buffers.iter().enumerate().map(|(i,b)|wgpu::BindGroupEntry {binding:i as u32,resource:b.as_entire_binding()}).collect::<Vec<_>>()});
+            let buffers=[&upload,&self.selector._instances.buffer,&self.proxy_buffer,&self.source_buffer];
+            let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("forest population publish"),layout:&self.publish_layout,entries:&buffers.iter().enumerate().map(|(i,b)|wgpu::BindGroupEntry {binding:i as u32,resource:if i==1 {self.selector._instances.binding()}else{b.as_entire_binding()}}).collect::<Vec<_>>()});
             {let mut pass=encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {label:Some("forest population publish"),timestamp_writes:None});
                 pass.set_pipeline(&self.publish_pipeline);pass.set_bind_group(0,&bind,&[]);pass.dispatch_workgroups((batch.len()as u32).div_ceil(64),1,1);}
             }
@@ -508,8 +508,8 @@ impl Runtime {
             let(tx,rx)=std::sync::mpsc::sync_channel(1);out.slice(..).map_async(wgpu::MapMode::Read,move|r|{let _=tx.send(r);});gpu.wait();rx.recv().map_err(|e|e.to_string())?.map_err(|e|e.to_string())?;
             let data=out.slice(..).get_mapped_range().map_err(|e|e.to_string())?;Ok(data.to_vec())
         }
-        let slot_bytes=read(gpu,&self.residency.slots)?;let node_bytes=read(gpu,&self.selector._nodes)?;let page_bytes=read(gpu,&self.selector.asset_pages)?;
-        let root_bytes=read(gpu,&self.selector._instances)?;let publication_bytes=read(gpu,&self.selector.demand)?;let fallback_bytes=read(gpu,&self.selector.fallback)?;
+        let slot_bytes=read(gpu,&self.residency.slots)?;let node_bytes:Vec<u8>=bytemuck::cast_slice(&self.selector._nodes.read(gpu)).to_vec();let page_bytes=read(gpu,&self.selector.asset_pages)?;
+        let root_bytes:Vec<u8>=bytemuck::cast_slice(&self.selector._instances.read(gpu)).to_vec();let publication_bytes=read(gpu,&self.selector.demand)?;let fallback_bytes=read(gpu,&self.selector.fallback)?;
         let slots:Vec<crate::foliage_residency::ResidentSlot>=slot_bytes.chunks_exact(32).map(bytemuck::pod_read_unaligned).collect();
         let nodes:Vec<crate::foliage_select::Node>=node_bytes.chunks_exact(48).map(bytemuck::pod_read_unaligned).collect();
         let pages:Vec<[u32;4]>=page_bytes.chunks_exact(16).map(bytemuck::pod_read_unaligned).collect();

@@ -60,7 +60,9 @@ impl ConsumerView {
 struct Consumer {vp:[f32;16],pixels:[f32;4]}
 #[repr(C)]
 #[derive(Clone,Copy,Pod,Zeroable)]
-struct Uniform {consumers:[Consumer;32],consumer_count:[u32;4],vp:[f32;16],previous_vp:[f32;16],pixels:[f32;4],counts:[u32;4]}
+struct Uniform {consumers:[Consumer;32],consumer_count:[u32;4],vp:[f32;16],previous_vp:[f32;16],pixels:[f32;4],counts:[u32;4],
+    /// x: first vec4 of the trees in the catalog buffer (Region::catalog).
+    catalog:[u32;4]}
 
 fn validate(nodes:&[Node],instances:&[Instance],capacity:u32)->Result<(),String> {
     if nodes.is_empty() || instances.is_empty() || capacity==0 {return Err("empty foliage selection input/capacity".into());}
@@ -114,6 +116,17 @@ impl Region {
     /// Selected records (vec4 per record), their consumer masks and the
     /// per-tree direct roots in one buffer, each range 256-byte aligned
     /// (foliage_refine.wgsl selected_consumers_at / selected_direct_at).
+    /// Nodes (with their work tables) from 0 and trees from the next
+    /// 256-byte boundary, read-only (foliage_refine.wgsl / foliage_select.wgsl
+    /// node_* / tree_* accessors). The trees range stays writable from the CPU.
+    fn catalog(gpu:&Gpu,nodes:&[u8],trees:&[u8])->(Region,Region) {
+        let at=(nodes.len()as u64).div_ceil(256)*256;let mut bytes=vec![0u8;(at as usize)+trees.len()];
+        bytes[..nodes.len()].copy_from_slice(nodes);bytes[at as usize..].copy_from_slice(trees);
+        use wgpu::util::DeviceExt;
+        let buffer=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some("foliage hierarchy and trees"),contents:&bytes,
+            usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC});
+        (Region {buffer:buffer.clone(),offset:0,size:nodes.len()as u64},Region {buffer,offset:at,size:trees.len()as u64})
+    }
     fn selected(gpu:&Gpu,capacity:u32,trees:u32)->(Region,Region,Region) {
         let align=|n:u64|n.div_ceil(256)*256;
         let records=capacity as u64*16;let consumers=align(records);let direct=consumers+align(capacity as u64*4);
@@ -137,7 +150,9 @@ impl Region {
 }
 pub struct Selector {
     source_cluster_budget:std::sync::atomic::AtomicU32,
-    pub(crate) _nodes:wgpu::Buffer,pub(crate) _instances:wgpu::Buffer,pub(crate) uniform:wgpu::Buffer,
+    /// The hierarchy (nodes, then their source work tables) and the trees, in one
+    /// read-only buffer that refine and select bind whole (Region::catalog).
+    pub(crate) _nodes:Region,pub(crate) _instances:Region,pub(crate) uniform:wgpu::Buffer,
     /// vec4(instance ID, node ID, representation ID, generation).
     pub records:Region,
     /// Per-record camera256/shadow512 demand. Zero is the legacy union contract.
@@ -232,7 +247,7 @@ impl Selector {
                 usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::INDIRECT,mapped_at_creation:false});
             let uniform=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("foliage selector view"),size:std::mem::size_of::<Uniform>()as u64,
                 usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
-            let entries=(0..16).map(|binding|wgpu::BindGroupLayoutEntry {binding,visibility:wgpu::ShaderStages::COMPUTE,count:None,
+            let entries=(0..16).filter(|&binding|binding!=2).map(|binding|wgpu::BindGroupLayoutEntry {binding,visibility:wgpu::ShaderStages::COMPUTE,count:None,
                 ty:if binding==7 {wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Float {filterable:false},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}}
                 else {wgpu::BindingType::Buffer {ty:if binding==0 {wgpu::BufferBindingType::Uniform} else {wgpu::BufferBindingType::Storage {read_only:binding<3 || binding==13}},has_dynamic_offset:false,min_binding_size:None}}}).collect::<Vec<_>>();
             let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("foliage GPU selection"),entries:&entries});
@@ -244,9 +259,10 @@ impl Selector {
             // (foliage_refine.wgsl binds it whole as `selected`); each other pass
             // binds its own 256-byte-aligned range.
             let (records,record_consumers,direct)=Region::selected(gpu,capacity,instances.len()as u32);
-            let refiner=crate::foliage_refine::Refiner::new(gpu,work_capacity,[(record_consumers.offset/4)as u32,(direct.offset/4)as u32]);let counters=refiner.state.clone();
+            let (_nodes,_instances)=Region::catalog(gpu,bytemuck::cast_slice(&uploaded),bytemuck::cast_slice(instances));
+            let refiner=crate::foliage_refine::Refiner::new(gpu,work_capacity,[(record_consumers.offset/4)as u32,(direct.offset/4)as u32,(_instances.offset/16)as u32,nodes.len()as u32]);let counters=refiner.state.clone();
             Self {source_cluster_budget:std::sync::atomic::AtomicU32::new(DEFAULT_SOURCE_CLUSTER_BUDGET),seed_visibility:storage("foliage current seed visibility",instances.len()as u64*4),seed_classifier:crate::foliage_seed_visibility::Visibility::new(gpu),refiner,asset_pages:upload("foliage asset publication",bytemuck::cast_slice(&asset_state)),asset_requests:storage("foliage compact asset demand",16+page_count as u64*16),asset_state:std::sync::Mutex::new(asset_state),pinned_pages,compact_assets:make("compact_asset_requests"),children:upload("shared foliage child spans",bytemuck::cast_slice(&children)),work:[storage("unused legacy frontier A",24),storage("unused legacy frontier B",24)],levels,
-                _nodes:upload("shared foliage hierarchy",bytemuck::cast_slice(&uploaded)),_instances:upload("persistent foliage instances",bytemuck::cast_slice(instances)),uniform,
+                _nodes,_instances,uniform,
                 records,record_consumers,deferred:storage("deferred foliage subtrees",deferred_capacity as u64*8),
                 counters,arguments:storage("foliage indirect arguments",24),fallback:storage("foliage root fallbacks",instances.len()as u64*4),
                 direct,
@@ -272,8 +288,8 @@ impl Selector {
     }
     fn bind(&self,gpu:&Gpu,hzb:&wgpu::TextureView)->wgpu::BindGroup {self.bind_work(gpu,hzb,0)}
     fn bind_work(&self,gpu:&Gpu,hzb:&wgpu::TextureView,front:usize)->wgpu::BindGroup {
-        let buffers=[self.uniform.as_entire_binding(),self._nodes.as_entire_binding(),self._instances.as_entire_binding(),self.records.binding(),self.deferred.as_entire_binding(),self.counters.as_entire_binding(),self.fallback.as_entire_binding()];
-        let mut entries=buffers.into_iter().enumerate().map(|(i,resource)|wgpu::BindGroupEntry {binding:i as u32,resource}).collect::<Vec<_>>();
+        let buffers=[self.uniform.as_entire_binding(),self._nodes.buffer.as_entire_binding(),self.records.binding(),self.deferred.as_entire_binding(),self.counters.as_entire_binding(),self.fallback.as_entire_binding()];
+        let mut entries=buffers.into_iter().zip([0u32,1,3,4,5,6]).map(|(resource,binding)|wgpu::BindGroupEntry {binding,resource}).collect::<Vec<_>>();
         entries.push(wgpu::BindGroupEntry {binding:7,resource:wgpu::BindingResource::TextureView(hzb)});
         entries.push(wgpu::BindGroupEntry {binding:8,resource:self.direct.binding()});
         entries.push(wgpu::BindGroupEntry {binding:9,resource:self.demand.as_entire_binding()});
@@ -291,7 +307,7 @@ impl Selector {
     pub fn first(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,vp:Mat4,previous_vp:Mat4,size:[u32;2],error:f32,history_valid:bool,hzb:&wgpu::TextureView)->Result<(),String> {
         if !vp.is_finite() || !previous_vp.is_finite() || size.contains(&0) || !error.is_finite() || error<0. {return Err("invalid foliage selection view".into());}
         gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&Uniform {consumers:[Consumer::zeroed();32],consumer_count:[0;4],vp:vp.to_cols_array(),previous_vp:previous_vp.to_cols_array(),
-            pixels:[size[0]as f32,size[1]as f32,error,0.],counts:[self.count,self.capacity,self.deferred_capacity,u32::from(history_valid)]}));
+            pixels:[size[0]as f32,size[1]as f32,error,0.],counts:[self.count,self.capacity,self.deferred_capacity,u32::from(history_valid)],catalog:[(self._instances.offset/16)as u32,0,0,0]}));
         enc.clear_buffer(&self.counters,0,Some(64));enc.clear_buffer(&self.fallback,0,None);self.direct.clear(enc);self.record_consumers.clear(enc);
         let bind=self.bind(gpu,hzb);let mut pass=enc.begin_compute_pass(&Default::default());
         pass.set_bind_group(0,&bind,&[]);pass.set_pipeline(&self.first);pass.dispatch_workgroups(self.count.div_ceil(64),1,1);
@@ -344,7 +360,7 @@ impl Selector {
             *dst=v.packed()?;
         }
         gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&Uniform {consumers,consumer_count:[views.len()as u32,branch_budget,raster_budget[0],raster_budget[1]],
-            vp:views[0].projection.view_projection.to_cols_array(),previous_vp:views[0].projection.view_projection.to_cols_array(),pixels:[0.,0.,error,self.source_cluster_budget.load(std::sync::atomic::Ordering::Relaxed) as f32],counts:[self.count,self.capacity,self.deferred_capacity,u32::from(current.is_some())]}));
+            vp:views[0].projection.view_projection.to_cols_array(),previous_vp:views[0].projection.view_projection.to_cols_array(),pixels:[0.,0.,error,self.source_cluster_budget.load(std::sync::atomic::Ordering::Relaxed) as f32],counts:[self.count,self.capacity,self.deferred_capacity,u32::from(current.is_some())],catalog:[(self._instances.offset/16)as u32,0,0,0]}));
         enc.clear_buffer(&self.counters,0,Some(64));enc.clear_buffer(&self.fallback,0,None);self.direct.clear(enc);self.record_consumers.clear(enc);
         let binds=[self.bind_work(gpu,empty_depth,0),self.bind_work(gpu,empty_depth,1)];
         mark(enc,2);
@@ -516,7 +532,7 @@ mod tests {
    assert_eq!(read(&gpu,&selector.demand)[1],512|if visible {256}else{0});
   }
   // Wind envelope crossing the near plane must fail open, even with full depth.
-  trees[0].scale[1]=1.;gpu.queue.write_buffer(&selector._instances,0,bytemuck::cast_slice(&trees));
+  trees[0].scale[1]=1.;selector._instances.write(&gpu,0,bytemuck::cast_slice(&trees));
   let mut enc=gpu.device.create_command_encoder(&Default::default());
   let views=[ConsumerView::camera(view),ConsumerView::shadow(view)];
   selector.union_consumers_budget_depth(&gpu,&mut enc,&views,1.,4,[100;2],&clear,Some(&[CameraDepth {projection:Mat4::IDENTITY,pyramid:&blocked}])).unwrap();gpu.queue.submit([enc.finish()]);
