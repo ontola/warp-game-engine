@@ -11,6 +11,7 @@ use render::{
 };
 use serde::Deserialize;
 mod warp_human;
+mod warp_skin;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},

@@ -2693,13 +2693,16 @@ fn skin_hair_shares(flags: u32, alpha: f32) -> vec2<f32> {
     return vec2<f32>(select(0.0, 1.0, is_skin), select(0.0, 1.0, is_hair));
 }
 
-// Metres of material between p and the sun, from the sun shadow map's
-// nearest texel (orthographic: depth is linear along the light). Large
-// when the map does not cover p. Shadow-map depth is only accurate to about
-// a texel, which is added so that silhouette texels never glow. The maps are
-// read directly (not passed as arguments): shaders that include this file
-// declare them differently.
-fn sun_thickness(p: vec3<f32>) -> f32 {
+// How much sunlight reaches p through the skin in front of it, per channel:
+// the metres of material between p and the sun come from the sun shadow map
+// (orthographic: depth is linear along the light), and the four texels
+// round p are blended, so the result follows the surface and not the map's
+// grid (one nearest texel printed its squares on a cheek turned from the
+// sun). Shadow-map depth is only accurate to about a texel, which is added
+// so that silhouette texels never glow; none where the map does not cover p.
+// The maps are read directly (not passed as arguments): shaders that
+// include this file declare them differently.
+fn sun_through_skin(p: vec3<f32>) -> vec3<f32> {
     var projection = light.shadow_view_proj;
     var world_texel = light.sky.w;
     // The finest sun clipmap level that covers p, else the shared map.
@@ -2715,17 +2718,29 @@ fn sun_thickness(p: vec3<f32>) -> f32 {
     }
     let c = projection * vec4<f32>(p, 1.0);
     let uv = c.xy * vec2<f32>(0.5, -0.5) + 0.5;
-    if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || c.z < 0.0 || c.z > 1.0 { return 1e3; }
-    var occluder: f32;
-    if level >= 0 {
-        let size = vec2<i32>(textureDimensions(near_shadow_tex));
-        occluder = textureLoad(near_shadow_tex, clamp(vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(0), size - 1), level, 0);
-    } else {
-        let size = vec2<i32>(textureDimensions(shadow_tex));
-        occluder = textureLoad(shadow_tex, clamp(vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(0), size - 1), 0);
-    }
+    if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || c.z < 0.0 || c.z > 1.0 { return vec3<f32>(0.0); }
+    var size = vec2<i32>(textureDimensions(shadow_tex));
+    if level >= 0 { size = vec2<i32>(textureDimensions(near_shadow_tex)); }
+    let q = uv * vec2<f32>(size) - 0.5;
+    let base = vec2<i32>(floor(q));
+    let f = fract(q);
     let row_z = vec3<f32>(projection[0].z, projection[1].z, projection[2].z);
-    return max(c.z - occluder, 0.0) / max(length(row_z), 1e-12) + world_texel * 1.5;
+    let metres = 1.0 / max(length(row_z), 1e-12);
+    var through = vec3<f32>(0.0);
+    for (var i = 0; i < 4; i++) {
+        let corner = vec2<i32>(i & 1, i >> 1);
+        let texel = clamp(base + corner, vec2<i32>(0), size - 1);
+        var occluder: f32;
+        if level >= 0 {
+            occluder = textureLoad(near_shadow_tex, texel, level, 0);
+        } else {
+            occluder = textureLoad(shadow_tex, texel, 0);
+        }
+        let thickness = max(c.z - occluder, 0.0) * metres + world_texel * 1.5;
+        let w = mix(1.0 - f, f, vec2<f32>(corner));
+        through += w.x * w.y * exp(-vec3<f32>(thickness) / (SKIN_PATH * SKIN_SPREAD));
+    }
+    return through;
 }
 
 // Kajiya-Kay strand highlight around tangent t, normalised so that its
@@ -2755,8 +2770,7 @@ fn skin_hair_direct(albedo: vec3<f32>, n: vec3<f32>, surface_n: vec3<f32>, v: ve
         // path through the skin. Thickness from the sun shadow map.
         let back = clamp(-dot(surface_n, l), 0.0, 1.0);
         if back > 0.0 {
-            let through = exp(-vec3<f32>(sun_thickness(p)) / (SKIN_PATH * SKIN_SPREAD));
-            rad += albedo / PI * sun_open * through * back * 0.6;
+            rad += albedo / PI * sun_open * sun_through_skin(p) * back * 0.6;
         }
         // Two specular lobes: a thin oily sheen over the broader skin.
         let f0 = vec3<f32>(0.028);
