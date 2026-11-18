@@ -56,3 +56,14 @@ most of the saving came from fewer needles, which shows as proxy balls in
 near crowns (first come, first served splat reservations refuse the near
 trees' late refinements). f9b1613c keeps the full needle budget on medium
 and half on low; those steps are not timed yet.
+
+## Later the same night
+
+| change | result |
+| --- | --- |
+| Splat loop reads the tree's pose and grid once per thread (32151383) | No effect: voxel splats 6.30 / 3.52 / 5.43 before and after. |
+| Splat loop reads three extinction values per cell instead of the whole 128-byte cell (ca99d058) | voxel splats 6.30 / 3.86 / 5.41 to 1.72 / 1.19 / 1.51 ms; covered_ms 21.2 / 19.6 / 17.8 to 16.4 / 16.7 / 13.9. Image diff 0.19 / 0.002 / 0.05, same splat count. The pass was memory bound. |
+| Tier steps of f9b1613c | covered_ms high 21.15 / 19.17 / 18.27, medium 19.95 / 19.24 / 16.83, low 16.54 / 15.70 / 13.96 (before ca99d058). Medium near equals high in the image; low near keeps a few balls where the 4M splat cap refuses 8k camera requests. |
+| Page admission by urgency with a resident bias (not committed) | No effect stationary; flying, ten times the evictions for a few more source slots. The cause was the dependency set, not the order. |
+| Error-ordered gate in fast_round (not committed) | Worse: more refusals at tier low near, an even/odd alternation between frames, +0.8 to +1.3 ms from the extra rounds. |
+| Branch voxel slots page their selected mip and coarser only (1c134042) | Default: pages and slots unchanged, covered_ms within 0.5; image differs 4.5 at crowns and over (under investigation: the shadow consumer can no longer pick a finer level than the camera's). Fine cells: resident pages 251 to 394 and voxel slots 4.2k to 14.7k at near, but near trees still miss pages; the arena fills at about 400 pages. |
