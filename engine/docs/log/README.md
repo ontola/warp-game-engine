@@ -180,6 +180,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
 ## Effects and content
 
 - [Warp Humans posture in Luau games, 18 November](2026-11-18-warp-humans-posture.md)
+- [Warp Humans skin and eyes from the seed, 18 November](2026-11-18-warp-humans-seed-skin.md)
 - [GPU particles first pass, 8 November](2026-11-08-gpu-particles.md)
 - [Baked smoke scalability baseline, 31 October](baked-smoke-scaling.md)
 - [Growing Guns crowd silhouettes, 29 October](growing-guns-crowd.md)
