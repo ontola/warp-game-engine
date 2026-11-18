@@ -3,7 +3,7 @@
 //! how it falls. No groom mesh: a strand starts on the head's skin, leaves
 //! it at an angle, bends under its weight and rests on the skull. The
 //! renderer draws the strands as they are (render::humans::PlayerStrands).
-use super::warp_skin::{hash, noise, smooth, unit, FACE, METRES};
+use super::warp_skin::{hash, hash3, noise, smooth, unit, FACE, METRES};
 use glam::Vec3;
 use render::humans::BodyVertex;
 
@@ -149,7 +149,14 @@ impl Cut {
         } else if years > 50. && !coily && matches!(style, Style::Crop | Style::Fringe) && roll(27) < 0.6 {
             style = if roll(28) < 0.6 { Style::SidePart } else { Style::SweptBack };
         }
-        Self { coil: f32::from(coily), recede, thin, grey, full, ..Self::styled(seed, style) }
+        let cut = Self { coil: f32::from(coily), recede, thin, grey, full, ..Self::styled(seed, style) };
+        if !coily {
+            return cut;
+        }
+        // Coiled hair is not combed flat or aside: it stands, and a short
+        // cut of it is shorter than the same cut of straight hair.
+        let top = if style == Style::Crop { 0.55 * cut.top } else { cut.top };
+        Self { top, taper: cut.taper.min(top), lift: 0.9, sweep: 0., part: 0., bangs: 0., wave: 0., ..cut }
     }
 
     pub fn styled(seed: u32, style: Style) -> Self {
@@ -219,7 +226,7 @@ impl Cut {
             },
             // Grown out evenly all round, a little shorter low down.
             Style::Afro => {
-                let top = 0.045 + 0.06 * roll(2).powi(2);
+                let top = 0.03 + 0.05 * roll(2).powi(2);
                 Self { top, taper: 0.6 * top, band: 0.5, fade: 1., lift: 0.9, mess: 1., wave: 0., ..short }
             }
             // Parted in the middle and cut round at the ears.
@@ -374,7 +381,27 @@ fn grow(root: Vec3, normal: Vec3, cut: Cut, skull: &Skull, id: u32) -> [Vec3; PO
     let roll = |k: u32| unit(hash(id.wrapping_mul(0x85eb_ca6b) ^ k));
     // Hair lies as its lock does: neighbours share length and bend.
     let lock = |k: u32| 0.5 + 0.5 * noise(root, 0.012, cut.seed ^ k);
-    let uneven = 0.78 + 0.2 * lock(11) + 0.12 * roll(1);
+    // Coiled hair grows in small tufts: the hairs of a tuft gather a few
+    // millimetres out and wind together as one coil. It stands straight
+    // off the round of the head, whatever the skin does under it.
+    // The tufts are not in rows: where one ends and the next begins wanders.
+    let astray = Vec3::new(noise(root, 0.011, cut.seed ^ 0xa1), noise(root, 0.011, cut.seed ^ 0xa2), noise(root, 0.011, cut.seed ^ 0xa3));
+    let cell = (root / TUFT + astray * 1.5).floor();
+    let tuft = hash3([cell.x as i32, cell.y as i32, cell.z as i32], cut.seed ^ 0xc1);
+    let of_tuft = |k: u32| unit(hash(tuft ^ k));
+    // Low on the head it stands out more than down, and each tuft a little
+    // its own way: grown out it is a ball, not a curtain.
+    let normal = {
+        let round = skull.outward(root) + Vec3::Y * 0.8 * smooth(0.05, -0.06, root.y);
+        let astray = (Vec3::new(of_tuft(21), of_tuft(22), of_tuft(23)) - 0.5) * 0.3;
+        normal.lerp((round + astray).normalize_or(normal), 0.9 * cut.coil).normalize_or(normal)
+    };
+    let gather = {
+        let centre = (cell - astray * 1.5 + Vec3::splat(0.5) + (Vec3::new(of_tuft(1), of_tuft(2), of_tuft(3)) - 0.5) * 0.4) * TUFT;
+        let to = centre - root;
+        (to - normal * to.dot(normal)) * 0.6 * cut.coil
+    };
+    let uneven = (0.78 + 0.2 * lock(11) + 0.12 * roll(1)) * (1. - cut.coil) + (0.92 + 0.10 * of_tuft(7)) * cut.coil;
     let length = cut.length(root, skull.centre.y + skull.radii.y) * uneven;
     let top = smooth(0.05, 0.85, normal.y);
     // The comb: away from the parting on top, back or forward at the front,
@@ -417,7 +444,9 @@ fn grow(root: Vec3, normal: Vec3, cut: Cut, skull: &Skull, id: u32) -> [Vec3; PO
     lie = (lie * stray.cos() + normal.cross(lie) * stray.sin()).normalize_or(lie);
     // Hair stands up most on top; at the sides it lies down the head.
     // Coiled hair stands off the head all round.
-    let lift = (cut.lift * (0.7 + 0.6 * lock(13)) * (0.5 + 0.5 * top.max(cut.coil))).clamp(0.03, 0.9);
+    let lift = (cut.lift * ((0.7 + 0.6 * lock(13)) * (1. - cut.coil) + cut.coil) * (0.5 + 0.5 * top.max(cut.coil))).clamp(0.03, 0.9);
+    // Coiled hair is not combed any way at all.
+    let lift = lift + (1. - lift) * cut.coil;
     let mut dir = (normal * lift + lie * (1. - lift)).normalize();
     let across = dir.cross(normal).normalize_or(Vec3::X);
     let phase = std::f32::consts::TAU * lock(17);
@@ -431,15 +460,24 @@ fn grow(root: Vec3, normal: Vec3, cut: Cut, skull: &Skull, id: u32) -> [Vec3; PO
     // The strand is laid in steps much shorter than its segments.
     let pace = (length / 18.).clamp(0.0008, 0.005 - 0.004 * cut.coil);
     // A coil: the strand winds round its own line.
-    let spiral = (0.0022 + 0.0016 * roll(13), std::f32::consts::TAU / (0.010 + 0.008 * roll(15)), std::f32::consts::TAU * roll(17));
-    let wind = |along: f32, dir: Vec3| {
-        let u = dir.cross(normal).normalize_or(Vec3::X);
+    let spiral = (
+        (0.0020 + 0.0012 * of_tuft(4)) * (0.75 + 0.25 * roll(13)),
+        std::f32::consts::TAU / (0.0065 + 0.004 * of_tuft(5)) * if tuft & 1 == 0 { 1. } else { -1. },
+        std::f32::consts::TAU * of_tuft(6) + 0.8 * (roll(17) - 0.5),
+    );
+    // Every coiled hair also kinks its own way as it grows, so a mass of
+    // it is hairs in all directions and not a brush of spokes.
+    let kink = Vec3::new(roll(21) - 0.5, roll(22) - 0.5, roll(23) - 0.5).normalize_or(Vec3::X) * (cut.coil / (0.012 + 0.02 * roll(24)));
+    let mut side = dir.any_orthonormal_vector();
+    let wind = |along: f32, dir: Vec3, u: Vec3| {
         let v = dir.cross(u);
         let turn = spiral.1 * along + spiral.2;
         (u * turn.cos() + v * turn.sin()) * (spiral.0 * cut.coil * (along / 0.004).min(1.))
     };
     let mut path = Vec::with_capacity(64);
+    let mut laid = Vec::with_capacity(64);
     path.push(root);
+    laid.push(0f32);
     let mut p = root;
     let mut along = 0.;
     let mut limit = length;
@@ -448,7 +486,7 @@ fn grow(root: Vec3, normal: Vec3, cut: Cut, skull: &Skull, id: u32) -> [Vec3; PO
         // Weight bends a strand more the longer it reaches past its root;
         // stray hairs stand off a little.
         // Coils carry their own weight.
-        let sag = ((along / 0.06).min(1.) * 0.55 + 0.05) * (1. - 0.9 * cut.coil);
+        let sag = ((along / 0.06).min(1.) * 0.55 + 0.05) * (1. - cut.coil);
         // On top of the head hair lies where the comb left it: its weight
         // presses it down but does not drag it downhill (that parts it in
         // a star round the highest point). Past a few centimetres it
@@ -459,6 +497,8 @@ fn grow(root: Vec3, normal: Vec3, cut: Cut, skull: &Skull, id: u32) -> [Vec3; PO
         // Long hair that has left the head there is pressed back onto it.
         let press = carried * sag * smooth(0.03, 0.10, along) * smooth(0.002, 0.012, skull.above(p)) * 0.5;
         dir = (dir - out * (dir.dot(out).max(0.) * settle + press * step / 0.012) + Vec3::NEG_Y * sag * (1. - carried) * step / 0.012 * 0.25).normalize();
+        dir = (dir + flat(kink, dir) * kink.length() * step * smooth(0.004, 0.02, along)).normalize();
+        side = flat(side, dir);
         let next = p + dir * step + across * (swing(along + step) - swing(along));
         along += step;
         // Rest on the skull, lower layers under upper ones.
@@ -466,15 +506,23 @@ fn grow(root: Vec3, normal: Vec3, cut: Cut, skull: &Skull, id: u32) -> [Vec3; PO
         // Hair leaves the scalp where it grows and rises over what stands
         // out next to it (an ear) on a slope, not at once.
         let rise = (root - skull.centre).length() + 0.003 + 0.7 * along;
-        let mut rested = skull.rest(next, clear);
+        let risen = |q: Vec3, clear: f32| {
+            let rested = skull.rest(q, clear);
+            let (from, to) = ((q - skull.centre).length(), (rested - skull.centre).length());
+            if to > rise.max(from) { skull.centre + (rested - skull.centre) * (rise.max(from) / to) } else { rested }
+        };
+        let rested = risen(next, clear);
         let (from, to) = ((next - skull.centre).length(), (rested - skull.centre).length());
-        if to > rise.max(from) {
-            rested = skull.centre + (rested - skull.centre) * (rise.max(from) / to);
+        // Coiled hair does not lie along what it meets (an ear, the neck):
+        // it ends there.
+        if cut.coil > 0.5 && along > 0.006 && to > from + 0.003 {
+            break;
         }
         if rested != next {
             // Slide along the head instead of into it.
             let out = skull.outward(rested);
-            dir = flat(dir, out).lerp(dir, 0.2).normalize();
+            // Coiled hair stands off whatever is under it.
+            dir = flat(dir, out).lerp(dir, 0.2 + 0.8 * cut.coil).normalize();
         }
         // Cut at the hem, and where it would come down over the face (a
         // fringe across the forehead; beside the face it hangs free).
@@ -488,7 +536,8 @@ fn grow(root: Vec3, normal: Vec3, cut: Cut, skull: &Skull, id: u32) -> [Vec3; PO
             break;
         }
         p = rested;
-        path.push(skull.rest(p + wind(along, dir), 0.001));
+        path.push(risen(p + gather * smooth(0., 0.006, along) + wind(along, dir, side), 0.001));
+        laid.push(along);
         // Lying over shorter hair, it is cut to blend with it.
         limit = limit.min(along + BLEND * cut.length(p, skull.centre.y + skull.radii.y) * uneven);
     }
@@ -496,13 +545,24 @@ fn grow(root: Vec3, normal: Vec3, cut: Cut, skull: &Skull, id: u32) -> [Vec3; PO
     // (over the head) than where it hangs straight: a radian of bend
     // counts as BEND metres of hair.
     const BEND: f32 = 0.06;
+    // Ten points hold two or three turns of a coil and no more. Of coiled
+    // hair longer than that each strand is drawn over one such stretch,
+    // every strand at its own depth, more of them further out: together
+    // they fill the mass with coils from the scalp to its surface.
+    if cut.coil > 0.5 && along > SHELL {
+        let start = (along - SHELL) * roll(19).powf(0.85);
+        let from = laid.iter().position(|&a| a >= start).unwrap_or(0);
+        let to = laid.iter().position(|&a| a > start + SHELL).unwrap_or(path.len());
+        path.truncate(to.max(from + 2).min(path.len()));
+        path.drain(..from.min(path.len() - 2));
+    }
     let mut measure = vec![0f32; path.len()];
     for k in 1..path.len() {
         let bend = if k >= 2 { (path[k] - path[k - 1]).angle_between(path[k - 1] - path[k - 2]) } else { 0. };
         measure[k] = measure[k - 1] + path[k].distance(path[k - 1]) + BEND * if bend.is_finite() { bend } else { 0. };
     }
     let whole = measure[path.len() - 1];
-    let mut points = [root; POINTS];
+    let mut points = [path[0]; POINTS];
     let mut at = 1;
     for (k, point) in points.iter_mut().enumerate().skip(1) {
         if path.len() < 2 {
@@ -518,8 +578,15 @@ fn grow(root: Vec3, normal: Vec3, cut: Cut, skull: &Skull, id: u32) -> [Vec3; PO
     points
 }
 
-/// Added to a strand's shade when it is a grey hair (player_strands.wgsl).
+/// A strand's shade carries how grey it is: 2 is added for every eighth
+/// (player_strands.wgsl takes them apart again).
 pub(super) const GREY: f32 = 2.;
+const GREYS: f32 = 8.;
+
+/// Metres across a tuft of coiled hair.
+const TUFT: f32 = 0.007;
+/// How much of a long coiled hair is drawn, in metres.
+const SHELL: f32 = 0.02;
 
 /// The strands of one person: POINTS points each, as [x, y, z, shade] in
 /// the fitted body's normalized units, for a groom whose fit scales x and z
@@ -570,12 +637,14 @@ pub(super) fn strands(body: &[BodyVertex], indices: &[u32], eyes: Vec3, skull: f
             }
             let normal = (t[0].normal * w + t[1].normal * u + t[2].normal * v).normalize_or(Vec3::Y);
             let mut shade = 0.62 + 0.55 * unit(hash(id ^ 0x99)) * (0.6 + 0.4 * noise(root, 0.01, cut.seed ^ 5).abs());
-            // Grey hairs come first at the temples. The strand renderer
-            // draws a shade of GREY and up without the hair's colour.
+            // A strand stands for many hairs, so greying mixes into its
+            // colour: first at the temples, in streaks lock by lock, never
+            // as single white strands among dark ones.
             let temples = smooth(0.03, 0.07, root.x.abs()) * smooth(-0.10, -0.03, root.z);
-            if unit(hash(id ^ 0x6e)) < cut.grey * (0.7 + 0.8 * temples) {
-                shade += GREY;
-            }
+            let share = (cut.grey * (0.7 + 0.8 * temples)).min(1.);
+            let streak = noise(root, 0.016, cut.seed ^ 0x6e) + 0.25 * (unit(hash(id ^ 0x6e)) - 0.5);
+            let grey = (share + 1.1 * share * (1. - share) * streak).clamp(0., 1.);
+            shade += GREY * (grey * GREYS).round();
             let grown = grow(root, normal, cut, &skull_shape, id);
             // A strand cut at its root is no hair.
             if grown[1] == grown[0] {
@@ -681,5 +750,9 @@ mod tests {
         let middle = Vec3::new(0., 0.02, -0.09);
         let out: f32 = hair.chunks_exact(POINTS).map(|s| metres(s, eyes, POINTS - 1).distance(middle) - metres(s, eyes, 0).distance(middle)).sum::<f32>() / (hair.len() / POINTS) as f32;
         assert!(out > 0.012, "tips {out} m further out than roots");
+        // Every strand is a coil: none has a long straight stretch (hair
+        // pushed out of the neck or an ear in one step did).
+        let longest = hair.chunks_exact(POINTS).flat_map(|s| (1..POINTS).map(move |k| metres(s, eyes, k).distance(metres(s, eyes, k - 1)))).fold(0f32, f32::max);
+        assert!(longest < 0.012, "a segment of {longest} m");
     }
 }

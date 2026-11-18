@@ -273,6 +273,8 @@ impl Character {
         let traits = warp_skin::Traits::new(seed, fair);
         let traits = age.map_or(traits, |years| traits.aged(years));
         let cut = warp_hair::Cut::new(seed, fair, traits.years());
+        // Coiled hair is dark: light shades of it are rare.
+        let (hair, brows) = if cut.coil > 0.5 { (hair * 0.55, brows * 0.7) } else { (hair, brows) };
         // Brows grey later and less than the head.
         let brows = brows.lerp(Vec3::splat(0.62), 0.6 * cut.grey * cut.grey);
         let (mut body, indices) = person.fitted_mesh(gripping);

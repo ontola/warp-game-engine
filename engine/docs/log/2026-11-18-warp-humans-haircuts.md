@@ -83,3 +83,30 @@ Playtester: "oud moet minder haar en saggy skin en zo".
 Open: thin white hair reads as separate stiff strands (ribbons are opaque
 and as wide as young hair); the neck below the chin and the hands do not
 age; no stoop.
+
+## Night: grey blends, coiled hair is coils
+
+Playtester, on the three-quarter sheet: "Dit ziet er belachelijk uit, die
+halve grijze haren zo" and "En moet dit kroeshaar voorstellen?".
+
+- Grey was on or off per strand: white wires among dark hair. It is now a
+  share per strand in eight steps, mixed into the colour in the shader, with
+  streaks from 16 mm noise.
+- Coiled hair was a spiral per strand with its own phase: fuzz. Now tufts
+  (7 mm cells, warped so they are not in rows) share radius, pitch, hand
+  and phase.
+- Afro, tried in order: (1) all ten points on the outer 18 mm after a
+  straight stretch from the root: the stretches showed as sticks; (2) only
+  the outer shell drawn: a halo round a bare scalp; (3) one 20 mm stretch
+  per strand at a random depth: fills, but radial rows like a bottle brush;
+  (4) a kink per strand (radius 12 to 32 mm) and warped tufts: reads as an
+  afro.
+- Straight combs of hair behind the ears and down the neck: path points
+  were rested on the head's reach without the rise limit the walk itself
+  has, so strands rooted under an ear or at the nape jumped 3 cm out in one
+  segment. Both now use the same limit (straight hair too). Found by
+  printing strands with a first segment over 15 mm.
+
+Checked on lavapipe only, at 30, 50, 65 and 80, three-quarter and four
+sides. Open: white coiled hair on a thin head reads coarse; a strand of an
+afro is not one continuous hair.
