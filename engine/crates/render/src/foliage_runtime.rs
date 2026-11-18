@@ -346,6 +346,8 @@ pub struct CutSnapshot {
     pub state:Vec<u32>,
     /// Per tree: camera, shadow.
     pub trees:Vec<[TreeCut;2]>,
+    /// Current-depth preselection result for each root, unioned across cameras.
+    pub seed_visible: Vec<u32>,
     /// Per tree: root position (the streamed GPU roots).
     pub positions:Vec<[f32;3]>,
 }
@@ -656,7 +658,7 @@ impl Runtime {
     pub fn cut_snapshot(&self,gpu:&Gpu)->Result<CutSnapshot,String> {
         let slot_bytes=u64::from(self.slots)*32;let history_bytes=u64::from(self.trees)*32;
         let roots=&self.selector._instances;let root_bytes=u64::from(self.trees)*std::mem::size_of::<Instance>()as u64;
-        let inputs=[(&self.residency.slots,0,slot_bytes),(&self.choices,self.history_at,history_bytes),(&self.selector.refiner.state,crate::foliage_refine::STATE_OFFSET,96*4),(&roots.buffer,roots.offset,root_bytes)];
+        let inputs=[(&self.residency.slots,0,slot_bytes),(&self.choices,self.history_at,history_bytes),(&self.selector.refiner.state,crate::foliage_refine::STATE_OFFSET,96*4),(&roots.buffer,roots.offset,root_bytes),(&self.selector.seed_visibility,0,u64::from(self.trees)*4)];
         let output=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("forest cut snapshot"),size:inputs.iter().map(|i|i.2).sum(),usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
         let mut enc=gpu.device.create_command_encoder(&Default::default());let mut offset=0;
         for (buffer,from,len) in inputs {enc.copy_buffer_to_buffer(buffer,from,&output,offset,len);offset+=len;}
@@ -666,7 +668,8 @@ impl Runtime {
         rx.recv().map_err(|e|e.to_string())?.map_err(|e|e.to_string())?;
         let bytes=output.slice(..).get_mapped_range().map_err(|e|e.to_string())?;
         let words:Vec<u32>=bytes.chunks_exact(4).map(bytemuck::pod_read_unaligned).collect();
-        let (slots,rest)=words.split_at(self.slots as usize*8);let (history,rest)=rest.split_at(self.trees as usize*8);let (state,roots)=rest.split_at(96);
+        let (slots,rest)=words.split_at(self.slots as usize*8);let (history,rest)=rest.split_at(self.trees as usize*8);let (state,rest)=rest.split_at(96);
+        let (roots,seed_visible)=rest.split_at(root_bytes as usize/4);
         let stride=std::mem::size_of::<Instance>()/4;
         let positions=roots.chunks_exact(stride).map(|r|[f32::from_bits(r[3]),f32::from_bits(r[7]),f32::from_bits(r[11])]).collect();
         let mut trees=vec![[TreeCut::default(),TreeCut::default()];self.trees as usize];
@@ -681,7 +684,7 @@ impl Runtime {
             }
         }
         for cut in trees.iter_mut().flatten() {cut.parts.sort_unstable();}
-        Ok(CutSnapshot {scale:[f32::from_bits(state[79]),f32::from_bits(state[78]),f32::from_bits(state[85])],state:state.to_vec(),trees,positions})
+        Ok(CutSnapshot {scale:[f32::from_bits(state[79]),f32::from_bits(state[78]),f32::from_bits(state[85])],state:state.to_vec(),trees,positions,seed_visible:seed_visible.to_vec()})
     }
     /// Per representation: kind and voxel mip (CutSnapshot::change).
     pub fn representation_kinds(&self)->&[RepKind] {&self.rep_kinds}
@@ -1376,41 +1379,23 @@ impl Runtime {
     #[test]
     #[ignore="exclusive GPU: forest pipeline layouts under WebGPU's storage-buffer limit"]
     fn forest_layouts_under_webgpu_storage_limit() {
-        // Every pipeline layout counts every storage buffer its bind group
-        // layouts declare, per stage, whatever an entry point reads. Build a
-        // forest scene on a device with WebGPU's default 8 storage buffers
-        // (Macs give 10) and list what fails. Each layout split removes a name
-        // below; the list ends empty when the forest runs in every browser.
         use super::*;
         use crate::vegetation_asset::CookedPlant;
         crate::gpu::TEST_STORAGE_BUFFERS.with(|c| c.set(Some(8)));
+        crate::gpu::TEST_SAMPLED_TEXTURES.with(|c| c.set(Some(16)));
         let gpu=Gpu::new().unwrap();
         crate::gpu::TEST_STORAGE_BUFFERS.with(|c| c.set(None));
-        let errors=std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
-        let sink=errors.clone();
-        gpu.device.on_uncaptured_error(std::sync::Arc::new(move |e: wgpu::Error| {
-            let text=e.to_string();
-            for line in text.lines() {
-                if let Some(rest)=line.split("create_pipeline_layout, label = '").nth(1) {sink.lock().unwrap().insert(format!("layout {}",rest.trim_end_matches("'")));}
-            }
-        }));
+        crate::gpu::TEST_SAMPLED_TEXTURES.with(|c| c.set(None));
         let source=crate::vegetation_asset::tests::aggregate_fixture();let config=crate::vegetation_asset::tests::aggregate_config();
         let mut cooked=CookedPlant::cook_aggregate(&source,config).unwrap();cooked.cook_proxy(&source,config,3).unwrap();
         let policy=crate::aggregate_lod::Policy {allow_sampled_optics:false,..Default::default()};
         let tree=RootPlacement {up:Vec3::Y,pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0};
         let mut scene=Scene::default();plant(&mut scene,std::slice::from_ref(&cooked),&[tree],1,policy).unwrap();
         let light=crate::Lighting::default();
-        let built=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{crate::Renderer::new(&gpu,&scene,&light);}));
-        let _=gpu.device.poll(wgpu::PollType::Wait {submission_index:None,timeout:Some(std::time::Duration::from_secs(30))});
-        let mut failures:Vec<String>=errors.lock().unwrap().iter().cloned().collect();
-        if let Err(panic)=built {
-            let text=panic.downcast_ref::<String>().cloned().or_else(||panic.downcast_ref::<&str>().map(|s|s.to_string())).unwrap_or_default();
-            failures.push(format!("panic {}",text.split(": ").last().unwrap_or("").trim_matches('"')));
-        }
-        // Known failures, removed one pipeline family at a time.
-        let known:Vec<&str>=vec!["layout cached voxel sun splats","layout voxel forest","layout voxel sun splats"];
-        println!("{failures:#?}");
-        assert_eq!(failures,known,"forest pipeline layouts over the Mac limit changed");
+        let renderer = crate::Renderer::new(&gpu, &scene, &light);
+        let cam = crate::Camera {pos:Vec3::new(0.3,0.4,1.6),target:Vec3::new(0.3,0.4,0.),fov_y:1.,near:0.05};
+        renderer.try_render_views(&gpu, &[crate::ViewRect {cam,x:0,y:0,w:64,h:64}], &light, 64, 64, &[]).unwrap();
+        gpu.wait();
     }
     #[test]
     #[ignore="exclusive GPU forest draw fixture"]

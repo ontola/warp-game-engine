@@ -158,20 +158,20 @@ fn main() {
         for (k, reg) in top.iter().enumerate() {
             let t = reg["frame"].as_u64().unwrap() as usize;
             let (rx, ry, rw, rh) = ["x", "y", "w", "h"].map(|k| reg[k].as_u64().unwrap() as usize).into();
-            // A square crop around the region, at least 192 px, before | after.
+            // Keep the whole region, including regions wider than the frame is tall.
             let side = rw.max(rh).max(192) + 64;
             let (w, h, a) = rgb(&frames[t - 1]); let (_, _, b) = rgb(&frames[t]);
-            let cx = (rx + rw / 2).clamp(side / 2, w - side / 2); let cy = (ry + rh / 2).clamp(side / 2, h - side / 2);
-            let (ox, oy) = (cx - side / 2, cy - side / 2);
-            let mut img = vec![0u8; side * 2 * side * 3 + 0];
-            for y in 0..side { for x in 0..side {
-                for c in 0..3 {
-                    img[(y * side * 2 + x) * 3 + c] = a[((oy + y) * w + ox + x) * 3 + c];
-                    img[(y * side * 2 + side + x) * 3 + c] = b[((oy + y) * w + ox + x) * 3 + c];
-                }
-            } }
+            let (cw, ch) = (side.min(w), side.min(h));
+            let ox = (rx + rw / 2).saturating_sub(cw / 2).min(w - cw);
+            let oy = (ry + rh / 2).saturating_sub(ch / 2).min(h - ch);
+            let mut img = Vec::with_capacity(cw * 2 * ch * 3);
+            for y in oy..oy + ch {
+                let start = (y * w + ox) * 3;
+                img.extend_from_slice(&a[start..start + cw * 3]);
+                img.extend_from_slice(&b[start..start + cw * 3]);
+            }
             let file = std::fs::File::create(out.join(format!("{k:02}-f{t:03}.png"))).unwrap();
-            let mut enc = png::Encoder::new(std::io::BufWriter::new(file), (side * 2) as u32, side as u32);
+            let mut enc = png::Encoder::new(std::io::BufWriter::new(file), (cw * 2) as u32, ch as u32);
             enc.set_color(png::ColorType::Rgb); enc.set_depth(png::BitDepth::Eight);
             enc.write_header().unwrap().write_image_data(&img).unwrap();
         }

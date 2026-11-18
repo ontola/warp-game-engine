@@ -129,7 +129,12 @@ find it in a clip and name its cause:
   root is on screen carry their screen position and distance. Each line also
   has the error-cut scales, the refine state's used totals, refusals and fills,
   the sun clipmap levels (`Renderer::sun_clipmap_log`: deferred, drawn,
-  full redraw, scroll) and the voxel page cache counters. Diagnostic
+  full redraw, scroll), voxel page cache counters, and `depth_flips`. These
+  two counts are on-screen appearances and disappearances accompanied by the
+  corresponding current-depth visibility change. `--dump-freeze-cut N`
+  holds the published geometry from frame N-1 while the camera keeps moving.
+  Compare the same screen region at the same frame in a normal and frozen
+  replay after warming the forest. Diagnostic
   readbacks: use it for clips, not timing.
 - `cargo run --release -p render --example pop_meter -- DIR` reads the PNGs.
   Per 16 px block it takes the smallest mean luma difference to the previous

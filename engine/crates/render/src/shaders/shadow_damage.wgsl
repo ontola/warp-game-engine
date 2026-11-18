@@ -5,7 +5,7 @@
 struct Source {rows:array<vec4<f32>,3>,sphere:vec4<f32>,tail:vec4<u32>};
 struct Volume {inverse:array<vec4<f32>,3>,low:vec4<f32>,high:vec4<f32>,identity:vec4<u32>};
 // control: force, size, shift x, shift y (i32); live.x: tracked this frame,
-// live.y: drawn this frame (its mask restarts; a deferred map accumulates).
+// live.y: start a fresh mask after consumption or a projection invalidation.
 struct Map {vp:mat4x4<f32>,control:vec4<u32>,live:vec4<u32>};
 const MAX_MAPS:u32=33u;
 // control.x: map count, control.y: any map forced.

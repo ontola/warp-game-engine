@@ -1400,10 +1400,14 @@ fn main() -> Result<(), String> {
         // as JSON lines. Diagnostic readback; finding level-of-detail pops.
         let mut cut_log = arg("--dump-cut").map(|p| std::fs::File::create(&p).map(std::io::BufWriter::new).map_err(|e| format!("{p}: {e}"))).transpose()?;
         let mut last_cut: Option<render::foliage_runtime::CutSnapshot> = None;
+        let freeze = arg("--dump-freeze-cut").map(|s| s.parse::<u32>()).transpose().map_err(|_| "invalid forest freeze frame")?;
         for i in 0..n.parse::<u32>().map_err(|_| "--dump N DIR")? {
             // --climb holds climb: cloud and parallax checks while rising.
             let held = if args.iter().any(|a| a == "--climb") { Buttons(Buttons::SOUTH) } else { Buttons::default() };
             game.tick(&[Controls { look: [pan, 0.0], mv: [0.0, forward], held, ..Default::default() }]);
+            if freeze == Some(i) {
+                headless.renderer().ok_or("freezing requires a warmed forest")?.freeze_forest_snapshot(true);
+            }
             let rgba = headless.frame(&mut game)?;
             if i % every == 0 { render::write_png(&PathBuf::from(&dir).join(format!("{:03}.png", i / every)), w, h, &rgba)?; }
             if let (Some(out), Some(forest)) = (cut_log.as_mut(), headless.renderer().and_then(|r| r.gpu_forest_runtime())) {
@@ -1416,6 +1420,7 @@ fn main() -> Result<(), String> {
                 // Camera changes on screen (tree root inside the frame), off screen, shadow.
                 let mut counts = [std::collections::BTreeMap::<String, u32>::new(), Default::default(), Default::default()];
                 let mut changes = Vec::new();
+                let mut depth_flips = [0u32; 2];
                 if let Some(prev) = &last_cut {
                     for (tree, (a, b)) in prev.trees.iter().zip(&cut.trees).enumerate() {
                         for consumer in 0..2 {
@@ -1427,6 +1432,12 @@ fn main() -> Result<(), String> {
                             let on = c.w > 0.0 && (0.0..w as f32).contains(&sx) && (0.0..h as f32).contains(&sy);
                             *counts[if on {0} else {1}].entry(format!("{kind:?}")).or_default() += 1;
                             if on {
+                                use render::foliage_runtime::CutChange;
+                                match (kind, prev.seed_visible[tree], cut.seed_visible[tree]) {
+                                    (CutChange::Appear, 0, 1) => depth_flips[0] += 1,
+                                    (CutChange::Disappear, 1, 0) => depth_flips[1] += 1,
+                                    _ => {}
+                                }
                                 changes.push(serde_json::json!([tree, format!("{kind:?}"), sx.round(), sy.round(), p.distance(cam.pos).round()]));
                             }
                         }
@@ -1438,7 +1449,7 @@ fn main() -> Result<(), String> {
                     "fills": [f32::from_bits(cut.state[74]), f32::from_bits(cut.state[77])],
                     "sun_levels": headless.renderer().map(|r| r.sun_clipmap_log()).unwrap_or_default(),
                     "pages": headless.renderer().and_then(|r| r.foliage_page_stats()),
-                    "camera_changes": counts[0], "offscreen_changes": counts[1], "shadow_changes": counts[2], "changes": changes})).map_err(|e| e.to_string())?;
+                    "depth_flips": depth_flips, "camera_changes": counts[0], "offscreen_changes": counts[1], "shadow_changes": counts[2], "changes": changes})).map_err(|e| e.to_string())?;
                 last_cut = Some(cut);
             }
         }
