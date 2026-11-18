@@ -4,10 +4,16 @@ struct Branch {rest:array<vec4<f32>,3>,source:Source,volume:Volume,low:vec4<f32>
 struct Root {rows:array<vec4<f32>,3>,scale:vec4<f32>,info:vec4<u32>};
 struct Node {sphere:vec4<f32>,error:vec4<f32>,links:vec4<u32>};
 struct Slot {key:vec4<u32>,history:vec4<u32>};
-struct State {wind:vec4<f32>,counts:vec4<u32>};
+struct State {wind:vec4<f32>,counts:vec4<u32>,catalog:vec4<u32>};
 @group(0) @binding(0) var<uniform> state:State;
-@group(0) @binding(1) var<storage,read> roots:array<Root>;
-@group(0) @binding(2) var<storage,read> nodes:array<Node>;
+// The selector's hierarchy (nodes from 0) and roots (from vec4 state.catalog.x)
+// in one read-only binding (foliage_select.rs Region::catalog), read by field.
+@group(0) @binding(1) var<storage,read> catalog:array<vec4<u32>>;
+fn node_sphere(i:u32)->vec4<f32> {return bitcast<vec4<f32>>(catalog[i*3u]);}
+fn root_rows(i:u32)->array<vec4<f32>,3> {let b=state.catalog.x+i*5u;return array<vec4<f32>,3>(bitcast<vec4<f32>>(catalog[b]),bitcast<vec4<f32>>(catalog[b+1u]),bitcast<vec4<f32>>(catalog[b+2u]));}
+fn root_scale(i:u32)->vec4<f32> {return bitcast<vec4<f32>>(catalog[state.catalog.x+i*5u+3u]);}
+fn root_info(i:u32)->vec4<u32> {return catalog[state.catalog.x+i*5u+4u];}
+fn root_at(i:u32)->Root {return Root(root_rows(i),root_scale(i),root_info(i));}
 @group(0) @binding(3) var<storage,read> branches:array<Branch>;
 @group(0) @binding(4) var<storage,read> representations:array<vec4<u32>>;
 @group(0) @binding(5) var<storage,read> slots:array<Slot>;
@@ -74,12 +80,12 @@ fn cached_pose(root:u32,branch:u32)->array<vec4<f32>,3> {
  let at=pose_find(pose_key(root,branch));
  if at!=0xffffffffu {return pose_cache[at].rows;}
  // Bounded hash overflow cannot lose a pose or substitute an old generation.
- return pose(roots[root],branch);
+ return pose(root_at(root),branch);
 }
 @compute @workgroup_size(64)
 fn prepare_root_poses(@builtin(global_invocation_id) id:vec3<u32>) {
- let i=id.x;if i>=state.counts.z || roots[i].info.w!=0u {return;}
- root_poses[i]=pose(roots[i],roots[i].info.z);
+ let i=id.x;if i>=state.counts.z || root_info(i).w!=0u {return;}
+ root_poses[i]=pose(root_at(i),root_info(i).z);
 }
 @compute @workgroup_size(64)
 fn request_poses(@builtin(global_invocation_id) id:vec3<u32>) {
@@ -116,7 +122,7 @@ fn evaluate_poses(@builtin(global_invocation_id) id:vec3<u32>) {
 // Appearance identity must survive transient branch allocation and page IO.
 // A finite exactly representable float carries 24 hash bits in unused high.w.
 fn appearance_seed(root:u32,branch:u32)->f32 {
- var h=(root*0x9e3779b9u) ^ (roots[root].info.y*0x85ebca6bu) ^ (branch*0xc2b2ae35u);
+ var h=(root*0x9e3779b9u) ^ (root_info(root).y*0x85ebca6bu) ^ (branch*0xc2b2ae35u);
  h=(h^(h>>16u))*0x7feb352du;return f32((h^(h>>15u))&0xffffffu)+1.;
 }
 fn bounds(v:Volume,m:array<vec4<f32>,3>,lo:vec3<f32>,hi:vec3<f32>)->Volume {
@@ -130,9 +136,9 @@ fn materialize(@builtin(global_invocation_id) id:vec3<u32>) {
  if i<state.counts.x {
   let slot=slots[i];let owner=state.counts.y+i;
   if slot.history.z==0u {sources[owner].sphere.w=-1.;sources[owner].first=0u;choices[i]=0u;choices[i+state.counts.x]=0u;return;}
-  let root=roots[slot.key.x];let rep=representations[slot.key.z];
+  let root=root_at(slot.key.x);let rep=representations[slot.key.z];
   let branch=branches[select(rep.x,rep.w-1u,rep.w!=0u)];let m=cached_pose(slot.key.x,rep.x);
-  var source=branch.source;source.rows=m;let bound=nodes[slot.key.y].sphere;
+  var source=branch.source;source.rows=m;let bound=node_sphere(slot.key.y);
   source.sphere=vec4<f32>(point(root.rows,bound.xyz),bound.w*root.scale.x);
   source.scale=length(root.rows[0].xyz);
   // ||I + uv^T|| <= 1 + |u| |v|. Basal mode has only one moving
@@ -156,7 +162,7 @@ fn materialize(@builtin(global_invocation_id) id:vec3<u32>) {
   choices[i+state.counts.x]=select(3u,select(0u,765u,rep.y==1u),(roles&512u)!=0u)|visibility;
  }else {
   let tree=i-state.counts.x;if tree>=state.counts.z {return;}
-  let root=roots[tree];let original=proxies[tree];
+  let root=root_at(tree);let original=proxies[tree];
   if root.info.w!=0u {
    var hidden=original;hidden.low.w=1.;volumes[i]=hidden;volumes[i+state.counts.z]=hidden;
    sources[original.identity.x].sphere.w=-1.;return;
