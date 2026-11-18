@@ -58,6 +58,7 @@ WebGPU minimum of 8 storage buffers per shader stage so it can get there.
 | [Neon Siege](games/neon-siege/README.md), [Neon Trails](games/neon-trails/README.md), [Stack Together](games/stack-together/README.md) | Party games ported from LÖVE | Luau |
 | [Painted Meadow](games/painted-meadow/README.md) | Stylised walk with its own lighting and finish shaders | Luau |
 | [Pine Lab](games/pine-lab/README.md) | Jeffrey pines regrown live as growth rules change | Luau |
+| [Human Lab](games/human-lab/README.md) | Warp Humans up close: a row of people and fixed portrait cameras | Luau |
 | [Hello Warp](games/hello-warp/README.md) | The starter that `warp new` writes | Luau |
 | [Game Room](lobbies/game-room/README.md) | Gamepad Party's lobby | Rust |
 

@@ -207,7 +207,11 @@ pub struct Rig {
     pub grips: &'static [([f32; 3], Bone)],
 }
 
-/// One clip in a blend: which, where in it, and how much of the pose.
+/// A `Layer::clip` that is no capture: the rest pose, standing upright with
+/// the arms down (blend it with a walk for a body that stands relaxed).
+pub const REST: usize = usize::MAX;
+
+/// One clip in a blend: which (or `REST`), where in it, and how much of the pose.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Layer {
     pub clip: usize,
@@ -292,7 +296,7 @@ impl Bound {
                 if l.w <= 0.0 {
                     continue;
                 }
-                let (q, r) = lib.get(l.clip).sample(l.t, l.looped, lib.fps);
+                let (q, r) = if l.clip == REST { ([Quat::IDENTITY; BONES], Vec3::ZERO) } else { lib.get(l.clip).sample(l.t, l.looped, lib.fps) };
                 let w = l.w / total;
                 root += r * w;
                 for b in 0..BONES {
