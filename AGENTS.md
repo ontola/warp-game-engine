@@ -102,7 +102,7 @@ full. Keep one clone per repository and reuse it:
   that commit and remove it afterwards.
 - Rust: crate sources are already shared in `%USERPROFILE%\.cargo`. Compiled
   dependencies are shared through sccache (`RUSTC_WRAPPER=sccache`, cache in
-  `E:\sccache`, 30 GB cap), so a new worktree's first build reuses them. Each
+  `C:\sccache` on the NVMe drive; E: is a slow HDD, 30 GB cap), so a new worktree's first build reuses them. Each
   worktree keeps its own `target/`; never set a shared `CARGO_TARGET_DIR`,
   parallel builds would block on its lock and overwrite each other's binaries.
 - Captures and measurements go to `C:\dev\perf\<YYYY-MM-DD-topic>`. Keep only
