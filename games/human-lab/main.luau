@@ -12,9 +12,9 @@ local KNOBS = {
 -- Camera relative to the head: distance (m), side angle (rad), height
 -- above the head (m), where it aims below the head (m), fov (degrees).
 local VIEWS = {
-	{ name = "face", dist = 0.62, side = 0, up = 0.0, drop = 0.03, fov = 30 },
-	{ name = "three-quarter", dist = 0.66, side = 0.7, up = 0.03, drop = 0.03, fov = 30 },
-	{ name = "profile", dist = 0.68, side = 1.5708, up = 0.0, drop = 0.03, fov = 30 },
+	{ name = "face", dist = 0.72, side = 0, up = 0.0, drop = 0.05, fov = 30 },
+	{ name = "three-quarter", dist = 0.74, side = 0.7, up = 0.03, drop = 0.05, fov = 30 },
+	{ name = "profile", dist = 0.76, side = 1.5708, up = 0.0, drop = 0.05, fov = 30 },
 	{ name = "bust", dist = 1.5, side = 0.35, up = 0.05, drop = 0.22, fov = 30 },
 	{ name = "body", dist = 4.4, side = 0.35, up = -0.3, drop = 0.75, fov = 30 },
 	{ name = "row", dist = 7.5, side = 0.2, up = 0.3, drop = 0.8, fov = 40 },
