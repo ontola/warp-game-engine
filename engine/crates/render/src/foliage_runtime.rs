@@ -35,6 +35,16 @@ impl Spec {
     pub(crate) fn source_page_instances(&self)->Vec<Option<GpuInstance>> {
         self.representations.iter().map(|r|(r[1]==0).then(||self.branches[r[0]as usize].source)).collect()
     }
+    /// The levels finer than a branch voxel selection, nearest first. The sun
+    /// pass picks its level per texel and uses these when they are resident,
+    /// so the page cache loads them with whatever budget the selections that
+    /// must draw leave over; no selection waits for them.
+    pub(crate) fn voxel_page_finer(&self)->Vec<Vec<usize>> {
+        self.representations.iter().map(|rep|{let branch=&self.branches[if rep[3]==0 {rep[0]}else{rep[3]-1}as usize];
+            if rep[1]!=1 || (rep[3]==0 && branch.info[0]==NONE) {return Vec::new();}
+            let start=branch.volume.meta[1]as usize;(start..start+(rep[2].min(branch.volume.meta[2]))as usize).rev().collect()
+        }).collect()
+    }
     pub(crate) fn voxel_page_dependencies(&self,levels:usize)->Result<(Vec<Vec<usize>>,Vec<bool>),String> {
         let mut pinned=vec![false;levels];
         let range=|v:GpuTree|->Result<Vec<usize>,String>{let start=v.meta[1]as usize;let end=start.checked_add(v.meta[2]as usize).ok_or("voxel dependency overflow")?;if end>levels{return Err("voxel dependency outside catalog".into());}Ok((start..end).collect())};
@@ -50,8 +60,8 @@ impl Spec {
             // renders source geometry for either consumer; it must not wait
             // for an unrelated voxel shadow bundle. A voxel slot waits for its
             // selected mip and the coarser ones, never for a finer level the
-            // camera does not draw: its shadow uses a finer one only when that
-            // happens to be resident (voxel_forest.wgsl volume_sun_splats_impl).
+            // camera does not draw: its shadow uses a finer one when the cache
+            // had room for it (voxel_page_finer, volume_sun_splats_impl).
             else{let levels=range(branch.volume)?;Ok(levels.get(rep[2]as usize..).filter(|l|!l.is_empty()).ok_or("voxel mip outside catalog")?.to_vec())}
         }).collect::<Result<Vec<_>,String>>()?;
         for template in &self.templates {
