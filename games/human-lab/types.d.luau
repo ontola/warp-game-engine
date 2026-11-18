@@ -220,7 +220,8 @@ declare lights: {
 -- Warp Humans from game.toml's [humans.NAME] pools: spawn returns nil when
 -- the pool is full. Set pos (feet) and yaw each tick; the legs follow.
 -- pose: walk, idle, crouch, wave, reach, raise, strike, aim, shove, attack, punch, jab,
--- hit, hit_head, cast, roll, dead, down; t is its progress, 0 to 1.
+-- hit, hit_head, cast, roll, dead, down, feed (crouched, bent over something on the
+-- ground), rise (getting up off the ground over t); t is its progress, 0 to 1.
 declare humans: {
 	spawn: (pool: string, opts: { pos: Vec?, yaw: number? }?) -> number?,
 	-- tired 0..1: bent over, out of breath, over any pose; coil -1..1: wound up for a heavy blow (1), swung through (< 0)
