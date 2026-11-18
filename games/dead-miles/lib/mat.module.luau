@@ -9,7 +9,8 @@ local M = {}
 
 M.ASPHALT, M.PAVEMENT, M.GRASS, M.DIRT, M.BRICK, M.PLASTER, M.CONCRETE, M.WOOD = 0, 1, 2, 3, 4, 5, 6, 7
 M.METAL, M.RUST, M.ROOF, M.FOLIAGE, M.CLOTH, M.RUBBER, M.GLASS, M.PAINT, M.LOGS = 8, 9, 10, 11, 12, 13, 14, 15, 16
-M.TILES, M.BARK = 17, 18
+M.TILES, M.BARK, M.FLOOR, M.PLAIN = 17, 18, 19, 20
+M.INDOOR = 64 -- added to a kind: the same, in the dark of a room
 
 local K = M
 -- By colour (lower case).
@@ -47,7 +48,12 @@ M.BY_COLOR = {
 	["#4a3e32"] = K.BARK, ["#56703a"] = K.FOLIAGE, ["#5e6a30"] = K.FOLIAGE, ["#2a3f24"] = K.FOLIAGE,
 	["#9a968e"] = K.CONCRETE, ["#26272a"] = K.METAL, ["#8a2420"] = K.PAINT, ["#2a4a7a"] = K.PAINT, ["#2a4a2a"] = K.GLASS,
 	["#6b4a22"] = K.FOLIAGE, ["#5a3e1e"] = K.FOLIAGE, ["#7a5a30"] = K.FOLIAGE,
-	["#c8c2b4"] = K.CONCRETE, ["#6a2a24"] = K.PAINT, ["#2a4a5a"] = K.PAINT, ["#5a5a2a"] = K.PAINT, ["#3a3a3a"] = K.PAINT,
+	["#c8c2b4"] = K.CONCRETE,
+	-- Indoors: furniture, fabrics, appliances, tiled floors.
+	["#7a6a58"] = K.WOOD, ["#2a2622"] = K.WOOD, ["#c8c8c0"] = K.PAINT, ["#303034"] = K.METAL,
+	["#c8c0ae"] = K.CLOTH, ["#d8d2c4"] = K.CLOTH, ["#6a4040"] = K.CLOTH, ["#4a5a40"] = K.CLOTH, ["#5a4a5a"] = K.CLOTH,
+	["#5a5040"] = K.CLOTH, ["#6a3a34"] = K.CLOTH, ["#3a4a5a"] = K.CLOTH, ["#5a4a32"] = K.CLOTH, ["#3a5a3a"] = K.PAINT,
+	["#a8a49a"] = K.FLOOR, ["#8a8a84"] = K.FLOOR, ["#b0aca2"] = K.FLOOR, ["#6a2a24"] = K.PAINT, ["#2a4a5a"] = K.PAINT, ["#5a5a2a"] = K.PAINT, ["#3a3a3a"] = K.PAINT,
 	["#2f4a26"] = K.FOLIAGE, ["#3c5a2c"] = K.FOLIAGE, ["#26401f"] = K.FOLIAGE, ["#4a6a32"] = K.FOLIAGE,
 }
 
@@ -58,6 +64,11 @@ function M.dress(o)
 		if k then o.surface = k end
 	end
 	if o.surface == false then o.surface = nil end
+	-- indoor = true: darker, for what stands in a room (see surface.wgsl).
+	if o.indoor then
+		if not o.emissive then o.surface = (o.surface or M.PLAIN) % M.INDOOR + M.INDOOR end
+		o.indoor = nil
+	end
 	return o
 end
 

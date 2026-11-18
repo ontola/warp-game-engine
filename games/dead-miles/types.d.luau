@@ -73,6 +73,7 @@ export type EntityOptions = {
 	width: number?, -- "wire" only: edge thickness in metres at size 1 (default 0.05)
 	solid: boolean?, -- blocks world.move and raycasts (default true)
 	visible: boolean?, -- default true
+	shadow_only: boolean?, -- casts shadows but no camera sees it (a ceiling over a roofless room); default false
 	tag: string?, -- for world.find, overlap and raycast filters
 }
 
@@ -88,7 +89,7 @@ export type Player = {
 
 export type Entity = {
 	id: number, parent: number?, world_pos: Vec, shape: string, pos: Vec, rot: Vec, size: Vec, color: Vec,
-	emissive: number, roughness: number, metal: number, surface: number?, solid: boolean, visible: boolean, tag: string,
+	emissive: number, roughness: number, metal: number, surface: number?, solid: boolean, visible: boolean, shadow_only: boolean, tag: string,
 }
 
 export type Query = {
