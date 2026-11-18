@@ -16,10 +16,10 @@ pub use gamenight::party::Phase;
 
 /// A seated person or AI seat, as the game sees it.
 #[derive(Clone, Debug, PartialEq)]
-pub struct SeatInfo { pub seat: usize, pub name: String, pub color: Option<[f32; 3]>, pub bot: bool, pub couch: Option<i64> }
+pub struct SeatInfo { pub seat: usize, pub name: String, pub color: Option<[f32; 3]>, pub bot: bool, pub couch: Option<i64>, pub skin: String, pub avatar: String }
 
 impl SeatInfo {
-    fn from(s: &Seat) -> Self { SeatInfo { seat: s.index, name: s.name.clone(), color: hex(&s.color), bot: s.ai, couch: s.couch } }
+    fn from(s: &Seat) -> Self { SeatInfo { seat: s.index, name: s.name.clone(), color: hex(&s.color), bot: s.ai, couch: s.couch, skin: s.skin_color.clone(), avatar: s.avatar.clone() } }
 }
 
 /// What the game should do after a poll.

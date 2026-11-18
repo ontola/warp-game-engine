@@ -190,8 +190,8 @@ impl LuaGame {
         let mut g = LuaGame { dir: dir.to_path_buf(), single: single.clone(), seed: cfg.seed, fresh, cfg, host, core, inited: BTreeSet::new(), light: Lighting::default(), applied_sky: None, sky_upload: None,
             log: VecDeque::new(), live: None, live_logs: None, default_sky, echo: true, party: None, menu: None, menu_stick: 0.0, running_for: 0, ready_due: false, windowed: false, polls: 0, next_id: 1, quit: false, surface: GameSurface::new(dir), trial: None, editor_pages: Default::default() };
         g.surface.install();
-        let people: Vec<SeatInfo> = (0..g.cfg.players).map(|i| SeatInfo { seat: i, name: format!("Player {}", i + 1), color: None, bot: false, couch: None })
-            .chain((0..g.cfg.bots).map(|i| SeatInfo { seat: 100 + i, name: format!("Bot {}", i + 1), color: None, bot: true, couch: None })).collect();
+        let people: Vec<SeatInfo> = (0..g.cfg.players).map(|i| SeatInfo { seat: i, name: format!("Player {}", i + 1), color: None, bot: false, couch: None, skin: String::new(), avatar: String::new() })
+            .chain((0..g.cfg.bots).map(|i| SeatInfo { seat: 100 + i, name: format!("Bot {}", i + 1), color: None, bot: true, couch: None, skin: String::new(), avatar: String::new() })).collect();
         g.seat_all(&people, false);
         for l in lines { g.say(l); }
         if let Some(name) = &single { g.host.only(name); }
@@ -371,6 +371,7 @@ impl LuaGame {
                     p.name = s.name.clone();
                     p.color = color;
                     p.couch = s.couch;
+                    p.set_face(&s.skin, &s.avatar);
                 }
             }
             let gone: Vec<usize> = c.roster.iter().enumerate().filter(|(_, p)| p.seat.is_some_and(|seat| !seats.iter().any(|s| s.seat == seat))).map(|(i, _)| i).collect();
@@ -382,6 +383,7 @@ impl LuaGame {
                 self.next_id += 1;
                 p.seat = Some(s.seat);
                 p.couch = s.couch;
+                p.set_face(&s.skin, &s.avatar);
                 joined.push(p);
             }
             for p in &joined {
