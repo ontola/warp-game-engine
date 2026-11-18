@@ -225,7 +225,9 @@ keyboard mapping is in `app::input`.
   tall), `color`, `emissive` (0 off, 1 a clear glow in daylight),
   `roughness`, `metal`, `solid` (default true), `visible`, `shadow_only`
   (casts shadows, but no camera sees it: a ceiling over a roofless room
-  that keeps the moon out while the camera looks in) and `tag`. An
+  that keeps the moon out while the camera looks in), `hide_views` (a mask:
+  bit i hides it from split-screen view i only, shadows stay: a roof that
+  opens for the view whose player went inside) and `tag`. An
   outline is a hollow regular polygon lying flat (3 to 64 sides, corners
   on the 1 m box's circle, the first towards +X) whose edge is the given
   share of the box wide (default 0.06): neon line art seen from above.

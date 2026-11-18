@@ -97,6 +97,8 @@ pub struct Entity {
     /// Drawn into shadows only, never seen by a camera: a ceiling that keeps
     /// the moon out of a roofless room the camera looks into.
     pub shadow_only: bool,
+    /// Bit i hides it from camera view i (shadows stay).
+    pub hide_views: u8,
     pub tag: String,
     /// Shape::Wire: its points and edges.
     pub wire: Option<Wire>,
@@ -159,12 +161,14 @@ pub struct Spawn {
     pub solid: bool,
     pub visible: bool,
     pub shadow_only: bool,
+    /// Bit i hides it from camera view i (shadows stay).
+    pub hide_views: u8,
     pub tag: String,
     pub wire: Option<Wire>,
 }
 
 impl Default for Spawn {
-    fn default() -> Self { Spawn { parent: None, shape: Shape::Cube, look: Look::default(), pos: Vec3::ZERO, rot: Vec3::ZERO, size: Vec3::ONE, solid: true, visible: true, shadow_only: false, tag: String::new(), wire: None } }
+    fn default() -> Self { Spawn { parent: None, shape: Shape::Cube, look: Look::default(), pos: Vec3::ZERO, rot: Vec3::ZERO, size: Vec3::ONE, solid: true, visible: true, shadow_only: false, hide_views: 0, tag: String::new(), wire: None } }
 }
 
 /// Put an entity's slots where it is: one for a shape, one per edge for a
@@ -178,7 +182,7 @@ fn show(slots: &mut Slots, scene: &mut Scene, e: &mut Entity) {
             (false, None) => {}
         }
         // Every time: a reused slot keeps the flags of whatever had it before.
-        if let Some(slot) = e.slot { slots.hide_in_views(scene, slot, if e.shadow_only { 0xff } else { 0 }); }
+        if let Some(slot) = e.slot { slots.hide_in_views(scene, slot, if e.shadow_only { 0xff } else { e.hide_views }); }
         return;
     };
     let want = if e.visible { w.edges.len() } else { 0 };
@@ -388,7 +392,7 @@ impl World {
         if let Some(w) = &s.wire { local = w.bounds(); }
         let id = self.next;
         self.next += 1;
-        let mut e = Entity { parent: s.parent, frame, children: Vec::new(), shape: s.shape, look: s.look, pos: s.pos, rot: s.rot, size: s.size, solid: s.solid, visible: s.visible, shadow_only: s.shadow_only, tag: s.tag, wire: s.wire, slot: None, edge_slots: Vec::new(), mesh, local };
+        let mut e = Entity { parent: s.parent, frame, children: Vec::new(), shape: s.shape, look: s.look, pos: s.pos, rot: s.rot, size: s.size, solid: s.solid, visible: s.visible, shadow_only: s.shadow_only, hide_views: s.hide_views, tag: s.tag, wire: s.wire, slot: None, edge_slots: Vec::new(), mesh, local };
         show(&mut self.slots, &mut self.scene, &mut e);
         if let Some(parent) = s.parent { self.entities.get_mut(&parent).unwrap().children.push(id); }
         self.entities.insert(id, e);

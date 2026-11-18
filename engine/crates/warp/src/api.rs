@@ -272,7 +272,7 @@ pub fn shape(name: &str) -> mlua::Result<Shape> {
     })
 }
 
-const ENTITY_KEYS: &[&str] = &["shape", "pos", "rot", "size", "color", "emissive", "roughness", "metal", "surface", "solid", "visible", "shadow_only", "tag", "points", "edges", "width"];
+const ENTITY_KEYS: &[&str] = &["shape", "pos", "rot", "size", "color", "emissive", "roughness", "metal", "surface", "solid", "visible", "shadow_only", "hide_views", "tag", "points", "edges", "width"];
 
 fn boolean(v: &Value, what: &str) -> mlua::Result<bool> {
     match v { Value::Boolean(b) => Ok(*b), _ => Err(rt(format!("{what}: expected true or false"))) }
@@ -282,6 +282,19 @@ fn number(v: &Value, what: &str) -> mlua::Result<f32> { num(v).ok_or_else(|| rt(
 
 /// Apply `world.spawn`/`world.set` options to an entity's fields.
 #[allow(clippy::too_many_arguments)]
+/// `hide_views`: a mask, bit i hides the entity from camera view i (it
+/// still casts shadows and shows in the other views).
+fn hide_views(opts: &[(String, Value)]) -> mlua::Result<Option<u8>> {
+    for (k, v) in opts {
+        if k == "hide_views" {
+            let m = number(v, "hide_views")?;
+            if !(0.0..=255.0).contains(&m) || m.fract() != 0.0 { return Err(rt("hide_views: a whole number 0 to 255 (bit i hides view i)")); }
+            return Ok(Some(m as u8));
+        }
+    }
+    Ok(None)
+}
+
 fn apply(opts: &[(String, Value)], shape_: &mut Shape, look: &mut Look, pos: &mut Vec3, rot: &mut Vec3, sz: &mut Vec3, solid: &mut bool, visible: &mut bool, shadow_only: &mut bool, tag: &mut String) -> mlua::Result<()> {
     for (k, v) in opts {
         match k.as_str() {
@@ -294,7 +307,7 @@ fn apply(opts: &[(String, Value)], shape_: &mut Shape, look: &mut Look, pos: &mu
             "visible" => *visible = boolean(v, "visible")?,
             "shadow_only" => *shadow_only = boolean(v, "shadow_only")?,
             "tag" => *tag = v.to_string()?,
-            "points" | "edges" | "width" => {}
+            "points" | "edges" | "width" | "hide_views" => {}
             _ => unreachable!("checked by options"),
         }
     }
@@ -411,6 +424,7 @@ fn entity_table(lua: &Lua, id: u32, e: &Entity) -> mlua::Result<Table> {
     t.raw_set("solid", e.solid)?;
     t.raw_set("visible", e.visible)?;
     t.raw_set("shadow_only", e.shadow_only)?;
+    t.raw_set("hide_views", e.hide_views)?;
     t.raw_set("tag", e.tag.as_str())?;
     Ok(t)
 }
@@ -576,6 +590,7 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             if let Some(t) = opts {
                 let o = options(&t, &ENTITY_KEYS[1..], "world.spawn")?;
                 apply(&o, &mut s.shape, &mut s.look, &mut s.pos, &mut s.rot, &mut s.size, &mut s.solid, &mut s.visible, &mut s.shadow_only, &mut s.tag)?;
+                if let Some(m) = hide_views(&o)? { s.hide_views = m; }
                 if s.shape == Shape::Wire { s.wire = Some(Wire { points: Vec::new(), edges: Vec::new(), width: 0.05 }); }
                 apply_wire(&o, &mut s.wire)?;
             }
@@ -589,7 +604,9 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             sim(&c, "world.set")?;
             c.world.try_update(id, |e| {
                 apply(&o, &mut e.shape, &mut e.look, &mut e.pos, &mut e.rot, &mut e.size, &mut e.solid, &mut e.visible, &mut e.shadow_only, &mut e.tag)
-                    .and_then(|_| apply_wire(&o, &mut e.wire)).map_err(|err| err.to_string())
+                    .and_then(|_| apply_wire(&o, &mut e.wire))
+                    .and_then(|_| { if let Some(m) = hide_views(&o)? { e.hide_views = m; } Ok(()) })
+                    .map_err(|err| err.to_string())
             }).map_err(rt)
         })),
         ("set_parent", f!(core, move |_, (id, parent): (u32, Option<u32>)| {
