@@ -178,10 +178,14 @@ local function box(c, x0, z0, x1, z1, h, look, tag)
 	return r
 end
 
+-- Ground layers lie flat and thin, y apart by at least 4 mm x 4: a few
+-- millimetres are within the depth buffer's step at the camera's 25 m and
+-- flicker (z-fighting) on a real GPU.
+local FLAT_STEP = 4
 local function flat(c, x0, z0, x1, z1, y, color, indoor)
 	return add(c, mat.spawn("cube", {
-		pos = v((x0 + x1) / 2, y, (z0 + z1) / 2 + ZC),
-		size = v(math.abs(x1 - x0), 0.02, math.abs(z1 - z0)),
+		pos = v((x0 + x1) / 2, y * FLAT_STEP, (z0 + z1) / 2 + ZC),
+		size = v(math.abs(x1 - x0), 0.004, math.abs(z1 - z0)),
 		color = color,
 		roughness = 0.95,
 		solid = false,
@@ -286,7 +290,7 @@ local function undergrowth(c, x0, x1, za, zb, n)
 			end
 		else
 			for _ = 1, random.int(5, 10) do
-				deco(c, "cube", v(x + random.range(-0.8, 0.8), 0.01, z + random.range(-0.8, 0.8)), v(0.1, 0.004, 0.07), FALLEN[random.int(1, #FALLEN)], { roughness = 0.9, rot = v(0, random.range(0, 3), 0) })
+				deco(c, "cube", v(x + random.range(-0.8, 0.8), 0.045, z + random.range(-0.8, 0.8)), v(0.1, 0.004, 0.07), FALLEN[random.int(1, #FALLEN)], { roughness = 0.9, rot = v(0, random.range(0, 3), 0) })
 			end
 		end
 	end
@@ -766,7 +770,7 @@ local function wreck(c, x, z)
 	if random.chance(0.4) then deco(c, "sphere", v(x + random.range(-3, 3), 0.12, z + random.range(-1.6, 1.6)), v(0.64, 0.24, 0.64), PROP.tyre) end
 	-- Glass and bits around it.
 	for _ = 1, random.int(2, 5) do
-		deco(c, "cube", v(x + random.range(-2.4, 2.4), 0.01, z + random.range(-1.4, 1.4)), v(random.range(0.05, 0.2), 0.01, random.range(0.05, 0.15)), GLASS, { roughness = 0.1, rot = v(0, random.range(0, 3), 0) })
+		deco(c, "cube", v(x + random.range(-2.4, 2.4), 0.045, z + random.range(-1.4, 1.4)), v(random.range(0.05, 0.2), 0.01, random.range(0.05, 0.15)), GLASS, { roughness = 0.1, rot = v(0, random.range(0, 3), 0) })
 	end
 	if not burnt and random.chance(0.5) then
 		table.insert(c.containers, { kind = "car", x = x, z = z, rect = r, id = r.id, searched = false })
@@ -1088,11 +1092,11 @@ function M.chunk(index, day, in_day, zc, zc_prev)
 		for _, sd in { -1, 1 } do
 			deco(c, "cube", v((x0 + x1) / 2, 0.05, sd * (kerb + 0.07)), v(x1 - x0, 0.1, 0.16), KERB, { roughness = 0.95 })
 			for x = x0 + random.range(1, 5), x1 - 1, random.range(7, 10) do
-				deco(c, "cube", v(x, 0.008, sd * (kerb - 0.25)), v(0.45, 0.012, 0.3), DRAIN, { roughness = 0.6, metal = 0.5 })
+				deco(c, "cube", v(x, 0.04, sd * (kerb - 0.25)), v(0.45, 0.012, 0.3), DRAIN, { roughness = 0.6, metal = 0.5 })
 			end
 		end
 		if random.chance(0.6) then
-			deco(c, "sphere", v(random.range(x0 + 2, x1 - 2), 0.0, random.range(-1.6, 1.6)), v(0.75, 0.02, 0.75), DRAIN, { roughness = 0.6, metal = 0.5 })
+			deco(c, "sphere", v(random.range(x0 + 2, x1 - 2), 0.03, random.range(-1.6, 1.6)), v(0.75, 0.02, 0.75), DRAIN, { roughness = 0.6, metal = 0.5 })
 		end
 	end
 	-- Litter on the road and the verges: paper, cans, bottles, leaves.
@@ -1101,14 +1105,14 @@ function M.chunk(index, day, in_day, zc, zc_prev)
 			local x, z = random.range(x0, x1), random.range(-4.4, 4.4)
 			local roll = random.float()
 			if roll < 0.35 then
-				deco(c, "cube", v(x, 0.012, z), v(random.range(0.15, 0.3), 0.004, random.range(0.12, 0.22)), "#d8d0a0", { roughness = 0.95, rot = v(0, random.range(0, 3), 0) })
+				deco(c, "cube", v(x, 0.045, z), v(random.range(0.15, 0.3), 0.004, random.range(0.12, 0.22)), "#d8d0a0", { roughness = 0.95, rot = v(0, random.range(0, 3), 0) })
 			elseif roll < 0.55 then
 				deco(c, "cube", v(x, 0.035, z), v(0.12, 0.065, 0.065), CANS[random.int(1, #CANS)], { roughness = 0.6, metal = 0.5, rot = v(0, random.range(0, 3), 0) })
 			elseif roll < 0.65 then
 				deco(c, "cube", v(x, 0.04, z), v(0.24, 0.07, 0.07), BOTTLE, { roughness = 0.1, rot = v(0, random.range(0, 3), 0) })
 			else
 				for _ = 1, random.int(3, 7) do
-					deco(c, "cube", v(x + random.range(-0.5, 0.5), 0.01, z + random.range(-0.5, 0.5)), v(0.08, 0.004, 0.06), FALLEN[random.int(1, #FALLEN)], { roughness = 0.9, rot = v(0, random.range(0, 3), 0) })
+					deco(c, "cube", v(x + random.range(-0.5, 0.5), 0.045, z + random.range(-0.5, 0.5)), v(0.08, 0.004, 0.06), FALLEN[random.int(1, #FALLEN)], { roughness = 0.9, rot = v(0, random.range(0, 3), 0) })
 				end
 			end
 		end
