@@ -366,6 +366,32 @@ local function hold_weapon(u)
 	body.hold(u.fig, held_kind(u), HELD)
 end
 
+-- Two things carried, one in the hand (or neither: bare hands). The hand
+-- is u.melee/u.dur or u.gun/u.gun_dur; u.slots[1] and [2] hold the rest.
+-- store puts what is in the hand back in its slot, load takes it out.
+local function store(u)
+	u.slots = u.slots or {}
+	u.hand = u.hand or 1
+	if u.hand == 0 then return end
+	if u.gun then
+		u.slots[u.hand] = { kind = u.gun, dur = u.gun_dur }
+	elseif u.melee and u.melee ~= "fists" then
+		u.slots[u.hand] = { kind = u.melee, dur = u.dur }
+	else
+		u.slots[u.hand] = nil
+	end
+end
+
+local function load_hand(u)
+	local it = u.hand > 0 and u.slots[u.hand]
+	u.melee, u.dur, u.gun, u.gun_dur = "fists", nil, nil, nil
+	if it then
+		if GUNS[it.kind] then u.gun, u.gun_dur = it.kind, it.dur else u.melee, u.dur = it.kind, it.dur end
+	end
+	hold_weapon(u)
+end
+
+
 local function give_body(u, pos, look)
 	u.pos = pos
 	u.yaw = -math.pi / 2
@@ -375,6 +401,7 @@ local function give_body(u, pos, look)
 	u.t = 0
 	u.melee, u.dur = "fists", nil
 	u.gun, u.gun_dur = nil, nil
+	u.slots, u.hand = {}, 1
 	-- Every person is different, and some are better than others: breath,
 	-- legs and arms are rolled for each new body.
 	u.stamina_max = KNOBS.stamina * pick({ 0.75, 0.9, 1, 1, 1.15, 1.35 })
@@ -439,6 +466,21 @@ local function tip(u, key, row)
 	u.tips[key] = (u.tips[key] or 0) + 1
 	if u.tips[key] > 2 then return end
 	u.tip = { row = row, t = 3.5 }
+end
+
+-- Y: the first thing, the second, bare hands, round again (empty slots skipped).
+local function switch_hand(u)
+	store(u)
+	local h = u.hand
+	for _ = 1, 3 do
+		h = (h + 1) % 3
+		if h == 0 or u.slots[h] then break end
+	end
+	if h == u.hand then return end
+	u.hand = h
+	load_hand(u)
+	popup(u, if h == 0 then "bare hands" else u.slots[h].kind, "#c8c0b4")
+	sfx("click", u.pos, { pitch = 0.8 })
 end
 
 ----------------------------------------------------------------------------
@@ -1273,7 +1315,7 @@ local function from_input(i)
 		-- (with a loaded gun RT fires instead).
 		light = i.held.right_shoulder or i.held.west, heavy = i.held.right_trigger,
 		use = i.held.south, use_pressed = i.pressed.south,
-		med = i.pressed.north, torch = i.pressed.left_shoulder, run = i.held.left_trigger,
+		y_held = i.held.north, torch = i.pressed.left_shoulder, run = i.held.left_trigger,
 		up = i.pressed.up, down = i.pressed.down, back = i.pressed.east,
 		stick_y = i.move_y,
 	}
@@ -1520,9 +1562,15 @@ local function hurt(u, from)
 end
 
 local function drop_melee(u)
-	local at = u.pos + v(random.range(-0.4, 0.4), 0, random.range(-0.4, 0.4))
-	if u.gun then place_weapon(u.gun, at, u.gun_dur) end
-	if u.melee ~= "fists" then place_weapon(u.melee, at, u.dur) end
+	store(u)
+	for h = 1, 2 do
+		local it = u.slots[h]
+		if it then
+			local at = u.pos + v(random.range(-0.5, 0.5), 0, random.range(-0.5, 0.5))
+			place_weapon(it.kind, at, it.dur)
+		end
+	end
+	u.slots, u.hand = {}, 1
 	u.melee, u.dur, u.gun, u.gun_dur = "fists", nil, nil, nil
 end
 
@@ -1553,6 +1601,7 @@ local function die(u)
 	for i, r in s.survivors do
 		if r.recruit and standing(r) then
 			u.pos, u.yaw, u.fig, u.melee, u.dur, u.injured = r.pos, r.yaw, r.fig, r.melee, r.dur, r.injured
+			u.slots, u.hand = {}, 1
 			u.state, u.invul, u.t = "ok", 1.5, 0
 			u.search_t, u.revive_t = 0, 0
 			body.tint(u.fig, { color = u.color, roughness = 0.9 })
@@ -2100,16 +2149,20 @@ local function act(u, it, dt)
 				world.remove(p.ent)
 				if p.ring then world.remove(p.ring) end
 				table.remove(s.pickups, i)
-				-- One thing in the hand: what you held goes down here.
-				drop_melee(u)
+				-- Two things carried: into a free slot, else what is in the
+				-- hand goes down here.
+				store(u)
+				local slot = if not u.slots[1] then 1 elseif not u.slots[2] then 2 elseif u.hand > 0 then u.hand else 1
+				local old = u.slots[slot]
+				if old then place_weapon(old.kind, u.pos + v(random.range(-0.4, 0.4), 0, random.range(-0.4, 0.4)), old.dur) end
+				u.slots[slot] = { kind = p.kind, dur = p.dur }
+				u.hand = slot
+				load_hand(u)
 				if GUNS[p.kind] then
-					u.gun, u.gun_dur = p.kind, p.dur
-					tip(u, "gun", { { "RT", "fire" }, { "RS", "aim" }, { "RB", "hit" } })
+					tip(u, "gun", { { "RT", "fire" }, { "RS", "aim" }, { "Y", "switch" } })
 				else
-					u.melee, u.dur = p.kind, p.dur
-					tip(u, "melee", { { "RB", "quick hit" }, { "RT", "heavy (hold: charge)" } })
+					tip(u, "melee", { { "RB", "quick hit" }, { "RT", "heavy (hold: charge)" }, { "Y", "switch" } })
 				end
-				hold_weapon(u)
 				sfx("pickup", u.pos, { pitch = 1.2 })
 				count("pickups")
 				break
@@ -2117,6 +2170,19 @@ local function act(u, it, dt)
 		end
 	end
 
+	-- Y: a tap switches what is in the hand; held while hurt, first aid.
+	if not u.bot then
+		if it.y_held then
+			u.y_t = (u.y_t or 0) + dt
+			if u.y_t >= 0.7 and u.injured and s.meds > 0 and not u.y_used then
+				it.med = true
+				u.y_used = true
+			end
+		else
+			if u.y_t and u.y_t > 0 and u.y_t < 0.35 and not u.y_used then switch_hand(u) end
+			u.y_t, u.y_used = 0, nil
+		end
+	end
 	if it.med and s.meds > 0 and u.injured then
 		s.meds -= 1
 		u.injured = false
@@ -2259,7 +2325,8 @@ local function act(u, it, dt)
 		end
 	elseif u.shove_t > 0 then
 		body.animate(u.fig, dt, moved, "shove")
-	elseif it.fire or u.cd_gun > 0.2 then
+	elseif u.gun or it.fire or u.cd_gun > 0.2 then
+		-- A gun in the hand is held out at arm's length, pointed where you aim.
 		body.animate(u.fig, dt, moved, "aim")
 	else
 		body.animate(u.fig, dt, moved * (if u.injured then 0.7 else 1), "swing")
@@ -3603,7 +3670,7 @@ local function prompt_of(u)
 	end
 	local st = nearest_stranger(u)
 	if st then return { { "A", (encounter_of(st) or {}).verb or "talk" } }, st.pos end
-	if u.injured and s.meds > 0 then return { { "Y", "first aid" } }, nil end
+	if u.injured and s.meds > 0 then return { { "Y", "hold: first aid" } }, nil end
 	return nil
 end
 
