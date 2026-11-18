@@ -7,7 +7,9 @@
 //! instance, so an element can be hidden or restyled. From the tags this
 //! crate derives what a viewer of buildings needs without hand placement:
 //! surfaces ([`surfaces`]: brick outside, plaster inside, oak or tiles per
-//! room), proposed elements as a tinted ghost, the probe grid for the room
+//! room; or, when a material says what it is (AtomicBuildings' `pattern`,
+//! `category`, `moduleSize`), that pattern at that size in that colour),
+//! lights and cameras the file carries, proposed elements as a tinted ghost, the probe grid for the room
 //! bake (`render::room_bake`), camera shots per room and around the outside,
 //! a ground, and the sun for a place and time ([`sun`]).
 //!
@@ -25,10 +27,12 @@ use render::cluster::{ClusterMesh, Part, SimplificationPolicy, Vertex};
 use render::irradiance_volume::Grid;
 use render::room_bake::Occluders;
 use render::scene::{Material, Scene, TWO_SIDED};
+use render::clustered_lights::{ClusteredLight, LightShadow};
+use render::headlights::LocalLight;
 use render::{primitives, Camera};
 use std::collections::HashMap;
 use std::path::Path;
-pub use surfaces::Surface;
+pub use surfaces::{Layout, Style, Surface};
 
 /// Review state of an element, as AtomicBuildings marks AI work.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,6 +65,57 @@ pub struct House {
     pub triangles: usize,
     /// The opaque confirmed geometry, for ray tests.
     pub solid: Occluders,
+    /// `KHR_lights_punctual` point and spot lights, placed like the house.
+    pub lights: Vec<Light>,
+    /// glTF cameras (AtomicBuildings' saved views), placed like the house.
+    pub cameras: Vec<ViewCamera>,
+}
+
+/// A glTF point or spot light (`KHR_lights_punctual`), in the scene's frame.
+#[derive(Clone, Debug)]
+pub struct Light {
+    pub name: String,
+    pub position: Vec3,
+    /// Where a spot points (a point light shines all round).
+    pub direction: Vec3,
+    /// Linear colour, 0..1 (glTF: from the lamp's kelvin).
+    pub color: [f32; 3],
+    /// Candela.
+    pub intensity: f32,
+    /// A spot's inner and outer cone half-angles, radians.
+    pub cone: Option<(f32, f32)>,
+    /// Where the light is cut off, metres, when the file says.
+    pub range: Option<f32>,
+}
+
+impl Light {
+    /// The renderer's local light: physical inverse-square candela, reaching
+    /// as far as it is brighter than 0.1 lux (30 m at most) unless the file
+    /// gives a range.
+    pub fn local(&self) -> LocalLight {
+        let colour = Vec3::from(self.color) * self.intensity;
+        let range = self.range.unwrap_or_else(|| (colour.max_element() / 0.1).sqrt()).clamp(3.0, 30.0);
+        let (inner_cos, outer_cos) = match self.cone {
+            Some((inner, outer)) => {
+                let outer = outer.clamp(0.02, 1.55);
+                let (oc, ic) = (outer.cos(), inner.clamp(0.0, outer).cos());
+                (ic.max(oc + 0.01).min(1.0), oc)
+            }
+            None => (-0.999, -1.0),
+        };
+        LocalLight { position: self.position, direction: self.direction, intensity_cd: colour, range_m: range, inner_cos, outer_cos, source_radius_m: 0.05, falloff: 2.0 }
+    }
+}
+
+/// A glTF camera: a saved view of the building.
+#[derive(Clone, Debug)]
+pub struct ViewCamera {
+    /// The camera's node name (a view's name).
+    pub name: String,
+    pub camera: Camera,
+    /// When the view was made, ms since the Unix epoch (UTC), from `extras.viewTime`:
+    /// the sun of that time shows the light the designer saw.
+    pub view_time_ms: Option<i64>,
 }
 
 /// Eye height of a standing viewer (metres above the floor).
@@ -125,6 +180,8 @@ impl House {
         }).collect();
         let in_room = |p: Vec3| rooms.iter().any(|(tris, lo, hi)| (*lo..=*hi).contains(&p.y) && tris.iter().any(|t| in_triangle(Vec2::new(p.x, p.z), t)));
         let mut materials: HashMap<(Surface, bool, bool), u32> = HashMap::new();
+        let mut styled: HashMap<(String, [u32; 5], bool), u32> = HashMap::new();
+        let mut painted: HashMap<String, (i32, [f32; 3])> = HashMap::new();
         let ghost = scene.add_material(Material { tint: [0.35, 0.6, 0.95], layer: -1, roughness: 0.3, flags: 0, scale: 1.0, metal: 0.0 });
         scene.set_material_blend(ghost, 0.35, true);
         let (mut min, mut max, mut triangles) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY), 0);
@@ -151,6 +208,7 @@ impl House {
                     tris.push((k, v, pos, c.normalize_or(Vec3::Y), c.length() * 0.5));
                 }
             }
+            let looks: Vec<Option<Look>> = node.primitives.iter().map(|p| Look::of(scene, p)).collect();
             let patch = patches(&tris.iter().map(|t| (t.0, t.2, t.3)).collect::<Vec<_>>());
             // Per patch: area-weighted normal, outward area, total area, curved?
             let mut info: HashMap<usize, (Vec3, f32, f32, bool)> = HashMap::new();
@@ -176,6 +234,7 @@ impl House {
                 let &(sum, out, area, curved) = &info[&patch[i]];
                 let pn = sum.normalize_or(n);
                 let surface = match kind {
+                    _ if looks[k].is_some() => None,
                     "glass" => None,
                     "frame" => Some(Surface::Frame),
                     "furniture" => Some(Surface::Furniture),
@@ -199,22 +258,32 @@ impl House {
                         else if !curved && pn.y < -0.7 { Surface::Plaster }
                         else { Surface::Brick }),
                 };
+                // A material that says what it is (a design's pattern, module
+                // and colour) draws as that; one with a texture of its own
+                // (a furniture model) keeps its uvs and normals.
+                let look = looks[k].as_ref();
                 let triplanar = curved && surface.is_some_and(Surface::textured);
-                let material = match (review, surface) {
-                    (Review::Proposed, _) => ghost,
-                    (_, None) => p.material,
-                    (_, Some(s)) => {
-                        let two_sided = scene.materials.get(p.material as usize).is_some_and(|m| m.flags & TWO_SIDED != 0);
-                        *materials.entry((s, triplanar, two_sided)).or_insert_with(|| s.add_mapped(scene, triplanar, two_sided))
+                let two_sided = scene.materials.get(p.material as usize).is_some_and(|m| m.flags & TWO_SIDED != 0);
+                let material = match (review, look, surface) {
+                    (Review::Proposed, _, _) => ghost,
+                    (_, Some(Look::Style { style, color, roughness, metal }), _) => {
+                        let key = (style.key(), [color[0].to_bits(), color[1].to_bits(), color[2].to_bits(), roughness.to_bits(), metal.to_bits()], two_sided);
+                        *styled.entry(key).or_insert_with(|| style.add(scene, &mut painted, *color, *roughness, *metal, two_sided))
                     }
+                    (_, Some(Look::Keep { .. }), _) | (_, None, None) => p.material,
+                    (_, None, Some(s)) => *materials.entry((s, triplanar, two_sided)).or_insert_with(|| s.add_mapped(scene, triplanar, two_sided)),
                 };
-                let tile = surface.map_or(1.0, Surface::tile_metres);
+                let tile = match look {
+                    Some(Look::Style { style, .. }) => Vec2::from(style.tile()),
+                    _ => Vec2::splat(surface.map_or(1.0, Surface::tile_metres)),
+                };
+                let keep_uv = matches!(look, Some(Look::Keep { textured: true }));
                 let (verts, idx, seen) = parts.entry(material).or_default();
                 for (j, mut vert) in v.into_iter().enumerate() {
                     // One plane per flat patch, so the pattern runs on
                     // across its triangles.
-                    vert.uv = (planar(pos[j], if curved { n } else { pn }) / tile).to_array();
-                    if surface.is_some() { vert.normal = if curved { smooth[i][j] } else { n }.to_array(); }
+                    if !keep_uv { vert.uv = (planar(pos[j], if curved { n } else { pn }) / tile).to_array(); }
+                    if surface.is_some() || matches!(look, Some(Look::Style { .. })) { vert.normal = if curved { smooth[i][j] } else { n }.to_array(); }
                     // Shared vertices: the LOD simplifier only collapses
                     // edges between connected triangles; a soup of loose
                     // triangles fell back to sloppy clustering and broke a
@@ -240,7 +309,16 @@ impl House {
             elements.push(element);
         }
         if triangles == 0 { return Err(format!("{}: nothing to draw", path.display())); }
-        Ok(House { elements, min, max, triangles, solid: outside })
+        let (lights, cameras) = read_lights_and_cameras(bytes, &place);
+        Ok(House { elements, min, max, triangles, solid: outside, lights, cameras })
+    }
+
+    /// The file's lights as clustered lights, every one shadowed (the
+    /// renderer keeps what its shadow budget holds). Turn
+    /// `Scene::graphics.clustered_lights` on before `Renderer::new`, then
+    /// `Renderer::set_clustered_lights` with these.
+    pub fn clustered_lights(&self) -> Vec<ClusteredLight> {
+        self.lights.iter().enumerate().map(|(i, l)| ClusteredLight { shadow: Some(LightShadow { id: i as u64 + 1, exclude: None }), ..ClusteredLight::unshadowed(l.local()) }).collect()
     }
 
     pub fn spaces(&self) -> impl Iterator<Item = &Element> { self.elements.iter().filter(|e| e.ifc_class == "IfcSpace") }
@@ -402,6 +480,70 @@ impl Finish {
     }
 }
 
+/// What a primitive's own material says about how it is drawn.
+enum Look {
+    /// Keep the glTF material: flat colour, glass, or (when `textured`) a
+    /// texture with the file's own uvs.
+    Keep { textured: bool },
+    /// A procedural surface laid out as the design asks, tinted so it
+    /// averages `color`.
+    Style { style: Style, color: [f32; 3], roughness: f32, metal: f32 },
+}
+
+impl Look {
+    /// `None` for a material with nothing to say (IFC): the name and
+    /// position based choice applies.
+    fn of(scene: &Scene, p: &assets::gltf::Primitive) -> Option<Look> {
+        let m = scene.materials.get(p.material as usize)?;
+        if m.layer >= 0 { return Some(Look::Keep { textured: true }); }
+        let extras: serde_json::Value = serde_json::from_str(p.material_extras.as_deref()?).ok()?;
+        if !["pattern", "category", "subject"].iter().any(|k| extras.get(k).is_some()) { return None; }
+        if scene.blended_materials.contains_key(&p.material) { return Some(Look::Keep { textured: false }); }
+        Some(match Style::from_extras(&extras, p.material_name.as_deref().unwrap_or("")) {
+            Some(style) => Look::Style { style, color: m.tint, roughness: m.roughness, metal: m.metal },
+            None => Look::Keep { textured: false },
+        })
+    }
+}
+
+/// `KHR_lights_punctual` lights and cameras of the default scene, moved by `place`.
+fn read_lights_and_cameras(bytes: &[u8], place: &Affine3A) -> (Vec<Light>, Vec<ViewCamera>) {
+    let Ok(g) = gltf::Gltf::from_slice_without_validation(bytes) else { return (vec![], vec![]) };
+    let defs: Vec<serde_json::Value> = g.extension_value("KHR_lights_punctual").and_then(|e| e["lights"].as_array().cloned()).unwrap_or_default();
+    let (mut lights, mut cameras) = (Vec::new(), Vec::new());
+    let mut stack: Vec<(gltf::Node, glam::Mat4)> = g.default_scene().or_else(|| g.scenes().next())
+        .map(|s| s.nodes().map(|n| (n, glam::Mat4::IDENTITY)).collect()).unwrap_or_default();
+    while let Some((node, parent)) = stack.pop() {
+        let world = parent * glam::Mat4::from_cols_array_2d(&node.transform().matrix());
+        let pos = place.transform_point3(world.transform_point3(Vec3::ZERO));
+        let forward = place.transform_vector3(world.transform_vector3(Vec3::NEG_Z)).normalize_or(Vec3::NEG_Z);
+        let name = node.name().unwrap_or("").to_string();
+        if let Some(def) = node.extension_value("KHR_lights_punctual").and_then(|e| e["light"].as_u64()).and_then(|i| defs.get(i as usize)) {
+            let kind = def["type"].as_str().unwrap_or("");
+            let num = |v: &serde_json::Value, d: f32| v.as_f64().map_or(d, |x| x as f32);
+            let color = def["color"].as_array().filter(|c| c.len() == 3).map_or([1.0; 3], |c| std::array::from_fn(|k| num(&c[k], 1.0)));
+            let cone = (kind == "spot").then(|| (num(&def["spot"]["innerConeAngle"], 0.0), num(&def["spot"]["outerConeAngle"], std::f32::consts::FRAC_PI_4)));
+            if kind == "point" || kind == "spot" {
+                lights.push(Light { name: name.clone(), position: pos, direction: forward, color, intensity: num(&def["intensity"], 1.0), cone, range: def["range"].as_f64().map(|r| r as f32) });
+            }
+        }
+        if let Some(cam) = node.camera() {
+            if let gltf::camera::Projection::Perspective(p) = cam.projection() {
+                // viewTime sits on the node or on the camera.
+                let extra = |e: Option<&serde_json::value::RawValue>| e.and_then(|r| serde_json::from_str::<serde_json::Value>(r.get()).ok()).and_then(|v| v["viewTime"].as_f64()).map(|t| t as i64);
+                let view_time_ms = extra(node.extras().as_deref()).or_else(|| extra(cam.extras().as_deref()));
+                let name = if name.is_empty() { cam.name().unwrap_or("camera").to_string() } else { name.clone() };
+                cameras.push(ViewCamera { name, camera: Camera { pos, target: pos + forward, fov_y: p.yfov(), near: p.znear().max(0.05) }, view_time_ms });
+            }
+        }
+        for child in node.children() { stack.push((child, world)); }
+    }
+    // Depth-first from a stack reverses sibling order; keep the file's.
+    lights.reverse();
+    cameras.reverse();
+    (lights, cameras)
+}
+
 fn in_triangle(p: Vec2, t: &[Vec2; 3]) -> bool {
     let side = |a: Vec2, b: Vec2| (b - a).perp_dot(p - a);
     let (d0, d1, d2) = (side(t[0], t[1]), side(t[1], t[2]), side(t[2], t[0]));
@@ -472,4 +614,81 @@ fn planar(p: Vec3, n: Vec3) -> Vec2 {
     if n.y.abs() > 0.7 { return Vec2::new(p.x, p.z); }
     let along = Vec3::Y.cross(n).normalize_or(Vec3::X);
     Vec2::new(p.dot(along), -p.y)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base64(bytes: &[u8]) -> String {
+        const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        bytes.chunks(3).map(|c| {
+            let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+            (0..4).map(|i| if i <= c.len() { A[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' }).collect::<String>()
+        }).collect()
+    }
+
+    /// A one-triangle house with a brick material, a spot light turned to
+    /// look down, a point light and a camera, as AtomicBuildings writes them.
+    fn tiny_house() -> Vec<u8> {
+        let pos: [f32; 9] = [0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, -3.0];
+        let bin: Vec<u8> = pos.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let json = serde_json::json!({
+            "asset": {"version": "2.0"},
+            "scene": 0,
+            "scenes": [{"nodes": [0, 3]}],
+            "extensionsUsed": ["KHR_lights_punctual"],
+            "extensions": {"KHR_lights_punctual": {"lights": [
+                {"type": "spot", "color": [1.0, 0.5, 0.2], "intensity": 800.0, "spot": {"innerConeAngle": 0.3, "outerConeAngle": 0.5}},
+                {"type": "point", "intensity": 50.0}]}},
+            "nodes": [
+                {"name": "Floor", "mesh": 0, "children": [1, 2], "translation": [10.0, 0.0, 0.0], "extras": {"ifcClass": "IfcSlab", "reviewState": "confirmed"}},
+                {"name": "Downlight", "translation": [1.0, 2.5, 3.0], "rotation": [-0.7071068, 0.0, 0.0, 0.7071068], "extensions": {"KHR_lights_punctual": {"light": 0}}},
+                {"name": "Lamp", "translation": [0.0, 1.0, 0.0], "extensions": {"KHR_lights_punctual": {"light": 1}}},
+                {"name": "Evening", "camera": 0, "translation": [0.0, 1.6, 5.0], "extras": {"viewTime": 1782068400000i64}}],
+            "cameras": [{"type": "perspective", "perspective": {"yfov": 0.9, "znear": 0.1}}],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "material": 0}]}],
+            "materials": [{"name": "Red-brown brick", "pbrMetallicRoughness": {"baseColorFactor": [0.25, 0.07, 0.034, 1.0], "roughnessFactor": 0.9},
+                "extras": {"pattern": "running-bond", "moduleSize": [0.21, 0.05]}}],
+            "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0.0, 0.0, -3.0], "max": [4.0, 0.0, 0.0]}],
+            "bufferViews": [{"buffer": 0, "byteLength": 36}],
+            "buffers": [{"byteLength": 36, "uri": format!("data:application/octet-stream;base64,{}", base64(&bin))}],
+        });
+        json.to_string().into_bytes()
+    }
+
+    #[test]
+    fn reads_lights_cameras_and_design_materials() {
+        let mut scene = Scene::default();
+        let house = House::from_glb(&mut scene, &tiny_house(), Path::new("tiny.gltf"), None, 0.0).unwrap();
+        // Lights: world position through the parent's translation, a spot looks where its node does.
+        assert_eq!(house.lights.len(), 2);
+        let spot = house.lights.iter().find(|l| l.name == "Downlight").unwrap();
+        assert!(spot.position.distance(Vec3::new(11.0, 2.5, 3.0)) < 1e-4, "{}", spot.position);
+        assert!(spot.direction.distance(Vec3::NEG_Y) < 1e-4, "{}", spot.direction);
+        assert_eq!(spot.cone, Some((0.3, 0.5)));
+        let local = spot.local();
+        assert!(local.validated().is_ok() && local.intensity_cd.distance(Vec3::new(800.0, 400.0, 160.0)) < 1e-3);
+        let point = house.lights.iter().find(|l| l.name == "Lamp").unwrap();
+        assert!(point.local().validated().is_ok() && point.cone.is_none());
+        assert_eq!(house.clustered_lights().len(), 2);
+        // Cameras: named after the node, level lens from yfov, its time kept.
+        let cam = &house.cameras[0];
+        assert_eq!((cam.name.as_str(), cam.view_time_ms), ("Evening", Some(1_782_068_400_000)));
+        assert!((cam.camera.fov_y - 0.9).abs() < 1e-6 && cam.camera.target.distance(cam.camera.pos + Vec3::NEG_Z) < 1e-5);
+        // The brick material draws as brick at its module size: one styled texture.
+        assert!(scene.textures.iter().any(|t| t.name.starts_with("architecture/Brick/RunningBond/0.2100x0.0500")), "{:?}", scene.textures.iter().map(|t| &t.name).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn placement_moves_lights_and_cameras_with_the_house() {
+        let mut scene = Scene::default();
+        let house = House::from_glb(&mut scene, &tiny_house(), Path::new("tiny.gltf"), Some(Vec2::ZERO), std::f32::consts::FRAC_PI_2).unwrap();
+        let spot = house.lights.iter().find(|l| l.name == "Downlight").unwrap();
+        // Still above where it was, the spot still points down, and the rotation turned the plan.
+        assert!((spot.position.y - 2.5).abs() < 1e-4 && spot.direction.distance(Vec3::NEG_Y) < 1e-4);
+        assert!(spot.position.x.hypot(spot.position.z) < 20.0 && (spot.position.x - 11.0).abs() > 0.1);
+        let cam = &house.cameras[0].camera;
+        assert!(cam.target.distance(cam.pos) > 0.99 && (cam.target - cam.pos).y.abs() < 1e-5);
+    }
 }

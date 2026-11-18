@@ -56,6 +56,9 @@ pub struct Primitive {
     pub material: u32,
     /// The glTF material's name, if any.
     pub material_name: Option<String>,
+    /// The glTF material's `extras` as JSON text, if any (AtomicBuildings
+    /// writes `pattern`, `category`, `moduleSize` there).
+    pub material_extras: Option<String>,
 }
 
 /// A glTF node with a mesh: name, `extras` as JSON text, primitives.
@@ -199,7 +202,8 @@ pub fn read_bytes(scene: &mut Scene, bytes: &[u8], path: &Path) -> Result<Docume
                     Vertex { pos: world.transform_point3(Vec3::from(*p)).to_array(), normal: normal_m.transform_vector3(Vec3::from(*n)).normalize_or(Vec3::Y).to_array(), uv: *t }
                 }).collect();
                 let material = prim.material().index().and_then(|i| materials.get(i).copied()).unwrap_or(fallback);
-                primitives.push(Primitive { vertices, indices, material, material_name: prim.material().name().map(str::to_string) });
+                let material_extras = prim.material().extras().as_ref().map(|r| r.get().to_string());
+                primitives.push(Primitive { vertices, indices, material, material_name: prim.material().name().map(str::to_string), material_extras });
             }
             nodes.push(Node { name: node.name().map(str::to_string), extras: node.extras().as_ref().map(|r| r.get().to_string()), primitives });
         }

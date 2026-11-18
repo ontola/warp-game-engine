@@ -49,6 +49,8 @@ struct View {
     tap: Option<([f32; 2], [u32; 2])>,
     /// Where a tap sent the eye; it glides there.
     walk_to: Option<Vec3>,
+    /// The file's lamps (KHR_lights_punctual), set on the renderer at upload.
+    lamps: Vec<render::clustered_lights::ClusteredLight>,
 }
 
 impl View {
@@ -60,6 +62,7 @@ impl View {
         scene.sky = Some(primitives::gradient_sky([0.3, 0.45, 0.7], [0.75, 0.8, 0.85], [0.35, 0.33, 0.3]));
         let house = House::from_glb(&mut scene, bytes, Path::new(name), None, 0.0)?;
         house.add_ground(&mut scene);
+        scene.graphics.clustered_lights = !house.lights.is_empty();
         let grid: Grid = house.probe_grid();
         scene.reserve_irradiance_volume(grid)?;
         // DDGI visibility, probes moved out of walls and per-probe reach:
@@ -80,8 +83,11 @@ impl View {
         };
         let mut shots = house.exterior_shots();
         shots.extend(house.room_shots());
+        // The file's saved views come last, after the rooms.
+        shots.extend(house.cameras.iter().map(|v| (v.name.clone(), v.camera)));
+        let lamps = house.clustered_lights();
         let mut view = View { scene, shots, shot: 0, pos: Vec3::ZERO, yaw: 0.0, pitch: 0.0, light, bake: Some(baked), uploaded: false, name: name.to_string(), rooms: house.reflection_boxes(),
-            solid: house.solid, tap: None, walk_to: None };
+            solid: house.solid, tap: None, walk_to: None, lamps };
         view.go(0);
         Ok(view)
     }
@@ -165,6 +171,7 @@ impl Game for View {
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
         if !std::mem::replace(&mut self.uploaded, true) {
             frame.set_scene(&self.scene, &self.light);
+            if !self.lamps.is_empty() { frame.renderer().ok_or("no renderer")?.set_clustered_lights(&self.lamps)?; }
             if let Some(b) = self.bake.take() {
                 let renderer = frame.renderer().ok_or("no renderer")?;
                 renderer.set_sky_sun_separated(frame.gpu, &b.probes, &b.planes)?;

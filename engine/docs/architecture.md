@@ -29,8 +29,52 @@ Node `extras` it understands: `ifcClass` (`IfcWall`, `IfcWindow`,
 
 ```sh
 cargo run --release -p architecture --example render_house -- house.glb out/ \
-    [--rays 2048] [--size 1280x720] [--site LAT,LON,NORTH_DEG] [--when DAY,UTC_HOURS]
+    [--rays 2048] [--size 1280x720] [--site LAT,LON,NORTH_DEG] [--when DAY,UTC_HOURS] [--night]
 ```
+
+## Designs that say what they are made of (AtomicBuildings)
+
+The contract is `glb-contract.md` in the AtomicBuildings project files.
+A glTF material with `extras` (`pattern`, `category`, `moduleSize`,
+`jointWidth`, or just `subject`) is drawn as that, per primitive, and the
+position-and-name guesses above do not apply to it (per-side wall finishes
+are separate primitives with their own materials). Materials without such
+extras (IFC) behave as before.
+
+- `Style` (`surfaces.rs`) is a surface laid out as the design asks:
+  `planks` boards (staggered; the long side of `moduleSize` is the board's
+  length, along v for a wall so vertical boards stay vertical), `slats`
+  (open joints), `herringbone`, `running-bond` / `stack-bond` brick
+  (module plus joint is the pitch), `random-stone` (Voronoi fieldstone),
+  `ashlar` (courses of varied block length), `tiles`, `terrazzo` (chips),
+  `board-formed` concrete. No `pattern`: the `category` (or, with none, the
+  material name) picks wood veneer, stone, brick, concrete, plaster or
+  lawn. Textile, metal, glass, ceramic, plastic, water and unknown names use
+  the flat glTF colour, roughness and metalness; blended materials stay
+  blended.
+- Each look is drawn once per scene, neutral, at the module size (the repeat
+  is a whole number of pieces, about 0.6 to 2 m, UVs in metres divided by
+  the repeat), and each material tints it so the pieces (joints left out)
+  average `baseColorFactor`; roughness and metalness come from the glTF.
+- A primitive with a base-colour texture (a furniture model embedded in
+  the GLB) keeps its material, UVs and normals; `assets::gltf` imports the
+  texture, normal and metallic-roughness maps.
+- `KHR_lights_punctual` point and spot lights become `House::lights`
+  (node transforms and the house placement applied) and
+  `House::clustered_lights()`: candela as the file gives it, colour, the
+  spot cone, range 0.1 lux cut-off (30 m at most), all shadowed (the
+  renderer's shadow budget decides how many keep a shadow). A scene turns
+  `graphics.clustered_lights` on when `House::lights` is not empty;
+  `render_house` and `house_view` do. Lamps carry direct light only: the
+  room bake does not know them.
+- glTF cameras become `House::cameras` (name, lens, `extras.viewTime`).
+  `render_house` renders each as an extra shot named after its node. With
+  no `--when`, a camera's `viewTime` sets the sun of that shot with
+  `--site`; the room bake is redone for each distinct sun (minutes on CPU),
+  shots are grouped by sun. `--when` or `--night` fix the sun for all.
+  `house_view` lists the cameras after the room views.
+- `--night`: the sun below the horizon (UTC midnight), no sun light, a dark
+  sky, so the lamps carry the picture.
 
 ## IFC (BIM)
 
@@ -103,8 +147,8 @@ native cores at 2048 rays), so always ship the bake.
 The plan (hosts, import paths, milestones) is in the project's
 "Warp Architecture: plan" document.
 
-Open: per-element material choice from the app (only defaults now), IFC
-colours are replaced by the defaults (every IFC wall turns brick), pitched
-roofs get the flat-roof gravel, lamps, furniture assets, one probe grid per
+Open: IFC colours are replaced by the defaults (every IFC wall turns
+brick), pitched roofs get the flat-roof gravel, lamp light does not
+bounce, one probe grid per
 scene (coarse cells for a street). AtomicBuildings homes get a roof only
 when the app has an IfcRoof element (ontola/atomic-buildings).
