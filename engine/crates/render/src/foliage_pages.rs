@@ -1,7 +1,7 @@
 //! Relocatable voxel pages. Logical level IDs never encode physical addresses.
 //! Each page owns its grid/brick directory, sparse cells and splat references.
 //! The normal GPU forest uses cache::Cache for bounded demand-driven uploads.
-use crate::foliage_volume_data::{GpuForest,GpuLevel,GpuCell,BRICK_INDIRECTION,cell_index};
+use crate::foliage_volume_data::{GpuForest,GpuLevel,GpuCell,BRICK_INDIRECTION,COMPACT_BRICKS,cell_index};
 use std::collections::BTreeMap;
 use std::ops::Range;
 #[path="foliage_page_cache.rs"]
@@ -30,22 +30,42 @@ impl VoxelPage {
         if base.checked_add(count).is_none_or(|end|end>forest.indices.len()) {return Err("invalid voxel page directory".into());}
         let mut page=Self {level,indices:vec![0;count],cells:Vec::new(),splats:Vec::new(),directory:if bricked{count}else{0},splat_bricks:Vec::new()};
         let mut remap=BTreeMap::new();
-        // Retain the source encoding. Bricked pages do not expand into dense grids.
+        // Bricked pages do not expand into dense grids, and store each
+        // occupied brick compactly (COMPACT_BRICKS): its cells are appended
+        // here in mask-bit order, so the first address and the mask find any.
         if bricked {
             for i in 0..count {
                 let address=forest.indices[base+i];if address==0 {continue;}
                 let source=forest.indices.get(address as usize-1..address as usize-1+64).ok_or("invalid voxel page brick")?;
+                let mut mask=0u64;let mut first=0;
+                for (bit,&cell) in source.iter().enumerate() {
+                    if cell==0 {continue;}
+                    // A cell shared between positions is stored once per
+                    // position: the mask addresses cells by their order.
+                    page.cells.push(*forest.cells.get(cell as usize-1).ok_or("invalid voxel page sparse cell")?);
+                    let value=page.cells.len()as u32;remap.entry(cell).or_insert(value);
+                    if mask==0 {first=value;}
+                    mask|=1<<bit;
+                }
+                if mask==0 {continue;}
                 page.indices[i]=page.indices.len()as u32+1;
-                for &cell in source {let value=page.local_cell(forest,cell,&mut remap)?;page.indices.push(value);}
+                page.indices.extend([mask as u32,(mask>>32)as u32,first]);
             }
         }else {
             for i in 0..count {page.indices[i]=page.local_cell(forest,forest.indices[base+i],&mut remap)?;}
         }
         for z in 0..dz {for y in 0..dy {for x in 0..dx {
             let cell=cell_index(forest,&level,[x,y,z]).ok_or("invalid voxel page cell address")?;
-            if cell!=0 {let local=*remap.get(&cell).ok_or("voxel page missing cell")?;page.splats.push([local-1,x|y<<10|z<<20]);}
+            if cell==0 {continue;}
+            // A bricked page addresses a cell by its own position's copy.
+            let local=if bricked {
+                let record=page.indices[(x/4+dx.div_ceil(4)*(y/4+dy.div_ceil(4)*(z/4)))as usize]as usize-1;
+                let mask=page.indices[record]as u64|(page.indices[record+1]as u64)<<32;let bit=x%4+4*(y%4)+16*(z%4);
+                page.indices[record+2]+(mask&((1u64<<bit)-1)).count_ones()
+            } else {*remap.get(&cell).ok_or("voxel page missing cell")?};
+            page.splats.push([local-1,x|y<<10|z<<20]);
         }}}
-        page.level.dims_offset[3]=if bricked{BRICK_INDIRECTION}else{0};
+        page.level.dims_offset[3]=if bricked{BRICK_INDIRECTION|COMPACT_BRICKS}else{0};
         Ok(page)
     }
     /// Group occupied cells once per asset page, not per world instance.
@@ -72,11 +92,17 @@ impl VoxelPage {
     /// Materialize a page at independent physical arena offsets. All address
     /// arithmetic is checked before returning any upload payload.
     pub fn relocate(&self,index_base:u32,cell_base:u32)->Result<(GpuLevel,Vec<u32>,Vec<[u32;2]>),String> {
-        if (index_base as u64+self.indices.len()as u64)>=BRICK_INDIRECTION as u64
+        if (index_base as u64+self.indices.len()as u64)>=COMPACT_BRICKS as u64
             || (cell_base as u64+self.cells.len()as u64)>u32::MAX as u64 {return Err("voxel page physical address overflow".into());}
         let mut level=self.level;level.dims_offset[3]|=index_base;
         let mut indices=self.indices.clone();
-        for (i,value) in indices.iter_mut().enumerate() {if *value!=0 {*value+=if i<self.directory{index_base}else{cell_base};}}
+        // Directory entries move with the index arena. After them: cell
+        // addresses (a dense page), or brick records whose third word is one.
+        let bricked=self.level.dims_offset[3]&BRICK_INDIRECTION!=0;
+        for (i,value) in indices.iter_mut().enumerate() {
+            if i<self.directory {if *value!=0 {*value+=index_base;}}
+            else if !bricked || (i-self.directory)%3==2 {if *value!=0 {*value+=cell_base;}}
+        }
         let splats=self.splats.iter().map(|s|[s[0]+cell_base,s[1]]).collect();
         Ok((level,indices,splats))
     }
@@ -116,7 +142,7 @@ pub fn pack(forest:&GpuForest)->Result<(GpuForest,Vec<[u32;2]>),String> {
     let pages=(0..forest.levels.len()).map(|i|VoxelPage::cook(forest,i)).collect::<Result<Vec<_>,_>>()?;
     let indices=pages.iter().map(|p|p.indices.len()as u64).sum::<u64>();
     let cells=pages.iter().map(|p|p.cells.len()as u64).sum::<u64>();
-    if indices>=BRICK_INDIRECTION as u64 || cells>u32::MAX as u64 {return Err("voxel page arena exceeds addressing budget".into());}
+    if indices>=COMPACT_BRICKS as u64 || cells>u32::MAX as u64 {return Err("voxel page arena exceeds addressing budget".into());}
     let mut index_arena=Arena::new(indices as u32);let mut cell_arena=Arena::new(cells as u32);
     let mut result=GpuForest {levels:forest.levels.clone(),indices:vec![0;indices as usize],cells:Vec::with_capacity(cells as usize),instances:forest.instances.clone()};
     let mut splat_list=vec![[0u32;2];pages.len()];
@@ -180,7 +206,7 @@ mod tests {
                     }
                 }}}
                 for s in splats {let c=[s[1]&1023,(s[1]>>10)&1023,s[1]>>20];assert_eq!(cell_index(&isolated,&relocated,c),Some(s[0]+1));}
-                assert!(p.relocate(BRICK_INDIRECTION-1,0).is_err());
+                assert!(p.relocate(COMPACT_BRICKS-1,0).is_err());
             }
         }
     }

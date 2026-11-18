@@ -26,7 +26,7 @@ pub struct Cache {
     /// of the cut waiting on it, x16; camera x4). Uploads go most urgent first.
     priority:Vec<u32>,index:Arena,cell:Arena,splat:Arena,pending:Option<Pending>,budget:Budget,
     pub buffers:[wgpu::Buffer;4], // levels, indices + brick descriptors, cells, splats (two logical headers + pool)
-    publication:Vec<(bool,u32)>,dirty:BTreeSet<usize>,wanted:BTreeSet<usize>,frame:u64,
+    publication:Vec<(bool,u32)>,dirty:BTreeSet<usize>,cleared:Vec<usize>,wanted:BTreeSet<usize>,frame:u64,
     feedback:Vec<Feedback>,last_feedback:u64,stats:Stats,
 }
 impl Cache {
@@ -58,8 +58,9 @@ impl Cache {
         let buffers=std::array::from_fn(|i|gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("bounded voxel asset arena"),size:sizes[i].max(176),usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false}));
         let last_requested=vec![0;deps.len()];
         let priority=vec![0;deps.len()];
-        let mut this=Self {source:None,source_wanted:BTreeSet::from([0]),capacities,last_requested,priority,resident:vec![None;pages.len()],pages,deps,pinned,index:Arena::new(capacities[0]),cell:Arena::new(capacities[1]),splat:Arena::new(capacities[2]),pending:None,budget,buffers,publication:Vec::new(),dirty:BTreeSet::new(),wanted:BTreeSet::new(),frame:0,feedback:Vec::new(),last_feedback:0,stats:Stats {allocated_bytes:sizes.iter().map(|s|(*s).max(176)).sum(),..Default::default()}};
+        let mut this=Self {source:None,source_wanted:BTreeSet::from([0]),capacities,last_requested,priority,resident:vec![None;pages.len()],pages,deps,pinned,index:Arena::new(capacities[0]),cell:Arena::new(capacities[1]),splat:Arena::new(capacities[2]),pending:None,budget,buffers,publication:Vec::new(),dirty:BTreeSet::new(),cleared:Vec::new(),wanted:BTreeSet::new(),frame:0,feedback:Vec::new(),last_feedback:0,stats:Stats {allocated_bytes:sizes.iter().map(|s|(*s).max(176)).sum(),..Default::default()}};
         this.publication=vec![(true,1);this.deps.len()];
+        for id in 0..this.pages.len() {this.clear_header(gpu,id);}
         this.dirty.extend(0..this.pages.len());
         // Ancestors are uploaded at construction, before any selector can use
         // the cache. Startup uploads are distinct from per-frame upload budget.
@@ -108,10 +109,21 @@ impl Cache {
     }
     fn evict(&mut self,id:usize)->Result<(),String> {
         if self.pinned[id]{return Err("cannot evict pinned voxel ancestor".into());}
-        if let Some(r)=self.resident[id].take(){self.index.release(r.index)?;self.cell.release(r.cell)?;self.splat.release(r.splat)?;self.dirty.insert(id);self.stats.evictions+=1;}
+        if let Some(r)=self.resident[id].take(){self.index.release(r.index)?;self.cell.release(r.cell)?;self.splat.release(r.splat)?;self.dirty.insert(id);self.cleared.push(id);self.stats.evictions+=1;}
         Ok(())
     }
+    /// A page that is out keeps its grid (cell size and dimensions never
+    /// change, and shaders read the finest level's cell size of a volume
+    /// whose finest page is out) but has no cells and no bricks: that empty
+    /// range is how the sun pass sees it is not resident.
+    fn clear_header(&self,gpu:&Gpu,id:usize) {
+        gpu.queue.write_buffer(&self.buffers[0],id as u64*32,bytemuck::bytes_of(&self.pages[id].level));
+        gpu.queue.write_buffer(&self.buffers[3],id as u64*8,bytemuck::cast_slice(&[0u32,0]));
+        gpu.queue.write_buffer(&self.buffers[3],(self.pages.len()+id)as u64*8,bytemuck::cast_slice(&[0u32,0]));
+    }
     fn publish(&mut self,gpu:&Gpu,runtime:&Selector)->Result<(),String> {
+        // An evicted page may have been uploaded again since: only clear what is still out.
+        for id in std::mem::take(&mut self.cleared) {if self.resident[id].is_none() && self.pending.as_ref().is_none_or(|p|p.id!=id) {self.clear_header(gpu,id);}}
         if self.dirty.is_empty() && self.source.as_ref().is_none_or(|s|s.dirty.is_empty()){return Ok(());}
         let mut updates=Vec::new();
         for (id,deps) in self.deps.iter().enumerate() {

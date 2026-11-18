@@ -249,11 +249,17 @@ impl GpuForest {
 /// Aggregate levels use a sparse directory of 4x4x4 bricks. Bit31 of the
 /// level offset tags this encoding; ordinary providers retain dense indices.
 pub const BRICK_INDIRECTION: u32 = 1 << 31;
+/// Bit30 on a bricked level: an occupied brick is three words (occupancy
+/// mask low and high, address of its first cell) instead of 64 cell
+/// addresses, its cells stored in mask-bit order. Voxel pages use it
+/// (foliage_pages.rs): needles fill a brick thinly, and 64 words per brick
+/// made the directory of a fine level several times the size of its cells.
+pub const COMPACT_BRICKS: u32 = 1 << 30;
 /// voxel_forest.wgsl VOLUME_SPLAT_MIN_ALPHA: fainter cells are thinned to this alpha.
 pub(crate) const SPLAT_MIN_ALPHA: f32 = 0.5;
 pub(crate) fn cell_index(forest:&GpuForest,level:&GpuLevel,c:[u32;3])->Option<u32> {
     if (0..3).any(|a|c[a]>=level.dims_offset[a]) {return Some(0);}
-    let base=(level.dims_offset[3]&!BRICK_INDIRECTION)as usize;
+    let base=(level.dims_offset[3]&!(BRICK_INDIRECTION|COMPACT_BRICKS))as usize;
     if level.dims_offset[3]&BRICK_INDIRECTION==0 {
         return forest.indices.get(base+c[0]as usize+level.dims_offset[0]as usize*
             (c[1]as usize+level.dims_offset[1]as usize*c[2]as usize)).copied();
@@ -261,7 +267,14 @@ pub(crate) fn cell_index(forest:&GpuForest,level:&GpuLevel,c:[u32;3])->Option<u3
     let dx=level.dims_offset[0].div_ceil(4)as usize;let dy=level.dims_offset[1].div_ceil(4)as usize;
     let brick=*forest.indices.get(base+(c[0]/4)as usize+dx*((c[1]/4)as usize+dy*(c[2]/4)as usize))?;
     if brick==0 {return Some(0);}
-    forest.indices.get((brick-1)as usize+(c[0]%4+4*(c[1]%4)+16*(c[2]%4))as usize).copied()
+    let bit=c[0]%4+4*(c[1]%4)+16*(c[2]%4);
+    if level.dims_offset[3]&COMPACT_BRICKS!=0 {
+        let record=forest.indices.get((brick-1)as usize..(brick+2)as usize)?;
+        let mask=record[0]as u64|(record[1]as u64)<<32;
+        if mask>>bit&1==0 {return Some(0);}
+        return Some(record[2]+(mask&((1u64<<bit)-1)).count_ones());
+    }
+    forest.indices.get((brick-1)as usize+bit as usize).copied()
 }
 
 /// Convert only an aggregate provider after packing. Every level is bounded
@@ -291,7 +304,7 @@ pub fn pack_bricks(forest:&mut GpuForest,max_bricks_per_level:usize)->Result<Vec
             return Err("invalid original aggregate directory/grid range".into());
         }
         let base=indices.len();let end=base.checked_add(count).ok_or("brick directory overflow")?;
-        if end>=BRICK_INDIRECTION as usize {return Err("brick directory exceeds31bit addressing".into());}
+        if end>=COMPACT_BRICKS as usize {return Err("brick directory exceeds 30 bit addressing".into());}
         indices.resize(end,0);let mut occupied=0;
         for z in 0..bd[2] {for y in 0..bd[1] {for x in 0..bd[0] {
             let mut cells=[0u32;64];
@@ -303,7 +316,7 @@ pub fn pack_bricks(forest:&mut GpuForest,max_bricks_per_level:usize)->Result<Vec
             }}}
             if cells.iter().all(|v|*v==0){continue;}
             occupied+=1;if occupied>max_bricks_per_level {return Err("aggregate level exceeds its brick budget".into());}
-            if indices.len().checked_add(64).is_none_or(|end|end>=BRICK_INDIRECTION as usize) {
+            if indices.len().checked_add(64).is_none_or(|end|end>=COMPACT_BRICKS as usize) {
                 return Err("brick payload exceeds31bit addressing".into());
             }
             indices[base+x as usize+bd[0]as usize*(y as usize+bd[1]as usize*z as usize)]=indices.len()as u32+1;
