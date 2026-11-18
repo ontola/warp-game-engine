@@ -618,6 +618,10 @@ pub struct Lighting {
 }
 
 impl Lighting {
+    fn terrain_shadow_sun(&self) -> Option<Vec3> {
+        self.sun_dir.try_normalize().filter(|s| s.y > 0.0 && self.sun_lux > 0.0 && self.shadow_strength > 0.0)
+    }
+
     /// The factor on emitted radiance: 2^((ev100 - emissive_ev100) * compensation).
     pub fn emissive_scale(&self) -> f32 {
         let s = 2f32.powf((self.ev100 - self.emissive_ev100) * self.emissive_compensation.clamp(0.0, 1.0));
@@ -1060,6 +1064,7 @@ struct MeadowBrickFixture {
 }
 
 pub struct Renderer {
+    terrain_shadow_sun: std::sync::Mutex<Option<Vec3>>,
     // Optional per-view roll for flight games. Empty preserves world-up cameras.
     camera_up_axes: std::sync::Mutex<Vec<Vec3>>,
     camera_projections: std::sync::Mutex<Vec<Mat4>>,
@@ -1088,6 +1093,7 @@ pub struct Renderer {
     far_cull_scene_bind: wgpu::BindGroup,
     foliage_cull_scene_bind: wgpu::BindGroup,
     voxel_scene_bind: wgpu::BindGroup,
+    forest_lighting_bind: wgpu::BindGroup,
     voxel_scene_layout: wgpu::BindGroupLayout,
     meadow_brick_fixture: Option<MeadowBrickFixture>,
     shadow_scene_bind: wgpu::BindGroup,
@@ -1120,6 +1126,7 @@ pub struct Renderer {
     wind: crate::wind::WindRenderer,
     part_wind: Option<crate::part_wind::PartWindRenderer>,
     gpu_forest: Option<(crate::foliage_runtime::Runtime,u32)>,
+    forest_snapshot_frozen: std::sync::atomic::AtomicBool,
     foliage_seed_depth:Option<FoliageSeedDepth>,
     part_wind_lod: bool,
     aggregate_lod: Option<crate::aggregate_lod::Selector>,
@@ -1183,6 +1190,7 @@ pub struct Renderer {
     occlusion: crate::occlusion::Resources,
     cluster_buckets: bool,
     simple_lighting: bool,
+    compact_shade_scene: Option<wgpu::BindGroup>,
     sharp_sprites: bool,
     fx_over_sprites: bool,
     simple_cull: bool,
@@ -1402,7 +1410,7 @@ fn resolve_lighting_focus(views:&[ViewRect], requested:&[Vec3])->Result<Vec<Vec3
     Ok(points)
 }
 
-fn storage(read_only: bool) -> wgpu::BindingType {
+pub(crate) fn storage(read_only: bool) -> wgpu::BindingType {
     wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only }, has_dynamic_offset: false, min_binding_size: None }
 }
 
@@ -1459,6 +1467,16 @@ fn scene_layout_bindings() -> Vec<(u32, wgpu::BindingType)> {
                 (29, storage(true)),
                 (30, tex_array),
     ]
+}
+
+// Resources used by shade_compact and classify on WebGPU baseline devices.
+// Keep the same visibility buffer, directional shadows and forest geometry.
+const COMPACT_SHADE_SCENE: &[u32] = &[0,3,4,5,6,7,9,12,17,18,22,23,25];
+const COMPACT_SHADE_VIEW: &[u32] = &[0,1,2,3,4,5,6,7,8,10,11,13,14,15,16];
+
+fn shade_subset<'a,T:Clone>(bindings:&'a [(u32,T)], compact:bool, used:&[u32]) -> std::borrow::Cow<'a,[(u32,T)]> {
+    if compact { bindings.iter().filter(|(id,_)| used.contains(id)).cloned().collect::<Vec<_>>().into() }
+    else { bindings.into() }
 }
 
 /// Shade's per-view bindings (group 1).
@@ -1997,7 +2015,7 @@ impl Renderer {
         u.fog_cull[3] = excluded;
         gpu.queue.write_buffer(&targets.uniform, 0, bytemuck::bytes_of(&u));
         self.cull_and_raster(enc, gpu, targets, Some(vis), depth, ts, names, "probe cull", RasterPass::Color);
-        let shade_bind = bind(gpu, &self.shade_layout, &[
+        let shade_bind = bind(gpu, &self.shade_layout, &shade_subset(&[
             (0, targets.uniform.as_entire_binding()),
             (1, targets.visible.as_entire_binding()),
             (2, light_buf.as_entire_binding()),
@@ -2025,8 +2043,8 @@ impl Renderer {
             (27, wgpu::BindingResource::TextureView(&self.probes.view)),
             (29, wgpu::BindingResource::TextureView(&fog_none)),
             (30, wgpu::BindingResource::TextureView(&fog_none)),
-        ]);
-        let binds = [&self.scene_bind, &shade_bind, &self.clustered.bind];
+        ], self.compact_shade_scene.is_some(), COMPACT_SHADE_VIEW));
+        let binds = [self.compact_shade_scene.as_ref().unwrap_or(&self.scene_bind), &shade_bind, &self.clustered.bind];
         let t = self.query.as_ref().map(|(qs, _, _)| { names.push("probe shade"); (qs, timestamp_pair(ts)) });
         let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("probe shade"),
             timestamp_writes: t.map(|(qs, i)| wgpu::ComputePassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }) });
@@ -2187,7 +2205,10 @@ impl Renderer {
             anisotropy_clamp: 16,
             ..Default::default()
         });
+        let compact_shade = gpu.limits.max_sampled_textures_per_shader_stage < shade_sampled_textures();
         let scene_bindings = scene_layout_bindings();
+        let compact_scene_layout = compact_shade.then(|| layout(gpu, "compact material lighting",
+            &shade_subset(&scene_bindings, true, COMPACT_SHADE_SCENE)));
         let mut scene_entries = layout_entries(&scene_bindings);
         for entry in &mut scene_entries {
             if entry.binding == 29 { entry.visibility = wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE; }
@@ -2217,7 +2238,9 @@ impl Renderer {
         crate::aggregate_lod::validate_scene(scene).expect("valid aggregate scene");
         let aggregate_lod=scene.aggregate_lod.as_ref().map(|s|crate::aggregate_lod::Selector::new(gpu,s))
             .transpose().expect("invalid aggregate error selection");
-        let voxel_forest = crate::voxel_forest::VoxelRenderer::new(gpu, scene, &voxel_scene_layout, &volume_view_layout,forest_assets);
+        let forest_lighting_layout = layout(gpu, "forest lighting", &voxel_scene_bindings.iter().copied()
+            .filter(|(binding,_)|crate::voxel_forest::FOREST_LIGHTING_BINDINGS.contains(binding)).collect::<Vec<_>>());
+        let voxel_forest = crate::voxel_forest::VoxelRenderer::new(gpu, scene, &instances, &forest_lighting_layout, &volume_view_layout,forest_assets);
         let gpu_forest=scene.gpu_forest.as_ref().map(|spec| crate::foliage_runtime::Runtime::new(gpu,spec,&instances,
             voxel_forest.as_ref().expect("GPU forest volumes").tree_buffer()).map(|runtime|(runtime,spec.first_owner)))
             .transpose().expect("invalid GPU forest runtime");
@@ -2265,7 +2288,7 @@ impl Renderer {
         // Clustered lights (opt-in) keep their shadow tiles in extra layers
         // of the spot shadow array, so shade binds no further texture.
         let clustered_on=crate::clustered_lights::enabled(scene.graphics.clustered_lights)
-            && crate::switches::SIMPLE_LIGHTING.var().map_or(!scene.graphics.simple_lighting,|v|v!="1");
+            && !compact_shade && crate::switches::SIMPLE_LIGHTING.var().map_or(!scene.graphics.simple_lighting,|v|v!="1");
         let clustered_budget=crate::clustered_lights::budget(clustered_on);
         let headlights=crate::headlights::Resources::with_layers(gpu,clustered_budget.layers);
         let tracks=crate::tracks::Resources::new(gpu);
@@ -2338,10 +2361,10 @@ impl Renderer {
         assert!(!(far_sun.enabled && foliage_sun_pages.enabled),"choose paged foliage or legacy experimental far sun map, not both");
         let noise_view = crate::noise_field::texture(gpu, scene.noise.as_ref());
         let light_shapes = crate::light_shapes::LightShapes::new(gpu);
-        let make_scene_bind = |headlight_view:&wgpu::TextureView, far_view:&wgpu::TextureView, instance_data:&wgpu::Buffer, wind_data:&wgpu::Buffer| bind(
+        let make_scene_bind = |compact_layout:Option<&wgpu::BindGroupLayout>, headlight_view:&wgpu::TextureView, far_view:&wgpu::TextureView, instance_data:&wgpu::Buffer, wind_data:&wgpu::Buffer| bind(
             gpu,
-            &scene_layout,
-            &[
+            compact_layout.unwrap_or(&scene_layout),
+            &shade_subset(&[
                 (0, topology.buffer.as_entire_binding()),
                 (3, clusters.as_entire_binding()),
                 (4, instance_data.as_entire_binding()),
@@ -2366,13 +2389,15 @@ impl Renderer {
                 (28, wgpu::BindingResource::TextureView(&noise_view)),
                 (29, meadow_edge_buffer.as_entire_binding()),
                 (30, wgpu::BindingResource::TextureView(&light_shapes.view)),
-            ],
+            ], compact_layout.is_some(), COMPACT_SHADE_SCENE),
         );
         let sampled_far=if foliage_sun_pages.enabled {&foliage_sun_pages.sampled}else{&far_sun.view};
-        let scene_bind=make_scene_bind(&headlights.sampled,sampled_far,&instances,wind.buffer());
-        let shadow_scene_bind=make_scene_bind(&headlights.empty,&far_sun.empty,&instances,wind.buffer());
-        let far_sun_scene_bind=make_scene_bind(&headlights.empty,&far_sun.empty,&far_sun.instances,&far_sun.wind);
-        let foliage_sun_scene_bind=make_scene_bind(&headlights.empty,&foliage_sun_pages.empty,&foliage_sun_pages.instances,&foliage_sun_pages.wind);
+        let scene_bind=make_scene_bind(None,&headlights.sampled,sampled_far,&instances,wind.buffer());
+        let compact_shade_scene = compact_scene_layout.as_ref().map(|layout|
+            make_scene_bind(Some(layout), &headlights.sampled, sampled_far, &instances, wind.buffer()));
+        let shadow_scene_bind=make_scene_bind(None,&headlights.empty,&far_sun.empty,&instances,wind.buffer());
+        let far_sun_scene_bind=make_scene_bind(None,&headlights.empty,&far_sun.empty,&far_sun.instances,&far_sun.wind);
+        let foliage_sun_scene_bind=make_scene_bind(None,&headlights.empty,&foliage_sun_pages.empty,&foliage_sun_pages.instances,&foliage_sun_pages.wind);
         // Cull consumes four buffers, not the full material/lighting layout.
         // Spatial grouping, sun owners and cluster traversal keep this layout
         // within the device's sixteen-storage-buffer stage limit.
@@ -2396,7 +2421,7 @@ impl Renderer {
         } else {None};
         let cluster_traversal=crate::cluster_traversal::Resources::new(gpu,scene)
             .expect("invalid shared cluster traversal resources");
-        let voxel_scene_bind = bind(gpu, &voxel_scene_layout, &[
+        let voxel_resources = [
             (4, instances.as_entire_binding()),
             (12,wind.buffer().as_entire_binding()),
             (13, grass_lighting.uniform.as_entire_binding()),
@@ -2409,7 +2434,10 @@ impl Renderer {
             (23, wgpu::BindingResource::TextureView(sampled_far)),
             (25, world_visibility.uniform.as_entire_binding()),
             (5, scene_tables.buffer.as_entire_binding()),
-        ]);
+        ];
+        let voxel_scene_bind = bind(gpu, &voxel_scene_layout, &voxel_resources);
+        let forest_lighting_bind = bind(gpu, &forest_lighting_layout, &voxel_resources.iter()
+            .filter(|(binding,_)|crate::voxel_forest::FOREST_LIGHTING_BINDINGS.contains(binding)).cloned().collect::<Vec<_>>());
         let view_cull_layout = layout(gpu, "view cull", &[(0, uniform()), (1, storage(false)), (2, storage(false)), (5, storage(true)), (6, uniform()),
             (7,wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Float {filterable:false},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}),
             (8,storage(true)),(10,storage(false)),(14,storage(false)),(15,uniform())].into_iter()
@@ -2420,7 +2448,7 @@ impl Renderer {
         let mut view_raster_entries = layout_entries(&[(0, uniform()), (1, storage(true)), (2, storage(true)), (4, storage(true))]);
         for entry in &mut view_raster_entries { if entry.binding != 0 { entry.visibility = wgpu::ShaderStages::VERTEX; } }
         let view_raster_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("view raster"), entries: &view_raster_entries });
-        let shade_layout = layout(gpu, "shade", &shade_layout_bindings());
+        let shade_layout = layout(gpu, "shade", &shade_subset(&shade_layout_bindings(), compact_shade, COMPACT_SHADE_VIEW));
         let canopy = crate::canopy::CanopyClipmap::new(gpu, scene, &scene_layout)
             .expect("scene exceeds the bounded canopy representation");
         startup.mark("scene_bindings_canopy_resources");
@@ -2498,7 +2526,7 @@ impl Renderer {
         // Constructor-time switches permit same-binary ABBA comparisons with
         // identical assets, LOD thresholds, lighting and camera inputs.
         let cluster_buckets = !crate::switches::CLUSTER_BUCKETS.off();
-        let simple_lighting=crate::switches::SIMPLE_LIGHTING.var().map_or(scene.graphics.simple_lighting,|v|v=="1");
+        let simple_lighting=compact_shade || crate::switches::SIMPLE_LIGHTING.var().map_or(scene.graphics.simple_lighting,|v|v=="1");
         let occlusion = crate::occlusion::Resources::new(gpu,cluster_buckets,scene.gpu_forest.is_some());
         let plain_meshes = scene.meadow.is_none() && scene.far_grass.is_none()
             && scene.voxel_forest.is_none() && scene.foliage_world.is_none()
@@ -2626,7 +2654,8 @@ impl Renderer {
         let sun_guard_bounds=(sun_cache_guard_m>0.0)
             .then(||std::sync::Mutex::new(crate::stability::SunSceneBounds::from_scene(scene)));
         startup.mark("sun_scene_bounds");
-        let shade_pl = pl(&[&scene_layout, &shade_layout, &clustered.layout]);
+        let lighting_scene_layout = compact_scene_layout.as_ref().unwrap_or(&scene_layout);
+        let shade_pl = pl(&[lighting_scene_layout, &shade_layout, &clustered.layout]);
         let rock_variation=crate::switches::ROCK_VARIATION.on();
         let skip_hidden_meadow=meadow.as_ref().is_some_and(|m|m.skip_hidden_shade_enabled());
         let meadow_edge_enabled=meadow.as_ref().is_some_and(|m|m.edge_shadow_stats().is_some_and(|s|s.enabled));
@@ -2673,7 +2702,7 @@ impl Renderer {
         let diagnostic_constants: Vec<(&'static str, f64)> = shade_constants.clone();
         shade_constants.push(("SHADE_DIAGNOSTICS", 0.0));
         let shade = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label:Some("shade"),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some(if simple_lighting {"shade_simple"} else {"shade"}),
+            label:Some("shade"),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some(if compact_shade {"shade_compact"} else if simple_lighting {"shade_simple"} else {"shade"}),
             compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
         });
         // The live bounce of clustered lights (rsm.wgsl), before shade.
@@ -2683,7 +2712,7 @@ impl Renderer {
         });
         // Froxel fog injection: shade's groups and its own group 3 (the cells).
         let fog_out_layout = layout(gpu, "fog inject out", &fog_out_bindings());
-        let fog_inject_pl = pl(&[&scene_layout, &shade_layout, &clustered.layout, &fog_out_layout]);
+        let fog_inject_pl = pl(&[lighting_scene_layout, &shade_layout, &clustered.layout, &fog_out_layout]);
         let fog_inject = (!simple_lighting).then(|| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label:Some("fog_inject"),layout:Some(&fog_inject_pl),module:&shade_mod,entry_point:Some("fog_inject"),
             compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
@@ -2793,7 +2822,7 @@ impl Renderer {
             cull_scene_bind,
             far_cull_scene_bind,
             foliage_cull_scene_bind,
-            voxel_scene_bind,
+            voxel_scene_bind, forest_lighting_bind,
             voxel_scene_layout,
             meadow_brick_fixture: None,
             shadow_scene_bind,
@@ -2832,6 +2861,7 @@ impl Renderer {
             part_wind,
             foliage_seed_depth:gpu_forest.as_ref().map(|_|FoliageSeedDepth {pyramid:crate::depth_pyramid::DepthPyramid::new(gpu),targets:Default::default()}),
             gpu_forest,
+            forest_snapshot_frozen: Default::default(),
             part_wind_lod: scene.part_wind_lod,
             aggregate_lod,
             aggregate_lod_enabled: std::sync::atomic::AtomicBool::new(true),
@@ -2889,7 +2919,8 @@ impl Renderer {
             prepare_tree_phase,recover_tree_clusters,
             occlusion,
             cluster_buckets,
-            simple_lighting,
+            simple_lighting, compact_shade_scene,
+            terrain_shadow_sun: std::sync::Mutex::new(light.terrain_shadow_sun()),
             sharp_sprites: scene.graphics.sharp_sprites,
             fx_over_sprites: scene.graphics.fx_over_sprites,
             simple_cull,
@@ -3713,6 +3744,16 @@ impl Renderer {
     /// The GPU forest's runtime, for offline diagnostics (cut snapshots).
     /// Last frame's sun clipmap levels (view 0); empty when no level was requested.
     pub fn sun_clipmap_log(&self)->Vec<SunLevelLog> {self.clipmap_log.lock().unwrap().clone()}
+    pub(crate) fn terrain_shadow_sun(&self) -> Option<Vec3> {
+        *self.terrain_shadow_sun.lock().unwrap()
+    }
+
+    /// Hold the last published forest (cut, poses and owners) during an offline
+    /// camera replay, so geometry changes can be isolated from disocclusion.
+    pub fn freeze_forest_snapshot(&self, frozen: bool) {
+        self.forest_snapshot_frozen.store(frozen, std::sync::atomic::Ordering::Relaxed);
+    }
+
     pub fn gpu_forest_runtime(&self)->Option<&crate::foliage_runtime::Runtime> {self.gpu_forest.as_ref().map(|(forest,_)|forest)}
     pub fn gpu_forest_diagnostics(&self,gpu:&Gpu)->Result<Option<crate::foliage_runtime::Diagnostics>,String> {
         self.gpu_forest.as_ref().map(|(forest,_)|forest.diagnostics(gpu)).transpose()
@@ -3834,7 +3875,7 @@ impl Renderer {
                     compilation_options: wgpu::PipelineCompilationOptions {constants:&constants,..Default::default()},
                     cache: gpu.pipeline_cache(),
                 });
-                (make(if self.simple_lighting {"shade_simple"}else{"shade"}), make("classify"), self.rsm_gather.as_ref().map(|_| crate::rsm::Pipelines { gather: make("rsm_gather"), filters: [make("rsm_filter1"), make("rsm_filter2"), make("rsm_filter4")] }), self.fog_inject.as_ref().map(|_| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                (make(if self.compact_shade_scene.is_some() {"shade_compact"}else if self.simple_lighting {"shade_simple"}else{"shade"}), make("classify"), self.rsm_gather.as_ref().map(|_| crate::rsm::Pipelines { gather: make("rsm_gather"), filters: [make("rsm_filter1"), make("rsm_filter2"), make("rsm_filter4")] }), self.fog_inject.as_ref().map(|_| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                     label: Some("fog_inject"), layout: Some(&self.fog_inject_pl), module: &module, entry_point: Some("fog_inject"),
                     compilation_options: wgpu::PipelineCompilationOptions {constants:&constants,..Default::default()}, cache: gpu.pipeline_cache() })))
             }).map_err(|e| format!("opaque reload: {e}"))?)
@@ -4802,7 +4843,8 @@ impl Renderer {
             crate::stability::stable_shadow_depth(shared_centre,light.sun_dir,extent,SHADOW_SIZE,range)
         } else {sun_projection(centre,extent,SHADOW_SIZE)};
         let shared_eye=guard_depth.map_or_else(||sun_eye(centre),|range|crate::stability::shadow_eye(shared_centre,light.sun_dir,range));
-        let sun_needed = !self.simple_lighting && sun_visibility_required(self.zero_sun_fast_path, light.sun_lux, light.debug);
+        *self.terrain_shadow_sun.lock().unwrap() = light.terrain_shadow_sun();
+        let sun_needed = (!self.simple_lighting || self.compact_shade_scene.is_some()) && sun_visibility_required(self.zero_sun_fast_path, light.sun_lux, light.debug);
         let near_enabled = light.near_shadows > 0.5 && light.shadow_strength > 0.0 && light.sun_lux > 0.0;
         // The clipmap replaces the shared map this frame (near maps on, every
         // level of every view has a damage slot).
@@ -5134,7 +5176,8 @@ impl Renderer {
                 names.push("gpu particles sim");
             }
         }
-        if let Some((forest,first_owner))=&self.gpu_forest {
+        if let Some((forest,first_owner))=self.gpu_forest.as_ref().filter(|_|
+            !self.forest_snapshot_frozen.load(std::sync::atomic::Ordering::Relaxed)) {
             // CURRENT terrain depth is safe before vegetation publication. No old
             // vegetation slots/pages/poses enter this seed, so recycled owners and
             // rejected partial cuts cannot leave false occluders behind.
@@ -5385,7 +5428,7 @@ impl Renderer {
             if let Some(forest)=self.voxel_forest.as_ref().filter(|f|f.casts_sun()) {
                 let times=["voxel sun splats","voxel sun splat raster"].map(|name|self.query.as_ref().map(|(qs,_,_)|{
                     let i=timestamp_pair(&mut ts);names.push(name);(qs,i)}));
-                forest.render_sun(gpu,&mut enc,&self.voxel_scene_bind,&shadow_t.foliage_selection,crate::voxel_forest::SunSplatView {
+                forest.render_sun(gpu,&mut enc,&shadow_t.foliage_selection,crate::voxel_forest::SunSplatView {
                     damage:damage_bind.as_ref(),depth:&shadow_v,view_proj:svp,planes:shadow_uniform.planes,direction:light.sun_dir,texel_m:sun_voxel_m(texel,SHARED_SUN_VOXEL_M),map_size:SHADOW_SIZE},times)?;
             }
         }
@@ -5397,7 +5440,7 @@ impl Renderer {
             if let (true,Some((projection,_)),Some(forest))=(self.far_sun.anchored,far_projection,self.voxel_forest.as_ref().filter(|f|f.casts_sun())) {
                 let texel=2.*projection.extent/crate::far_sun::SIZE as f32;
                 let planes=view_uniform(projection.vp,projection.eye,1.,[0.;4],[0.;4],0.).planes;
-                forest.render_sun(gpu,&mut enc,&self.voxel_scene_bind,&shadow_t.foliage_selection,crate::voxel_forest::SunSplatView {
+                forest.render_sun(gpu,&mut enc,&shadow_t.foliage_selection,crate::voxel_forest::SunSplatView {
                     damage:None,depth:&self.far_sun.target,view_proj:projection.vp,planes,direction:light.sun_dir,texel_m:sun_voxel_m(texel,SHARED_SUN_VOXEL_M),map_size:crate::far_sun::SIZE},[None,None])?;
             }
         }
@@ -5583,7 +5626,7 @@ impl Renderer {
                     if let Some(forest)=self.voxel_forest.as_ref().filter(|f|f.has_proxies()||voxel_casters) {
                         let times=(if k == 0 {["voxel near sun splats","voxel near sun splat raster"]} else {["voxel sun clipmap splats","voxel sun clipmap splat raster"]})
                             .map(|name|self.query.as_ref().map(|(qs,_,_)|{let i=timestamp_pair(&mut ts);names.push(name);(qs,i)}));
-                        forest.render_sun(gpu,&mut enc,&self.voxel_scene_bind,&targets.foliage_selection,crate::voxel_forest::SunSplatView {
+                        forest.render_sun(gpu,&mut enc,&targets.foliage_selection,crate::voxel_forest::SunSplatView {
                             damage:level_damage.as_ref(),depth:&texture_view,view_proj:near_vp,planes:near_uniform.planes,direction:light.sun_dir,
                             texel_m:sun_voxel_m(2.0*extent/NEAR_SHADOW_SIZE as f32,near_level_voxel_m(k + clipmap_bases[vi])),map_size:NEAR_SHADOW_SIZE},times)?;
                     }
@@ -5816,7 +5859,7 @@ impl Renderer {
                 self.query.as_ref().map(|(qs,_,_)|{let i=timestamp_pair(&mut ts); names.push(name); (qs,i)})
             }));
             if let Some(forest) = &self.voxel_forest {
-                forest.render(gpu,&mut enc,vi,(w,h),&self.voxel_scene_bind,
+                forest.render(gpu,&mut enc,vi,(w,h),&self.forest_lighting_bind,
                     volume_view.as_ref().unwrap(),&hdr_v,&main.foliage_selection,
                     up.motion.as_ref().filter(|_|motion_on && forest.has_temporal()).map(|motion|crate::voxel_forest::TemporalInputs {
                         previous_instances:motion.previous_instances(),snapshot_valid:motion.snapshot_valid()}),voxel_times.unwrap(),
@@ -5852,7 +5895,7 @@ impl Renderer {
                 gpu,
                 &self.shade_layout,
                 "cached shade view",
-                &[
+                &shade_subset(&[
                     (0, main.uniform.as_entire_binding()),
                     (1, main.visible.as_entire_binding()),
                     (2, light_buf.as_entire_binding()),
@@ -5880,7 +5923,7 @@ impl Renderer {
                     (27, wgpu::BindingResource::TextureView(&self.probes.view)),
                     (29, wgpu::BindingResource::TextureView(rsm[3])),
                     (30, wgpu::BindingResource::TextureView(rsm[4])),
-                ],
+                ], self.compact_shade_scene.is_some(), COMPACT_SHADE_VIEW),
             );
             let shade_bind = shade_bind_with(resources, coarse_target.as_ref().map_or(&self.terrain_coarse_fallback, |t| &t.1), rsm_shade);
             // The gather (out from prev), then the filter: out to a, a to b, b to a.
@@ -5947,7 +5990,7 @@ impl Renderer {
                 passes.push(("shade terrain", diagnostic.and_then(|d| d.1.as_ref()).or(unlit.and_then(|u| u.1.as_ref())).unwrap_or(terrain), vec![&self.scene_bind, &shade_bind, &self.clustered.bind]));
             }
             if let Some(voxels) = &self.voxel_pass { passes.push(("shade voxels", voxels, vec![&self.scene_bind, &shade_bind, &self.clustered.bind])); }
-            passes.push(("shade", diagnostic.map(|d| &d.0).or(unlit.map(|u| &u.0)).unwrap_or(&self.shade), vec![&self.scene_bind, &shade_bind, &self.clustered.bind]));
+            passes.push(("shade", diagnostic.map(|d| &d.0).or(unlit.map(|u| &u.0)).unwrap_or(&self.shade), vec![self.compact_shade_scene.as_ref().unwrap_or(&self.scene_bind), &shade_bind, &self.clustered.bind]));
             let mut far_motion_layer = None;
             for (label, pipe, bindings) in passes {
                 let t = self.query.as_ref().map(|(qs, _, _)| {
@@ -6027,11 +6070,11 @@ impl Renderer {
                     });
                     if let Some(forest)=&self.foliage_world {
                         let times=["world foliage integrate","world foliage composite"].map(|name|self.query.as_ref().map(|(qs,_,_)|{names.push(name);(qs,timestamp_pair(&mut ts))}));
-                        forest.render(gpu,&mut enc,vi,(w,h),&self.voxel_scene_bind,volume_view.as_ref().unwrap(),&hdr_v,
+                        forest.render(gpu,&mut enc,vi,(w,h),&self.forest_lighting_bind,volume_view.as_ref().unwrap(),&hdr_v,
                             &main.spatial_owners,&self.instance_groups.owners,times);
                     }
                     if let Some(forest) = &self.voxel_forest {
-                        forest.render(gpu,&mut enc,vi,(w,h),&self.voxel_scene_bind,
+                        forest.render(gpu,&mut enc,vi,(w,h),&self.forest_lighting_bind,
                             volume_view.as_ref().unwrap(),&hdr_v,&main.foliage_selection,
                             up.motion.as_ref().filter(|_|motion_on && forest.has_temporal()).map(|motion|crate::voxel_forest::TemporalInputs {
                                 previous_instances:motion.previous_instances(),snapshot_valid:motion.snapshot_valid()}),voxel_times.unwrap(),

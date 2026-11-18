@@ -23,7 +23,8 @@ fn volume_level_at(i:u32)->VolumeLevel {return VolumeLevel(volume_level_origin(i
 @group(2) @binding(5) var<storage,read_write> volume_stats: array<atomic<u32>>;
 @group(2) @binding(6) var volume_output: texture_storage_2d<rgba16float,write>;
 @group(2) @binding(7) var<uniform> volume_config: VolumeConfig;
-@group(2) @binding(8) var<storage,read_write> volume_jobs: array<atomic<u32>>;
+// The job/interval worklist follows the tile candidates in the atomic buffer.
+fn job_word(index:u32)->u32 { return volume_config.tile_span.x + volume_config.tile_span.y + index; }
 @group(2) @binding(9) var<storage,read> volume_selection_words: array<u32>;
 fn volume_selection_at(i:u32)->vec4<u32> { return selection_unpack(volume_selection_words[i]); }
 // Packed group selection (aggregate_lod.wgsl writes it): one u32 per group,
@@ -159,12 +160,12 @@ fn voxel_tiles(@builtin(global_invocation_id) id:vec3<u32>) {
         atomicAdd(&volume_stats[13],extent.x*extent.y);
     }
     if count>0u && volume_config.dispatch.x!=0u {
-        let job=atomicAdd(&volume_jobs[3],1u);
-        atomicStore(&volume_jobs[4u+job],id.y*tile_dims.x+id.x);
+        let job=atomicAdd(&volume_stats[job_word(3)],1u);
+        atomicStore(&volume_stats[job_word(4u+job)],id.y*tile_dims.x+id.x);
         if VOLUME_BRICK_VISIBILITY {atomicStore(&volume_stats[VOLUME_MASK_WORD+id.y*tile_dims.x+id.x],job+1u);}
-        atomicMax(&volume_jobs[0],min(job+1u,VOLUME_JOB_ROW));
-        atomicMax(&volume_jobs[1],4u*(job/VOLUME_JOB_ROW+1u));
-        atomicStore(&volume_jobs[2],1u);
+        atomicMax(&volume_stats[job_word(0)],min(job+1u,VOLUME_JOB_ROW));
+        atomicMax(&volume_stats[job_word(1)],4u*(job/VOLUME_JOB_ROW+1u));
+        atomicStore(&volume_stats[job_word(2)],1u);
     }
 }
 
@@ -475,8 +476,8 @@ fn volume_stream_pool()->u32 {return volume_config.dispatch.z+4u+volume_config.d
 fn volume_stream_capacity()->u32 {return (VOLUME_INTERVAL_STREAM_WORDS-4u-volume_config.dispatch.w*2u)/4u;}
 fn volume_stream_read(first:u32,index:u32)->VolumeInterval {
     let at=volume_stream_pool()+(first+index)*4u;
-    return VolumeInterval(vec2<f32>(bitcast<f32>(atomicLoad(&volume_jobs[at])),bitcast<f32>(atomicLoad(&volume_jobs[at+1u]))),
-        atomicLoad(&volume_jobs[at+2u]),0u);
+    return VolumeInterval(vec2<f32>(bitcast<f32>(atomicLoad(&volume_stats[job_word(at)])),bitcast<f32>(atomicLoad(&volume_stats[job_word(at+1u)]))),
+        atomicLoad(&volume_stats[job_word(at+2u)]),0u);
 }
 // Compact support visibility. Regions are disjoint in each pose's local
 // space, including the trilinear halo; different branches still overlap and
@@ -498,8 +499,8 @@ fn volume_brick_interval(brick:u32,origin:vec3<f32>,direction:vec3<f32>,near:f32
 }
 fn volume_stream_write(first:u32,index:u32,value:VolumeInterval) {
     let at=volume_stream_pool()+(first+index)*4u;
-    atomicStore(&volume_jobs[at],bitcast<u32>(value.time.x));atomicStore(&volume_jobs[at+1u],bitcast<u32>(value.time.y));
-    atomicStore(&volume_jobs[at+2u],value.index);atomicStore(&volume_jobs[at+3u],0u);
+    atomicStore(&volume_stats[job_word(at)],bitcast<u32>(value.time.x));atomicStore(&volume_stats[job_word(at+1u)],bitcast<u32>(value.time.y));
+    atomicStore(&volume_stats[job_word(at+2u)],value.index);atomicStore(&volume_stats[job_word(at+3u)],0u);
 }
 fn volume_interval_less(a:VolumeInterval,b:VolumeInterval)->bool {
     return a.time.x<b.time.x || (a.time.x==b.time.x && (a.index<b.index || (a.index==b.index && a.time.y<b.time.y)));
@@ -528,8 +529,8 @@ fn volume_stream_sort(first:u32,count:u32) {
 // Capacity failure flags a complete branch fallback, never an invalid write.
 fn volume_stream_reserve(count:u32)->u32 {
     let capacity=volume_stream_capacity();
-    if atomicLoad(&volume_jobs[volume_config.dispatch.z])>=capacity {return VOLUME_STREAM_FALLBACK;}
-    let first=atomicAdd(&volume_jobs[volume_config.dispatch.z],count);
+    if atomicLoad(&volume_stats[job_word(volume_config.dispatch.z)])>=capacity {return VOLUME_STREAM_FALLBACK;}
+    let first=atomicAdd(&volume_stats[job_word(volume_config.dispatch.z)],count);
     if first>capacity || count>capacity-first {return VOLUME_STREAM_FALLBACK;}
     return first;
 }
@@ -568,37 +569,37 @@ fn voxel_brick_scatter(@builtin(global_invocation_id) id:vec3<u32>) {
         }
         if slot>=volume_config.dispatch.w {continue;}
         let metadata=volume_config.dispatch.z+4u+slot*2u;
-        if (atomicLoad(&volume_jobs[metadata+1u])&0x80000000u)!=0u {continue;}
+        if (atomicLoad(&volume_stats[job_word(metadata+1u)])&0x80000000u)!=0u {continue;}
         let pixel=volume_pixel_ray(pixel_id);let d=vec4<f32>(pixel.direction,0.0);
         let direction=vec3<f32>(dot(tree.inverse[0],d),dot(tree.inverse[1],d),dot(tree.inverse[2],d));
         tests++;let interval=volume_brick_interval(brick,origin,direction,pixel.near,pixel.limit);
         if interval.y<=interval.x {continue;}
         let record=volume_stream_reserve(1u);
-        if record==VOLUME_STREAM_FALLBACK {atomicOr(&volume_jobs[metadata+1u],0x80000000u);continue;}
-        let count=atomicAdd(&volume_jobs[metadata+1u],1u);
-        if (count&0x7fffffffu)>=512u {atomicOr(&volume_jobs[metadata+1u],0x80000000u);continue;}
-        let previous=atomicExchange(&volume_jobs[metadata],record+1u);
+        if record==VOLUME_STREAM_FALLBACK {atomicOr(&volume_stats[job_word(metadata+1u)],0x80000000u);continue;}
+        let count=atomicAdd(&volume_stats[job_word(metadata+1u)],1u);
+        if (count&0x7fffffffu)>=512u {atomicOr(&volume_stats[job_word(metadata+1u)],0x80000000u);continue;}
+        let previous=atomicExchange(&volume_stats[job_word(metadata)],record+1u);
         volume_stream_write(record,0u,VolumeInterval(interval,index,0u));
-        atomicStore(&volume_jobs[volume_stream_pool()+record*4u+3u],previous);
+        atomicStore(&volume_stats[job_word(volume_stream_pool()+record*4u+3u)],previous);
     }}
     volume_add_total(20u,tests);
 }
 fn voxel_brick_intervals_pixel(id:vec2<u32>,slot:u32) {
     if any(id>=volume_config.size_count.xy) || slot>=volume_config.dispatch.w {return;}
-    let metadata=volume_config.dispatch.z+4u+slot*2u;let count=atomicLoad(&volume_jobs[metadata+1u]);
+    let metadata=volume_config.dispatch.z+4u+slot*2u;let count=atomicLoad(&volume_stats[job_word(metadata+1u)]);
     if count==0u {return;}
-    if count>512u {atomicStore(&volume_jobs[metadata+1u],VOLUME_STREAM_FALLBACK);return;}
+    if count>512u {atomicStore(&volume_stats[job_word(metadata+1u)],VOLUME_STREAM_FALLBACK);return;}
     let first=volume_stream_reserve(count);
-    if first==VOLUME_STREAM_FALLBACK {atomicStore(&volume_jobs[metadata+1u],VOLUME_STREAM_FALLBACK);return;}
-    var link=atomicLoad(&volume_jobs[metadata]);
+    if first==VOLUME_STREAM_FALLBACK {atomicStore(&volume_stats[job_word(metadata+1u)],VOLUME_STREAM_FALLBACK);return;}
+    var link=atomicLoad(&volume_stats[job_word(metadata)]);
     for(var j=0u;j<count;j++) {
         // Broken chains must never produce a partially populated span.
-        if link==0u {atomicStore(&volume_jobs[metadata+1u],VOLUME_STREAM_FALLBACK);return;}
+        if link==0u {atomicStore(&volume_stats[job_word(metadata+1u)],VOLUME_STREAM_FALLBACK);return;}
         let record=link-1u;let value=volume_stream_read(record,0u);
-        link=atomicLoad(&volume_jobs[volume_stream_pool()+record*4u+3u]);volume_stream_write(first,j,value);
+        link=atomicLoad(&volume_stats[job_word(volume_stream_pool()+record*4u+3u)]);volume_stream_write(first,j,value);
     }
-    volume_stream_sort(first,count);atomicStore(&volume_jobs[metadata],first);
-    atomicAdd(&volume_jobs[volume_config.dispatch.z+2u],count);
+    volume_stream_sort(first,count);atomicStore(&volume_stats[job_word(metadata)],first);
+    atomicAdd(&volume_stats[job_word(volume_config.dispatch.z+2u)],count);
 }
 
 // No per-ray private lists. A scalar first scan counts exact intersections;
@@ -607,7 +608,7 @@ fn voxel_intervals_pixel(id:vec2<u32>,slot:u32) {
     if VOLUME_BRICK_VISIBILITY {voxel_brick_intervals_pixel(id,slot);return;}
     if any(id>=volume_config.size_count.xy) || slot>=volume_config.dispatch.w {return;}
     let metadata=volume_config.dispatch.z+4u+slot*2u;
-    atomicStore(&volume_jobs[metadata],0u);atomicStore(&volume_jobs[metadata+1u],0u);
+    atomicStore(&volume_stats[job_word(metadata)],0u);atomicStore(&volume_stats[job_word(metadata+1u)],0u);
     let tile=id/16u;let start=(tile.y*volume_config.size_count.z+tile.x)*(VOLUME_CANDIDATES+1u);
     let count=atomicLoad(&volume_stats[volume_config.tile_span.x+(start)]);if count==0u {return;}
     let tile_fallback=count>VOLUME_CANDIDATES;
@@ -623,10 +624,10 @@ fn voxel_intervals_pixel(id:vec2<u32>,slot:u32) {
     }
     if ray_count==0u {volume_add_total(20u,interval_tests);return;}
     // At most262144 admitted slots x4096 volumes: reservation cannot wrap u32.
-    let first=atomicAdd(&volume_jobs[volume_config.dispatch.z],ray_count);
+    let first=atomicAdd(&volume_stats[job_word(volume_config.dispatch.z)],ray_count);
     let capacity=volume_stream_capacity();
     if first>capacity || ray_count>capacity-first {
-        atomicStore(&volume_jobs[metadata+1u],VOLUME_STREAM_FALLBACK);
+        atomicStore(&volume_stats[job_word(metadata+1u)],VOLUME_STREAM_FALLBACK);
         volume_add_total(20u,interval_tests);return;
     }
     var written=0u;
@@ -637,16 +638,16 @@ fn voxel_intervals_pixel(id:vec2<u32>,slot:u32) {
         var interval=volume_interval(volume_trees[index],view.cam.xyz,pixel_ray.direction,pixel_ray.limit);
         interval.x=max(interval.x,pixel_ray.near);if interval.y<=interval.x {continue;}
         let at=volume_stream_pool()+(first+written)*4u;
-        atomicStore(&volume_jobs[at],bitcast<u32>(interval.x));atomicStore(&volume_jobs[at+1u],bitcast<u32>(interval.y));
-        atomicStore(&volume_jobs[at+2u],index);atomicStore(&volume_jobs[at+3u],0u);written++;
+        atomicStore(&volume_stats[job_word(at)],bitcast<u32>(interval.x));atomicStore(&volume_stats[job_word(at+1u)],bitcast<u32>(interval.y));
+        atomicStore(&volume_stats[job_word(at+2u)],index);atomicStore(&volume_stats[job_word(at+3u)],0u);written++;
     }
-    atomicStore(&volume_jobs[metadata],first);atomicStore(&volume_jobs[metadata+1u],written);
-    atomicAdd(&volume_jobs[volume_config.dispatch.z+2u],written);volume_add_total(20u,interval_tests);
+    atomicStore(&volume_stats[job_word(metadata)],first);atomicStore(&volume_stats[job_word(metadata+1u)],written);
+    atomicAdd(&volume_stats[job_word(volume_config.dispatch.z+2u)],written);volume_add_total(20u,interval_tests);
 }
 fn volume_stream_pixel(group:vec3<u32>,local:vec3<u32>)->vec4<u32> {
     let job=group.x+(group.y/4u)*VOLUME_JOB_ROW;
-    if job>=atomicLoad(&volume_jobs[3]) {return vec4<u32>(0u);}
-    let tile_index=atomicLoad(&volume_jobs[4u+job]);let tile_width=volume_config.size_count.z;
+    if job>=atomicLoad(&volume_stats[job_word(3)]) {return vec4<u32>(0u);}
+    let tile_index=atomicLoad(&volume_stats[job_word(4u+job)]);let tile_width=volume_config.size_count.z;
     let tile=vec2<u32>(tile_index%tile_width,tile_index/tile_width);
     let offset=vec2<u32>(group.y&1u,(group.y>>1u)&1u)*8u+local.xy;
     return vec4<u32>(tile*16u+offset,job*256u+offset.y*16u+offset.x,1u);
@@ -695,7 +696,7 @@ fn voxel_integrate_global_pixel(id:vec2<u32>,slot:u32) {
     var first=0u;var ray_count=VOLUME_STREAM_FALLBACK;
     if slot<volume_config.dispatch.w {
         let metadata=volume_config.dispatch.z+4u+slot*2u;
-        first=atomicLoad(&volume_jobs[metadata]);ray_count=atomicLoad(&volume_jobs[metadata+1u]);
+        first=atomicLoad(&volume_stats[job_word(metadata)]);ray_count=atomicLoad(&volume_stats[job_word(metadata+1u)]);
     }
     let streamed=ray_count!=VOLUME_STREAM_FALLBACK;
     var interval_tests=0u;var begin=1e30;var end=0.0;
@@ -712,7 +713,7 @@ fn voxel_integrate_global_pixel(id:vec2<u32>,slot:u32) {
     }
     atomicMax(&volume_stats[5],ray_count);
     if ray_count==0u {volume_add_total(20u,interval_tests);return;}
-    if !streamed {atomicAdd(&volume_jobs[volume_config.dispatch.z+1u],1u);}
+    if !streamed {atomicAdd(&volume_stats[job_word(volume_config.dispatch.z+1u)],1u);}
     atomicAdd(&volume_stats[2],1u);
     let query_count=select(candidates,ray_count,streamed);
     var first_live=0u;var t=begin;var transmittance=1.0;var color=vec3<f32>(0.0);var steps=0u;
@@ -813,8 +814,8 @@ fn voxel_integrate(@builtin(global_invocation_id) id:vec3<u32>) {
 fn voxel_integrate_active(@builtin(workgroup_id) group:vec3<u32>,
                           @builtin(local_invocation_id) local:vec3<u32>) {
     let job=group.x+(group.y/4u)*VOLUME_JOB_ROW;
-    if job>=atomicLoad(&volume_jobs[3]) {return;}
-    let tile_index=atomicLoad(&volume_jobs[4u+job]);
+    if job>=atomicLoad(&volume_stats[job_word(3)]) {return;}
+    let tile_index=atomicLoad(&volume_stats[job_word(4u+job)]);
     let tile_width=volume_config.size_count.z;
     let tile=vec2<u32>(tile_index%tile_width,tile_index/tile_width);
     let offset=vec2<u32>(group.y&1u,(group.y>>1u)&1u)*8u;

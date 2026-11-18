@@ -32,8 +32,7 @@ pub(crate) struct Portable {
     targets: Vec<Target>,
 }
 
-/// Storage buffers per stage the full renderer needs without trees (every
-/// pass fits 8; browser.md). The GPU forest still needs 16 storage buffers.
+/// Storage buffers per stage for the scene and GPU forest renderers.
 pub const FULL_STORAGE_BUFFERS: u32 = 8;
 
 /// Sampled textures per stage the full renderer needs: what shade's bind
@@ -44,7 +43,7 @@ pub fn full_sampled_textures() -> u32 { crate::frame::shade_sampled_textures() }
 /// Whether a device with these limits needs the portable renderer.
 pub fn needed(limits: &wgpu::Limits) -> bool {
     limits.max_storage_buffers_per_shader_stage < FULL_STORAGE_BUFFERS
-        || limits.max_sampled_textures_per_shader_stage < full_sampled_textures()
+        || limits.max_sampled_textures_per_shader_stage < wgpu::Limits::default().max_sampled_textures_per_shader_stage
         || crate::switches::PORTABLE.on()
 }
 
@@ -186,19 +185,12 @@ mod limit_tests {
     use super::*;
 
     #[test]
-    fn the_full_renderer_needs_what_shade_layouts_bind() {
-        // Shade's layouts as created (frame.rs): a device one texture short
-        // takes the portable path, one with exactly enough the full one.
-        let n = full_sampled_textures();
-        assert!(n >= 20 && n <= 32, "shade binds {n} sampled textures per stage; gpu.rs asks for at most 32");
-        let mut limits = wgpu::Limits { max_storage_buffers_per_shader_stage: FULL_STORAGE_BUFFERS, ..wgpu::Limits::default() };
-        limits.max_sampled_textures_per_shader_stage = n;
+    fn guaranteed_limits_support_compact_material_lighting() {
+        let mut limits = wgpu::Limits::default();
+        assert!(full_sampled_textures() > limits.max_sampled_textures_per_shader_stage);
         if !crate::switches::PORTABLE.on() { assert!(!needed(&limits)); }
-        limits.max_sampled_textures_per_shader_stage = n - 1;
+        limits.max_sampled_textures_per_shader_stage -= 1;
         assert!(needed(&limits));
-        // WebGPU's guaranteed limits (16 sampled textures: phones, many
-        // browsers) take the portable path.
-        assert!(n > wgpu::Limits::default().max_sampled_textures_per_shader_stage && needed(&wgpu::Limits::default()));
     }
 
     #[test]

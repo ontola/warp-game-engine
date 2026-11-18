@@ -38,32 +38,19 @@ host serves it.
   `topology.rs`, `shade_scratch.rs`, `cull_tables.rs`, the cull `CullDraw`
   binding); optional features keep their own bind group. Check a change with
   `KERN_WEBGPU_LIMITS=spec` ([renderer switches](renderer-switches.md)).
-- Where it stands: shade, raster and cull fit 8 (cull leaves out the
-  opt-in receiver shadow demand, which adds a ninth); shade needs as many sampled
-  textures as its bind group layouts make visible to a stage
-  (`frame::shade_sampled_textures`, counted from the layouts; the live bounce of clustered lights and the reflection
-  probes added three; they belong in a bind group or texture array of
-  their own before a browser build) Storage textures stay within 4 per stage, the
-  default every device gets (`frame::shade_storage_textures` over every
-  pipeline layout built from shade's module, checked by a test); (spec 16, but 98 % of Macs and 92 % of all WebGPU
-  devices offer 44 or more, web3dsurvey.com, November 2026). The GPU forest's
-  selection, refinement, residency, materialize and pose passes fit 8
-  storage buffers per pipeline layout (`foliage_select::STORAGE_BUFFERS`;
-  the budgeted refine admission, `KERN_FOLIAGE_CUT=budget`, needs 10 and is
-  left out below that). Three voxel forest layouts (`voxel forest`, `voxel
-  sun splats`, `cached voxel sun splats`) are still over; the GPU test
-  `forest_layouts_under_webgpu_storage_limit` lists them. Storage buffers on macOS: 94 %
-  offer 10 or more, 29 % 16; Firefox (Zen) gives 9, Chrome's software
-  adapter (SwiftShader) 10 with 16 textures.
-- With fewer than 8 storage buffers or fewer sampled textures than that
-  (`render::portable::needed`) the renderer switches to its portable path
-  (`render::portable`, `KERN_PORTABLE=1` forces it natively): the
-  procedural terrain drawn straight from its patch pool, textured with a
-  simplified `field_surface`, a sky gradient and haze, with three storage
-  buffers. No shadows, trees, grass, cars, GI or post-processing. The full
-  renderer is still built next to it, so the console shows its layouts
-  failing validation once at startup. `KERN_WEBGPU_LIMITS=mac` or `=spec`
-  runs this natively.
+- The GPU forest fits eight storage buffers per stage. Its preparation,
+  integration, emission, and surface passes bind their own inputs. The
+  budgeted refinement mode still requires ten. The default refinement
+  path and both sun splat pipelines fit eight.
+- At WebGPU's guaranteed sixteen sampled textures the renderer uses compact
+  material lighting. Terrain, textured meshes, bark, voxel trees, and
+  directional shadows use the GPU scene and its visibility buffer. The
+  wider material layout enables the full lighting effects on devices that
+  support it. `KERN_WEBGPU_LIMITS=spec` and `=mac` exercise those limits on
+  a native adapter. These runs do not exercise a browser's shader compiler.
+- Devices below eight storage buffers or sixteen sampled textures can use
+  the three-buffer procedural terrain renderer. `KERN_PORTABLE=1` selects
+  it explicitly.
 - Optional features are used when there: timestamps; `primitive_index`
   (meadow visibility) has a fallback. There is no pipeline cache.
 
