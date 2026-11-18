@@ -82,12 +82,12 @@ impl Residency {
             let layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("GPU branch residency"), entries: &entries,
             });
-            let buffers = [&uniform, &selector.records, &selector.counters, &selector.fallback,
-                &slots, &table, &request_slots, &free, &counters, &selector.asset_pages,&selector.record_consumers,&consumer_union];
+            let buffers = [uniform.as_entire_binding(), selector.records.binding(), selector.counters.as_entire_binding(), selector.fallback.as_entire_binding(),
+                slots.as_entire_binding(), table.as_entire_binding(), request_slots.as_entire_binding(), free.as_entire_binding(), counters.as_entire_binding(), selector.asset_pages.as_entire_binding(),selector.record_consumers.binding(),consumer_union.as_entire_binding()];
             let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("GPU branch residency"), layout: &layout,
-                entries: &buffers.iter().enumerate().map(|(i, b)| wgpu::BindGroupEntry {
-                    binding: i as u32, resource: b.as_entire_binding(),
+                entries: &buffers.into_iter().enumerate().map(|(i, resource)| wgpu::BindGroupEntry {
+                    binding: i as u32, resource,
                 }).collect::<Vec<_>>(),
             });
             let layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -149,7 +149,7 @@ mod tests {
     fn run(gpu:&Gpu, select:&Selector, resident:&Residency, requests:&[[u32;4]])->(Vec<u32>,Vec<u32>,Vec<u32>) {
         // Fixture only: stand in for the selector's completed record stream.
         // Production has no CPU record upload or allocation decision.
-        gpu.queue.write_buffer(&select.records,0,bytemuck::cast_slice(requests));
+        select.records.write(&gpu,0,bytemuck::cast_slice(requests));
         gpu.queue.write_buffer(&select.counters,0,bytemuck::cast_slice(&[requests.len()as u32]));
         gpu.queue.write_buffer(&select.arguments,12,bytemuck::cast_slice(&[(requests.len()as u32).div_ceil(64),1,1]));
         let mut enc=gpu.device.create_command_encoder(&Default::default());enc.clear_buffer(&select.fallback,0,None);
@@ -215,21 +215,21 @@ mod tests {
     fn gpu_consumer_union_and_new_consumer_history() {
         let gpu=Gpu::new().unwrap();let select=selector(&gpu);let resident=Residency::new(&gpu,&select,8).unwrap();
         let key=[1,2,12,4];
-        gpu.queue.write_buffer(&select.record_consumers,0,bytemuck::cast_slice(&[256u32,512,256]));
+        select.record_consumers.write(&gpu,0,bytemuck::cast_slice(&[256u32,512,256]));
         let (slots,map,_)=run(&gpu,&select,&resident,&[key,key,key]);
         let index=*map[..3].iter().find(|v|**v!=NONE).unwrap()as usize;
         assert_eq!(map[..3].iter().filter(|v|**v!=NONE).count(),1);
         assert_eq!(slots[index*8+7]&768,768,"duplicate camera/shadow demands share one slot");
         let epoch=slots[index*8+7]&128;
-        gpu.queue.write_buffer(&select.record_consumers,0,bytemuck::cast_slice(&[512u32]));
+        select.record_consumers.write(&gpu,0,bytemuck::cast_slice(&[512u32]));
         let (slots,map,_)=run(&gpu,&select,&resident,&[key]);assert_eq!(map[0]as usize,index);
         assert_eq!(slots[index*8+7]&768,512);assert_eq!(slots[index*8+5],1);assert_eq!(slots[index*8+7]&128,epoch);
-        gpu.queue.write_buffer(&select.record_consumers,0,bytemuck::cast_slice(&[256u32]));
+        select.record_consumers.write(&gpu,0,bytemuck::cast_slice(&[256u32]));
         let (slots,map,_)=run(&gpu,&select,&resident,&[key]);assert_eq!(map[0]as usize,index);
         assert_eq!(slots[index*8+7]&768,256);assert_eq!(slots[index*8+5],0,"newly visible camera cannot reuse shadow-only motion history");
         assert_ne!(slots[index*8+7]&128,epoch);
         let (slots,_,_)=run(&gpu,&select,&resident,&[key]);assert_eq!(slots[index*8+5],1);
-        gpu.queue.write_buffer(&select.record_consumers,0,bytemuck::cast_slice(&[512u32,256]));
+        select.record_consumers.write(&gpu,0,bytemuck::cast_slice(&[512u32,256]));
         let (slots,map,_)=run(&gpu,&select,&resident,&[key,key]);
         let index=*map[..2].iter().find(|v|**v!=NONE).unwrap()as usize;
         assert_eq!(slots[index*8+7]&768,768);assert_eq!(slots[index*8+5],0);
@@ -238,7 +238,7 @@ mod tests {
     #[ignore="exclusive GPU consumer fallback isolation oracle"]
     fn gpu_consumer_fallback_does_not_retire_other_consumer() {
         let gpu=Gpu::new().unwrap();let select=selector(&gpu);let resident=Residency::new(&gpu,&select,8).unwrap();let key=[1,2,12,4];
-        gpu.queue.write_buffer(&select.record_consumers,0,bytemuck::cast_slice(&[256u32,512]));run(&gpu,&select,&resident,&[key,key]);
+        select.record_consumers.write(&gpu,0,bytemuck::cast_slice(&[256u32,512]));run(&gpu,&select,&resident,&[key,key]);
         for failure in [512u32,256,1,0] {
             gpu.queue.write_buffer(&select.fallback,4,bytemuck::cast_slice(&[failure]));
             let mut enc=gpu.device.create_command_encoder(&Default::default());resident.encode(&mut enc);gpu.queue.submit([enc.finish()]);
