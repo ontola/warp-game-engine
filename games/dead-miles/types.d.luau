@@ -169,13 +169,19 @@ declare camera: {
 declare sound: {
 	-- Play sounds/NAME.luau once; returns a handle. Options: at (a world
 	-- position; without it the sound is 2D), db (gain), pitch (rate, 1 normal);
-	-- any other key sets the patch parameter of that name.
+	-- any other key sets the patch parameter of that name. A recording named
+	-- NAME (or NAME.1, NAME.2 ... a different one each time) in samples.lock
+	-- plays instead once fetched; it takes only `rate` and `gain`.
 	play: (name: string, opts: { [string]: number | Vec }?) -> number,
 	-- Change a parameter of a playing sound.
 	set_param: (handle: number, param: string, value: number) -> (),
 	-- Release a playing sound (looping sounds play until stopped).
 	stop: (handle: number) -> (),
 	list: () -> { string },
+	-- Whether play(name) plays anything (a patch, or a fetched recording).
+	has: (name: string) -> boolean,
+	-- Whether play(name) plays a recording now (not the synth patch).
+	recorded: (name: string) -> boolean,
 }
 
 declare hud: {

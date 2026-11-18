@@ -28,6 +28,7 @@ toml.workspace = true
 jsonschema = { version = "0.60.2", default-features = false }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 directories = "6.0.0"
+sha2.workspace = true
 mlua = { version = "0.12", features = ["serde"] }
 
 [dev-dependencies]

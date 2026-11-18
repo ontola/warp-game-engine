@@ -599,6 +599,7 @@ local function kill_zombie(z, away, strength)
 	blood_splat(z.pos, away, 1.6 + (strength or 1) * 0.4)
 	blood_spray(v(z.pos.x, 0.8, z.pos.z), 8, 3, 0.08)
 	sfx("splat", z.pos, { pitch = random.range(0.85, 1.15) })
+	if game.tick() % 3 == 0 and sound.recorded("zdeath") then sfx("zdeath", z.pos, { pitch = 0.8 + (game.tick() % 7) / 20, db = -4 }) end
 	count("kills")
 	s.kills += 1
 end
@@ -2341,6 +2342,13 @@ local function act(u, it, dt)
 
 	body.place(u.fig, u.pos, u.yaw)
 	local moved = dist(before, u.pos) / dt
+	-- Footfalls, one a stride (pitch from the tick, not the game's dice).
+	u.stride = (u.stride or 0) + dist(before, u.pos)
+	if u.stride > (if running then 1.5 else 1.1) then
+		u.stride = 0
+		local p = 0.9 + ((game.tick() * 37 + (u.id or 0) * 11) % 21) / 100
+		sfx("step", u.pos, { pitch = p * (if running then 1.06 else 1), db = (if running then -3 else -8) + (if u.bot then -3 else 0) + (if spent then -3 else 0) })
+	end
 	-- Out of breath shows: bent over and heaving once half the breath is gone.
 	local tired = tiredness(u)
 	body.tired(u.fig, if (u.spent or 0) > 0 then 1 elseif tired > 0.4 then math.min(1, (tired - 0.4) / 0.55) ^ 1.2 else 0)
@@ -2492,6 +2500,7 @@ local function eat(z, m, speed)
 			blood_spray(v(m.pos.x + ahead.x * -0.25, 0.35, m.pos.z + ahead.z * -0.25), 5, 1.8, 0.05)
 			if random.chance(0.35) then sfx("splat", m.pos, { pitch = random.range(0.55, 0.8) }) end
 			if random.chance(0.2) then sfx("groan", z.pos, { pitch = random.range(0.65, 0.9) }) end
+			sfx("feed", m.pos, { pitch = 0.85 + (game.tick() % 30) / 100, db = -5 })
 			if m.state == "down" then
 				m.t -= 0.8
 				rumble(m, 0.35, 0.15)
@@ -3568,8 +3577,62 @@ local function over_camera()
 	post.set({ vignette = 0.6 + 0.35 * x, grain = 0.14 + 0.1 * x, saturation = 0.7 * (1 - 0.6 * x), contrast = 1.12 })
 end
 
+----------------------------------------------------------------------------
+-- Ambience: recorded beds (samples.lock) under everything. Crickets in the
+-- night that fall silent when the dead come close, wind in the ruins, a
+-- dread that swells with danger. Without the recordings: silence, as before.
+
+local BEDS = { "bed_crickets", "bed_wind", "bed_night", "bed_dread" }
+
+local function ambience_step(dt)
+	state.beds = state.beds or {}
+	local beds = state.beds
+	-- How close the dead are to the people (0 calm, 1 surrounded).
+	local danger = 0
+	for _, u in s.survivors do
+		if u.pos and not u.recruit then
+			local n = 0
+			for _, z in s.zombies do
+				if z.pos and z.state ~= "dead" then
+					local dx, dz = z.pos.x - u.pos.x, z.pos.z - u.pos.z
+					local d2 = dx * dx + dz * dz
+					if d2 < 196 then n += if d2 < 36 then 1 else 0.4 end
+				end
+			end
+			danger = math.max(danger, math.clamp(n / 5, 0, 1))
+		end
+	end
+	if s.phase == "over" then danger = 1 end
+	local night = if dark() then 1 else 0.25
+	local biome = "suburb"
+	for _, c in s.chunks do
+		if s.center and c.x0 <= s.center.x and s.center.x < c.x1 then biome = c.biome end
+	end
+	local town = biome == "city"
+	local want = {
+		bed_crickets = night * (if town then 0.35 else 0.8) * (1 - 0.85 * danger),
+		bed_wind = (if town then 0.55 else 0.35) + 0.15 * (1 - night),
+		bed_night = 0.45 * night * (1 - 0.5 * danger),
+		bed_dread = 0.1 + 0.9 * danger,
+	}
+	if s.phase == "camp" then want.bed_dread, want.bed_crickets = 0, night * 0.9 end
+	for _, name in BEDS do
+		local b = beds[name]
+		if not b and sound.recorded(name) then
+			b = { h = sound.play(name, { gain = 0 }), g = 0 }
+			beds[name] = b
+		end
+		if b then
+			-- Slow swells, never jumps.
+			b.g += (want[name] - b.g) * math.min(1, dt * 0.6)
+			sound.set_param(b.h, "gain", b.g)
+		end
+	end
+end
+
 local function tick(dt, input)
 	s = state.s
+	ambience_step(dt)
 	if s.phase == "camp" then
 		s.camp_t -= dt
 		if s.camp_t <= 0 then

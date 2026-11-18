@@ -619,45 +619,42 @@ impl Jets {
             self.sprites.push(glow(at,[9.,9.],Vec3::new(0.75,0.35,1.)*radiance*1.6*pulse,20));
         }
         for blast in &race.blasts {
-            // EMP: a digital shell races out to the full range in about half
-            // a second, glitching cell by cell, with a ring of data blocks on
-            // the ground; everything it passes stays disabled (EMP sparks).
+            // EMP: a translucent shockwave curtain races out along the road
+            // to the full range in about half a second, with a hot seam on
+            // the asphalt and a fainter echo behind it; everything it passes
+            // stays disabled (EMP sparks on the ships).
             if blast.kind==spaceracer::race::Weapon::Emp && blast.age<1.1 {
                 let age=blast.age as f32;
                 let t=(age/0.5).min(1.);
                 let r=(blast.radius as f32*(1.-(1.-t).powi(3))).max(2.);
-                let fade=1.-smooth(0.55,1.1,age);
-                let step=(time*24.).floor();
-                let color=Vec3::new(0.35,0.75,1.);
+                let fade=1.-smooth(0.5,1.1,age);
+                let color=Vec3::new(0.3,0.75,1.);
                 if age<0.25 {
                     let flash=(1.-age/0.25).powi(2);
-                    self.sprites.push(glow(blast.position+Vec3::Y*2.,[34.,34.],Vec3::new(0.6,0.9,1.)*radiance*flash*4.,2));
+                    self.sprites.push(glow(blast.position+Vec3::Y*2.,[26.,26.],Vec3::new(0.5,0.85,1.)*radiance*flash*2.5,2));
                 }
-                let mut shell=glow(blast.position+Vec3::Y*2.,[r*2.;2],color*radiance*1.4*fade,19);
-                shell.facing=render::sprites::Facing::Screen;shell.params=[step,0.,age,0.];
-                self.sprites.push(shell);
-                // The city walls and hills hide a flat ring, so the wave front
-                // rides the road: a wall of data blocks sweeps out along the
-                // track ahead and behind, the width of the road.
+                // City walls and hills hide a flat ring, so the wave front
+                // rides the road, ahead of and behind the shooter.
                 let reference=race.pilots.iter().zip(poses).min_by(|a,b|a.1.origin.distance_squared(blast.position).total_cmp(&b.1.origin.distance_squared(blast.position))).map_or(0.,|(p,_)|p.distance);
                 let (at,_,_)=race.world.track.project(blast.position,reference,400.);
-                for (side,dir) in [(0u32,1.),(1u32,-1.)] {
-                    let node=race.world.track.sample(at+dir*r as f64);
-                    let width=node.geometry.width;
-                    let a=node.point(-width,0.4);let b=node.point(width,0.4);
-                    self.sprites.push(shaft(a,b,0.9,color*radiance*5.*fade,11,[0.;4]));
-                    let columns=((2.*width)/2.6).ceil() as u32;
-                    for c in 0..columns {
-                        for layer in 0..4u32 {
-                            let seed=side*7919+c*131+layer*17;
-                            if hash(seed+step as u32*31)<0.35 {continue;}
-                            let x=-width+(c as f64+0.5)*2.*width/columns as f64;
-                            let h=0.9+layer as f64*2.2+hash(seed+5) as f64*0.6;
-                            let size=1.4+hash(seed+9)*1.2;
-                            let tint=if hash(seed+step as u32*7)<0.15 {Vec3::new(1.,0.35,0.9)} else {color};
-                            let mut block=glow(node.point(x,h),[size,size],tint*radiance*3.*fade*(1.-layer as f32*0.15),18);
-                            block.facing=render::sprites::Facing::Screen;
-                            self.sprites.push(block);
+                for dir in [1.,-1.] {
+                    for (lag,strength) in [(0.,1.),(0.1,0.3)] {
+                        let front=(r*(1.-lag)) as f64;
+                        let node=race.world.track.sample(at+dir*front);
+                        let width=node.geometry.width*1.04;
+                        // A fixed upright plane across the road, fading
+                        // upward from a bright base on the asphalt.
+                        let height=8.;
+                        let left=node.point(-width,0.);let right=node.point(width,0.);
+                        let across=(right-left).normalize_or_zero();
+                        let mut curtain=glow((left+right)*0.5+Vec3::Y*height*0.5,[2.*width as f32,height],color*radiance*1.4*fade*strength,18);
+                        curtain.facing=render::sprites::Facing::Fixed{right:across,up:Vec3::Y};
+                        curtain.params=[time,age,dir as f32,0.];
+                        self.sprites.push(curtain);
+                        if lag==0. {
+                            let mut seam=shaft(node.point(-width,0.25),node.point(width,0.25),0.3,Vec3::new(0.7,0.95,1.)*radiance*2.*fade,11,[0.;4]);
+                            seam.additive=true;
+                            self.sprites.push(seam);
                         }
                     }
                 }
@@ -947,7 +944,7 @@ mod tests {
         let renderer=render::Renderer::new(&gpu,&scene,&light);
         renderer.set_sprite_image(&gpu,IMAGE,&render::picture::Picture::solid(2,2,[255;4]),render::hud::ImageFilter::Nearest);
         let camera=render::Camera{pos:Vec3::new(0.,0.,14.),target:Vec3::ZERO,fov_y:50_f32.to_radians(),near:0.1};
-        for effect in [2u32,18,19,20] {
+        for effect in [2u32,18,20] {
             let mut s=glow(Vec3::ZERO,[4.;2],Vec3::splat(4.),effect);s.facing=render::sprites::Facing::Screen;
             renderer.set_sprites(&gpu,&[s]).unwrap();
             let (pixels,_)=renderer.render(&gpu,&camera,&light,256,128);
@@ -1087,19 +1084,21 @@ mod tests {
         assert!(!jets.sprites.iter().any(|s|s.effect==5));
     }
     #[test]
-    fn emp_blast_spreads_a_digital_shell_to_its_range() {
+    fn emp_blast_sweeps_a_shockwave_curtain_to_its_range() {
         let root=Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut jets=Jets::new(root).unwrap();let mut race=Race::new(31,"normal","city",1,3);
         let poses:Vec<_>=(0..6).map(|i|race.pose(i)).collect();
-        race.blasts.push(spaceracer::race::Blast{position:poses[0].origin,radius:100.,age:0.1,kind:spaceracer::race::Weapon::Emp});
+        let origin=poses[0].origin;
+        race.blasts.push(spaceracer::race::Blast{position:origin,radius:100.,age:0.1,kind:spaceracer::race::Weapon::Emp});
         jets.update(&race,&poses,1.);
-        let shell=|j:&Jets|j.sprites.iter().find(|s|s.effect==19).map(|s|s.size[0]);
-        let early=shell(&jets).expect("EMP shell");
-        assert!(jets.sprites.iter().filter(|s|s.effect==18).count()>20,"data blocks wall the road");
+        let reach=|j:&Jets|j.sprites.iter().filter(|s|s.effect==18).map(|s|s.center.distance(origin)).fold(None,|m:Option<f32>,d|Some(m.map_or(d,|m|m.max(d))));
+        assert_eq!(jets.sprites.iter().filter(|s|s.effect==18).count(),4,"a front and an echo, ahead and behind");
+        let early=reach(&jets).expect("EMP curtain");
         race.blasts[0].age=0.6;jets.update(&race,&poses,1.5);
-        assert!(shell(&jets).unwrap()>early && (shell(&jets).unwrap()-200.).abs()<1.,"the shell reaches the full range");
+        let full=reach(&jets).unwrap();
+        assert!(full>early && full>80. && full<110.,"the curtain reaches the full range: {early} -> {full}");
         race.blasts[0].age=1.15;jets.update(&race,&poses,2.);
-        assert!(shell(&jets).is_none(),"and is gone after a second");
+        assert!(reach(&jets).is_none(),"and is gone after a second");
     }
     #[test]
     fn a_weapon_hit_sets_a_jet_burning_for_a_moment() {

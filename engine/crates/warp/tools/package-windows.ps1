@@ -16,4 +16,11 @@ Copy-Item -LiteralPath $gameRoot -Destination (Join-Path $destination 'game') -R
 # Headless playtests stay in the repository; the package is what players run.
 $scripts=Join-Path $destination 'game/scripts'
 if(Test-Path -LiteralPath $scripts){Remove-Item -LiteralPath $scripts -Recurse}
+# Recordings a samples.lock lists travel inside the package (fetched and
+# hash-checked here), so players never download them.
+$packaged=Join-Path $destination 'game'
+if(Test-Path -LiteralPath (Join-Path $packaged 'samples.lock')){
+  & (Join-Path $destination 'warp.exe') samples $packaged --bundle
+  if($LASTEXITCODE -ne 0){throw 'warp samples --bundle failed'}
+}
 Write-Output $destination

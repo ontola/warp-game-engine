@@ -5,3 +5,4 @@ build/
 __pycache__/
 gpu-out/
 engine/webxr/node_modules/
+games/*/samples/
