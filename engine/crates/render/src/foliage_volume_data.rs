@@ -201,12 +201,15 @@ impl GpuForest {
     /// Count grid entries, not unique payloads: aliases rasterize once per
     /// coordinate. Computed once for the shared asset catalog.
     pub(crate) fn raster_work_bounds(&self) -> Result<Vec<u32>, String> {
+        // Largest chord over a cell in units of its size: the drawn disc's mean
+        // chord 1/1.48711 (KERN_VOXEL_DISC_DEPTH), else the cube chord's maximum 1.
+        let chord = if crate::switches::VOXEL_DISC_DEPTH.off() { 1.0 } else { 1.0 / 1.48711f32 };
         let kept: Vec<f32> = self.cells.iter().map(|c| c.extinction.as_flattened()[..13].iter().fold(0f32, |m, &v| m.max(v))).collect();
         let payload = |entries: &[u32], size: f32| -> Result<f64, String> {
             let mut sum = 0f64;
             for &i in entries.iter().filter(|&&i| i != 0) {
                 let sigma = *kept.get(i as usize - 1).ok_or("raster work references a missing voxel cell")?;
-                let alpha = 1.0 - (-sigma.max(0.0) * size).exp();
+                let alpha = 1.0 - (-sigma.max(0.0) * size * chord).exp();
                 if alpha >= 1.0 / 255.0 { sum += f64::from((alpha / SPLAT_MIN_ALPHA).min(1.0)); }
             }
             Ok(sum)

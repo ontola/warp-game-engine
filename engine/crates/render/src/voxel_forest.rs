@@ -52,9 +52,11 @@ struct IntegratorOptions {
     brick_visibility: bool,
     /// Opaque stochastic voxel rasterization instead of ray integration.
     raster: bool,
+    /// Splat alpha from the drawn disc's mean chord (KERN_VOXEL_DISC_DEPTH).
+    disc_depth: bool,
 }
 impl Default for IntegratorOptions {
-    fn default() -> Self { Self { empty_ceiling: true, antipodal_normals: false,global_intervals:false,brick_visibility:false,raster:false } }
+    fn default() -> Self { Self { empty_ceiling: true, antipodal_normals: false,global_intervals:false,brick_visibility:false,raster:false,disc_depth:true } }
 }
 impl IntegratorOptions {
     fn from_environment() -> Self {
@@ -64,6 +66,7 @@ impl IntegratorOptions {
             brick_visibility: crate::switches::VOXEL_BRICK_VISIBILITY.on(),
             global_intervals: crate::switches::VOXEL_GLOBAL_INTERVALS.on(),
             raster: crate::switches::VOXEL_RASTER.on(),
+            disc_depth: !crate::switches::VOXEL_DISC_DEPTH.off(),
         }
     }
     fn specialize(self, source: &str) -> Result<String, String> {
@@ -71,6 +74,7 @@ impl IntegratorOptions {
         let changes = [
             (self.brick_visibility, "const VOLUME_BRICK_VISIBILITY: bool = false;", "const VOLUME_BRICK_VISIBILITY: bool = true;"),
             (self.empty_ceiling, "const VOLUME_EMPTY_CEILING: bool = false;", "const VOLUME_EMPTY_CEILING: bool = true;"),
+            (!self.disc_depth, "const VOLUME_DISC_DEPTH: bool = true;", "const VOLUME_DISC_DEPTH: bool = false;"),
         ];
         for (enabled, from, to) in changes {
             if !enabled { continue; }
