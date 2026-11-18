@@ -18,6 +18,7 @@ local M = {}
 
 M.CHUNK = 24 -- metres of land per chunk
 M.HALF_Z = 18 -- the strip runs 18 m either side of the path
+M.UNSEEN = 128 -- added to a room floor's surface kind while nobody has seen in (surface.wgsl)
 M.TURN = 7 -- metres at the west end of a chunk for a street that turns north or south
 
 -- Each chunk's path runs at its own z (its centre): when it differs from
@@ -133,7 +134,12 @@ function M.warm()
 		mat.warm(shape, look)
 	end)
 	for _, l in LOOKS do
-		for _, c in l.floors do mat.warm("cube", { color = c, roughness = 0.95, indoor = true }) end
+		for _, c in l.floors do
+			mat.warm("cube", { color = c, roughness = 0.95, indoor = true })
+			local o = mat.dress({ color = c, roughness = 0.95, indoor = true })
+			o.surface += M.UNSEEN
+			world.warm("cube", o)
+		end
 		for _, c in l.walls do mat.warm("cube", { color = c, roughness = 0.95, indoor = true }) end
 	end
 	mat.warm("cube", { color = "#d8d0a0", roughness = 0.95, indoor = true })
@@ -199,7 +205,7 @@ end
 
 -- A tree: a solid trunk with a branch or two and a crown of several
 -- clumps; in the woods, darker and taller, the clumps in tiers.
-local function tree(c, x, z, dark)
+local function grow_tree(c, x, z, dark)
 	local h = if dark then random.range(3.4, 4.6) else random.range(2.6, 3.6)
 	box(c, x - 0.16, z - 0.16, x + 0.16, z + 0.16, h, { color = BARK })
 	deco(c, "cube", v(x, 0.25, z), v(0.46, 0.5, 0.46), BARK, { rot = v(0, random.range(0, 1.5), 0) })
@@ -232,6 +238,34 @@ local function tree(c, x, z, dark)
 			deco(c, "sphere", v(x + math.cos(a) * r * 0.75, h + random.range(-0.1, 0.9), z + math.sin(a) * r * 0.75), s * 2, cols[random.int(1, #cols)])
 		end
 	end
+end
+
+-- Trees are planted last (plant_trees), so none grows inside a building or
+-- hangs its crown over one, whichever was laid out first.
+local function tree(c, x, z, dark)
+	c.trees = c.trees or {}
+	table.insert(c.trees, { x = x, z = z, dark = dark, zc = ZC })
+end
+
+local function plant_trees(c)
+	local keep = ZC
+	for _, t in c.trees or {} do
+		local m = if t.dark then 2.2 else 1.8
+		local ok = true
+		for _, b in c.buildings do
+			local bz = b.zc or 0
+			if t.x + m > b.x0 and t.x - m < b.x1 and t.z + t.zc + m > b.z0 + bz and t.z + t.zc - m < b.z1 + bz then
+				ok = false
+				break
+			end
+		end
+		if ok then
+			ZC = t.zc
+			grow_tree(c, t.x, t.z, t.dark)
+		end
+	end
+	c.trees = nil
+	ZC = keep
 end
 
 -- The floor of a wood: bushes, a stump, ferns, drifts of dead leaves.
@@ -385,8 +419,7 @@ local function building(c, x0, w, d, cols, rows, side, look, kinds, sleepers)
 	local cw, rd = w / cols, d / rows
 	local floor = look.floors[random.int(1, #look.floors)]
 	local wall = { color = look.walls[random.int(1, #look.walls)] }
-	flat(c, x0, z0, x0 + w, z1, 0.012, floor, true)
-	local b = { x0 = x0, x1 = x0 + w, z0 = z0, z1 = z1, rooms = {}, doors = {}, cols = cols, rows = rows }
+	local b = { x0 = x0, x1 = x0 + w, z0 = z0, z1 = z1, rooms = {}, doors = {}, cols = cols, rows = rows, zc = ZC }
 	-- Rooms by column i (west to east) and row j (from the path inwards).
 	local function rid(i, j) return (j - 1) * cols + i end
 	for j = 1, rows do
@@ -534,10 +567,13 @@ local function building(c, x0, w, d, cols, rows, side, look, kinds, sleepers)
 		for _ = 1, random.int(0, sleepers) do
 			table.insert(c.inside, v(random.range(r.x0 + 0.7, r.x1 - 0.7), 0, random.range(r.z0 + 0.7, r.z1 - 0.7)))
 		end
-		-- Fog of war: the room is dark until somebody is in it or looks in
-		-- through a door or a hole in the wall (main.luau lifts it).
-		local h = look.height[2] + 0.15
-		r.shroud = add(c, mat.spawn("cube", { pos = v((r.x0 + r.x1) / 2, h / 2, (r.z0 + r.z1) / 2 + ZC), size = v(r.x1 - r.x0 - 0.2, h, r.z1 - r.z0 - 0.2), color = SHROUD, roughness = 1, solid = false, tag = "deco" }))
+		-- Each room its own floor. Fog of war: until somebody is in the room
+		-- or looks in through a door or a hole in the wall, its floor is a
+		-- shade darker and greyer (surface kind + 128, see surface.wgsl);
+		-- main.luau lifts it. A hint, not a black box.
+		r.floor = flat(c, r.x0, r.z0, r.x1, r.z1, 0.012, floor, true)
+		r.floor_surface = (world.get(r.floor) or {}).surface
+		if r.floor_surface then world.set(r.floor, { surface = r.floor_surface + M.UNSEEN }) end
 	end
 	table.insert(c.buildings, b)
 	return b
@@ -553,7 +589,7 @@ local function closed(c, x0, w, d, side, look, h, style)
 	local z0, z1 = math.min(zn, zf), math.max(zn, zf)
 	local x1 = x0 + w
 	local color = look.walls[random.int(1, #look.walls)]
-	local blk = { x0 = x0, x1 = x1, z0 = z0, z1 = z1, h = h, parts = {}, rooms = {}, doors = {} }
+	local blk = { x0 = x0, x1 = x1, z0 = z0, z1 = z1, h = h, parts = {}, rooms = {}, doors = {}, zc = ZC }
 	local function part(id) table.insert(blk.parts, id) return id end
 	local r = box(c, x0, z0, x1, z1, h, { color = color })
 	part(r.id)
@@ -1079,6 +1115,7 @@ function M.chunk(index, day, in_day, zc, zc_prev)
 	end
 	if in_day == 0 then
 		camp(c, x0)
+		plant_trees(c)
 		shift(c, zc)
 		ZC = 0
 		return c
@@ -1166,6 +1203,7 @@ function M.chunk(index, day, in_day, zc, zc_prev)
 	elseif day == 1 then
 		table.insert(c.weapons, { kind = "pipe", pos = v(x0 + 14, 0, 1.2) })
 	end
+	plant_trees(c)
 	shift(c, zc)
 	ZC = 0
 	return c
