@@ -141,6 +141,7 @@ pub const STATIC_SUN_CACHE: Switch = Switch::new("KERN_STATIC_SUN_CACHE");
 pub const SUN_CACHE_GUARD_METRES: Switch = Switch::new("KERN_SUN_CACHE_GUARD_METRES");
 pub const SUN_CLIPMAP: Switch = Switch::new("KERN_SUN_CLIPMAP");
 pub const SUN_DAMAGE_REPORT: Switch = Switch::new("KERN_SUN_DAMAGE_REPORT");
+pub const SUN_CLOSE: Switch = Switch::new("KERN_SUN_CLOSE");
 pub const SUN_DITHER_TEXEL: Switch = Switch::new("KERN_SUN_DITHER_TEXEL");
 pub const SUN_INSTANCE_GROUPS: Switch = Switch::new("KERN_SUN_INSTANCE_GROUPS");
 pub const SUN_LEVELS: Switch = Switch::new("KERN_SUN_LEVELS");
@@ -291,6 +292,7 @@ pub const ALL: &[&Switch] = &[
     &SUN_CACHE_GUARD_METRES,
     &SUN_CLIPMAP,
     &SUN_DAMAGE_REPORT,
+    &SUN_CLOSE,
     &SUN_DITHER_TEXEL,
     &SUN_INSTANCE_GROUPS,
     &SUN_LEVELS,
