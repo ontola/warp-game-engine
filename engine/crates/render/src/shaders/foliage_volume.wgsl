@@ -9,18 +9,22 @@ struct VolumeCell {
     // Actual conditional mean normals and normalized lobe area weights.
     normals: array<vec4<f32>,6>,
 };
-// Stored normal moments retain signed direction, magnitude and lobe weight.
-// Colour and directional extinction remain full precision (including tiny tau).
+// Stored cell, 64 bytes: fourteen extinction values as half floats (value i
+// in word i/2, half i%2), colour and roughness as unorm16 (words 7, 8), six
+// normal moments as snorm8 xyzw (words 9..15). Moments keep signed direction,
+// magnitude and lobe weight. foliage_volume_data.rs PackedCell is the writer.
 struct PackedVolumeCell {
-    albedo_rough:vec4<f32>,extinction:array<vec4<f32>,4>,normals:array<vec2<u32>,6>,
+    words:array<u32,16>,
 };
 fn unpack_volume_cell(p:PackedVolumeCell)->VolumeCell {
-    var c:VolumeCell;c.albedo_rough=p.albedo_rough;c.extinction=p.extinction;
-    for(var i=0u;i<6u;i++){c.normals[i]=vec4<f32>(unpack2x16snorm(p.normals[i].x),unpack2x16snorm(p.normals[i].y));}
+    var c:VolumeCell;c.albedo_rough=vec4<f32>(unpack2x16unorm(p.words[7]),unpack2x16unorm(p.words[8]));
+    for(var i=0u;i<3u;i++){c.extinction[i]=vec4<f32>(unpack2x16float(p.words[2u*i]),unpack2x16float(p.words[2u*i+1u]));}
+    c.extinction[3]=vec4<f32>(unpack2x16float(p.words[6]),0.,0.);
+    for(var i=0u;i<6u;i++){c.normals[i]=unpack4x8snorm(p.words[9u+i]);}
     return c;
 }
 // This specializes only private interpolation state. Uploaded cells retain
-// all six records; packed providers use128 bytes, logical cells use176 bytes.
+// all six records; packed providers use 64 bytes, logical cells use176 bytes.
 const VOLUME_NORMAL_COUNT: u32 = 6u;
 struct VolumeDirection { indices:vec3<u32>,weights:vec3<f32> };
 struct VolumeSample {

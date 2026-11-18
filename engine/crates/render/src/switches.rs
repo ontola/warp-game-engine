@@ -36,6 +36,7 @@ impl Switch {
 pub const ADAPTER: Switch = Switch::new("KERN_ADAPTER");
 pub const ASYNC_SHADOW_VALIDATION: Switch = Switch::new("KERN_ASYNC_SHADOW_VALIDATION");
 pub const BOUNDED_DRAWS: Switch = Switch::new("KERN_BOUNDED_DRAWS");
+pub const BRANCH_BRICKS: Switch = Switch::new("KERN_BRANCH_BRICKS");
 pub const BRANCH_CELL_M: Switch = Switch::new("KERN_BRANCH_CELL_M");
 pub const BRICK_EMPTY_JUMP: Switch = Switch::new("KERN_BRICK_EMPTY_JUMP");
 pub const BRICK_EMPTY_SKIP: Switch = Switch::new("KERN_BRICK_EMPTY_SKIP");
@@ -105,11 +106,14 @@ pub const PAGED_FOLIAGE_SUN: Switch = Switch::new("KERN_PAGED_FOLIAGE_SUN");
 pub const PIPELINE_CACHE: Switch = Switch::new("KERN_PIPELINE_CACHE");
 pub const PIPELINE_CACHE_DIR: Switch = Switch::new("KERN_PIPELINE_CACHE_DIR");
 pub const PORTABLE: Switch = Switch::new("KERN_PORTABLE");
+pub const PROBE_AGE: Switch = Switch::new("KERN_PROBE_AGE");
 pub const PROBE_GRADIENTS: Switch = Switch::new("KERN_PROBE_GRADIENTS");
 pub const RASTER_FLOOR: Switch = Switch::new("KERN_RASTER_FLOOR");
 pub const RASTER_LARGE_FIRST: Switch = Switch::new("KERN_RASTER_LARGE_FIRST");
 pub const RASTER_SPLIT: Switch = Switch::new("KERN_RASTER_SPLIT");
 pub const RECEIVER_SHADOW_DEMAND: Switch = Switch::new("KERN_RECEIVER_SHADOW_DEMAND");
+pub const REFINE_ROUNDS: Switch = Switch::new("KERN_REFINE_ROUNDS");
+pub const REFINE_WAVE_PUBLISH: Switch = Switch::new("KERN_REFINE_WAVE_PUBLISH");
 pub const REFLECTION_PROBES: Switch = Switch::new("KERN_REFLECTION_PROBES");
 pub const REFRACTION: Switch = Switch::new("KERN_REFRACTION");
 pub const REUSE_SUN_TEXTURE: Switch = Switch::new("KERN_REUSE_SUN_TEXTURE");
@@ -158,6 +162,8 @@ pub const TILED_POST: Switch = Switch::new("KERN_TILED_POST");
 pub const TRACED_REFLECTIONS: Switch = Switch::new("KERN_TRACED_REFLECTIONS");
 pub const TREE_OCCLUSION: Switch = Switch::new("KERN_TREE_OCCLUSION");
 pub const TREE_OCCLUSION_REJECT: Switch = Switch::new("KERN_TREE_OCCLUSION_REJECT");
+pub const VEGETATION_BUDGETS: Switch = Switch::new("KERN_VEGETATION_BUDGETS");
+pub const VEGETATION_QUALITY: Switch = Switch::new("KERN_VEGETATION_QUALITY");
 pub const VIRTUAL_MEMBERS: Switch = Switch::new("KERN_VIRTUAL_MEMBERS");
 pub const VIRTUAL_SERIAL_CULL: Switch = Switch::new("KERN_VIRTUAL_SERIAL_CULL");
 pub const VOXEL_ANTIPODAL_NORMALS: Switch = Switch::new("KERN_VOXEL_ANTIPODAL_NORMALS");
@@ -166,6 +172,8 @@ pub const VOXEL_EMPTY_CEILING: Switch = Switch::new("KERN_VOXEL_EMPTY_CEILING");
 pub const VOXEL_GAP_MIPS: Switch = Switch::new("KERN_VOXEL_GAP_MIPS");
 pub const VOXEL_GLOBAL_INTERVALS: Switch = Switch::new("KERN_VOXEL_GLOBAL_INTERVALS");
 pub const VOXEL_OWN_IN_CLIPMAP: Switch = Switch::new("KERN_VOXEL_OWN_IN_CLIPMAP");
+pub const VOXEL_LEAF_PARITY: Switch = Switch::new("KERN_VOXEL_LEAF_PARITY");
+pub const VOXEL_DISC_DEPTH: Switch = Switch::new("KERN_VOXEL_DISC_DEPTH");
 pub const VOXEL_PASS: Switch = Switch::new("KERN_VOXEL_PASS");
 pub const VOXEL_RASTER: Switch = Switch::new("KERN_VOXEL_RASTER");
 pub const VOXEL_SELF_SHADOW_COARSER: Switch = Switch::new("KERN_VOXEL_SELF_SHADOW_COARSER");
@@ -304,6 +312,8 @@ pub const ALL: &[&Switch] = &[
     &TRACED_REFLECTIONS,
     &TREE_OCCLUSION,
     &TREE_OCCLUSION_REJECT,
+    &VEGETATION_BUDGETS,
+    &VEGETATION_QUALITY,
     &VIRTUAL_MEMBERS,
     &VIRTUAL_SERIAL_CULL,
     &VOXEL_ANTIPODAL_NORMALS,
@@ -312,6 +322,8 @@ pub const ALL: &[&Switch] = &[
     &VOXEL_GAP_MIPS,
     &VOXEL_GLOBAL_INTERVALS,
     &VOXEL_OWN_IN_CLIPMAP,
+    &VOXEL_LEAF_PARITY,
+    &VOXEL_DISC_DEPTH,
     &VOXEL_PASS,
     &VOXEL_RASTER,
     &VOXEL_SELF_SHADOW_COARSER,

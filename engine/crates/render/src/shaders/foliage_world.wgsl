@@ -12,6 +12,10 @@ struct VolumeConfig {
     selection: vec4<u32>,
 };
 @group(2) @binding(0) var<storage,read> volume_levels: array<VolumeLevel>;
+// The shared helpers (voxel_forest.wgsl) read levels through these.
+fn volume_level_origin(i:u32)->vec4<f32> {return volume_levels[i].origin_cell;}
+fn volume_level_dims(i:u32)->vec4<u32> {return volume_levels[i].dims_offset;}
+fn volume_level_at(i:u32)->VolumeLevel {return volume_levels[i];}
 @group(2) @binding(1) var<storage,read> volume_indices: array<u32>;
 @group(2) @binding(2) var<storage,read> volume_cells: array<PackedVolumeCell>;
 @group(2) @binding(3) var<storage,read> volume_trees: array<VolumeTree>;

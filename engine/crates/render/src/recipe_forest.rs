@@ -35,6 +35,12 @@ pub fn aggregate_config() -> Config {
     let base = Config { max_placements: 8192, max_source_triangles: 40_000_000, max_samples: 150_000_000, triangle_refinements: true,
         max_reference_voxels: 262_144, max_diagnostic_steps: 80_000_000,
         gap_mips: !crate::switches::VOXEL_GAP_MIPS.off(), ..Default::default() };
+    // KERN_BRANCH_BRICKS (experiment, up to 4096): bricks a branch group's
+    // level may hold. At 128 only a third of the spruce groups got 3.75 cm
+    // cells; the rest started at 7.5 cm (recipe_forest fine_cell_probe).
+    let bricks = crate::switches::BRANCH_BRICKS.parse::<usize>()
+        .filter(|b| (1..=crate::foliage_volume_data::MAX_PACKED_BRICKS_PER_LEVEL).contains(b)).unwrap_or(base.max_bricks_per_level);
+    let base = Config { max_bricks_per_level: bricks, max_total_bricks: base.max_total_bricks * bricks.div_ceil(base.max_bricks_per_level), ..base };
     let cell = crate::switches::BRANCH_CELL_M.parse::<f32>()
         .filter(|c| (0.01..base.reference_cell_size).contains(c));
     let Some(cell) = cell else { return base };
@@ -282,6 +288,7 @@ fn limits(variants: &[CookedPlant], full: usize) -> AttachLimits {
     // of six species needs more than the default 256.
     let assets: usize = variants.iter().map(|c| c.stats().volume_assets + 1).sum();
     limits.pack.max_assets = limits.pack.max_assets.max(assets);
+    limits.fit_voxels(variants.iter());
     limits
 }
 
@@ -630,5 +637,58 @@ mod streaming_tests {
                 assert!(crate::foliage_volume_data::matrix(s.rows).transform_point3(*p).distance(w)<0.001);
             }
         }}
+    }
+}
+
+#[cfg(test)]
+mod fine_cell_probe {
+    /// Cook statistics of a young swiss spruce's branch voxels per level, at
+    /// the default finest cell and at KERN_BRANCH_CELL_M (diagnostic, prints):
+    /// KERN_BRANCH_CELL_M=0.0375 cargo test --release -p render --lib fine_cell_probe -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn branch_voxel_levels() {
+        let parts = crate::plant_growth_assembly::Parts::for_look(&crate::plant_growth_assembly::Look::norway_spruce());
+        let (plant, ms) = super::cook_grown_stages(crate::plant_growth::Species::norway_spruce(), crate::switches::PROBE_AGE.parse().unwrap_or(12), 1, &parts,
+            crate::plant_growth_assembly::Look::norway_spruce()).unwrap();
+        println!("cell env {:?} bricks {:?}, cook ms {ms:?}", crate::switches::BRANCH_CELL_M.get(), crate::switches::BRANCH_BRICKS.get());
+        let mut rows: std::collections::BTreeMap<u32, (f32, usize, f64, f64, f64, f64, usize)> = Default::default();
+        for asset in plant.voxel_assets() {
+            for level in &asset.levels {
+                let key = (level.cell_size * 1e5).round() as u32;
+                let row = rows.entry(key).or_insert((level.cell_size, 0, 0.0, 0.0, 0.0, 0.0, 0));
+                row.6 += 1;
+                for v in &level.voxels {
+                    let a = f64::from(v.surface_area);
+                    let luma = 0.2126 * f64::from(v.albedo[0]) + 0.7152 * f64::from(v.albedo[1]) + 0.0722 * f64::from(v.albedo[2]);
+                    row.1 += 1; row.2 += a; row.3 += luma * a;
+                    row.4 += f64::from(v.directional_area.iter().copied().fold(0.0f32, f32::max)) / f64::from(level.cell_size).powi(3);
+                    row.5 += f64::from(v.leaf_fraction);
+                }
+            }
+        }
+        // Page sizes as the GPU forest would hold them (foliage_pages.rs).
+        let world = [crate::foliage_population::WorldRoot { id: 1, placement: crate::foliage_runtime::RootPlacement { up: glam::Vec3::Y, pos: glam::Vec3::ZERO, yaw: 0., scale: 1., variant: 0 } }];
+        let mut scene = crate::Scene::default();
+        match crate::foliage_runtime::plant_population(&mut scene, std::slice::from_ref(&plant), &world, 4, 65_536, crate::aggregate_lod::Policy { allow_sampled_optics: true, max_coverage_error: 1., max_color_error: 1., ..Default::default() }) {
+            Ok(_) => {
+                let forest = scene.voxel_forest.as_ref().unwrap();
+                let mut pages: std::collections::BTreeMap<u32, (f32, usize, [usize; 4])> = Default::default();
+                for id in 0..forest.levels.len() {
+                    let (cell, words) = crate::foliage_pages::VoxelPage::cook(forest, id).unwrap().grouped().sizes();
+                    let row = pages.entry((cell * 1e5).round() as u32).or_insert((cell, 0, [0; 4]));
+                    row.1 += 1; for i in 0..4 { row.2[i] += words[i]; }
+                }
+                for (_, (cell, n, w)) in pages {
+                    println!("pages cell {cell:.4} m: {n:4} pages, directory {:9} words, brick records {:9} words, splat bricks {:9} words, cells {:8} ({:.1} MB index, {:.1} MB cells)",
+                        w[0], w[1], w[2], w[3], (w[0] + w[1] + w[2]) as f64 * 4.0 / 1048576.0, w[3] as f64 * 128.0 / 1048576.0);
+                }
+            }
+            Err(e) => println!("plant_population failed: {e}"),
+        }
+        for (_, (cell, n, area, luma, sigma, leaf, assets)) in rows {
+            println!("cell {cell:.4} m: assets {assets:4} voxels {n:8} area {area:9.2} m2 albedo luma {:.4} mean max-sigma {:.1}/m leaf {:.3}",
+                luma / area.max(1e-12), sigma / n.max(1) as f64, leaf / n.max(1) as f64);
+        }
     }
 }
