@@ -80,7 +80,7 @@ fn tools() -> Vec<ToolSpec> {
         ToolSpec::new("match_state", "Players (bot, alive, health, score, cards, special, changed weapon fields), round, phase, modifier. With player: that player's whole Weapon; with fields: the names and kinds of every Weapon field.",
             obj(json!({ "player": player, "fields": { "type": "boolean" } }), &[])).read_only(),
         ToolSpec::new("knobs", "The match's tweakable values (`-- @knobs` blocks in the mods: damage, fire_rate, move_speed, bullet_speed, explosions, health, as multipliers of what the cards give) with their values and ranges.", obj(json!({}), &[])).read_only(),
-        ToolSpec::new("set_knob", "Set one knob for every player at once, mid-round too; saved in its mod file (ready to commit) and hot-reloaded. The Gamepad Party app's settings show it.",
+        ToolSpec::new("set_knob", "Set one knob for every player at once, mid-round too; saved in its mod file (ready to commit) and hot-reloaded. The Splitscreen Club app's settings show it.",
             obj(json!({ "name": { "type": "string" }, "value": { "type": "string", "description": "one Luau value, such as 1.5" } }), &["name", "value"])),
         ToolSpec::new("list_cards", "Every card on offer: id, name, description, rarity.", obj(json!({}), &[])).read_only(),
         ToolSpec::new("give_card", "Give a player a card now (its stats, pick hook and the gun's growth), as if picked.",

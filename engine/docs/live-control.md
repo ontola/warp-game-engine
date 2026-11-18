@@ -3,7 +3,7 @@
 A running Warp game can serve the
 [Model Context Protocol](https://modelcontextprotocol.io) (MCP), so you
 can change it while you play, together with Claude (Claude Desktop, Claude
-Code), ChatGPT, or Gamepad Party's session assistant (see below). Ask "make the
+Code), ChatGPT, or Splitscreen Club's session assistant (see below). Ask "make the
 shotgun spread wider and let me hear the new shot", and the assistant
 reads the match, edits a Weapon field or a Luau card, renders the sound
 patch, reloads a shader and takes a screenshot to check the result.
@@ -123,16 +123,16 @@ endpoint.
   away, so the client lists the tools again.
 - Both must use the same `WARP_LIVE_DIR`, if you set one.
 
-## The Gamepad Party session assistant
+## The Splitscreen Club session assistant
 
-A Luau game that Gamepad Party launches (`warp run`, `GAMENIGHT=1`) turns live
+A Luau game that Splitscreen Club launches (`warp run`, `GAMENIGHT=1`) turns live
 control on by itself, on a free local port (`WARP_LIVE=0` turns that off;
 `--live` still picks the port). It tells the party host the path of its
-token file in `declare_commands` (`mcp`, see Gamepad Party's `docs/protocol.md`).
-When an allow-listed player then asks the assistant in the Gamepad Party app
+token file in `declare_commands` (`mcp`, see Splitscreen Club's `docs/protocol.md`).
+When an allow-listed player then asks the assistant in the Splitscreen Club app
 "make the enemies slower" or "give my ship a red trail", the host reads the
 token file, lists these same tools, and carries out the request with them,
-one model step at a time from the Gamepad Party cloud. The token stays on the
+one model step at a time from the Splitscreen Club cloud. The token stays on the
 host, the cloud only sees tool results, and the player hears back what was
 changed. Nothing here is GameNight-specific: it is the same MCP server and
 the same tools that Claude Code uses.

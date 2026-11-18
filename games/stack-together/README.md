@@ -27,5 +27,5 @@ speed, fall times, repeat delays, bot patience, glow): `knob speed 130` in
 the console or `set_knob` over MCP changes it live.
 
 Not ported yet: the party settings (target rows and speed are knobs until
-Luau games can declare Gamepad Party settings) and the players' drawn faces
+Luau games can declare Splitscreen Club settings) and the players' drawn faces
 (here a round head in the player's colour with eyes that follow its piece).

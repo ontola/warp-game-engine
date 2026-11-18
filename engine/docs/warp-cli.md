@@ -25,8 +25,8 @@ warp run my-game --live                # ... and let Claude change it over MCP
 
 | Command | What it does |
 | --- | --- |
-| `warp run DIR [--players N] [--bots N] [--live [PORT]] [--sky SKY] [--seed N] [--size WxH] [--fullscreen] [--frames N]` | Play fullscreen, with sound (`--windowed` opts out). `--live` serves MCP ([live control](live-control.md); all its `--live-*` flags work). `--frames N` quits after N frames (a smoke test). Launched by a Gamepad Party party host, the host's seats decide the players (see [Gamepad Party](#gamenight)). |
-| `warp DIR` | The same as `warp run DIR`. This is how a Gamepad Party host starts an installed game: the runtime gets the game folder. |
+| `warp run DIR [--players N] [--bots N] [--live [PORT]] [--sky SKY] [--seed N] [--size WxH] [--fullscreen] [--frames N]` | Play fullscreen, with sound (`--windowed` opts out). `--live` serves MCP ([live control](live-control.md); all its `--live-*` flags work). `--frames N` quits after N frames (a smoke test). Launched by a Splitscreen Club party host, the host's seats decide the players (see [Splitscreen Club](#gamenight)). |
+| `warp DIR` | The same as `warp run DIR`. This is how a Splitscreen Club host starts an installed game: the runtime gets the game folder. |
 | `warp script DIR FILE.json --out OUT [--players N] [--sky SKY] [--seed N]` | A headless playtest in the [`app::script` format](building-and-running.md): ticks with controls, `cmd` lines, `expect` and `until` checks, `capture` (PNG), `state` (JSON) and `audio` (WAV). Exits with status 1 when a check fails. |
 | `warp serve DIR [--live [PORT]] [--seconds T] [--size WxH]` | Headless in real time with live control on (port 7878 by default). Renders a frame only for a screenshot. Sound plays into a mixer that is never heard. |
 | `warp check DIR [--ticks N]` | Load, run `init` and N idle ticks (default 120) without a GPU, then print the state. Exits with status 1 on any script or patch error. The fastest check of an edit. |
@@ -102,7 +102,7 @@ my-game/
 | `title` | the folder name | The window title. |
 | `tick_rate` | 60 | Ticks per second; `tick(dt, input)` gets `dt = 1 / tick_rate`. |
 | `storage` | false | Enable [versioned local saves, settings and profiles](storage.md). Requires an explicit game ID and a schema such as `save-schema.json`. |
-| `id` | the folder name | The Gamepad Party game id (lowercase letters, digits, dashes). A host's `GAMENIGHT_GAME_ID` wins. |
+| `id` | the folder name | The Splitscreen Club game id (lowercase letters, digits, dashes). A host's `GAMENIGHT_GAME_ID` wins. |
 | `players` | 1 | People without a party host, 1 to 4, in split screen. `--players` overrides it. |
 | `split` | true | One split-screen view per person; false gives one shared view (every `camera.set` moves that camera), as in an arena game. |
 | `bots` | 0 | Bots without a party host, 0 to 7. `--bots` overrides it. |
@@ -182,7 +182,7 @@ A module returns a table of hooks. All of them are optional.
 | `tick(dt, input)` | Every tick, at `tick_rate`. `input[1]` is player 1's input. |
 | `draw()` | Every displayed frame. For the HUD (and cameras). |
 | `reload()` | After a saved edit has reloaded the module. |
-| `player_joined(p)` | A Gamepad Party seat was added mid-game (`p` is a player table). |
+| `player_joined(p)` | A Splitscreen Club seat was added mid-game (`p` is a player table). |
 | `player_left(p)` | A player left mid-game. |
 | `players_changed()` | Names, colours or seats changed, after any join or leave too. |
 
@@ -361,14 +361,14 @@ Without a party host the players come from `game.toml` (`players`,
 ### The start menu
 
 Start on a controller (Enter or Escape on the keyboard) opens the menu
-every Gamepad Party game has: the game's title, Resume and New round (and Quit
-without a party host; under Gamepad Party the host's own overlay leaves the
+every Splitscreen Club game has: the game's title, Resume and New round (and Quit
+without a party host; under Splitscreen Club the host's own overlay leaves the
 game). No button hints. While it is open the game is frozen: `tick` does not
 run. New round runs `restart`. Up and down (or the stick) choose, A
 confirms, B or Start closes. Scripts and agents use the console:
 `menu`, `menu new round`, `menu resume`, `menu close`.
 
-### Gamepad Party
+### Splitscreen Club
 
 `warp run` and `warp DIR` connect to a party host when one launched them
 (`GAMENIGHT=1`) or `GAMENIGHT_ADDR` points at one, using the
@@ -544,7 +544,7 @@ local KNOBS = {
 
 `knobs` lists them and `set_knob` changes the value in the file itself,
 so the change is saved and reviewable in git. A player trying values
-from the Gamepad Party app gets temporary changes instead (`persist: false`):
+from the Splitscreen Club app gets temporary changes instead (`persist: false`):
 the game runs the edited source while the file stays as it was, until
 `keep` saves them or `revert` (or an edit of the file on disk) drops them. The game reloads at once;
 values that feed things `init` built only show when `reload()` rebuilds
@@ -578,7 +578,7 @@ The same commands work in scripts, as `cmd` steps:
   split screen (replaying exactly), `min_players`, the start menu, effects
   (bursts and rings spent after their life, `world.place`, `aim_x`), Neon
   Siege with bots clearing waves and replaying exactly, and a
-  fake Gamepad Party host on loopback (prepare, ready, start, a seat's
+  fake Splitscreen Club host on loopback (prepare, ready, start, a seat's
   controller, a live rename, a seat joining mid-game, the room log and
   `finished`);
 - `tests/headless.rs`, as child processes on `KERN_ADAPTER=software` (no
@@ -601,7 +601,7 @@ KERN_ADAPTER=software warp script games/hello-warp games/hello-warp/scripts/smok
 - No online play. The determinism rules are meant to make lockstep or
   host-authoritative play possible later.
 - `game.toml` and assets do not hot-reload.
-- Gamepad Party party settings (`declare_settings`), phone buttons
+- Splitscreen Club party settings (`declare_settings`), phone buttons
   (`declare_actions`) and per-player settings are not exposed to Luau yet.
 
 ### Native game visibility masks

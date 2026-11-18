@@ -69,7 +69,7 @@ Output: `build/quest-demo/` and `build/growing-guns-quest-webxr.zip`.
 The serving tool binds to loopback and serves only generated demo files.
 `--public` creates a public temporary URL through Cloudflare; anyone with that
 URL can load the demo. Stop the serving process to close the tunnel. A cached
-copy continues to run without it. It does not publish or modify Gamepad Party.
+copy continues to run without it. It does not publish or modify Splitscreen Club.
 
 For USB development, `adb reverse tcp:8787 tcp:8787` makes
 `http://localhost:8787` available to Quest Browser as a secure localhost context.
@@ -89,7 +89,7 @@ The eight cards are Heavy Hitter, Healthy, Rapid Fire, Big Mag, Quick Reload,
 Ricochet, Extra Barrel and Lifesteal. Their effects use the simulation's existing
 weapon fields. The desktop Luau host and its complete 52-card deck, full materials,
 animated character assets, crowd, TV screens, ragdolls, music, multiplayer,
-Gamepad Party integration and the other games are not part of this demo.
+Splitscreen Club integration and the other games are not part of this demo.
 
 ## Engine boundaries
 
