@@ -12,6 +12,7 @@
 
 local v = vector.create
 local mat = require("lib/mat")
+local interior = require("lib/interior")
 
 local M = {}
 
@@ -127,6 +128,15 @@ function M.warm()
 	mat.warm("cube", { color = BOTTLE, roughness = 0.1 })
 	for _, c in FALLEN do mat.warm("cube", { color = c, roughness = 0.9 }) end
 	mat.warm("cube", { color = "#d8d0a0", roughness = 0.95 })
+	interior.warm(function(shape, look)
+		look.indoor = true
+		mat.warm(shape, look)
+	end)
+	for _, l in LOOKS do
+		for _, c in l.floors do mat.warm("cube", { color = c, roughness = 0.95, indoor = true }) end
+		for _, c in l.walls do mat.warm("cube", { color = c, roughness = 0.95, indoor = true }) end
+	end
+	mat.warm("cube", { color = "#d8d0a0", roughness = 0.95, indoor = true })
 	-- Cars.
 	for _, c in { GLASS, HOLE } do mat.warm("cube", { color = c, roughness = 0.1 }) end
 	mat.warm("cube", { color = "#2a2a2c", roughness = 0.7 })
@@ -154,6 +164,7 @@ local function box(c, x0, z0, x1, z1, h, look, tag)
 		color = look.color,
 		roughness = look.roughness or 0.95,
 		metal = look.metal,
+		indoor = look.indoor,
 		tag = tag or "wall",
 	}))
 	local r = { x0 = x0, z0 = z0, x1 = x1, z1 = z1, h = h, id = id }
@@ -161,7 +172,7 @@ local function box(c, x0, z0, x1, z1, h, look, tag)
 	return r
 end
 
-local function flat(c, x0, z0, x1, z1, y, color)
+local function flat(c, x0, z0, x1, z1, y, color, indoor)
 	return add(c, mat.spawn("cube", {
 		pos = v((x0 + x1) / 2, y, (z0 + z1) / 2 + ZC),
 		size = v(math.abs(x1 - x0), 0.02, math.abs(z1 - z0)),
@@ -169,6 +180,7 @@ local function flat(c, x0, z0, x1, z1, y, color)
 		roughness = 0.95,
 		solid = false,
 		tag = "ground",
+		indoor = indoor,
 	}))
 end
 
@@ -334,7 +346,7 @@ local function rubble(c, x, z, spread, look, n)
 	for _ = 1, n do
 		local s = random.range(0.15, 0.45)
 		deco(c, "cube", v(x + random.range(-spread, spread), s * 0.35, z + random.range(-spread, spread)), v(s * random.range(1, 2.2), s * 0.7, s), look.color,
-			{ roughness = 0.95, rot = v(random.range(-0.4, 0.4), random.range(-math.pi, math.pi), random.range(-0.4, 0.4)) })
+			{ roughness = 0.95, indoor = look.indoor, rot = v(random.range(-0.4, 0.4), random.range(-math.pi, math.pi), random.range(-0.4, 0.4)) })
 	end
 end
 
@@ -373,7 +385,7 @@ local function building(c, x0, w, d, cols, rows, side, look, kinds, sleepers)
 	local cw, rd = w / cols, d / rows
 	local floor = look.floors[random.int(1, #look.floors)]
 	local wall = { color = look.walls[random.int(1, #look.walls)] }
-	flat(c, x0, z0, x0 + w, z1, 0.012, floor)
+	flat(c, x0, z0, x0 + w, z1, 0.012, floor, true)
 	local b = { x0 = x0, x1 = x0 + w, z0 = z0, z1 = z1, rooms = {}, doors = {}, cols = cols, rows = rows }
 	-- Rooms by column i (west to east) and row j (from the path inwards).
 	local function rid(i, j) return (j - 1) * cols + i end
@@ -481,22 +493,43 @@ local function building(c, x0, w, d, cols, rows, side, look, kinds, sleepers)
 	end
 	-- A cupboard in a corner of most rooms, sleepers in some; rubble and
 	-- junk on the floors.
+	local room_api = {
+		box = function(x0, z0, x1, z1, h, l)
+			l.indoor = true
+			return box(c, x0, z0, x1, z1, h, l, "furniture").id
+		end,
+		hidden = function(x0, z0, x1, z1, h)
+			local r = box(c, x0, z0, x1, z1, h, { color = SHROUD }, "furniture")
+			world.set(r.id, { visible = false })
+			return r.id
+		end,
+		deco = function(shape, pos, size, color, extra)
+			local e = { indoor = true }
+			for k, x in extra or {} do e[k] = x end
+			return deco(c, shape, pos, size, color, e)
+		end,
+	}
+	-- A ceiling no camera sees: the moon and the sun stay out, so inside it
+	-- is dark but for torches and what comes in through doors and holes.
+	add(c, mat.spawn("cube", { pos = v((b.x0 + b.x1) / 2, look.height[2] + 0.4, (b.z0 + b.z1) / 2 + ZC), size = v(b.x1 - b.x0 + 0.3, 0.2, b.z1 - b.z0 + 0.3),
+		color = SHROUD, roughness = 1, solid = false, shadow_only = true, tag = "deco" }))
 	for _, r in b.rooms do
 		if random.chance(0.6) then
-			rubble(c, random.range(r.x0 + 0.6, r.x1 - 0.6), random.range(r.z0 + 0.6, r.z1 - 0.6), 0.6, wall, random.int(2, 5))
+			rubble(c, random.range(r.x0 + 0.6, r.x1 - 0.6), random.range(r.z0 + 0.6, r.z1 - 0.6), 0.6, { color = wall.color, indoor = true }, random.int(2, 5))
 		end
 		for _ = 1, random.int(0, 2) do
 			local x, z = random.range(r.x0 + 0.3, r.x1 - 0.6), random.range(r.z0 + 0.3, r.z1 - 0.6)
-			flat(c, x, z, x + random.range(0.2, 0.5), z + random.range(0.15, 0.4), 0.016, "#d8d0a0")
+			flat(c, x, z, x + random.range(0.2, 0.5), z + random.range(0.15, 0.4), 0.016, "#d8d0a0", true)
 		end
-		if random.chance(0.75) then
-			local east = random.chance(0.5)
-			local deep = random.chance(0.5)
-			local x = if east then r.x1 - 0.55 else r.x0 + 0.55
-			local z = if deep then r.z1 - 0.45 else r.z0 + 0.45
-			local kind = kinds[random.int(1, #kinds)]
-			container(c, kind, x, z, 0.75, 0.6, if kind == "closet" then 1.3 else 0.95, if kind == "closet" then "#5a4632" else "#8b6b4a")
-			c.containers[#c.containers].stand = v((r.x0 + r.x1) / 2, 0, (r.z0 + r.z1) / 2)
+		-- Furniture against the walls; most rooms have something to search.
+		local kind = if random.chance(0.75) then kinds[random.int(1, #kinds)] else nil
+		local found = interior.furnish(room_api, b, r, kind, kinds)
+		if found and kind then
+			local rect = c.rects[#c.rects]
+			for i = #c.rects, 1, -1 do
+				if c.rects[i].id == found.id then rect = c.rects[i] break end
+			end
+			table.insert(c.containers, { kind = kind, x = found.x, z = found.z, rect = rect, id = found.id, searched = false, stand = v((r.x0 + r.x1) / 2, 0, (r.z0 + r.z1) / 2) })
 		end
 		for _ = 1, random.int(0, sleepers) do
 			table.insert(c.inside, v(random.range(r.x0 + 0.7, r.x1 - 0.7), 0, random.range(r.z0 + 0.7, r.z1 - 0.7)))

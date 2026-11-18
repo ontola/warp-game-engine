@@ -272,7 +272,7 @@ pub fn shape(name: &str) -> mlua::Result<Shape> {
     })
 }
 
-const ENTITY_KEYS: &[&str] = &["shape", "pos", "rot", "size", "color", "emissive", "roughness", "metal", "surface", "solid", "visible", "tag", "points", "edges", "width"];
+const ENTITY_KEYS: &[&str] = &["shape", "pos", "rot", "size", "color", "emissive", "roughness", "metal", "surface", "solid", "visible", "shadow_only", "tag", "points", "edges", "width"];
 
 fn boolean(v: &Value, what: &str) -> mlua::Result<bool> {
     match v { Value::Boolean(b) => Ok(*b), _ => Err(rt(format!("{what}: expected true or false"))) }
@@ -282,7 +282,7 @@ fn number(v: &Value, what: &str) -> mlua::Result<f32> { num(v).ok_or_else(|| rt(
 
 /// Apply `world.spawn`/`world.set` options to an entity's fields.
 #[allow(clippy::too_many_arguments)]
-fn apply(opts: &[(String, Value)], shape_: &mut Shape, look: &mut Look, pos: &mut Vec3, rot: &mut Vec3, sz: &mut Vec3, solid: &mut bool, visible: &mut bool, tag: &mut String) -> mlua::Result<()> {
+fn apply(opts: &[(String, Value)], shape_: &mut Shape, look: &mut Look, pos: &mut Vec3, rot: &mut Vec3, sz: &mut Vec3, solid: &mut bool, visible: &mut bool, shadow_only: &mut bool, tag: &mut String) -> mlua::Result<()> {
     for (k, v) in opts {
         match k.as_str() {
             "shape" => *shape_ = shape(&v.to_string()?)?,
@@ -292,6 +292,7 @@ fn apply(opts: &[(String, Value)], shape_: &mut Shape, look: &mut Look, pos: &mu
             "color" | "emissive" | "roughness" | "metal" | "surface" => { look_key(look, k, v)?; }
             "solid" => *solid = boolean(v, "solid")?,
             "visible" => *visible = boolean(v, "visible")?,
+            "shadow_only" => *shadow_only = boolean(v, "shadow_only")?,
             "tag" => *tag = v.to_string()?,
             "points" | "edges" | "width" => {}
             _ => unreachable!("checked by options"),
@@ -409,6 +410,7 @@ fn entity_table(lua: &Lua, id: u32, e: &Entity) -> mlua::Result<Table> {
     if let Some(k) = e.look.surface { t.raw_set("surface", k)?; }
     t.raw_set("solid", e.solid)?;
     t.raw_set("visible", e.visible)?;
+    t.raw_set("shadow_only", e.shadow_only)?;
     t.raw_set("tag", e.tag.as_str())?;
     Ok(t)
 }
@@ -573,7 +575,7 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             let mut s = Spawn { parent, shape: shape(&name)?, ..Default::default() };
             if let Some(t) = opts {
                 let o = options(&t, &ENTITY_KEYS[1..], "world.spawn")?;
-                apply(&o, &mut s.shape, &mut s.look, &mut s.pos, &mut s.rot, &mut s.size, &mut s.solid, &mut s.visible, &mut s.tag)?;
+                apply(&o, &mut s.shape, &mut s.look, &mut s.pos, &mut s.rot, &mut s.size, &mut s.solid, &mut s.visible, &mut s.shadow_only, &mut s.tag)?;
                 if s.shape == Shape::Wire { s.wire = Some(Wire { points: Vec::new(), edges: Vec::new(), width: 0.05 }); }
                 apply_wire(&o, &mut s.wire)?;
             }
@@ -586,7 +588,7 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             let mut c = lock(&core);
             sim(&c, "world.set")?;
             c.world.try_update(id, |e| {
-                apply(&o, &mut e.shape, &mut e.look, &mut e.pos, &mut e.rot, &mut e.size, &mut e.solid, &mut e.visible, &mut e.tag)
+                apply(&o, &mut e.shape, &mut e.look, &mut e.pos, &mut e.rot, &mut e.size, &mut e.solid, &mut e.visible, &mut e.shadow_only, &mut e.tag)
                     .and_then(|_| apply_wire(&o, &mut e.wire)).map_err(|err| err.to_string())
             }).map_err(rt)
         })),

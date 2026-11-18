@@ -124,6 +124,15 @@ impl Slots {
         self.touch(id.0);
     }
 
+    /// Hide an occupied slot from the camera views in `mask` (bit i: view
+    /// i); it still casts shadows. 0xff: a shadow-only object.
+    pub fn hide_in_views(&mut self, scene: &mut Scene, id: SlotId, mask: u8) {
+        let i = &mut scene.instances[self.first + id.0];
+        let before = i.flags;
+        i.hide_in_views(mask);
+        if i.flags != before { self.touch(id.0); }
+    }
+
     pub fn remove(&mut self, scene: &mut Scene, id: SlotId) {
         if !std::mem::replace(&mut self.used[id.0], false) { return; }
         self.prev[id.0] = None;

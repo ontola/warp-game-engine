@@ -94,6 +94,9 @@ pub struct Entity {
     /// Solid entities block `world.move` and are hit by `world.raycast`.
     pub solid: bool,
     pub visible: bool,
+    /// Drawn into shadows only, never seen by a camera: a ceiling that keeps
+    /// the moon out of a roofless room the camera looks into.
+    pub shadow_only: bool,
     pub tag: String,
     /// Shape::Wire: its points and edges.
     pub wire: Option<Wire>,
@@ -155,12 +158,13 @@ pub struct Spawn {
     pub size: Vec3,
     pub solid: bool,
     pub visible: bool,
+    pub shadow_only: bool,
     pub tag: String,
     pub wire: Option<Wire>,
 }
 
 impl Default for Spawn {
-    fn default() -> Self { Spawn { parent: None, shape: Shape::Cube, look: Look::default(), pos: Vec3::ZERO, rot: Vec3::ZERO, size: Vec3::ONE, solid: true, visible: true, tag: String::new(), wire: None } }
+    fn default() -> Self { Spawn { parent: None, shape: Shape::Cube, look: Look::default(), pos: Vec3::ZERO, rot: Vec3::ZERO, size: Vec3::ONE, solid: true, visible: true, shadow_only: false, tag: String::new(), wire: None } }
 }
 
 /// Put an entity's slots where it is: one for a shape, one per edge for a
@@ -173,6 +177,8 @@ fn show(slots: &mut Slots, scene: &mut Scene, e: &mut Entity) {
             (false, Some(slot)) => { slots.remove(scene, slot); e.slot = None; }
             (false, None) => {}
         }
+        // Every time: a reused slot keeps the flags of whatever had it before.
+        if let Some(slot) = e.slot { slots.hide_in_views(scene, slot, if e.shadow_only { 0xff } else { 0 }); }
         return;
     };
     let want = if e.visible { w.edges.len() } else { 0 };
@@ -382,7 +388,7 @@ impl World {
         if let Some(w) = &s.wire { local = w.bounds(); }
         let id = self.next;
         self.next += 1;
-        let mut e = Entity { parent: s.parent, frame, children: Vec::new(), shape: s.shape, look: s.look, pos: s.pos, rot: s.rot, size: s.size, solid: s.solid, visible: s.visible, tag: s.tag, wire: s.wire, slot: None, edge_slots: Vec::new(), mesh, local };
+        let mut e = Entity { parent: s.parent, frame, children: Vec::new(), shape: s.shape, look: s.look, pos: s.pos, rot: s.rot, size: s.size, solid: s.solid, visible: s.visible, shadow_only: s.shadow_only, tag: s.tag, wire: s.wire, slot: None, edge_slots: Vec::new(), mesh, local };
         show(&mut self.slots, &mut self.scene, &mut e);
         if let Some(parent) = s.parent { self.entities.get_mut(&parent).unwrap().children.push(id); }
         self.entities.insert(id, e);
@@ -649,6 +655,20 @@ mod tests {
     use super::*;
 
     fn world() -> World { World::new(Path::new("."), 16) }
+
+    #[test]
+    fn a_shadow_only_entity_is_hidden_from_every_view_and_a_reused_slot_is_not() {
+        let mask = |w: &World| w.scene.instances.iter().map(|i| (i.flags & render::scene::HIDE_IN_VIEW_MASK) >> render::scene::HIDE_IN_VIEW_SHIFT).max().unwrap();
+        let mut w = world();
+        let id = w.spawn(Spawn { shadow_only: true, solid: false, ..Default::default() }).unwrap();
+        assert_eq!(mask(&w), 0xff, "in the shadows only");
+        w.update(id, |e| e.shadow_only = false).unwrap();
+        assert_eq!(mask(&w), 0, "seen again");
+        w.update(id, |e| e.shadow_only = true).unwrap();
+        w.remove(id);
+        w.spawn(Spawn::default()).unwrap();
+        assert_eq!(mask(&w), 0, "the next one in that slot is seen");
+    }
 
     #[test]
     fn a_wire_takes_one_slot_per_edge_and_follows_its_points() {

@@ -532,7 +532,35 @@ fn dm_bark(uv: vec2<f32>, tint: vec3<f32>, fw: f32) -> DmS {
     return DmS(c, 0.92, 0.0, furrow * 0.012 * k);
 }
 
+// Floor tiles indoors: squares with grout, each a shade apart, cracked
+// here and there, grimy at the edges of the room.
+fn dm_floortile(uv: vec2<f32>, tint: vec3<f32>, fw: f32) -> DmS {
+    let size = 0.33;
+    let q = uv / size;
+    let cell = floor(q);
+    let f = fract(q);
+    let k = dm_fade(0.03, fw);
+    let id = dm_h21(cell + 7.0);
+    var c = tint * (0.88 + 0.24 * mix(0.5, id, k));
+    let e = min(min(f.x, 1.0 - f.x), min(f.y, 1.0 - f.y));
+    let grout = (1.0 - smoothstep(0.015, 0.04 + fw / size, e)) * k;
+    c = mix(c, tint * 0.45, grout);
+    let crack = dm_cracks(uv, 0.5, 0.003, fw, 0.25);
+    c = mix(c, tint * 0.3, crack);
+    let grime = smoothstep(0.45, 0.8, dm_fbm(uv * 0.8 + 3.0, fw * 0.8));
+    c = mix(c, DM_EARTH, grime * 0.45);
+    return DmS(c, mix(0.35, 0.8, max(grime, grout)), 0.0, -grout * 0.002 - crack * 0.002);
+}
+
+// Kinds from 64 up are the same materials indoors, under a roof that is
+// gone: the sky that still gets in is mostly blocked by the walls and the
+// ceiling no camera sees (lib/mat). Darker in every light, so a room is dark
+// until a torch is in it.
+const DM_INDOOR: f32 = 0.28;
+
 fn game_surface(s: SurfaceIn) -> SurfaceOut {
+    let kind = s.kind & 63u;
+    let indoor = s.kind >= 64u;
     let n = s.n;
     let an = abs(n);
     let top = an.y > max(an.x, an.z);
@@ -555,7 +583,7 @@ fn game_surface(s: SurfaceIn) -> SurfaceOut {
         let q = s.p + t1 * select(0.0, eps, k == 1) + t2 * select(0.0, eps, k == 2);
         let uv = vec2<f32>(dot(q, t1), dot(q, t2));
         var r = DmS(s.tint, s.rough, s.metal, 0.0);
-        switch s.kind {
+        switch kind {
             case 0u: { r = dm_asphalt(uv, s.tint, fw); }
             case 1u: { r = dm_pavement(uv, s.tint, fw); }
             case 2u: { if top { r = dm_grass(uv, s.tint, fw); } else { r = dm_dirt(uv, DM_EARTH * 1.6, fw); } }
@@ -587,6 +615,8 @@ fn game_surface(s: SurfaceIn) -> SurfaceOut {
                 r.rough = mix(0.3, r.rough, grime);
             }
             case 16u: { if top { r = dm_wood(uv, s.tint, fw); } else { r = dm_logs(uv, s.tint, fw); } }
+            case 19u: { r = dm_floortile(uv, s.tint, fw); }
+            case 20u: { r = DmS(s.tint * (0.9 + 0.2 * dm_fbm(uv * 2.0, fw * 2.0)), s.rough, s.metal, 0.0); }
             case 18u: { if top { r = dm_wood(uv, s.tint, fw); } else { r = dm_bark(uv, s.tint, fw); } }
             case 17u: { if top { r = dm_tiles(select(uv, vec2<f32>(uv.x, -uv.y), n.z < 0.0), s.tint, fw); } else { r = DmS(s.tint * 0.7, 0.8, 0.0, 0.0); } }
             default: { bump = 0.0; }
@@ -597,5 +627,6 @@ fn game_surface(s: SurfaceIn) -> SurfaceOut {
     let gx = (hx - o.h) / eps;
     let gy = (hy - o.h) / eps;
     let nn = normalize(n - (t1 * gx + t2 * gy) * bump * 0.8);
+    if indoor { o.albedo *= DM_INDOOR; }
     return SurfaceOut(max(o.albedo, vec3<f32>(0.0)), nn, clamp(o.rough, 0.03, 1.0), clamp(o.metal, 0.0, 1.0), vec3<f32>(0.0));
 }
