@@ -82,6 +82,7 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_NEAR_SHADOW_LOD` | 1.0 | Scale on near shadow cluster error. |
 | `KERN_SUN_VOXEL_M` | per scene | Voxel cell size in the sun map. |
 | `KERN_SUN_LEVELS` | 8 (clipmap), 4 with `KERN_SUN_CLIPMAP=0` | Sun clipmap levels round each camera (1 to 8; level k covers 24 m times 2^k, with `KERN_SUN_CLIPMAP` counted from a first level that grows with height). |
+| `KERN_SUN_CLOSE` | on | `0` keeps the doubling ladder (24 m first level) in scenes with skin. By default such a scene's clipmap, seen from the ground, has levels of 3, 12, 24 m and doubling to 768 m, so a face a metre away gets 3 mm sun texels. |
 | `KERN_SUN_STAGGER` | on | `0` redraws every clipmap level every frame. By default level 1 redraws every other frame, level 2 every fourth and the rest every eighth; with `KERN_SUN_CLIPMAP` a level also redraws when it moves. |
 | `KERN_SUN_CACHE_GUARD_METRES` | 0 | Guard band around the cached sun map (0 to 128 m). |
 | `KERN_FOLIAGE_SUN_LOD`, `KERN_FOLIAGE_SUN_PAGE_METRES` | 0.5, fine pages | Paged foliage sun (only with `KERN_PAGED_FOLIAGE_SUN=1`). |

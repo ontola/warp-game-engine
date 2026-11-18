@@ -16,14 +16,30 @@ code (`FEATURE_SKIN_HAIR`, [shade_features.rs](../crates/render/src/shade_featur
   edge turns warm instead of grey.
 - Sun shadow edges let red through first (the penumbra is widened per
   channel).
+- Where the sun map's texels at the point are finer than 4 mm (fading out
+  to 10 mm), the sun's visibility on skin is how much skin lies in its way
+  instead of a lit-or-dark test: sixteen taps on a golden-angle spiral
+  1.8 texels wide, each comparing the map with the receiver's own plane
+  and attenuating by Jensen's diffusion lengths (3.67, 1.37, 0.68 mm). A
+  sliver just past the terminator lets the wrapped light through; a cast
+  shadow's edge fades over the spiral instead of following the map's grid
+  or the mesh's triangles. Where the plane would leave what the triangle
+  spans along the sun, the taps close up along the slope. A triangle's
+  own flatness (its longest edge times how far its facing of the sun
+  departs from its vertices') is not counted as skin in the way. Shadows
+  from beyond the fine map (the shared map 3 m up the ray, world terrain,
+  clouds) still apply.
+- A scene with skin gets fine sun levels round the camera: half extents of
+  3, 12 and 24 m, then doubling to 768 m (`KERN_SUN_CLOSE=0` keeps the ladder from
+  24 m). The two finest are centred ahead of the camera unless the game
+  set a lighting focus.
 - Sunlight passes through thin parts such as ears, nostrils and fingers. The
-  thickness comes from the finest sun clipmap level covering the point, else
-  the shared sun map (receiver depth minus the first
-  occluder's depth), plus one and a half shadow texels because that depth is
-  only accurate to about a texel. Transmission falls off with Jensen's
-  measured mean free paths for skin (3.67, 1.37, 0.68 mm), lengthened four
-  times for sideways spread. Where the shadow map's texels are centimetres
-  wide, as in a wide stage scene, ears hardly glow.
+  thickness comes from the finest sun level covering the point, else
+  the shared sun map (receiver depth minus the occluder's depth over the
+  same sixteen taps), plus one and a half shadow texels because that depth
+  is only accurate to about a texel. Transmission falls off with the same
+  diffusion lengths. Where the shadow map's texels are centimetres wide,
+  as in a wide stage scene, ears hardly glow.
 - Specular is two GGX lobes (roughness 0.42 and 0.91 around a base of 0.7,
   30 % on the sharp one) with a skin F0 of 0.028.
 
