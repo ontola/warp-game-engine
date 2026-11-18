@@ -47,6 +47,7 @@ local KNOBS = {
 	blown = 0.3, -- after sprinting yourself empty, the stamina you need back before you can sprint again
 	spent = 4.5, -- seconds spent after running out of breath: a slow walk, slow swings, panting
 	spent_walk = 0.45, -- walking speed while spent
+	held = 0.45, -- speed while one of the dead holds on (pull free before it bites)
 	run_noise = 6, -- how far the dead hear you run, m
 	car_noise = 9, -- how far they hear you rummage through a car, m
 	limp = 0.72, -- share of that speed while injured
@@ -110,8 +111,10 @@ local HELD = {
 }
 
 local ZOMBIES = {
-	shambler = { hp = 3, sense = 8, reach = 1.35, windup = 1.0, strike = 0.25, recover = 1.0 },
-	runner = { hp = 2, sense = 12, reach = 3.6, windup = 0.9, strike = 0.35, recover = 1.2, lunge = 8.5 },
+	-- reach: where it starts its grab; windup: arms out, lurching in; strike:
+	-- the grab itself; bite: how long it holds on before it bites.
+	shambler = { hp = 3, sense = 8, reach = 1.35, windup = 0.8, strike = 0.3, recover = 1.0, bite = 1.1 },
+	runner = { hp = 2, sense = 12, reach = 3.6, windup = 0.9, strike = 0.35, recover = 1.2, lunge = 8.5, bite = 0.75 },
 }
 local ZOMBIE_SKIN = { "#7d8f6a", "#8a9178", "#6f7f66", "#93977f" }
 local ZOMBIE_SHIRTS = { "#5b5148", "#4d5560", "#6a4f45", "#56604a", "#6b6458", "#3f4650" }
@@ -2223,10 +2226,12 @@ local function act(u, it, dt)
 
 	-- Hands on you: every one of the dead within reach drags at you.
 	local grabs = 0
+	u.held = false
 	for _, z in s.zombies do
 		if z.state ~= "dead" and z.state ~= "sleep" then
 			local dx, dz = z.pos.x - u.pos.x, z.pos.z - u.pos.z
 			if dx * dx + dz * dz < 1.6 * 1.6 then grabs += 1 end
+			if z.state == "hold" and z.target == u then u.held = true end
 		end
 	end
 	if not u.stamina_max then u.stamina_max = KNOBS.stamina u.stamina = u.stamina_max end
@@ -2265,6 +2270,8 @@ local function act(u, it, dt)
 	-- Worn out, even the jog drags.
 	local worn = if spent then KNOBS.spent_walk else 1 - 0.25 * math.clamp((tiredness(u) - 0.6) / 0.4, 0, 1)
 	local speed = KNOBS.walk * (u.speed or 1) * worn * (if busy then 0 else (if u.charging then 0.35 elseif u.cd_melee > 0.2 then 0.5 else 1)) * (if u.injured then KNOBS.limp else 1) / (1 + KNOBS.grab * grabs) * (if running then KNOBS.run else 1)
+	-- In someone's hands: every step is a struggle to pull free.
+	if u.held then speed *= KNOBS.held end
 	-- Running is heard: footfalls every so often.
 	u.run_t = (u.run_t or 0) - dt
 	if running and u.run_t <= 0 then
@@ -2458,7 +2465,7 @@ local function zombie_step(z, dt)
 	end
 	-- Someone down near by is a meal; somebody standing comes first.
 	local meal = nil
-	if not target and (z.state ~= "windup" and z.state ~= "strike" and z.state ~= "recover" and z.state ~= "stagger") then
+	if not target and (z.state ~= "windup" and z.state ~= "strike" and z.state ~= "hold" and z.state ~= "recover" and z.state ~= "stagger") then
 		meal = meal_for(z)
 		if meal then target = nil end
 	end
@@ -2476,8 +2483,14 @@ local function zombie_step(z, dt)
 		z.knock = z.knock * math.max(0, 1 - 6 * dt)
 		if z.t <= 0 then z.state = if target then "chase" else "investigate" end
 	elseif z.state == "windup" then
-		arms = "raise"
-		if z.target and z.target.pos then z.yaw = yaw_of(z.target.pos - z.pos) end
+		-- Arms out, still lurching in: the grab is coming.
+		arms = "reach"
+		if z.target and z.target.pos then
+			local to = z.target.pos - z.pos
+			z.yaw = yaw_of(to)
+			local d = math.sqrt(to.x * to.x + to.z * to.z)
+			if z.kind ~= "runner" and d > 0.7 then move = to / d * speed * 0.5 end
+		end
 		if z.t <= 0 then
 			z.state = "strike"
 			z.t = spec.strike
@@ -2495,17 +2508,57 @@ local function zombie_step(z, dt)
 					local d = math.sqrt(to.x * to.x + to.z * to.z)
 					local reach = if z.kind == "runner" then 0.85 else spec.reach + 0.1
 					if d < reach and (d < 0.3 or (to.x * f.x + to.z * f.z) / d > 0.2) then
-						hurt(u, z.pos)
 						z.hit = true
-						count("zombie_hits")
+						if standing(u) then
+							-- Hands on you: no harm yet. Pull free, hit it or
+							-- shove it before it bites.
+							z.state = "hold"
+							z.target = u
+							z.t = spec.bite
+							z.hold_d = math.max(d, 0.6)
+							body.eyes(z.fig, true)
+							rumble(u, 0.45, 0.2)
+							sfx("groan", z.pos, { pitch = random.range(1.05, 1.25) })
+							if not u.bot then popup(u, "grabbed!", "#ff8a6a") end
+							count("grabs")
+						else
+							hurt(u, z.pos)
+							count("zombie_hits")
+						end
 						break
 					end
 				end
 			end
 		end
-		if z.t <= 0 then
+		if z.t <= 0 and z.state == "strike" then
 			z.state = "recover"
 			z.t = spec.recover
+		end
+	elseif z.state == "hold" then
+		arms = "reach"
+		local u = z.target
+		local to = if u and u.pos then u.pos - z.pos else v(0, 0, 0)
+		local d = math.sqrt(to.x * to.x + to.z * to.z)
+		if not (u and standing(u)) or d > (z.hold_d or 0.8) + 0.55 then
+			-- Pulled free (or nothing left to hold).
+			z.state = "recover"
+			z.t = spec.recover * 0.7
+			body.eyes(z.fig, false, NO_GLOW)
+			if u and standing(u) then count("pulled_free") end
+		else
+			z.yaw = yaw_of(to)
+			-- It hangs on, leaning in; pull hard enough and the grip goes.
+			if z.t <= 0 then
+				body.hit(z.fig, to / math.max(d, 0.01) * 1.4)
+				hurt(u, z.pos)
+				blood_splat(u.pos, to / math.max(d, 0.01), 0.5)
+				sfx("splat", u.pos, { pitch = random.range(0.7, 0.9) })
+				count("zombie_hits")
+				count("bites")
+				z.state = "recover"
+				z.t = spec.recover
+				body.eyes(z.fig, false, NO_GLOW)
+			end
 		end
 	elseif z.state == "recover" then
 		move = z.knock
