@@ -4,7 +4,7 @@ struct Branch {rest:array<vec4<f32>,3>,source:Source,volume:Volume,low:vec4<f32>
 struct Root {rows:array<vec4<f32>,3>,scale:vec4<f32>,info:vec4<u32>};
 struct Node {sphere:vec4<f32>,error:vec4<f32>,links:vec4<u32>};
 struct Slot {key:vec4<u32>,history:vec4<u32>};
-struct State {wind:vec4<f32>,counts:vec4<u32>,catalog:vec4<u32>};
+struct State {wind:vec4<f32>,counts:vec4<u32>,catalog:vec4<u32>,tables:vec4<u32>};
 @group(0) @binding(0) var<uniform> state:State;
 // The selector's hierarchy (nodes from 0) and roots (from vec4 state.catalog.x)
 // in one read-only binding (foliage_select.rs Region::catalog), read by field.
@@ -14,11 +14,19 @@ fn root_rows(i:u32)->array<vec4<f32>,3> {let b=state.catalog.x+i*5u;return array
 fn root_scale(i:u32)->vec4<f32> {return bitcast<vec4<f32>>(catalog[state.catalog.x+i*5u+3u]);}
 fn root_info(i:u32)->vec4<u32> {return catalog[state.catalog.x+i*5u+4u];}
 fn root_at(i:u32)->Root {return Root(root_rows(i),root_scale(i),root_info(i));}
-@group(0) @binding(3) var<storage,read> branches:array<Branch>;
-@group(0) @binding(4) var<storage,read> representations:array<vec4<u32>>;
+// Branch rigs (18 vec4 each, from 0), representations (from state.tables.x)
+// and root proxies (Volume, 6 vec4 each, from state.tables.y) in one
+// read-only binding (foliage_runtime.rs ForestTables).
+@group(0) @binding(3) var<storage,read> tables:array<vec4<u32>>;
+fn table_f(k:u32)->vec4<f32> {return bitcast<vec4<f32>>(tables[k]);}
+fn table_source(b:u32)->Source {let w=tables[b+4u];return Source(array<vec4<f32>,3>(table_f(b),table_f(b+1u),table_f(b+2u)),table_f(b+3u),w.x,w.y,bitcast<f32>(w.z),w.w);}
+fn table_volume(b:u32)->Volume {return Volume(array<vec4<f32>,3>(table_f(b),table_f(b+1u),table_f(b+2u)),table_f(b+3u),table_f(b+4u),tables[b+5u]);}
+fn branch_info(i:u32)->vec4<u32> {return tables[i*18u+17u];}
+fn branch_at(i:u32)->Branch {let b=i*18u;return Branch(array<vec4<f32>,3>(table_f(b),table_f(b+1u),table_f(b+2u)),table_source(b+3u),table_volume(b+8u),table_f(b+14u),table_f(b+15u),table_f(b+16u),tables[b+17u]);}
+fn representation_at(i:u32)->vec4<u32> {return tables[state.tables.x+i];}
+fn proxy_at(i:u32)->Volume {return table_volume(state.tables.y+i*6u);}
 @group(0) @binding(5) var<storage,read> slots:array<Slot>;
 @group(0) @binding(6) var<storage,read> fallback:array<u32>;
-@group(0) @binding(7) var<storage,read> proxies:array<Volume>;
 @group(0) @binding(8) var<storage,read_write> sources:array<Source>;
 @group(0) @binding(9) var<storage,read_write> volumes:array<Volume>;
 @group(0) @binding(10) var<storage,read_write> choices:array<u32>;
@@ -69,14 +77,14 @@ fn pose(root:Root,branch:u32)->array<vec4<f32>,3> {
  // Cook validation bounds ancestry at 64; branch data is shared, not copied
  // for every tree. Evaluate only selected branch chains, including ancestors.
  var stack:array<u32,64>;var n=0u;var b=branch;
- loop {stack[n]=b;n++;b=branches[b].info.x;if b==0xffffffffu || n==64u {break;}}
+ loop {stack[n]=b;n++;b=branch_info(b).x;if b==0xffffffffu || n==64u {break;}}
  var m=root.rows;let axis=normalize(vec3<f32>(-state.wind.y,0.,state.wind.x));
- loop {if n==0u {break;}n--;let part=branches[stack[n]];m=multiply(m,part.rest);
+ loop {if n==0u {break;}n--;let part=branch_at(stack[n]);m=multiply(m,part.rest);
   m=deform(m,axis,part.animation.x*state.wind.z*sin(state.wind.w*part.animation.y+part.animation.z),part.info.w);}
  return m;
 }
 fn cached_pose(root:u32,branch:u32)->array<vec4<f32>,3> {
- if branches[branch].info.x==0xffffffffu {return root_poses[root];}
+ if branch_info(branch).x==0xffffffffu {return root_poses[root];}
  let at=pose_find(pose_key(root,branch));
  if at!=0xffffffffu {return pose_cache[at].rows;}
  // Bounded hash overflow cannot lose a pose or substitute an old generation.
@@ -90,9 +98,9 @@ fn prepare_root_poses(@builtin(global_invocation_id) id:vec3<u32>) {
 @compute @workgroup_size(64)
 fn request_poses(@builtin(global_invocation_id) id:vec3<u32>) {
  let i=id.x;if i>=state.counts.x || slots[i].history.z==0u {return;}
- let root=slots[i].key.x;var branch=representations[slots[i].key.z].x;
+ let root=slots[i].key.x;var branch=representation_at(slots[i].key.z).x;
  loop {
-  let part=branches[branch];if part.info.x==0xffffffffu {break;}
+  let part=branch_at(branch);if part.info.x==0xffffffffu {break;}
   let key=pose_key(root,branch);let start=pose_hash(key);let mask=arrayLength(&pose_cache)-1u;var found=false;var probe=0u;
   for(var attempt=0u;attempt<128u;attempt++) {
    let at=(start+probe)&mask;let claim=atomicCompareExchangeWeak(&pose_cache[at].key,0u,key);
@@ -113,7 +121,7 @@ fn request_poses(@builtin(global_invocation_id) id:vec3<u32>) {
 fn evaluate_poses(@builtin(global_invocation_id) id:vec3<u32>) {
  let depth=pose_level.x;let i=id.x;if i>=min(atomicLoad(&pose_work[depth]),state.counts.x) {return;}
  let at=atomicLoad(&pose_work[128u+depth*state.counts.x+i]);let key=atomicLoad(&pose_cache[at].key)-1u;
- let root=key/state.counts.w;let branch=key%state.counts.w;let part=branches[branch];
+ let root=key/state.counts.w;let branch=key%state.counts.w;let part=branch_at(branch);
  var m=multiply(cached_pose(root,part.info.x),part.rest);
  let axis=normalize(vec3<f32>(-state.wind.y,0.,state.wind.x));
  m=deform(m,axis,part.animation.x*state.wind.z*sin(state.wind.w*part.animation.y+part.animation.z),part.info.w);
@@ -136,8 +144,8 @@ fn materialize(@builtin(global_invocation_id) id:vec3<u32>) {
  if i<state.counts.x {
   let slot=slots[i];let owner=state.counts.y+i;
   if slot.history.z==0u {sources[owner].sphere.w=-1.;sources[owner].first=0u;choices[i]=0u;choices[i+state.counts.x]=0u;return;}
-  let root=root_at(slot.key.x);let rep=representations[slot.key.z];
-  let branch=branches[select(rep.x,rep.w-1u,rep.w!=0u)];let m=cached_pose(slot.key.x,rep.x);
+  let root=root_at(slot.key.x);let rep=representation_at(slot.key.z);
+  let branch=branch_at(select(rep.x,rep.w-1u,rep.w!=0u));let m=cached_pose(slot.key.x,rep.x);
   var source=branch.source;source.rows=m;let bound=node_sphere(slot.key.y);
   source.sphere=vec4<f32>(point(root.rows,bound.xyz),bound.w*root.scale.x);
   source.scale=length(root.rows[0].xyz);
@@ -162,7 +170,7 @@ fn materialize(@builtin(global_invocation_id) id:vec3<u32>) {
   choices[i+state.counts.x]=select(3u,select(0u,765u,rep.y==1u),(roles&512u)!=0u)|visibility;
  }else {
   let tree=i-state.counts.x;if tree>=state.counts.z {return;}
-  let root=root_at(tree);let original=proxies[tree];
+  let root=root_at(tree);let original=proxy_at(tree);
   if root.info.w!=0u {
    var hidden=original;hidden.low.w=1.;volumes[i]=hidden;volumes[i+state.counts.z]=hidden;
    sources[original.identity.x].sphere.w=-1.;return;
@@ -180,7 +188,7 @@ fn materialize(@builtin(global_invocation_id) id:vec3<u32>) {
    // faults (low bits) still suppress both partial cuts atomically.
    if (fallback[tree]&(role|7u))!=0u && (roles&role)!=0u {history=0xffffffffu;}
    else if direct!=0u {
-    let rep=representations[direct-1u];let branch=branches[rep.x];
+    let rep=representation_at(direct-1u);let branch=branch_at(rep.x);
     volume=bounds(branch.volume,m,branch.low.xyz,branch.high.xyz);volume.inverse=inverse(m);
     volume.identity=vec4<u32>(original.identity.x,branch.volume.identity.y+rep.z,1u,branch.volume.identity.w);
     history=direct;

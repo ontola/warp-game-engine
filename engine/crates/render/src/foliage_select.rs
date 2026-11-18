@@ -134,6 +134,7 @@ impl Region {
             usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
         (Region {buffer:buffer.clone(),offset:0,size:records},Region {buffer:buffer.clone(),offset:consumers,size:capacity as u64*4},Region {buffer,offset:direct,size:trees as u64*4})
     }
+    pub(crate) fn new(buffer:wgpu::Buffer,offset:u64,size:u64)->Region {Region {buffer,offset,size}}
     pub fn binding(&self)->wgpu::BindingResource<'_> {
         wgpu::BindingResource::Buffer(wgpu::BufferBinding {buffer:&self.buffer,offset:self.offset,size:std::num::NonZeroU64::new(self.size)})
     }
