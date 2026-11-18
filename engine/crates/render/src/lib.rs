@@ -175,6 +175,8 @@ mod fog_tests;
 #[cfg(test)]
 mod transmittance_tests;
 #[cfg(test)]
+mod forest_bindings;
+#[cfg(test)]
 mod rock_mapping;
 
 pub use frame::{Camera, FrameStats, Lighting, Renderer, SplitLayout, ViewRect, split_rects, split_rects_with};
