@@ -1225,7 +1225,12 @@ fn volume_splat_append(index:u32,pose:VolumeSplatPose,cell_ref:vec2<u32>,cell:Vo
         if area_one<VOLUME_SPLAT_AREA_TARGET && area_draw>=max(area_one/VOLUME_SPLAT_AREA_TARGET,1.0/VOLUME_SPLAT_ALPHA_RANGE) {return;}
     }
     // Optical depth of the mean chord through this cell along the view.
-    let sigma=volume_sigma(unpack_volume_cell(volume_cells[cell_ref.x]),volume_direction(toward));
+    // Three extinction values straight from the buffer: loading and
+    // unpacking the whole 128-byte cell here is the loop's main memory read.
+    let direction=volume_direction(toward);
+    var sigma=0.0;
+    for(var k=0u;k<3u;k++) {let i=direction.indices[k];sigma+=volume_cells[cell_ref.x].extinction[i/4u][i%4u]*direction.weights[k];}
+    sigma=max(sigma,0.0);
     // The splat is drawn as a disc of constant area 1.48711 cell^2 from every
     // view (area_one), so the leaf area sigma*cell^3 spread over it gives a mean
     // chord of cell/1.48711. The cube chord cell/L1 was for a projected cube and
