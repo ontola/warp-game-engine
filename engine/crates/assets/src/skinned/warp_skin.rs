@@ -170,8 +170,9 @@ fn unwrap(body: &[BodyVertex], indices: &[u32], eyes: Vec3, size: usize) -> Vec<
 
 /// Relief in metres (negative into the skin) and what the albedo is
 /// multiplied by, at one point of the face.
-fn skin(t: &Texel, lips: f32, traits: Traits) -> (f32, Vec3) {
+fn skin(t: &Texel, lips: f32, traits: Traits, build: Build) -> (f32, Vec3) {
     let p = t.p;
+    let q = build.reference(p);
     let seed = traits.seed;
     // Regions, from where the point lies on the head.
     let front = smooth(-0.02, 0.03, t.n.z);
@@ -216,6 +217,33 @@ fn skin(t: &Texel, lips: f32, traits: Traits) -> (f32, Vec3) {
         height -= 0.000_18 * a * fan * ray;
     }
 
+    // What age does to the skin itself: folds where the face has moved for
+    // decades and where it has come down, slack creasing on the cheeks,
+    // and spots where the sun has been.
+    let old = smooth(0.30, 1.0, traits.age);
+    let mut fold = 0.;
+    if old > 0. {
+        // No fold is a ruled line.
+        let at = Vec2::new(q.x.abs() + 0.0018 * noise(Vec3::new(0., p.y, p.x.signum()), 0.011, seed ^ 0xf1), q.y);
+        let groove = |line: &[Vec2], width: f32| {
+            let near = line.windows(2).map(|w| segment(at, w[0], w[1])).fold(f32::MAX, f32::min);
+            1. - smooth(0., width, near)
+        };
+        // From the wing of the nose round the mouth, and down from its
+        // corners; under the eye; between the brows.
+        let nasolabial = groove(&[Vec2::new(0.018, -0.037), Vec2::new(0.029, -0.060), Vec2::new(0.035, -0.084)], 0.0045);
+        let marionette = groove(&[Vec2::new(0.031, -0.084), Vec2::new(0.034, -0.108)], 0.004);
+        let trough = groove(&[Vec2::new(0.013, -0.015), Vec2::new(0.027, -0.025), Vec2::new(0.046, -0.021)], 0.0035);
+        let frown = groove(&[Vec2::new(0.006, 0.010), Vec2::new(0.008, 0.028)], 0.0022) * unit(hash(seed ^ 0xf0)).max(0.3);
+        fold = (nasolabial + 0.4 * marionette + 0.55 * trough + 0.5 * frown).min(1.) * front * skin;
+        height -= 0.000_55 * old * fold;
+        // Slack skin creases finely across the pull of its weight.
+        let slack = noise(Vec3::new(p.x * 0.45, p.y * 1.6, p.z * 0.45), 0.0022, 97);
+        let crepe = (1. - smooth(0., 0.45, slack.abs())) * (cheeks + 0.8 * eye + 0.5 * (1. - front)).min(1.);
+        height -= 0.000_13 * old * old * crepe * skin;
+        fold = (fold + 0.4 * crepe * old).min(1.);
+    }
+
     // Colour. Pores and furrows hold shadow; blood shows unevenly, more on
     // the cheeks, nose and ears of fair skin; pigment gathers in freckles
     // and the odd mole.
@@ -248,9 +276,125 @@ fn skin(t: &Texel, lips: f32, traits: Traits) -> (f32, Vec3) {
         tint *= Vec3::ONE.lerp(Vec3::new(0.38, 0.25, 0.20), spot * 0.85 * skin);
         height += 0.000_12 * spot * skin;
     }
+    if old > 0. {
+        // Folds hold shadow; old lips lose their red.
+        tint *= 1. - 0.12 * old * fold;
+        tint *= Vec3::ONE.lerp(Vec3::new(0.95, 1.07, 1.07), 0.7 * old * lips);
+        // Age spots: flat brown patches a few millimetres across, on the
+        // temples, cheeks and forehead.
+        let (d, _, id) = worley(p, 0.013, seed ^ 101);
+        let sun = (cheeks.max(forehead) * front).max(0.7 * smooth(0.045, 0.065, p.x.abs()) * smooth(-0.02, 0.05, p.y));
+        if unit(id) < 0.55 * old * sun {
+            let radius = 0.0012 + 0.0026 * unit(hash(id));
+            let edge = radius * (0.8 + 0.3 * noise(p, 0.0015, id));
+            let spot = 1. - smooth(edge * 0.6, edge, d);
+            tint *= Vec3::ONE.lerp(Vec3::new(0.78, 0.66, 0.56), spot * (0.25 + 0.3 * unit(hash(id ^ 3))) * (0.5 + 0.5 * traits.fair) * skin);
+        }
+    }
     // Lips: darker in the creases.
     tint *= 1. - 0.18 * smooth(0.05, 0.75, crease.abs()) * lips;
     (height, tint)
+}
+
+/// Distance from `p` to the segment from `a` to `b`.
+fn segment(p: Vec2, a: Vec2, b: Vec2) -> f32 {
+    let along = ((p - a).dot(b - a) / (b - a).length_squared().max(1e-12)).clamp(0., 1.);
+    p.distance(a + (b - a) * along)
+}
+
+/// How this head's proportions differ from the reference head the
+/// landmarks below are given on (eyes to chin 118 mm, 65 mm from the middle
+/// to the side of the face at eye height).
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Build {
+    pub wide: f32,
+    pub long: f32,
+}
+
+impl Build {
+    /// `eyes`: the eye midpoint, in the body's units.
+    pub fn of(body: &[BodyVertex], eyes: Vec3) -> Self {
+        let (mut side, mut chin) = (0f32, 0f32);
+        for v in body.iter().filter(|v| v.material == FACE) {
+            let p = (v.position - eyes) * METRES;
+            if p.z > -0.05 && p.y.abs() < 0.012 {
+                side = side.max(p.x.abs());
+            }
+            if p.x.abs() < 0.006 && p.z > -0.02 {
+                chin = chin.min(p.y);
+            }
+        }
+        Self { wide: (side / 0.065).clamp(0.7, 1.5), long: (-chin / 0.118).clamp(0.7, 1.5) }
+    }
+
+    /// `p` (metres from the eye midpoint) on the reference head.
+    fn reference(&self, p: Vec3) -> Vec3 {
+        Vec3::new(p.x / self.wide, p.y / self.long, p.z / self.long)
+    }
+}
+
+/// Where the years move the face, in metres at a point `q` of the
+/// reference head, for `old` from 0 (under forty) to 1 (eighty): the cheeks
+/// come down and hollow, the lower cheek hangs over the jaw beside the
+/// chin, the skin under the chin and the brow sink, bags stand out under
+/// the eyes, the temples hollow and the tip of the nose drops.
+fn sag(q: Vec3, old: f32) -> Vec3 {
+    let side = q.x.signum();
+    let at = Vec3::new(q.x.abs(), q.y, q.z);
+    let lump = |centre: Vec3, reach: f32| (-(at.distance_squared(centre)) / (reach * reach)).exp();
+    let mut d = Vec3::ZERO;
+    d += Vec3::new(0.0018, -0.0065, 0.0020) * lump(Vec3::new(0.036, -0.100, 0.005), 0.026);
+    d += Vec3::new(-0.0014, -0.0032, -0.0022) * lump(Vec3::new(0.046, -0.052, 0.008), 0.028);
+    d += Vec3::new(0., -0.0008, 0.0017) * lump(Vec3::new(0.031, -0.022, 0.012), 0.010);
+    d += Vec3::new(0., -0.0016, 0.) * lump(Vec3::new(0.038, 0.018, 0.012), 0.012);
+    d += Vec3::new(-0.0018, 0., 0.) * lump(Vec3::new(0.058, 0.030, -0.020), 0.020);
+    d += Vec3::new(0., -0.0022, 0.0008) * lump(Vec3::new(0., -0.043, 0.035), 0.012);
+    d += Vec3::new(0., -0.0070, 0.0065) * lump(Vec3::new(0., -0.138, -0.010), 0.034);
+    Vec3::new(d.x * side, d.y, d.z) * old
+}
+
+/// Move a fitted body's head to its age (0 young adult to 1 old, as
+/// `Traits::age`) and turn its normals with the surface.
+pub(super) fn settle(body: &mut [BodyVertex], indices: &[u32], eyes: Vec3, age: f32) {
+    let old = smooth(0.30, 1.0, age);
+    if old <= 0. {
+        return;
+    }
+    let build = Build::of(body, eyes);
+    // The eyes stay; everything else near the head moves with the skin.
+    let moved: Vec<Vec3> = body
+        .iter()
+        .map(|v| {
+            let p = (v.position - eyes) * METRES;
+            if v.material == 6 || p.y < -0.26 {
+                return v.position;
+            }
+            v.position + sag(build.reference(p), old) * Vec3::new(build.wide, build.long, build.long) / METRES
+        })
+        .collect();
+    // Smooth normals of the surface before and after, shared by vertices
+    // at one place (the mesh is split along UV seams).
+    let place = |p: Vec3| (p * 20000.).round().as_ivec3();
+    let mut before = std::collections::HashMap::new();
+    let mut after = std::collections::HashMap::new();
+    for t in indices.chunks_exact(3) {
+        let [a, b, c] = [0, 1, 2].map(|k| t[k] as usize);
+        if moved[a] == body[a].position && moved[b] == body[b].position && moved[c] == body[c].position {
+            continue;
+        }
+        let was = (body[b].position - body[a].position).cross(body[c].position - body[a].position);
+        let is = (moved[b] - moved[a]).cross(moved[c] - moved[a]);
+        for k in [a, b, c] {
+            *before.entry(place(body[k].position)).or_insert(Vec3::ZERO) += was;
+            *after.entry(place(body[k].position)).or_insert(Vec3::ZERO) += is;
+        }
+    }
+    for (v, to) in body.iter_mut().zip(moved) {
+        if let (Some(was), Some(is)) = (before.get(&place(v.position)), after.get(&place(v.position))) {
+            v.normal = (v.normal + is.normalize_or_zero() - was.normalize_or_zero()).normalize_or(v.normal);
+        }
+        v.position = to;
+    }
 }
 
 /// How much of a texel of the painted face is lip, from its colour against
@@ -411,6 +555,7 @@ pub(super) fn face(
     size: usize,
 ) -> Maps {
     let texels = unwrap(body, indices, eyes, size);
+    let build = Build::of(body, eyes);
     let lid_travel = texels.iter().flatten().map(|t| t.lid).fold(1e-6f32, f32::max);
     let mut height = vec![0f32; size * size];
     let mut albedo = vec![[0u8; 4]; size * size];
@@ -431,13 +576,13 @@ pub(super) fn face(
                     let mut color = Vec3::new(painted[0], painted[1], painted[2]);
                     if let Some(t) = &texels[y * size + x] {
                         let lips = lip(painted.map(|c| c as u8), cheek);
-                        let (relief, tint) = skin(t, lips, traits);
+                        let (relief, tint) = skin(t, lips, traits, build);
                         *h = relief;
                         color *= tint;
                         // Under the hair the scalp is seen through it, in
                         // its shade.
                         let hair = cut.grows(t.p);
-                        color = color.lerp(under_hair * 255., 0.7 * hair * hair);
+                        color = color.lerp(under_hair * 255., 0.7 * hair * hair * cut.full);
                         color = color.lerp(brows.color * 255., brow(t.p, &brows, traits.seed));
                         // Lashes: a dark, broken line along the rim of the
                         // upper lid, which travels furthest in a blink.

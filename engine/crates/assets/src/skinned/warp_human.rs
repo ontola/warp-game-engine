@@ -275,7 +275,12 @@ impl Character {
         let cut = warp_hair::Cut::new(seed, fair, traits.years());
         // Brows grey later and less than the head.
         let brows = brows.lerp(Vec3::splat(0.62), 0.6 * cut.grey * cut.grey);
-        let (body, indices) = person.fitted_mesh(gripping);
+        let (mut body, indices) = person.fitted_mesh(gripping);
+        // The face comes down with the years.
+        if native {
+            let eyes = eye_midpoint(&body);
+            warp_skin::settle(&mut body, &indices, eyes, traits.age);
+        }
         let face = native.then(|| {
             let first = fitted_joints.len();
             let eyes = [false, true].map(|positive| {
