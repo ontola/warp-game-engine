@@ -442,7 +442,7 @@ impl Runtime {
             let history_at=align(u64::from(spec.slots)*8);let poses_at=history_at+align(spec.roots.len()as u64*32);
             let choices=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("GPU forest choices, root history and root poses"),size:poses_at+spec.roots.len()as u64*48,
                 usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
-            gpu.queue.write_buffer(&uniform,64,bytemuck::cast_slice(&[(history_at/4)as u32,(poses_at/4)as u32,0u32,0u32]));
+            gpu.queue.write_buffer(&uniform,64,bytemuck::cast_slice(&[(history_at/4)as u32,(poses_at/4)as u32,(selector.fallback.offset/16)as u32,0u32]));
             // Branch rigs, representations and root proxies in one buffer
             // (foliage_materialize.wgsl `tables`); population publish writes
             // the proxies through their own range.
@@ -468,11 +468,11 @@ impl Runtime {
             let pose_dispatch=gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some("pose dispatch preparation"),layout:Some(&dispatch_pl),module:&dispatch_module,entry_point:Some("prepare"),compilation_options:Default::default(),cache:gpu.pipeline_cache()});
             let mut levels=vec![0u32;(max_depth as usize+1)*64];for d in 0..=max_depth {levels[d as usize*64]=d;}
             let levels=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some("immutable pose depth dispatch"),contents:bytemuck::cast_slice(&levels),usage:wgpu::BufferUsages::UNIFORM});
-            let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("GPU forest materialization"),entries:&(0..18).filter(|&binding|![2,4,7,12,15].contains(&binding)).map(|binding|wgpu::BindGroupLayoutEntry {
+            let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("GPU forest materialization"),entries:&(0..18).filter(|&binding|![2,4,7,11,12,15].contains(&binding)).map(|binding|wgpu::BindGroupLayoutEntry {
                 binding,visibility:wgpu::ShaderStages::COMPUTE,count:None,ty:wgpu::BindingType::Buffer {ty:if binding==0 || binding==16 {wgpu::BufferBindingType::Uniform}else{wgpu::BufferBindingType::Storage {read_only:binding<8 || binding==11 || binding==17}},has_dynamic_offset:binding==16,min_binding_size:None},
             }).collect::<Vec<_>>()});
-            let buffers=[&uniform,&selector._instances.buffer,&selector._nodes.buffer,&tables,&tables,&residency.slots,&selector.fallback,&tables,instances,volumes,&choices,&selector.demand,&choices,&pose_cache,&pose_work,&choices,&levels,&selector.asset_pages];
-            let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("GPU forest materialization"),layout:&layout,entries:&buffers.iter().enumerate().filter(|&(i,_)|![2,4,7,12,15].contains(&i)).map(|(i,b)|wgpu::BindGroupEntry {binding:i as u32,resource:if i==16 {wgpu::BindingResource::Buffer(wgpu::BufferBinding {buffer:b,offset:0,size:std::num::NonZeroU64::new(16)})}else{b.as_entire_binding()}}).collect::<Vec<_>>()});
+            let buffers=[&uniform,&selector._instances.buffer,&selector._nodes.buffer,&tables,&tables,&residency.slots,&selector.fallback.buffer,&tables,instances,volumes,&choices,&selector.demand.buffer,&choices,&pose_cache,&pose_work,&choices,&levels,&selector.asset_pages];
+            let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("GPU forest materialization"),layout:&layout,entries:&buffers.iter().enumerate().filter(|&(i,_)|![2,4,7,11,12,15].contains(&i)).map(|(i,b)|wgpu::BindGroupEntry {binding:i as u32,resource:if i==16 {wgpu::BindingResource::Buffer(wgpu::BufferBinding {buffer:b,offset:0,size:std::num::NonZeroU64::new(16)})}else{b.as_entire_binding()}}).collect::<Vec<_>>()});
             let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("GPU forest materialization"),bind_group_layouts:&[Some(&layout)],immediate_size:0});
             let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("GPU forest materialization"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_materialize.wgsl").into())});
             let pipeline=gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some("GPU forest materialization"),layout:Some(&pl),module:&module,entry_point:Some("materialize"),compilation_options:Default::default(),cache:gpu.pipeline_cache()});
@@ -522,7 +522,7 @@ impl Runtime {
             let data=out.slice(..).get_mapped_range().map_err(|e|e.to_string())?;Ok(data.to_vec())
         }
         let slot_bytes=read(gpu,&self.residency.slots)?;let node_bytes:Vec<u8>=bytemuck::cast_slice(&self.selector._nodes.read(gpu)).to_vec();let page_bytes=read(gpu,&self.selector.asset_pages)?;
-        let root_bytes:Vec<u8>=bytemuck::cast_slice(&self.selector._instances.read(gpu)).to_vec();let publication_bytes=read(gpu,&self.selector.demand)?;let fallback_bytes=read(gpu,&self.selector.fallback)?;
+        let root_bytes:Vec<u8>=bytemuck::cast_slice(&self.selector._instances.read(gpu)).to_vec();let publication_bytes:Vec<u8>=bytemuck::cast_slice(&self.selector.demand.read(gpu)).to_vec();let fallback_bytes:Vec<u8>=bytemuck::cast_slice(&self.selector.fallback.read(gpu)).to_vec();
         let slots:Vec<crate::foliage_residency::ResidentSlot>=slot_bytes.chunks_exact(32).map(bytemuck::pod_read_unaligned).collect();
         let nodes:Vec<crate::foliage_select::Node>=node_bytes.chunks_exact(48).map(bytemuck::pod_read_unaligned).collect();
         let pages:Vec<[u32;4]>=page_bytes.chunks_exact(16).map(bytemuck::pod_read_unaligned).collect();
@@ -585,7 +585,7 @@ impl Runtime {
     /// Bytes in one consumer-class choice table; camera then shadow.
     pub(crate) fn choice_table_bytes(&self)->u64 {u64::from(self.slots)*4}
     pub fn diagnostics(&self,gpu:&Gpu)->Result<Diagnostics,String> {
-        let inputs=[(&self.selector.counters,0,64u64),(&self.residency.counters,0,32),(&self.selector.fallback,0,self.trees as u64*4),(&self.choices,0,2*self.choice_table_bytes()),(&self.pose_work,0,268),(&self.selector.demand,0,self.trees as u64*32),(&self.selector.refiner.state,crate::foliage_refine::STATE_OFFSET,384)];
+        let inputs=[(&self.selector.counters,0,64u64),(&self.residency.counters,0,32),(&self.selector.fallback.buffer,self.selector.fallback.offset,self.trees as u64*4),(&self.choices,0,2*self.choice_table_bytes()),(&self.pose_work,0,268),(&self.selector.demand.buffer,self.selector.demand.offset,self.trees as u64*32),(&self.selector.refiner.state,crate::foliage_refine::STATE_OFFSET,384)];
         let size=inputs.iter().map(|(_,_,n)|n).sum();
         let output=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("forest diagnostic snapshot"),size,usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
         let mut enc=gpu.device.create_command_encoder(&Default::default());let mut offset=0;
@@ -873,8 +873,8 @@ impl Runtime {
                 let direct=runtime.selector.direct.read(&gpu);assert_ne!(direct[0],0,"fixture must publish a complete resident ancestor");
                 if fallback {
                     // Exercise the actual fallback materializer without changing consumer demand.
-                    gpu.queue.write_buffer(&runtime.selector.fallback,0,bytemuck::cast_slice(&[2u32]));
-                    gpu.queue.write_buffer(&runtime.selector.demand,0,bytemuck::cast_slice(&[0u32,roles,0,0]));
+                    runtime.selector.fallback.write(&gpu,0,bytemuck::cast_slice(&[2u32]));
+                    runtime.selector.demand.write(&gpu,0,bytemuck::cast_slice(&[0u32,roles,0,0]));
                     let mut enc=gpu.device.create_command_encoder(&Default::default());
                     {let mut pass=enc.begin_compute_pass(&Default::default());pass.set_pipeline(&runtime.pipeline);pass.set_bind_group(0,&runtime.bind,&[0]);pass.dispatch_workgroups((spec.slots+spec.roots.len()as u32).div_ceil(64),1,1);}
                     gpu.queue.submit([enc.finish()]);

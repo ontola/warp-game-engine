@@ -142,11 +142,12 @@ impl Refiner {
     /// Bindings in use: 2 (trees), 11 (direct roots), 13 (state) and 15 (record
     /// consumers) now live inside 1 (catalog), 8 (selected) and 9 (counters).
     const BINDINGS:[u32;13]=[0,1,3,4,5,6,7,8,9,10,12,14,16];
-    fn entries<'a>(buffers:[&'a wgpu::Buffer;13])->Vec<wgpu::BindGroupEntry<'a>> {
-        Self::BINDINGS.iter().zip(buffers).map(|(&binding,b)|wgpu::BindGroupEntry {binding,resource:b.as_entire_binding()}).collect()
+    /// Bindings 10 (fallback) and 12 (demand) are the selector's per-tree ranges.
+    fn entries<'a>(buffers:[&'a wgpu::Buffer;13],s:&'a Selector)->Vec<wgpu::BindGroupEntry<'a>> {
+        Self::BINDINGS.iter().zip(buffers).map(|(&binding,b)|wgpu::BindGroupEntry {binding,resource:match binding {10=>s.fallback.binding(),12=>s.demand.binding(),_=>b.as_entire_binding()}}).collect()
     }
     fn bind(&self,gpu:&Gpu,s:&Selector,front:usize)->wgpu::BindGroup {
-        let entries=Self::entries([&s.uniform,&s._nodes.buffer,&s.asset_pages,&self.proposals,&self.queue,&self.halves[front],&self.blocks,&s.records.buffer,&s.counters,&s.fallback,&s.demand,&self.parked,&s.seed_visibility]);
+        let entries=Self::entries([&s.uniform,&s._nodes.buffer,&s.asset_pages,&self.proposals,&self.queue,&self.halves[front],&self.blocks,&s.records.buffer,&s.counters,&s.fallback.buffer,&s.demand.buffer,&self.parked,&s.seed_visibility],s);
         self.binds.lock().unwrap().entries(gpu,&self.layout,"foliage refinement buffers",&entries)
     }
     fn dispatch(&self,enc:&mut wgpu::CommandEncoder,bind:&wgpu::BindGroup,pipeline:usize,groups:Option<u32>,offset:u64) {
@@ -176,7 +177,7 @@ impl Refiner {
         let queue=scratch("offline proposal tasks",tasks.len()as u64*16);gpu.queue.write_buffer(&queue,0,bytemuck::cast_slice(tasks));
         let pages=scratch("offline proposal pages",s.asset_pages.size());
         let count=scratch("offline proposal count",4);gpu.queue.write_buffer(&count,0,bytemuck::bytes_of(&(tasks.len()as u32)));
-        let entries=Self::entries([&s.uniform,&s._nodes.buffer,&pages,&proposals,&queue,&self.halves[0],&self.blocks,&s.records.buffer,&state,&s.fallback,&s.demand,&self.parked,&s.seed_visibility]);
+        let entries=Self::entries([&s.uniform,&s._nodes.buffer,&pages,&proposals,&queue,&self.halves[0],&self.blocks,&s.records.buffer,&state,&s.fallback.buffer,&s.demand.buffer,&self.parked,&s.seed_visibility],s);
         let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("offline proposal replay"),layout:&self.layout,entries:&entries});
         let out=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("offline proposal readback"),size:proposals.size(),usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
         let mut enc=gpu.device.create_command_encoder(&Default::default());

@@ -1994,7 +1994,7 @@ pub(crate) mod tests {
                 gpu.device.poll(wgpu::PollType::Wait {submission_index:Some(submission),timeout:Some(std::time::Duration::from_secs(30))}).unwrap();rx.recv().unwrap().unwrap();
                 let bytes=out.slice(..).get_mapped_range().unwrap();bytes.chunks_exact(4).map(bytemuck::pod_read_unaligned).collect()
             };
-            let counters=read(&selector.counters);let records=selector.records.read(&gpu);let fallback=read(&selector.fallback);
+            let counters=read(&selector.counters);let records=selector.records.read(&gpu);let fallback=selector.fallback.read(&gpu);
             assert_eq!(counters[0],if coarse{1200}else{3600});assert!(fallback.iter().all(|&v|v==0));
             let mut cuts=vec![Vec::new();1200];
             for r in records.chunks_exact(4).take(counters[0]as usize) {
@@ -2042,7 +2042,7 @@ pub(crate) mod tests {
             selector.first(&gpu,&mut enc,vp,vp,[128;2],error,false,&depth).unwrap();
             selector.second(&gpu,&mut enc,&depth);gpu.queue.submit([enc.finish()]);
             let counters=read(&selector.counters);let records=selector.records.read(&gpu);
-            assert_eq!(read(&selector.fallback)[0],0,"unconstrained cut must not overflow");
+            assert_eq!(selector.fallback.read(&gpu)[0],0,"unconstrained cut must not overflow");
             let mut coverage=vec![0u32;cooked.placements.len()];let mut kinds=[false;3];
             for r in records.chunks_exact(4).take(counters[0]as usize) {
                 assert_eq!(r[0],0);assert_eq!(r[3],17);
