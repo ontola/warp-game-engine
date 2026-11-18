@@ -226,6 +226,8 @@ struct Config {
     dispatch: [u32; 4],
     /// First whole-plant proxy tree, its pixel error, the distance past which that error grows.
     proxy: [f32; 4],
+    /// First word and word count of the tile candidates inside the counters buffer.
+    layout: [u32; 4],
 }
 /// Rasterized voxels (KERN_VOXEL_RASTER=1, docs/log/voxel-raster-plan.md): the
 /// static cell list and the id/depth raster pipeline.
@@ -347,7 +349,7 @@ struct Targets {
     bind: wgpu::BindGroup,
     composite: wgpu::BindGroup,
     counters: wgpu::Buffer,
-    tiles: wgpu::Buffer,
+    tiles: crate::foliage_select::Region,
     jobs: wgpu::Buffer,
     indirect: wgpu::Buffer,
     config: wgpu::Buffer,
@@ -433,7 +435,7 @@ fn data_bindings(temporal: bool) -> Vec<(u32, wgpu::BindingType)> {
     let uniform=wgpu::BindingType::Buffer {ty:wgpu::BufferBindingType::Uniform,has_dynamic_offset:false,min_binding_size:None};
     let output=|format|wgpu::BindingType::StorageTexture {access:wgpu::StorageTextureAccess::WriteOnly,format,view_dimension:wgpu::TextureViewDimension::D2};
     let mut entries=vec![(0,storage(true)),(1,storage(true)),(2,storage(true)),(3,storage(true)),
-        (4,storage(false)),(5,storage(false)),(6,output(wgpu::TextureFormat::Rgba16Float)),
+        (5,storage(false)),(6,output(wgpu::TextureFormat::Rgba16Float)),
         (7,uniform),(8,storage(false)),(9,storage(true)),(12,storage(true)),
         (14,storage(true)),(15,storage(false)),
         (17,wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Uint,view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}),
@@ -1106,20 +1108,19 @@ impl VoxelRenderer {
         if mask_bytes + COUNTER_BYTES > u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size) {
             return Err("voxel brick visibility mask exceeds device limit".into());
         }
-        let tiles = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("voxel tile candidates"),
-            size: tile_count * u64::from(CANDIDATES + 1) * 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+        // Counters (and the brick mask) from 0, then the tile candidates from
+        // the next 256-byte boundary: one atomic binding (VolumeConfig.layout).
+        let tiles_at = (COUNTER_BYTES + mask_bytes).div_ceil(256) * 256;
+        let tiles_bytes = tile_count * u64::from(CANDIDATES + 1) * 4;
         let counters = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("voxel diagnostics and indirect draw"),
-            size: COUNTER_BYTES + mask_bytes,
+            label: Some("voxel diagnostics, indirect draw and tile candidates"),
+            size: tiles_at + tiles_bytes,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT
                 | wgpu::BufferUsages::COPY_SRC
                 | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let tiles = crate::foliage_select::Region::new(counters.clone(), tiles_at, tiles_bytes);
         // Header: dispatch xyz, active count; then one tile index per job.
         // Keep indirect arguments separate: the integration pass reads jobs
         // as storage, which cannot alias an indirect-dispatch argument buffer.
@@ -1147,6 +1148,7 @@ impl VoxelRenderer {
                     dispatch: [u32::from(self.active_tiles), 0, interval_stream.map_or(0,|s|s.header_word),
                         interval_stream.map_or(0,|s|s.pixel_slots)],
                     proxy: [(self.count - self.proxies) as f32, self.proxy_pixels, self.proxy_pixels_from, self.consumer_roots as f32],
+                    layout: [(tiles_at / 4) as u32, (tiles_bytes / 4) as u32, 0, 0],
                 }),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
@@ -1173,10 +1175,6 @@ impl VoxelRenderer {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: self.data[3].as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: tiles.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 5,
@@ -1285,13 +1283,13 @@ impl VoxelRenderer {
     }
     fn select_splat_trees(&self, encoder:&mut wgpu::CommandEncoder, target:&Targets,
         scene:&wgpu::BindGroup, view:&wgpu::BindGroup, pipeline:&wgpu::ComputePipeline) {
-        encoder.clear_buffer(&target.tiles,0,Some(16));
+        encoder.clear_buffer(&target.tiles.buffer,target.tiles.offset,Some(16));
         {
             let mut pass=encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {label:Some("voxel visible tree list"),timestamp_writes:None});
             pass.set_pipeline(pipeline);pass.set_bind_group(0,scene,&[]);pass.set_bind_group(1,view,&[]);pass.set_bind_group(2,&target.bind,&[]);
             let groups=(self.count-self.consumer_roots).div_ceil(64);pass.dispatch_workgroups(groups.min(65535),groups.div_ceil(65535).max(1),1);
         }
-        encoder.copy_buffer_to_buffer(&target.tiles,0,&target.indirect,0,12);
+        encoder.copy_buffer_to_buffer(&target.tiles.buffer,target.tiles.offset,&target.indirect,0,12);
     }
     pub(crate) fn render(
         &self,
@@ -1339,7 +1337,7 @@ impl VoxelRenderer {
         encoder.clear_buffer(&target.counters, 0, None);
         // Counts and slots share a buffer; clearing it preserves a bounded
         // zero-allocation append path and prevents old counts surviving views.
-        encoder.clear_buffer(&target.tiles, 0, None);
+        target.tiles.clear(encoder);
         if self.active_tiles {
             encoder.clear_buffer(&target.jobs, 0, Some(16));
         }
@@ -2151,7 +2149,8 @@ mod tests {
             let count = super::data_bindings(temporal).iter().filter(|(_, ty)| matches!(ty,
                 wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { .. }, .. })).count();
             // Reduced scene: instances, wind, terrain hierarchy, foliage pages.
-            assert_eq!(count + 4, if temporal { 16 } else { 15 });
+            // The tile candidates live inside the counters binding.
+            assert_eq!(count + 4, if temporal { 15 } else { 14 });
         }
         assert!(super::shader_source().contains("const VOLUME_MASK_WORD: u32 = 36u;"));
         assert!(super::shader_source().contains("const VOLUME_CULL_WORD: u32 = 26u;"));
@@ -2524,8 +2523,9 @@ mod tests {
     }
     #[test]
     fn config_layout_and_four_view_candidate_budget() {
-        assert_eq!(std::mem::size_of::<super::Config>(), 64);
+        assert_eq!(std::mem::size_of::<super::Config>(), 80);
         assert_eq!(std::mem::offset_of!(super::Config, proxy), 48);
+        assert_eq!(std::mem::offset_of!(super::Config, layout), 64);
         assert_eq!(std::mem::offset_of!(super::Config, dispatch), 32);
         assert_eq!(super::COUNTER_BYTES, (14 + 4 * 2 + 4 + 10) * 4);
         assert_eq!(3840u64 * 2160 * 8, 66_355_200);

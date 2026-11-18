@@ -8,12 +8,13 @@ struct VolumeTree {
 };
 // proxy: x first whole-plant proxy tree (Scene::voxel_proxies trail the
 // forest), y its pixel error.
-struct VolumeConfig { size_count: vec4<u32>, march: vec4<f32>, dispatch: vec4<u32>, proxy: vec4<f32> };
+// tile_span: x first word of the tile candidates in volume_stats, y their word count.
+struct VolumeConfig { size_count: vec4<u32>, march: vec4<f32>, dispatch: vec4<u32>, proxy: vec4<f32>, tile_span: vec4<u32> };
 @group(2) @binding(0) var<storage,read> volume_levels: array<VolumeLevel>;
 @group(2) @binding(1) var<storage,read> volume_indices: array<u32>;
 @group(2) @binding(2) var<storage,read> volume_cells: array<PackedVolumeCell>;
 @group(2) @binding(3) var<storage,read> volume_trees: array<VolumeTree>;
-@group(2) @binding(4) var<storage,read_write> volume_tiles: array<atomic<u32>>;
+// Counters (from 0) and the tile candidates (from volume_config.tile_span.x), one atomic binding.
 @group(2) @binding(5) var<storage,read_write> volume_stats: array<atomic<u32>>;
 @group(2) @binding(6) var volume_output: texture_storage_2d<rgba16float,write>;
 @group(2) @binding(7) var<uniform> volume_config: VolumeConfig;
@@ -118,8 +119,8 @@ fn voxel_bins(@builtin(global_invocation_id) id:vec3<u32>) {
                 let bit=1u<<(i%32u);
                 if (atomicOr(&volume_stats[VOLUME_MASK_WORD+mask],bit)&bit)!=0u {continue;}
             }
-            let slot=atomicAdd(&volume_tiles[start],1u);
-            if slot<VOLUME_CANDIDATES {atomicStore(&volume_tiles[start+1u+slot],i);}
+            let slot=atomicAdd(&volume_stats[volume_config.tile_span.x+(start)],1u);
+            if slot<VOLUME_CANDIDATES {atomicStore(&volume_stats[volume_config.tile_span.x+(start+1u+slot)],i);}
         }
     }
 }
@@ -132,17 +133,17 @@ fn voxel_tiles(@builtin(global_invocation_id) id:vec3<u32>) {
     let tile_dims=(volume_config.size_count.xy+vec2<u32>(15u))/16u;
     if any(id.xy>=tile_dims) {return;}
     let start=(id.y*tile_dims.x+id.x)*(VOLUME_CANDIDATES+1u);
-    let count=atomicLoad(&volume_tiles[start]);
+    let count=atomicLoad(&volume_stats[volume_config.tile_span.x+(start)]);
     if count<=VOLUME_CANDIDATES {
         for(var j=1u;j<count;j++) {
-            let value=atomicLoad(&volume_tiles[start+1u+j]);var k=j;
+            let value=atomicLoad(&volume_stats[volume_config.tile_span.x+(start+1u+j)]);var k=j;
             for(var move_count=0u;move_count<VOLUME_CANDIDATES;move_count++) {
                 if k==0u {break;}
-                let previous=atomicLoad(&volume_tiles[start+k]);
+                let previous=atomicLoad(&volume_stats[volume_config.tile_span.x+(start+k)]);
                 if previous<=value {break;}
-                atomicStore(&volume_tiles[start+1u+k],previous);k--;
+                atomicStore(&volume_stats[volume_config.tile_span.x+(start+1u+k)],previous);k--;
             }
-            atomicStore(&volume_tiles[start+1u+k],value);
+            atomicStore(&volume_stats[volume_config.tile_span.x+(start+1u+k)],value);
         }
     }
     atomicMax(&volume_stats[4],count);
@@ -603,12 +604,12 @@ fn voxel_intervals_pixel(id:vec2<u32>,slot:u32) {
     let metadata=volume_config.dispatch.z+4u+slot*2u;
     atomicStore(&volume_jobs[metadata],0u);atomicStore(&volume_jobs[metadata+1u],0u);
     let tile=id/16u;let start=(tile.y*volume_config.size_count.z+tile.x)*(VOLUME_CANDIDATES+1u);
-    let count=atomicLoad(&volume_tiles[start]);if count==0u {return;}
+    let count=atomicLoad(&volume_stats[volume_config.tile_span.x+(start)]);if count==0u {return;}
     let tile_fallback=count>VOLUME_CANDIDATES;
     let candidates=select(count,volume_config.size_count.w,tile_fallback);let pixel_ray=volume_pixel_ray(id);
     var ray_count=0u;var interval_tests=0u;
     for(var j=0u;j<candidates;j++) {
-        var index=j;if !tile_fallback {index=atomicLoad(&volume_tiles[start+1u+j]);}
+        var index=j;if !tile_fallback {index=atomicLoad(&volume_stats[volume_config.tile_span.x+(start+1u+j)]);}
         if volume_selection_at(index).x!=1u {continue;}
         interval_tests++;
         var interval=volume_interval(volume_trees[index],view.cam.xyz,pixel_ray.direction,pixel_ray.limit);
@@ -625,7 +626,7 @@ fn voxel_intervals_pixel(id:vec2<u32>,slot:u32) {
     }
     var written=0u;
     for(var j=0u;j<candidates;j++) {
-        var index=j;if !tile_fallback {index=atomicLoad(&volume_tiles[start+1u+j]);}
+        var index=j;if !tile_fallback {index=atomicLoad(&volume_stats[volume_config.tile_span.x+(start+1u+j)]);}
         if volume_selection_at(index).x!=1u {continue;}
         interval_tests++;
         var interval=volume_interval(volume_trees[index],view.cam.xyz,pixel_ray.direction,pixel_ray.limit);
@@ -683,7 +684,7 @@ fn voxel_integrate_global_pixel(id:vec2<u32>,slot:u32) {
     textureStore(volume_motion_output,px,vec4<f32>(0.0));
     // VOLUME_MOTION_END
     let tile=id/16u;let start=(tile.y*volume_config.size_count.z+tile.x)*(VOLUME_CANDIDATES+1u);
-    let count=atomicLoad(&volume_tiles[start]);if count==0u {return;}
+    let count=atomicLoad(&volume_stats[volume_config.tile_span.x+(start)]);if count==0u {return;}
     let tile_fallback=count>VOLUME_CANDIDATES;let candidates=select(count,volume_config.size_count.w,tile_fallback);
     let pixel_ray=volume_pixel_ray(id);let direction=pixel_ray.direction;let near_distance=pixel_ray.near;let limit=pixel_ray.limit;
     var first=0u;var ray_count=VOLUME_STREAM_FALLBACK;
@@ -698,7 +699,7 @@ fn voxel_integrate_global_pixel(id:vec2<u32>,slot:u32) {
     } else {
         ray_count=0u;
         for(var j=0u;j<candidates;j++) {
-            var index=j;if !tile_fallback {index=atomicLoad(&volume_tiles[start+1u+j]);}
+            var index=j;if !tile_fallback {index=atomicLoad(&volume_stats[volume_config.tile_span.x+(start+1u+j)]);}
             if volume_selection_at(index).x!=1u {continue;}interval_tests++;
             var interval=volume_interval(volume_trees[index],view.cam.xyz,direction,limit);interval.x=max(interval.x,near_distance);
             if interval.y<=interval.x {continue;}ray_count++;begin=min(begin,interval.x);end=max(end,interval.y);
@@ -727,7 +728,7 @@ fn voxel_integrate_global_pixel(id:vec2<u32>,slot:u32) {
             var interval:vec2<f32>;var index=j;
             if streamed {let record=volume_stream_read(first,j);interval=record.time;index=record.index;}
             else {
-                if !tile_fallback {index=atomicLoad(&volume_tiles[start+1u+j]);}
+                if !tile_fallback {index=atomicLoad(&volume_stats[volume_config.tile_span.x+(start+1u+j)]);}
                 if volume_selection_at(index).x!=1u {continue;}interval_tests++;
                 interval=volume_interval(volume_trees[index],view.cam.xyz,direction,limit);interval.x=max(interval.x,near_distance);
             }
@@ -751,7 +752,7 @@ fn voxel_integrate_global_pixel(id:vec2<u32>,slot:u32) {
             var interval:vec2<f32>;var index=j;
             if streamed {let record=volume_stream_read(first,j);interval=record.time;index=record.index;}
             else {
-                if !tile_fallback {index=atomicLoad(&volume_tiles[start+1u+j]);}
+                if !tile_fallback {index=atomicLoad(&volume_stats[volume_config.tile_span.x+(start+1u+j)]);}
                 if volume_selection_at(index).x!=1u {continue;}interval_tests++;
                 interval=volume_interval(volume_trees[index],view.cam.xyz,direction,limit);interval.x=max(interval.x,near_distance);
             }
@@ -825,7 +826,7 @@ fn voxel_integrate_pixel(id:vec3<u32>) {
     let tile_dims=(volume_config.size_count.xy+vec2<u32>(15u))/16u;
     let tile=id.xy/16u;
     let start=(tile.y*tile_dims.x+tile.x)*(VOLUME_CANDIDATES+1u);
-    let count=atomicLoad(&volume_tiles[start]);
+    let count=atomicLoad(&volume_stats[volume_config.tile_span.x+(start)]);
     if count==0u {return;}
     let tile_fallback=count>VOLUME_CANDIDATES;
     let candidates=select(count,volume_config.size_count.w,tile_fallback);
@@ -845,7 +846,7 @@ fn voxel_integrate_pixel(id:vec3<u32>) {
     var interval_tests=0u;
     var begin=1e30;var end=0.0;
     for(var j=0u;j<candidates;j++) {
-        var index=j;if !tile_fallback {index=atomicLoad(&volume_tiles[start+1u+j]);}
+        var index=j;if !tile_fallback {index=atomicLoad(&volume_stats[volume_config.tile_span.x+(start+1u+j)]);}
         if volume_selection_at(index).x!=1u {continue;}
         interval_tests++;
         var interval=volume_interval(volume_trees[index],view.cam.xyz,direction,limit);
@@ -925,7 +926,7 @@ fn voxel_integrate_pixel(id:vec3<u32>) {
                 var interval:vec2<f32>;var index=j;
                 if compact {interval=intervals[j].time;index=intervals[j].index;}
                 else {
-                    if !tile_fallback {index=atomicLoad(&volume_tiles[start+1u+j]);}
+                    if !tile_fallback {index=atomicLoad(&volume_stats[volume_config.tile_span.x+(start+1u+j)]);}
                     if volume_selection_at(index).x!=1u {continue;}
                     interval_tests++;
                     interval=volume_interval(volume_trees[index],view.cam.xyz,direction,limit);
@@ -974,7 +975,7 @@ fn voxel_integrate_pixel(id:vec3<u32>) {
                 var index=j;var interval:vec2<f32>;
                 if compact {index=intervals[j].index;interval=intervals[j].time;}
                 else {
-                    if !tile_fallback {index=atomicLoad(&volume_tiles[start+1u+j]);}
+                    if !tile_fallback {index=atomicLoad(&volume_stats[volume_config.tile_span.x+(start+1u+j)]);}
                     if volume_selection_at(index).x!=1u {continue;}
                     interval_tests++;
                     interval=volume_interval(volume_trees[index],view.cam.xyz,direction,limit);
@@ -1370,14 +1371,14 @@ fn volume_splat_wanted(index:u32)->bool {
 fn voxel_splat_tree_list(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
     let index=(group.x+group.y*65535u)*64u+lane;
     if index>=volume_consumer_count() || !volume_splat_wanted(index) {return;}
-    let slot=atomicAdd(&volume_tiles[3],1u);
-    let capacity=arrayLength(&volume_tiles)-4u;
-    if slot<capacity {atomicStore(&volume_tiles[4u+slot],index);}
+    let slot=atomicAdd(&volume_stats[volume_config.tile_span.x+(3)],1u);
+    let capacity=volume_config.tile_span.y-4u;
+    if slot<capacity {atomicStore(&volume_stats[volume_config.tile_span.x+(4u+slot)],index);}
     // On overflow dispatch every tree and use the direct path. Never drop it.
     let count=select(volume_consumer_count(),slot+1u,slot<capacity);
-    atomicMax(&volume_tiles[0],min(count,65535u));
-    atomicMax(&volume_tiles[1],(count+65534u)/65535u);
-    atomicMax(&volume_tiles[2],1u);
+    atomicMax(&volume_stats[volume_config.tile_span.x+(0)],min(count,65535u));
+    atomicMax(&volume_stats[volume_config.tile_span.x+(1)],(count+65534u)/65535u);
+    atomicMax(&volume_stats[volume_config.tile_span.x+(2)],1u);
 }
 
 fn volume_splat_eye(index:u32)->vec3<f32> {
@@ -1401,10 +1402,10 @@ fn voxel_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation
     let work=group.x+group.y*65535u;
     var index=select(volume_config.size_count.w,work,work<volume_consumer_count());
     if VOXEL_COMPACT {
-        let count=atomicLoad(&volume_tiles[3]);
-        if count<=arrayLength(&volume_tiles)-4u {
+        let count=atomicLoad(&volume_stats[volume_config.tile_span.x+(3)]);
+        if count<=volume_config.tile_span.y-4u {
             index=volume_config.size_count.w;
-            if work<count {index=atomicLoad(&volume_tiles[4u+work]);}
+            if work<count {index=atomicLoad(&volume_stats[volume_config.tile_span.x+(4u+work)]);}
         }
     }
     if lane==0u {
