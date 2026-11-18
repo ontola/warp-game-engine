@@ -323,6 +323,14 @@ impl HudDrawList {
         }
     }
 
+    /// An anti-aliased circle outline of `width` pixels: smooth at any size,
+    /// unlike a tessellated `arc`, for button rims and markers.
+    pub fn ring(&mut self, center: [f32; 2], radius: f32, width: f32, color: [f32; 4], clip: [f32; 4]) {
+        if radius<=0.0 || width<=0.0 {return;}
+        let [x,y]=center;let r=radius+width*0.5+1.0;
+        self.quad([[x-r,y-r],[x+r,y-r],[x+r,y+r],[x-r,y+r]],[[x,y,radius,4.0+width*0.5];4],color,clip);
+    }
+
     pub fn circle(&mut self, center: [f32; 2], radius: f32, color: [f32; 4], clip: [f32; 4]) {
         if radius<=0.0 {return;}
         let [x,y]=center;let r=radius+1.0;
@@ -827,6 +835,24 @@ mod tests {
         assert_eq!(px(34,8),[0,0,0],"green tint times red");
         assert_eq!(px(56,8),[255,255,255],"missing picture draws nothing");
         assert_eq!(px(8,24),[0,0,0],"plain shapes still draw");
+    }
+    #[test]
+    fn gpu_rings_and_discs_are_smooth_round_shapes() {
+        let gpu=Gpu::new().unwrap();let format=wgpu::TextureFormat::Rgba8Unorm;
+        let presenter=crate::present::Presenter::new(&gpu,format);
+        let mut hud=HudRenderer::new(&gpu,format).unwrap();
+        let background=gpu.device.create_texture_with_data(&gpu.queue,&wgpu::TextureDescriptor{label:None,size:wgpu::Extent3d{width:64,height:32,depth_or_array_layers:1},
+            mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Rgba8Unorm,usage:wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&[]},
+            Default::default(),&[0u8,0,0,255].repeat(64*32));
+        let mut list=HudDrawList::new([64,32]);let clip=[0.0,0.0,64.0,32.0];
+        list.ring([16.0,16.0],10.0,2.0,[1.0;4],clip);
+        list.circle([48.0,16.0],10.0,[1.0;4],clip);
+        hud.prepare(&gpu,&list).unwrap();
+        let out=presenter.capture_rgba(&gpu,&background,format,Some(&hud)).unwrap();
+        let px=|x:usize,y:usize|out[(y*64+x)*4];
+        assert!(px(26,16)>240,"on the ring");assert_eq!(px(16,16),0,"hollow centre");assert_eq!(px(16,30),0,"outside");
+        assert!(px(48,16)>240,"disc");assert_eq!(px(48,30),0,"outside the disc");
+        let edge=px(16+(11.0f32*0.7071) as usize,16+(11.0f32*0.7071) as usize);assert!(edge>0,"diagonal rim is drawn");
     }
     #[test]
     fn outlined_text_gets_a_real_stroke() {
