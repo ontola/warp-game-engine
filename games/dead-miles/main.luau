@@ -2137,6 +2137,19 @@ local function act(u, it, dt)
 			end
 			if best then
 				busy = true
+				-- Going through it is heard: a car is doors, glass and the boot.
+				u.rummage_t = (u.rummage_t or 0) - dt
+				if u.rummage_t <= 0 then
+					local car = best.kind == "car" or best.kind == "police"
+					u.rummage_t = random.range(0.45, 0.8)
+					local at = v(best.x, 0, best.z)
+					if car then
+						local r = random.float()
+						sfx(if u.search_t < 0.3 then "car_door" elseif r < 0.3 then "car_glass" elseif r < 0.65 then "car_thump" else "rummage", at, { pitch = random.range(0.9, 1.1) })
+					else
+						sfx("rummage", at, { pitch = random.range(0.85, 1.15), db = -4 })
+					end
+				end
 				u.search_t += dt
 				if u.search_t >= KNOBS.search then
 					u.search_t = 0
