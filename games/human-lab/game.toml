@@ -1,0 +1,16 @@
+# Human lab: Warp Humans up close, in the full renderer. A row of seeded
+# people and fixed portrait cameras. `warp run games/human-lab`; see README.md.
+title = "Human lab"
+tick_rate = 60
+players = 1
+bots = 0
+min_players = 1
+seed = 1
+sky = "afternoon"
+max_entities = 64
+
+[humans.person]
+count = 8
+variety = 8
+height = [1.6, 1.9]
+seed = 7

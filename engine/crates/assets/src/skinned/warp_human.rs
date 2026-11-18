@@ -23,6 +23,30 @@ pub(super) struct FaceRig {
 }
 
 const LID_RANGE: f32 = 0.016;
+// How far the lids rest open past the cooked neutral, as a share of a full
+// closure (the cooked opening is narrow: half-asleep up close).
+const LID_OPEN: f32 = 0.35;
+
+// Normalized hm08 joint positions (unit body height), each chain with the
+// point its last joint's segment ends at.
+const CORE_NAMES: [&str; 6] = ["Hips", "Spine", "Spine1", "Spine2", "Neck", "Head"];
+const CORE_POINTS: [[f32; 3]; 7] = [
+    [0., 0.534, -0.012],
+    [0., 0.602, -0.012],
+    [0., 0.658, -0.005],
+    [0., 0.750, -0.025],
+    [0., 0.843, -0.017],
+    [0., 0.909, -0.011],
+    [0., 1., -0.011],
+];
+const ARM_NAMES: [&str; 3] = ["Arm", "ForeArm", "Hand"];
+const ARM_POINTS: [[f32; 3]; 4] = [
+    [0.1008, 0.805, -0.012],
+    [0.1878, 0.6994, -0.0132],
+    [0.259, 0.637, 0.084],
+    [0.295, 0.565, 0.14],
+];
+const SIDES: [(&str, f32); 2] = [("Right", -1.), ("Left", 1.)];
 
 impl Character {
     /// Apply after the head pose, using the interpolated presentation clock.
@@ -39,7 +63,7 @@ impl Character {
             palette[face.first+i] = head * Mat4::from_rotation_translation(gaze, pivot - gaze*pivot);
         }
         for (i, axis) in [Vec3::X, -Vec3::X, Vec3::Y, -Vec3::Y, Vec3::Z, -Vec3::Z].into_iter().enumerate() {
-            palette[face.first+2+i] = head * Mat4::from_translation(face.scale * axis * (LID_RANGE * blink));
+            palette[face.first+2+i] = head * Mat4::from_translation(face.scale * axis * (LID_RANGE * (blink * (1. + LID_OPEN) - LID_OPEN)));
         }
     }
 
@@ -49,12 +73,13 @@ impl Character {
     }
 
     /// Override base skin in sRGB while retaining the seeded face texture.
+    /// The body is stretched onto this rig's own joints, shoulders included.
     pub fn warp_human_with_skin(
         &self,
         person: &Instance,
         skin: Option<[f32; 3]>,
     ) -> Result<Self, String> {
-        self.fit_human(person, skin, false)
+        self.fit_human(person, skin, false, false)
     }
 
     /// Keep the hm08 upper body in its native relaxed pose for a live two-hand
@@ -64,16 +89,48 @@ impl Character {
         person: &Instance,
         skin: Option<[f32; 3]>,
     ) -> Result<Self, String> {
-        self.fit_human(person, skin, true)
+        self.fit_human(person, skin, true, true)
     }
 
-    fn fit_human(
+    /// A person with their own anatomy: the spine, neck, head and arm joints
+    /// move to where the hm08 body has them (`warp_human_joints`), so the
+    /// shoulders keep their width and height and the skin binds undeformed.
+    /// Open hands, blinking eyes and close-up hair strands. The caller poses
+    /// the joints this returns, not the donor's.
+    pub fn warp_human_person(
         &self,
         person: &Instance,
         skin: Option<[f32; 3]>,
-        player: bool,
     ) -> Result<Self, String> {
-        let mut fitted_joints = self.joints.clone();
+        self.fit_human(person, skin, true, false)
+    }
+
+    /// Where `warp_human_person` and `warp_human_player` put this rig's
+    /// joints for `person`, without fitting a mesh (no GPU, cheap).
+    pub fn warp_human_joints(&self, person: &Instance) -> Result<Vec<(String, Mat4)>, String> {
+        let mut joints = self.joints.clone();
+        let upper_body = self.upper_body(person)?;
+        let mut place = |name: &str, point: Vec3| -> Result<(), String> {
+            let joint = joints
+                .iter_mut()
+                .find(|(n, _)| n == name)
+                .ok_or_else(|| format!("Warp Human rig missing {name}"))?;
+            joint.1.w_axis = upper_body.transform_point3(point).extend(1.);
+            Ok(())
+        };
+        for (name, point) in CORE_NAMES.iter().zip(CORE_POINTS) {
+            place(name, Vec3::from_array(point))?;
+        }
+        for (side, sign) in SIDES {
+            for (name, [x, y, z]) in ARM_NAMES.iter().zip(ARM_POINTS) {
+                place(&format!("{side}{name}"), Vec3::new(x * sign, y, z))?;
+            }
+        }
+        Ok(joints)
+    }
+
+    // hm08's unit-height space onto this rig, meeting at the hips.
+    fn upper_body(&self, person: &Instance) -> Result<Affine3A, String> {
         let hips = self
             .joints
             .iter()
@@ -83,11 +140,28 @@ impl Character {
             .w_axis
             .truncate();
         let scale = person.body_scale();
-        let upper_body = Affine3A::from_scale_rotation_translation(
+        Ok(Affine3A::from_scale_rotation_translation(
             scale,
             Quat::IDENTITY,
-            hips - scale * Vec3::new(0., 0.534, -0.012),
-        );
+            hips - scale * Vec3::from_array(CORE_POINTS[0]),
+        ))
+    }
+
+    // `native`: the upper body keeps hm08's own joints and pose. `gripping`:
+    // the fingers curl around a weapon.
+    fn fit_human(
+        &self,
+        person: &Instance,
+        skin: Option<[f32; 3]>,
+        native: bool,
+        gripping: bool,
+    ) -> Result<Self, String> {
+        // A person's limbs are turned from this rig's bind onto the captures
+        // (the `warp` crate's humans); a player's legs play the rig's own clips.
+        let retargeted = native && !gripping;
+        let mut fitted_joints = self.joints.clone();
+        let scale = person.body_scale();
+        let upper_body = self.upper_body(person)?;
         // Normalized hm08 joint positions, in the same space as the crowd rig.
         let mut chain =
             |names: &[&str], points: &[Vec3], keep_upper: bool| -> Result<Vec<Bone>, String> {
@@ -102,7 +176,7 @@ impl Character {
                             .ok_or_else(|| format!("Warp Human rig missing {name}"))
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                if player && keep_upper {
+                if native && keep_upper {
                     let normal = Mat3::from(upper_body.matrix3).inverse().transpose();
                     return Ok(joints
                         .iter()
@@ -129,6 +203,19 @@ impl Character {
                         stretch = at.distance(end) / (points[i].distance(points[i + 1]) * scale.y);
                     } else if names[i].ends_with("Hand") {
                         rotation = previous_rotation;
+                    } else if retargeted && names[i].ends_with("Foot") {
+                        // The rig's feet splay outward with its legs. Turn the
+                        // shoe the same way, so that whoever turns the rig's
+                        // foot straight ahead takes the shoe with it (left
+                        // facing ahead, it ended up pigeon-toed).
+                        let toe = names[i].replace("Foot", "ToeBase");
+                        if let Some((_, bind)) = self.joints.iter().find(|(n, _)| *n == toe) {
+                            let flat = |v: Vec3| Vec3::new(v.x, 0., v.z).normalize_or_zero();
+                            let (from, to) = (flat(source), flat(bind.w_axis.truncate() - at));
+                            if from != Vec3::ZERO && to != Vec3::ZERO {
+                                rotation = Quat::from_rotation_arc(from, to);
+                            }
+                        }
                     }
                     previous_rotation = rotation;
                     let along =
@@ -145,22 +232,9 @@ impl Character {
                 }
                 Ok(result)
             };
-        let core = chain(
-            &["Hips", "Spine", "Spine1", "Spine2", "Neck", "Head"],
-            &[
-                [0., 0.534, -0.012],
-                [0., 0.602, -0.012],
-                [0., 0.658, -0.005],
-                [0., 0.750, -0.025],
-                [0., 0.843, -0.017],
-                [0., 0.909, -0.011],
-                [0., 1., -0.011],
-            ]
-            .map(Vec3::from_array),
-            true,
-        )?;
+        let core = chain(&CORE_NAMES, &CORE_POINTS.map(Vec3::from_array), true)?;
         let mut limbs = Vec::new();
-        for (side, sign) in [("Right", -1.), ("Left", 1.)] {
+        for (side, sign) in SIDES {
             let mut limb = |names: &[&str], points: &[[f32; 3]], keep_upper| {
                 let names: Vec<_> = names.iter().map(|name| format!("{side}{name}")).collect();
                 let points: Vec<_> = points
@@ -173,16 +247,7 @@ impl Character {
                     keep_upper,
                 )
             };
-            let arm = limb(
-                &["Arm", "ForeArm", "Hand"],
-                &[
-                    [0.1008, 0.805, -0.012],
-                    [0.1878, 0.6994, -0.0132],
-                    [0.259, 0.637, 0.084],
-                    [0.295, 0.565, 0.14],
-                ],
-                true,
-            )?;
+            let arm = limb(&ARM_NAMES, &ARM_POINTS, true)?;
             let leg = limb(
                 &["UpLeg", "Leg", "Foot"],
                 &[
@@ -197,8 +262,8 @@ impl Character {
         }
         let skin_color = skin.map(Vec3::from).unwrap_or_else(|| person.skin_color());
         let (hair, brows) = person.hair_and_brows(skin_color);
-        let (body, indices) = person.fitted_mesh(player);
-        let face = player.then(|| {
+        let (body, indices) = person.fitted_mesh(gripping);
+        let face = native.then(|| {
             let first = fitted_joints.len();
             let eyes = [false, true].map(|positive| {
                 let mut lo = Vec3::splat(f32::INFINITY);
@@ -262,11 +327,21 @@ impl Character {
             };
             let mut pos = Vec3::ZERO;
             let mut normal = Vec3::ZERO;
+            // A groom is a few sheets laid over each other: lit by their own
+            // facing, each sheet takes the light differently and the parting
+            // shows as a hard edge. Light them mostly as one rounded head of
+            // hair instead, as the mass of strands they stand for would be.
+            let shading = if (20..=22).contains(&v.material) {
+                let round = (p - Vec3::new(0., 0.925, -0.008)).normalize_or(Vec3::Y);
+                v.normal.normalize_or(round).lerp(round, 0.75)
+            } else {
+                v.normal
+            };
             for (i, (bone, w)) in weights.into_iter().enumerate() {
                 inf.joints[i] = bone.joint as u32;
                 inf.weights[i] = w;
                 pos += bone.transform.transform_point3(p) * w;
-                normal += (bone.normal * v.normal) * w;
+                normal += (bone.normal * shading) * w;
             }
             if let Some(face) = &face {
                 if v.material == 6 {
@@ -301,9 +376,19 @@ impl Character {
                 inf,
             )
         };
+        // The cooked grooms carry loose triangles along the hairline that
+        // break up a distant crowd's outline. A fitted person has strands
+        // there up close, and the loose triangles read as saw teeth.
+        let mut shared = vec![0u8; body.len()];
+        for &i in &indices {
+            shared[i as usize] = shared[i as usize].saturating_add(1);
+        }
         let mut groups = BTreeMap::<u32, Vec<u32>>::new();
         for tri in indices.chunks_exact(3) {
             let a = &body[tri[0] as usize];
+            if native && a.material >= 20 && tri.iter().all(|&i| shared[i as usize] == 1) {
+                continue;
+            }
             let tag = if a.material == 3
                 && tri
                     .iter()
@@ -434,6 +519,7 @@ fn surface(person: &Instance, tag: u32, skin: Vec3, hair: Vec3, brows: Vec3) -> 
         skin_hair: match tag {
             4 => Some(SkinHair::Skin),
             11 => Some(SkinHair::PackedMask),
+            20..=22 => Some(SkinHair::Hair),
             _ => None,
         },
         material: MaterialFile {
