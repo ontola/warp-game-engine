@@ -88,7 +88,8 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_VOXEL_SELF_SHADOW_COARSER` | unset | Coarser voxel self-shadow mip. |
 | `KERN_CUT_HYSTERESIS` | 1.25 | How much less error a tree the camera drew in detail last frame keeps that detail down to, so the cut does not flip each frame (`foliage_refine.rs`; values below 1 are ignored, 1 disables it). |
 | `KERN_RASTER_FLOOR` | 8388608 | Lowest raster budget for the GPU forest (`foliage_runtime.rs`); the budget is the larger of this and the sum of the proxies' work, at most 16777216. |
-| `KERN_VEGETATION_QUALITY` | by adapter | Vegetation tier `low`, `medium` or `high` (`vegetation_quality.rs`): scales the forest's pixel error target and caps its needle, voxel splat and branch slot budgets. Unset: discrete GPU high, integrated medium, unknown low; `app` steps it down when adaptive quality runs out. |
+| `KERN_VEGETATION_BUDGETS` | unset | Replaces the tier's steps for tuning: `error scale,source clusters,splats,slot share`, for example `1.5,2097152,8388608,1`. |
+| `KERN_VEGETATION_QUALITY` | by adapter | Vegetation tier `low`, `medium` or `high` (`vegetation_quality.rs`): scales the forest's pixel error target and caps its voxel splat, branch slot and (on low) needle budgets. Unset: discrete GPU high, integrated medium, unknown low; `app` steps it down when adaptive quality runs out. |
 | `KERN_SOURCE_CLUSTERS` | 2097152 | Source cluster budget that bounds the camera cut in a GPU forest (`foliage_runtime.rs`), at least 1. |
 | `KERN_BRANCH_CELL_M` | 0.075 | Finest branch voxel cell in metres for aggregate cooks (accepted from 0.01 up to the default); each halving adds a level and quadruples the brick and voxel caps (`recipe_forest.rs`). |
 | `KERN_FAR_TREE_SHADOW_FROM` | 0.35 | Where in the shared sun map (its clip-space radius) per-tree ground shadows start to take over (`shade.wgsl`). |
