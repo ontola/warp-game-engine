@@ -150,7 +150,7 @@ impl Gpu {
         // storage buffers per stage, 32 sampled textures, 1 GiB buffers;
         // `mac` is `browser` with the 10 storage buffers most Macs give.
         let web = crate::switches::WEBGPU_LIMITS.get();
-        let (features, mut limits) = match web.as_deref() {
+        let (features, limits) = match web.as_deref() {
             Some(mode @ ("spec" | "browser" | "mac")) => {
                 let mut web = wgpu::Limits::default();
                 if mode != "spec" {
@@ -165,7 +165,7 @@ impl Gpu {
             _ => (features, limits),
         };
         #[cfg(test)]
-        if let Some(n) = TEST_STORAGE_BUFFERS.with(|c| c.get()) { limits.max_storage_buffers_per_shader_stage = limits.max_storage_buffers_per_shader_stage.min(n); }
+        let limits = match TEST_STORAGE_BUFFERS.with(|c| c.get()) { Some(n) => wgpu::Limits { max_storage_buffers_per_shader_stage: limits.max_storage_buffers_per_shader_stage.min(n), ..limits }, None => limits };
         let descriptor = wgpu::DeviceDescriptor {
             label: Some("kern"),
             required_features: features,

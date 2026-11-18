@@ -228,7 +228,8 @@ Luau entities can follow a parent, and native games can resolve named model sock
   HDR; trees are opt-in (`?trees=1`) because they are cooked at every load
   ([Running in a browser](browser.md)). Without trees the full renderer
   fits the engine rule of 8 storage buffers per shader stage but needs 21
-  sampled textures (spec minimum 16); trees still need 16 storage buffers.
+  sampled textures (spec minimum 16); trees still need more than 8 storage
+  buffers in three voxel forest layouts (the rest of the GPU forest fits 8).
   Below that a portable renderer draws terrain and sky only
   (`render::portable`).
 - The cloud container has no GPU: Mesa lavapipe runs GPU tests in software.

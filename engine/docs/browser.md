@@ -46,8 +46,13 @@ host serves it.
   their own before a browser build) Storage textures stay within 4 per stage, the
   default every device gets (`frame::shade_storage_textures` over every
   pipeline layout built from shade's module, checked by a test); (spec 16, but 98 % of Macs and 92 % of all WebGPU
-  devices offer 44 or more, web3dsurvey.com, November 2026). The GPU forest
-  (trees) still needs 16 storage buffers. Storage buffers on macOS: 94 %
+  devices offer 44 or more, web3dsurvey.com, November 2026). The GPU forest's
+  selection, refinement, residency, materialize and pose passes fit 8
+  storage buffers per pipeline layout (`foliage_select::STORAGE_BUFFERS`;
+  the budgeted refine admission, `KERN_FOLIAGE_CUT=budget`, needs 10 and is
+  left out below that). Three voxel forest layouts (`voxel forest`, `voxel
+  sun splats`, `cached voxel sun splats`) are still over; the GPU test
+  `forest_layouts_under_webgpu_storage_limit` lists them. Storage buffers on macOS: 94 %
   offer 10 or more, 29 % 16; Firefox (Zen) gives 9, Chrome's software
   adapter (SwiftShader) 10 with 16 textures.
 - With fewer than 8 storage buffers or fewer sampled textures than that
