@@ -273,15 +273,16 @@ impl Race {
         for k in 1..=(world.track.length / balance.pickup_spacing) as usize {
             let distance = k as f64 * balance.pickup_spacing;
             let n = world.track.sample(distance);
+            // One pickup per row; its lane cycles left, centre, right so
+            // each row is a choice of line, not a wall of items.
             if !n.air_gap && n.geometry.shape_angle < 0.1 && !n.is_loop {
-                for x in [-0.55, 0., 0.55] {
-                    if n.supported(x * n.geometry.width, 6.) {
-                        pickups.push(Pickup {
-                            distance,
-                            x: x * n.geometry.width,
-                            cooldown: 0.,
-                        });
-                    }
+                let lanes = [-0.55, 0., 0.55];
+                if let Some(x) = (0..3).map(|j| lanes[(k + j) % 3]).find(|x| n.supported(x * n.geometry.width, 6.)) {
+                    pickups.push(Pickup {
+                        distance,
+                        x: x * n.geometry.width,
+                        cooldown: 0.,
+                    });
                 }
             }
         }

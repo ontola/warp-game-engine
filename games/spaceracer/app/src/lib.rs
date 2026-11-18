@@ -944,6 +944,13 @@ fn scale_hud(hud: &mut HudDrawList, scale: f32) {
                 *x *= scale;
             }
         }
+        // Rings: centre, radius and the half width packed above 4.
+        if v.shape[3] >= 4. {
+            for x in &mut v.shape[..3] {
+                *x *= scale;
+            }
+            v.shape[3] = 4. + (v.shape[3] - 4.) * scale;
+        }
     }
     for t in &mut hud.text {
         t.position = t.position.map(|x| x * scale);

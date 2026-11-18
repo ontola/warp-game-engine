@@ -143,7 +143,7 @@ impl Party {
         gamenight::party::Party::connect("growing-guns").map(Party::new)
     }
 
-    fn new(host: gamenight::party::Party) -> Party {
+    pub(crate) fn new(host: gamenight::party::Party) -> Party {
         Party { host, settings: Settings::default(), seats: Vec::new(), triggers: Vec::new(), live: None, next_modifier: None, sticks: Default::default() }
     }
 

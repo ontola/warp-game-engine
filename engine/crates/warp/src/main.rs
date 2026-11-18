@@ -76,7 +76,7 @@ fn size(args: &[String], default: [u32; 2]) -> Result<[u32; 2], String> {
 }
 
 fn overrides(args: &[String]) -> Result<Overrides, String> {
-    Ok(Overrides { players: parse(args, "--players")?, bots: parse(args, "--bots")?, seed: parse(args, "--seed")?, sky: value(args, "--sky") })
+    Ok(Overrides { players: parse(args, "--players")?, bots: parse(args, "--bots")?, seed: parse(args, "--seed")?, sky: value(args, "--sky"), fresh: false })
 }
 
 /// The game folder or one-file game: the first argument after the command.
@@ -132,7 +132,9 @@ fn load_game(dir: &Path, args: &[String], sound: Option<audio::synth::SoundSende
         None if interactive => Location::User,
         None => Location::Memory,
     };
-    LuaGame::load_with_storage(dir, &overrides(args)?, sound, location)
+    // Played for real, a game with `fresh_seed` gets a new seed each round.
+    let over = Overrides { fresh: interactive, ..overrides(args)? };
+    LuaGame::load_with_storage(dir, &over, sound, location)
 }
 
 fn play(args: &[String]) -> Result<(), String> {

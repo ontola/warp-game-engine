@@ -61,9 +61,13 @@ impl Visor<'_> {
     fn circle(&mut self, p: [f32; 2], r: f32, c: [f32; 4]) {
         self.h.circle(self.point(p), r * self.s, c, self.r);
     }
+    /// A controller button: a smooth anti-aliased rim on a dark disc, the
+    /// letter centred optically (Open Sans caps sit high in the line box).
     fn button(&mut self, key: &str, p: [f32; 2], color: [u8; 4]) {
-        self.arc(p, 7., 0., PI * 2., 1., color.map(|v| v as f32 / 255.));
-        self.text(key, [p[0], p[1] - 7.5], 10., TextAlign::Center, color);
+        let c = color.map(|v| v as f32 / 255.);
+        self.h.circle(self.point(p), 7.6 * self.s, [0.01, 0.04, 0.07, 0.55], self.r);
+        self.h.ring(self.point(p), 7. * self.s, 1.1 * self.s, c, self.r);
+        self.text(key, [p[0], p[1] - 6.3], 9.5, TextAlign::Center, color);
     }
 }
 pub fn draw(

@@ -24,7 +24,7 @@ mod tests {
     fn every_roster_skin_keeps_its_initial_pose_then_articulates_and_settles() {
         for name in [3, 11, 52] {
             let model = super::super::characters::preview_model(name).unwrap();
-            let original = model.sample("pistol_run", 0.23, true).unwrap();
+            let (original, _) = super::super::characters::standing_pose(&model, 0.23).unwrap();
             let mut palette = original.clone();
             let transform = Affine3A::from_rotation_translation(Quat::from_rotation_y(0.7), Vec3::new(2.0, 1.5, -3.0));
             let mut physics = Physics::new(Vec3::new(0.0, -20.0, 0.0), 60.0);

@@ -355,7 +355,7 @@ mod tests {
             .load_text(
                 "game.luau",
                 &include_str!("../../rules/game.luau")
-                    .replace("pickup_spacing=1300", "pickup_spacing=0"),
+                    .replace("pickup_spacing=1750", "pickup_spacing=0"),
             )
             .unwrap();
         assert!(r.balance().is_err());
