@@ -308,11 +308,21 @@ impl Character {
             };
             let mut pos = Vec3::ZERO;
             let mut normal = Vec3::ZERO;
+            // A groom is a few sheets laid over each other: lit by their own
+            // facing, each sheet takes the light differently and the parting
+            // shows as a hard edge. Light them mostly as one rounded head of
+            // hair instead, as the mass of strands they stand for would be.
+            let shading = if (20..=22).contains(&v.material) {
+                let round = (p - Vec3::new(0., 0.925, -0.008)).normalize_or(Vec3::Y);
+                v.normal.normalize_or(round).lerp(round, 0.75)
+            } else {
+                v.normal
+            };
             for (i, (bone, w)) in weights.into_iter().enumerate() {
                 inf.joints[i] = bone.joint as u32;
                 inf.weights[i] = w;
                 pos += bone.transform.transform_point3(p) * w;
-                normal += (bone.normal * v.normal) * w;
+                normal += (bone.normal * shading) * w;
             }
             if let Some(face) = &face {
                 if v.material == 6 {
@@ -347,9 +357,19 @@ impl Character {
                 inf,
             )
         };
+        // The cooked grooms carry loose triangles along the hairline that
+        // break up a distant crowd's outline. A fitted person has strands
+        // there up close, and the loose triangles read as saw teeth.
+        let mut shared = vec![0u8; body.len()];
+        for &i in &indices {
+            shared[i as usize] = shared[i as usize].saturating_add(1);
+        }
         let mut groups = BTreeMap::<u32, Vec<u32>>::new();
         for tri in indices.chunks_exact(3) {
             let a = &body[tri[0] as usize];
+            if native && a.material >= 20 && tri.iter().all(|&i| shared[i as usize] == 1) {
+                continue;
+            }
             let tag = if a.material == 3
                 && tri
                     .iter()
@@ -480,6 +500,7 @@ fn surface(person: &Instance, tag: u32, skin: Vec3, hair: Vec3, brows: Vec3) -> 
         skin_hair: match tag {
             4 => Some(SkinHair::Skin),
             11 => Some(SkinHair::PackedMask),
+            20..=22 => Some(SkinHair::Hair),
             _ => None,
         },
         material: MaterialFile {
