@@ -2152,9 +2152,10 @@ local function act(u, it, dt)
 				-- Two things carried: into a free slot, else what is in the
 				-- hand goes down here.
 				store(u)
+				local at = u.pos + v(random.range(-0.4, 0.4), 0, random.range(-0.4, 0.4))
 				local slot = if not u.slots[1] then 1 elseif not u.slots[2] then 2 elseif u.hand > 0 then u.hand else 1
 				local old = u.slots[slot]
-				if old then place_weapon(old.kind, u.pos + v(random.range(-0.4, 0.4), 0, random.range(-0.4, 0.4)), old.dur) end
+				if old then place_weapon(old.kind, at, old.dur) end
 				u.slots[slot] = { kind = p.kind, dur = p.dur }
 				u.hand = slot
 				load_hand(u)
