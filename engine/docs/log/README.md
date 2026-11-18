@@ -20,6 +20,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
 - When a change alters how something works, update the guide for that part
   in the same commit. The log is not a substitute for that.
 - [Vegetation cost, tiers and rejected candidates, 18 November](2026-11-18-vegetation-cost-and-tiers.md)
+- [Vegetation pop-in: handoff, 18 November](2026-11-18-pop-in-handoff.md)
 - [handoff.md](handoff.md) is the running log of 23 October to 5 November
   2026, newest first.
 
