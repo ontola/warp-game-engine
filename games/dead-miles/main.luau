@@ -1533,7 +1533,7 @@ local function die(u)
 	body.hold(u.fig, nil, HELD)
 	body.tint(u.fig, figure.CORPSE)
 	-- The body stays a while; a human goes back to its pool later.
-	table.insert(s.corpses, { fig = u.fig, t = 20 })
+	table.insert(s.corpses, { fig = u.fig, t = 20, pos = u.pos })
 	u.fig = nil
 	count("deaths")
 	if u.recruit then
@@ -2258,6 +2258,88 @@ local function noticed_at(spec, u)
 	return spec.sense * k
 end
 
+-- The dead eat. A downed survivor or a fresh body draws the dead nearby
+-- that have nobody standing to chase: they kneel around it and tear at it,
+-- jolting back with each bite, blood pooling. A downed survivor being eaten
+-- goes faster; hitting an eater gets it off. Eaters are slow to look up.
+local EATERS = 4
+
+local function meal_ok(m)
+	if m.state then return m.state == "down" and m.fig ~= nil end
+	return m.t > 0 and m.pos ~= nil
+end
+
+local function meal_for(z)
+	local range = if s.phase == "over" then 40 else 8
+	if z.meal and meal_ok(z.meal) and dist(z.meal.pos, z.pos) < range + 2 then
+		z.meal.n = (z.meal.n or 0) + 1
+		return z.meal
+	end
+	z.meal = nil
+	local best, bd = nil, range
+	local function try(m)
+		if meal_ok(m) and (m.n or 0) < EATERS then
+			local d = dist(m.pos, z.pos)
+			if d < bd then best, bd = m, d end
+		end
+	end
+	for _, u in s.survivors do try(u) end
+	for _, c in s.corpses do try(c) end
+	if best then
+		best.n = (best.n or 0) + 1
+		z.meal = best
+		z.slot = random.range(-math.pi, math.pi)
+	end
+	return best
+end
+
+local function eat(z, m, speed)
+	local spot = m.pos + v(math.sin(z.slot), 0, math.cos(z.slot)) * 0.7
+	if z.state ~= "feed" then
+		z.state = "to_meal"
+		local to = waypoint(z.pos, spot) - z.pos
+		local d = math.sqrt(to.x * to.x + to.z * to.z)
+		if dist(spot, z.pos) < 0.4 then
+			z.state = "feed"
+			z.t = random.range(0.2, 0.6)
+			z.bite = 0
+			if random.chance(0.5) then sfx("groan", z.pos, { pitch = random.range(0.7, 0.9) }) end
+			return v(0, 0, 0)
+		end
+		if d > 0.05 then return to / d * speed end
+		return v(0, 0, 0)
+	end
+	local to = m.pos - z.pos
+	z.yaw = yaw_of(to)
+	if dist(m.pos, z.pos) > 1.3 then
+		z.state = "to_meal"
+		return v(0, 0, 0)
+	end
+	if z.t <= 0 then
+		-- In, then a yank back with a mouthful.
+		z.bite += 1
+		local d = math.max(0.01, math.sqrt(to.x * to.x + to.z * to.z))
+		local ahead = v(to.x / d, 0, to.z / d)
+		if z.bite % 2 == 1 then
+			z.t = random.range(0.25, 0.45)
+			body.hit(z.fig, ahead * random.range(0.6, 1))
+		else
+			z.t = random.range(0.5, 1.1)
+			body.hit(z.fig, ahead * -random.range(1.3, 2.2))
+			local at = m.pos + v(random.range(-0.45, 0.45), 0, random.range(-0.45, 0.45))
+			blood_drop(at, random.range(0.08, 0.22))
+			fx.burst(v(m.pos.x + ahead.x * -0.25, 0.35, m.pos.z + ahead.z * -0.25), { color = "#7a1410", count = 5, speed = 1.8, life = 0.45, size = 0.06, gravity = 9 })
+			if random.chance(0.35) then sfx("splat", m.pos, { pitch = random.range(0.55, 0.8) }) end
+			if random.chance(0.2) then sfx("groan", z.pos, { pitch = random.range(0.65, 0.9) }) end
+			if m.state == "down" then
+				m.t -= 0.8
+				rumble(m, 0.35, 0.15)
+			end
+		end
+	end
+	return v(0, 0, 0)
+end
+
 local function zombie_step(z, dt)
 	local spec = ZOMBIES[z.kind]
 	local speed = if z.kind == "runner" then KNOBS.runner else KNOBS.shambler
@@ -2277,10 +2359,17 @@ local function zombie_step(z, dt)
 
 	local target, td = nil, math.huge
 	for _, u in s.survivors do
-		if in_body(u) then
+		if standing(u) then
 			local d = dist(u.pos, z.pos)
-			if d < noticed_at(spec, u) and d < td then target, td = u, d end
+			local seen = if z.state == "feed" then 2.5 else noticed_at(spec, u)
+			if d < seen and d < td then target, td = u, d end
 		end
+	end
+	-- Someone down near by is a meal; somebody standing comes first.
+	local meal = nil
+	if not target and (z.state ~= "windup" and z.state ~= "strike" and z.state ~= "recover" and z.state ~= "stagger") then
+		meal = meal_for(z)
+		if meal then target = nil end
 	end
 
 	local move = v(0, 0, 0)
@@ -2331,7 +2420,13 @@ local function zombie_step(z, dt)
 		move = z.knock
 		z.knock = z.knock * 0.9
 		if z.t <= 0 then z.state = if target then "chase" else "investigate" end
+	elseif meal then
+		move = eat(z, meal, speed * 0.9)
 	else
+		if z.state == "feed" or z.state == "to_meal" then
+			z.state = "investigate"
+			z.meal = nil
+		end
 		if target then
 			z.state = "chase"
 			z.target = target
@@ -2421,7 +2516,11 @@ local function zombie_step(z, dt)
 		end
 	end
 	body.place(z.fig, z.pos, z.yaw)
-	body.animate(z.fig, dt, dist(before, z.pos) / dt, arms)
+	if z.state == "feed" then
+		body.pose(z.fig, "crouch")
+	else
+		body.animate(z.fig, dt, dist(before, z.pos) / dt, arms)
+	end
 end
 
 local function spawn_edge(kind, mode, goal, behind)
@@ -3021,6 +3120,8 @@ local function reload()
 end
 
 local function zombies_tick(dt)
+	for _, u in s.survivors do u.n = 0 end
+	for _, c in s.corpses do c.n = 0 end
 	zcells = {}
 	for _, z in s.zombies do
 		if z.state ~= "dead" then
@@ -3181,6 +3282,66 @@ local function events_step(dt)
 	end
 end
 
+-- Overrun: nobody left standing. The view closes in on the last of them
+-- while the dead eat; the picture fades out slowly; then the walk in
+-- numbers; then, slowly, the way back in.
+local OVER = { close = 5.5, fade = 4.5, black = 8.5, prompt = 11.5 }
+
+local function start_over()
+	-- Where each view looks: the body nearest its camera.
+	s.over_from, s.over_at = {}, {}
+	for n, cam in s.cams or {} do
+		local best, bd = nil, math.huge
+		for _, u in s.survivors do
+			if u.state == "down" and u.pos and dist(u.pos, cam) < bd then best, bd = u.pos, dist(u.pos, cam) end
+		end
+		for _, c in s.corpses do
+			if c.pos and dist(c.pos, cam) < bd then best, bd = c.pos, dist(c.pos, cam) end
+		end
+		s.over_from[n], s.over_at[n] = cam, best or cam
+	end
+	local focus = s.over_at[1] or s.center
+	sfx("scream", focus, { pitch = 0.85 })
+	sfx("down", focus, { pitch = 0.6 })
+	-- Enough of the dead to make a meal of it: a few more come out of the dark.
+	local near = 0
+	for _, z in s.zombies do
+		if z.state ~= "dead" and dist(z.pos, focus) < 20 then near += 1 end
+	end
+	for i = near + 1, 4 do
+		local a = random.range(-math.pi, math.pi)
+		local p = focus + v(math.sin(a), 0, math.cos(a)) * random.range(8, 11)
+		spawn_zombie(if i == 4 then "runner" else "shambler", p, "investigate", flat(focus))
+	end
+end
+
+local function over_camera()
+	local x = math.clamp(s.over_t / OVER.close, 0, 1)
+	x = x * x * (3 - 2 * x)
+	for n, g in s.groups do
+		local from, at = s.over_from and s.over_from[n], s.over_at and s.over_at[n]
+		if from and at then
+			local c = from + (at - from) * x
+			local k = 1 - 0.5 * x
+			local target = v(c.x, 0.4, c.z)
+			local pos = target + v(0, KNOBS.cam_height * k, KNOBS.cam_back * k)
+			local any = false
+			for _, u in g.members do
+				if not u.bot and players.get(u.id) then
+					camera.set(u.id, { pos = pos, target = target, fov = KNOBS.fov })
+					any = true
+				end
+			end
+			if not any and n == 1 then
+				local first = players.list()[1]
+				if first then camera.set(first.id, { pos = pos, target = target, fov = KNOBS.fov }) end
+			end
+		end
+	end
+	-- The colour drains as it goes.
+	post.set({ vignette = 0.6 + 0.35 * x, grain = 0.14 + 0.1 * x, saturation = 0.7 * (1 - 0.6 * x), contrast = 1.12 })
+end
+
 local function tick(dt, input)
 	s = state.s
 	if s.phase == "camp" then
@@ -3192,13 +3353,20 @@ local function tick(dt, input)
 		return
 	end
 	if s.phase == "over" then
-		s.over_t -= dt
+		s.over_t += dt
+		over_camera()
 		zombies_tick(dt)
-		local again = s.over_t <= 0
+		-- Only once the words are up does A start again; a room of bots
+		-- goes again on its own.
+		local people, again = false, false
 		for _, u in s.survivors do
-			local i = not u.bot and input[u.id]
-			if i and i.pressed.south and s.over_t < 3 then again = true end
+			if not u.bot then
+				people = true
+				local i = input[u.id]
+				if i and i.pressed.south and s.over_t > OVER.prompt then again = true end
+			end
 		end
+		if not people and s.over_t > OVER.prompt + 4 then again = true end
 		if again then new_run() end
 		return
 	end
@@ -3349,11 +3517,11 @@ local function tick(dt, input)
 	local alone = #s.survivors == 1 and s.survivors[1].lives > 0
 	if standing_count() == 0 and #s.survivors > 0 and not alone then
 		s.phase = "over"
-		s.over_t = 7
+		s.over_t = 0
 		s.walked = math.floor(s.route)
 		s.best = math.max(s.best, s.walked)
 		count("wipes")
-		sfx("down", s.center, { pitch = 0.6 })
+		start_over()
 		game.log("Dead Miles: overrun after " .. s.walked .. " m on day " .. s.day .. ", " .. s.kills .. " dead put down")
 	end
 end
@@ -3499,11 +3667,40 @@ local function proj(pos, u)
 	return hud.project(pos)
 end
 
+local function draw_over(W, H, k)
+	local t = s.over_t or 0
+	local function ramp(a, b) local x = math.clamp((t - a) / (b - a), 0, 1) return x * x * (3 - 2 * x) end
+	hud.box(0, 0, W, H, { 0, 0, 0, ramp(OVER.fade, OVER.black) })
+	local a = ramp(OVER.black, OVER.black + 1.5)
+	if a > 0 then
+		local y = H * 0.36
+		hud.text("OVERRUN", 0, y, { size = 64 * k, align = "center", width = W, color = { 1, 0.42, 0.29, a } })
+		local b = ramp(OVER.black + 0.8, OVER.black + 2.2)
+		local stats = {
+			(s.walked or 0) .. " m walked, day " .. s.day,
+			s.kills .. " of the dead put down",
+			"best " .. s.best .. " m",
+		}
+		for i, line in stats do
+			hud.text(line, 0, y + (70 + i * 34) * k, { size = 24 * k, align = "center", width = W, color = { 0.91, 0.88, 0.82, b * (if i == 3 then 0.6 else 1) } })
+		end
+		local c = ramp(OVER.prompt - 1, OVER.prompt) * (0.65 + 0.35 * math.cos((t - OVER.prompt) * 2.6))
+		if c > 0 then
+			hud.text("Press A to retry", 0, y + 240 * k, { size = 26 * k, align = "center", width = W, color = { 0.95, 0.9, 0.69, c } })
+		end
+	end
+end
+
 local function draw()
 	s = state.s
 	if not s or not s.cam then return end
 	local W, H = hud.size()
 	local k = H / 720
+	-- Overrun: only the end of the story, nothing else over it.
+	if s.phase == "over" then
+		draw_over(W, H, k)
+		return
+	end
 	torches()
 
 	if s.phase == "camp" then
@@ -3663,11 +3860,6 @@ local function draw()
 		end
 	end
 
-	if s.phase == "over" then
-		hud.box(0, H * 0.34, W, 150 * k, { 0, 0, 0, 0.6 })
-		hud.text("OVERRUN", 0, H * 0.34 + 22 * k, { size = 58 * k, align = "center", width = W, color = "#ff6a4a" })
-		hud.text((s.walked or 0) .. " m, day " .. s.day .. "   best " .. s.best .. " m", 0, H * 0.34 + 94 * k, { size = 24 * k, align = "center", width = W, color = "#e8e0d0" })
-	end
 end
 
 local function player_joined(p)
@@ -3774,7 +3966,7 @@ local debug = {
 		end
 		return "in room at " .. math.floor(m.x) .. "," .. math.floor(m.z)
 	end,
-	-- debug.die(2): survivor 2 dies now; debug.join(): a stranger joins
+	-- debug.die(2): survivor 2 dies now; debug.down(1): survivor 1 goes down; debug.overrun(): all but one die, that one goes down; debug.join(): a stranger joins
 	-- (the person who waits gets them). To test the new-person flow.
 	die = function(i)
 		s = state.s
@@ -3782,6 +3974,28 @@ local debug = {
 		if not u or not in_body(u) then return "no body" end
 		die(u)
 		return "died: " .. tostring(u.state)
+	end,
+	overrun = function()
+		s = state.s
+		local first = nil
+		for _, u in s.survivors do
+			if standing(u) then
+				if first then die(u) else first = u end
+			end
+		end
+		if first then
+			first.injured, first.invul = true, 0
+			hurt(first, first.pos + v(1, 0, 0))
+		end
+		return "standing " .. standing_count()
+	end,
+	down = function(i)
+		s = state.s
+		local u = s.survivors[i or 1]
+		if not u or not standing(u) then return "not standing" end
+		u.injured, u.invul = true, 0
+		hurt(u, u.pos + v(1, 0, 0))
+		return u.state
 	end,
 	join = function()
 		s = state.s
