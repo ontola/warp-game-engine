@@ -777,6 +777,12 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             Ok(())
         })),
         ("size", f!(core, move |_, ()| { let s = lock(&core).screen; Ok((s[0], s[1])) })),
+        ("measure", f!(core, move |_, (text, size): (Value, Option<f32>)| {
+            let _ = &core;
+            let text = match &text { Value::String(s) => s.to_string_lossy(), other => other.to_string()? };
+            let [w, h] = render::hud::measure(&text, render::hud::FontFace::Body, size.unwrap_or(24.0).clamp(4.0, 400.0));
+            Ok((w, h))
+        })),
         ("project", f!(core, move |_, (pos, p): (Value, Option<i64>)| {
             let at = vec3(&pos, "hud.project position")?;
             let c = lock(&core);

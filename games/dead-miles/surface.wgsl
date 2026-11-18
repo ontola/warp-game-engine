@@ -557,10 +557,14 @@ fn dm_floortile(uv: vec2<f32>, tint: vec3<f32>, fw: f32) -> DmS {
 // ceiling no camera sees (lib/mat). Darker in every light, so a room is dark
 // until a torch is in it.
 const DM_INDOOR: f32 = 0.28;
+// Bit 128: a room floor nobody has looked into yet (fog of war, main.luau).
+// A hint, not a black box: a shade darker and greyer.
+const DM_UNSEEN: f32 = 0.6;
 
 fn game_surface(s: SurfaceIn) -> SurfaceOut {
     let kind = s.kind & 63u;
-    let indoor = s.kind >= 64u;
+    let indoor = (s.kind & 64u) != 0u;
+    let unseen = (s.kind & 128u) != 0u;
     let n = s.n;
     let an = abs(n);
     let top = an.y > max(an.x, an.z);
@@ -628,5 +632,9 @@ fn game_surface(s: SurfaceIn) -> SurfaceOut {
     let gy = (hy - o.h) / eps;
     let nn = normalize(n - (t1 * gx + t2 * gy) * bump * 0.8);
     if indoor { o.albedo *= DM_INDOOR; }
+    if unseen {
+        let grey = dot(o.albedo, vec3<f32>(0.3, 0.59, 0.11));
+        o.albedo = mix(vec3<f32>(grey), o.albedo, 0.45) * DM_UNSEEN;
+    }
     return SurfaceOut(max(o.albedo, vec3<f32>(0.0)), nn, clamp(o.rough, 0.03, 1.0), clamp(o.metal, 0.0, 1.0), vec3<f32>(0.0));
 }

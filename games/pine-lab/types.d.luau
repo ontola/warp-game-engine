@@ -178,6 +178,8 @@ declare hud: {
 	box: (x: number, y: number, w: number, h: number, color: Color?) -> (),
 	-- The output size in pixels.
 	size: () -> (number, number),
+	-- One line of text in the HUD font: its width and height in pixels.
+	measure: (text: string, size: number?) -> (number, number),
 	-- A person's split-screen view: x, y, width, height in pixels (a bot: the whole output).
 	view: (player: number?) -> (number, number, number, number),
 	-- Where a world point shows in pixels (in that player's view; default
