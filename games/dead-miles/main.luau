@@ -234,6 +234,21 @@ local function collide(p, r)
 		end
 	end
 	local lo, hi = land.zrange(s.zcs, x)
+	if z < lo - 1 or z > hi + 1 then
+		-- Off the street's band at this x: beside a street that turns
+		-- north or south. Keep z and hold x in the turn instead (clamping
+		-- z here threw people tens of metres up or down the street).
+		local idx = math.floor(x / land.CHUNK) + 1
+		for _, cand in { idx, idx + 1 } do
+			local sx0 = (cand - 1) * land.CHUNK
+			local l2, h2 = land.zrange(s.zcs, sx0 + 0.5)
+			if z >= l2 - 1 and z <= h2 + 1 then
+				x = math.clamp(x, sx0 + 0.01, sx0 + land.TURN + 0.95)
+				lo, hi = l2, h2
+				break
+			end
+		end
+	end
 	z = math.clamp(z, lo + 0.5, hi - 0.5)
 	return v(x, 0, z)
 end
@@ -2861,10 +2876,24 @@ end
 
 local function group_center(members)
 	local sum, n = v(0, 0, 0), 0
+	-- The camera is the people's: a bot counts only while it keeps up
+	-- with one (a bot left behind never pulls the view off its person).
+	local people = {}
+	for _, u in members do
+		if standing(u) and not u.recruit and not u.bot then table.insert(people, u) end
+	end
 	for _, u in members do
 		if standing(u) and not u.recruit then
-			sum = sum + u.pos
-			n += 1
+			local counts = not u.bot or #people == 0
+			if u.bot then
+				for _, p in people do
+					if dist(p.pos, u.pos) < 7 then counts = true end
+				end
+			end
+			if counts then
+				sum = sum + u.pos
+				n += 1
+			end
 		end
 	end
 	if n == 0 then
@@ -2879,7 +2908,7 @@ local function group_center(members)
 	local c = sum / n
 	local spread = 0
 	for _, u in members do
-		if standing(u) and not u.recruit then spread = math.max(spread, dist(u.pos, c)) end
+		if standing(u) and not u.recruit and (not u.bot or #people == 0 or dist(u.pos, c) < 7) then spread = math.max(spread, dist(u.pos, c)) end
 	end
 	return c, spread
 end

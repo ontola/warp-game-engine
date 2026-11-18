@@ -59,7 +59,7 @@ local GLASS = "#202024"
 local HOLE = "#08080a"
 -- Set dressing (not solid), by name: every look is warmed in M.warm.
 local PROP = {
-	plank = "#6b4e37", board = "#8b6b4a", dark = "#161618", sandbag = "#8a7a5a", bag = "#1d1d1f",
+	plank = "#6b4e37", board = "#8b6b4a", door = "#3b2a1e", dark = "#161618", sandbag = "#8a7a5a", bag = "#1d1d1f",
 	dumpster = "#2f4a3a", barrel = "#6a3a2a", hedge = "#2f4a26", fence = "#8a8478", tyre = "#1a1a1a",
 }
 local SHROUD = "#060607"
@@ -416,6 +416,25 @@ end
 -- is reachable: a random spanning tree of inner doors, plus a few extra.
 -- The front door faces the path (side -1: north of it, so the door is on
 -- the +z wall). kinds: the loot table of its cupboards.
+-- A front door you can read from above: a step and a little canopy over it
+-- (the camera looks straight down), a frame, and the leaf itself: swung
+-- open out over the step where you can go in, shut where you cannot.
+-- z: the wall's face, out: the side the street is on (-1 or 1).
+local function doorway(c, x0, x1, z, out, open, h)
+	local mx, w = (x0 + x1) / 2, x1 - x0
+	deco(c, "cube", v(mx, 0.07, z + out * 0.45), v(w + 0.5, 0.14, 0.9), "#7a7470", { roughness = 0.95 })
+	deco(c, "cube", v(mx, (h or 2.4) + 0.08, z + out * 0.42), v(w + 0.7, 0.08, 0.85), PROP.door)
+	for _, x in { x0 - 0.06, x1 + 0.06 } do deco(c, "cube", v(x, 1.1, z + out * 0.04), v(0.12, 2.2, 0.16), FRAME, { roughness = 0.8 }) end
+	deco(c, "cube", v(mx, 2.22, z + out * 0.04), v(w + 0.24, 0.12, 0.16), FRAME, { roughness = 0.8 })
+	if open then
+		-- Hinged at the west post, standing out over the step.
+		deco(c, "cube", v(x0 + 0.04, 1.03, z + out * (w / 2 + 0.02)), v(0.06, 2.05, w - 0.05), PROP.door)
+	else
+		deco(c, "cube", v(mx, 1.03, z + out * 0.03), v(w - 0.02, 2.05, 0.07), PROP.door)
+		deco(c, "sphere", v(x1 - 0.18, 1.0, z + out * 0.09), v(0.07, 0.07, 0.07), "#7a7470", { roughness = 0.4, metal = 0.7 })
+	end
+end
+
 local function building(c, x0, w, d, cols, rows, side, look, kinds, sleepers)
 	local zn = side * 4.2 -- the wall facing the path
 	local zf = side * (4.2 + d)
@@ -487,6 +506,7 @@ local function building(c, x0, w, d, cols, rows, side, look, kinds, sleepers)
 		if gap then
 			local mx = (gap[1] + gap[2]) / 2
 			table.insert(b.doors, { a = 0, b = rid(i, 1), pa = v(mx, 0, zn - side * 0.8), pb = v(mx, 0, zn + side * 0.8) })
+			doorway(c, gap[1], gap[2], zn, -side, true)
 		end
 	end
 	-- The back wall: sometimes a back door too.
@@ -681,14 +701,18 @@ local function closed(c, x0, w, d, side, look, h, style)
 		end
 		blk.h = h + ph
 	end
-	-- The face towards the path: a boarded-up door.
+	-- The face towards the path: a front door, shut (and now and then
+	-- boarded over too). The step and canopy show it from above.
 	local fz = zn - side * 0.02
 	local dx = random.range(x0 + 1, x1 - 2)
-	part(deco(c, "cube", v(dx + 0.6, 1.05, fz), v(1.2, 2.1, 0.06), PROP.dark))
-	part(deco(c, "cube", v(dx + 0.6, 1.05, fz + side * 0.01), v(1.4, 2.25, 0.06), FRAME, { roughness = 0.8 }))
+	local n0 = #c.ents
+	doorway(c, dx, dx + 1.2, fz, -side, false)
+	for k = n0 + 1, #c.ents do part(c.ents[k]) end
 	for k = 0, 2 do
-		part(deco(c, "cube", v(dx + 0.6, 0.5 + k * 0.6, fz - side * 0.04), v(1.5, 0.18, 0.05), if k % 2 == 0 then PROP.plank else PROP.board,
-			{ rot = v(0, 0, random.range(-0.25, 0.25)) }))
+		local r = random.range(-0.25, 0.25)
+		if dx % 1 < 0.3 then
+			part(deco(c, "cube", v(dx + 0.6, 0.5 + k * 0.6, fz - side * 0.12), v(1.5, 0.18, 0.05), if k % 2 == 0 then PROP.plank else PROP.board, { rot = v(0, 0, r) }))
+		end
 	end
 	-- Windows on the faces the camera sees (south, +z) and the street face:
 	-- a frame, glass (or a dark hole), a cross bar, a sill; some boarded.
@@ -870,7 +894,7 @@ local function lot(c, side, x0, x1, look, biome)
 	if biome == "suburb" then
 		local w = math.min(random.range(8, 11), span - 1)
 		local bx = random.range(x0 + 0.5, x1 - w - 0.5)
-		if span >= 15 and random.chance(0.35) then
+		if span >= 13 and random.chance(0.55) then
 			-- A big house: most of the lot, two floors' worth of rooms.
 			local bw = math.min(random.range(13, 18), span - 1)
 			building(c, x0 + (span - bw) / 2, bw, random.range(9, 11.5), 3, 2, side, look, { "kitchen", "closet", "closet", "kitchen" }, 1)
@@ -901,7 +925,7 @@ local function lot(c, side, x0, x1, look, biome)
 	elseif biome == "city" then
 		local w = math.min(random.range(11, 16), span - 1)
 		local bx = random.range(x0 + 0.5, x1 - w - 0.5)
-		if span >= 15 and random.chance(0.3) then
+		if span >= 15 and random.chance(0.5) then
 			-- A big open ruin: a store, a clinic, offices; three rows deep.
 			local roll = random.float()
 			local kinds = if roll < 0.2 then { "pharmacy", "office" } elseif roll < 0.5 then { "shop", "shop", "office" } elseif roll < 0.6 then { "police", "office" } else { "office", "kitchen", "closet" }
