@@ -2790,9 +2790,14 @@ function warm_all()
 	world.warm("sphere", { color = "#cfe6ff", emissive = 0.35 })
 	for _, b in BLOOD do world.warm("sphere", b) end
 	world.warm("cube", { color = "#3b3631", roughness = 0.8, metal = 0, emissive = 0 })
+	-- A searched container keeps its surface (wood, paint, indoor...).
+	for k = 0, 20 do
+		world.warm("cube", { color = "#3b3631", roughness = 0.8, metal = 0, emissive = 0, surface = k })
+		world.warm("cube", { color = "#3b3631", roughness = 0.8, metal = 0, emissive = 0, surface = k + 64 })
+	end
 	world.warm("outline16", { color = "#f2e6b0", emissive = 0.12 })
 	for _, w in HELD do world.warm("cube", { color = w.color, metal = w.metal, roughness = w.roughness or 0.6 }) end
-	for _, c in { "#5a1e18", "#6a2a20", "#8a1a14" } do world.warm("cube", { color = c, emissive = 0.06 }) end
+	for _, c in { "#5a1e18", "#6a2a20", "#8a1a14", "#6a1410" } do world.warm("cube", { color = c, emissive = 0.06 }) end
 	-- A breaking weapon bursts into bits of its own colour.
 	for _, w in HELD do world.warm("cube", { color = w.color, emissive = 0.06 }) end
 	world.warm("sphere", { color = GLOW, emissive = 0.35, roughness = 1 })
@@ -3315,6 +3320,22 @@ local function draw()
 	bar(x + 234 * k, y + 8 * k, 70 * k, 8 * k, s.battery / 100, if s.battery < 15 then "#ff6a4a" else ITEM_COLORS.battery)
 	hud.text("DAY " .. s.day .. "   " .. math.max(0, math.floor(s.route)) .. " m", W - 260 * k, y, { size = 22 * k, width = 240 * k, align = "right", color = "#f4efe6" })
 
+	-- Button rows of people standing together stack instead of overlapping.
+	local rows_at = {}
+	local function free_y(cx, y)
+		local moved = true
+		while moved do
+			moved = false
+			for _, r in rows_at do
+				if math.abs(r[1] - cx) < 240 * k and math.abs(r[2] - y) < 30 * k then
+					y -= 32 * k
+					moved = true
+				end
+			end
+		end
+		table.insert(rows_at, { cx, y })
+		return y
+	end
 	for _, u in s.survivors do
 		if u.pos and u.state ~= "gone" then
 			local px, py = proj(v(u.pos.x, 0, u.pos.z), u)
@@ -3346,7 +3367,7 @@ local function draw()
 				end
 				if not u.bot and u.state == "ok" and not u.talk then
 					if u.tip then
-						button_row(px, py - 112 * k, u.tip.row, k, math.min(1, u.tip.t * 2))
+						button_row(px, free_y(px, py - 112 * k), u.tip.row, k, math.min(1, u.tip.t * 2))
 					else
 						local row, at = prompt_of(u)
 						if row then
@@ -3355,7 +3376,7 @@ local function draw()
 								local ax, ay = proj(v(at.x, 1.6, at.z), u)
 								if ax then qx, qy = ax, ay - 30 * k end
 							end
-							button_row(qx, qy, row, k)
+							button_row(qx, free_y(qx, qy), row, k)
 						end
 					end
 				end
@@ -3465,6 +3486,52 @@ local debug = {
 			if o.fig then body.place(o.fig, o.pos, o.yaw) end
 		end
 		return "at " .. best.kind .. " " .. math.floor(best.x)
+	end,
+	-- debug.room(2): the next building ahead with at least two rooms; the
+	-- first n survivors go into one room, the rest wait by the wall outside,
+	-- and a zombie stands in the next room, unseen. For in-game shots.
+	room = function(n)
+		s = state.s
+		n = n or 1
+		local u = s.survivors[1]
+		local best = nil
+		for _, b in s.buildings do
+			local count = 0
+			for _ in b.rooms do count += 1 end
+			if count >= 1 and b.x1 > u.pos.x + 4 and (best == nil or b.x0 < best.x0) then best = b end
+		end
+		if not best then return "none" end
+		local list = {}
+		for _, r in best.rooms do table.insert(list, r) end
+		table.sort(list, function(a, b) return a.x0 < b.x0 end)
+		local r, other = list[1], list[2] or list[1]
+		local m = v((r.x0 + r.x1) / 2, 0, (r.z0 + r.z1) / 2)
+		local road = if m.z > path_z(m.x) then -1 else 1
+		local edge = if road < 0 then best.z0 else best.z1
+		for i, o in s.survivors do
+			if o.pos then
+				if i <= n then
+					o.pos = collide(m + v((i - (n + 1) / 2) * 0.9, 0, 0.3), RADIUS)
+				else
+					o.pos = collide(v(m.x + (i - n) * 1.2, 0, edge + road * 1.6), RADIUS)
+				end
+				o.yaw = if i <= n then 0 else (if road < 0 then math.pi else 0)
+				o.torch = true
+			end
+			if o.fig then body.place(o.fig, o.pos, o.yaw) end
+		end
+		if other ~= r then
+			spawn_zombie("shambler", v((other.x0 + other.x1) / 2, 0, (other.z0 + other.z1) / 2), "idle")
+		end
+		return "in room at " .. math.floor(m.x) .. "," .. math.floor(m.z)
+	end,
+	-- debug.apart(30): the last survivor 30 m further east, to split the screen.
+	apart = function(m)
+		s = state.s
+		local o = s.survivors[#s.survivors]
+		o.pos = collide(v(o.pos.x + (m or 30), 0, path_z(o.pos.x + (m or 30))), RADIUS)
+		if o.fig then body.place(o.fig, o.pos, o.yaw) end
+		return "apart"
 	end,
 	peak = function()
 		s = state.s
