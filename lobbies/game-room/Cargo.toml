@@ -2,7 +2,7 @@
 name = "game-room"
 edition.workspace = true
 version.workspace = true
-description = "The GameNight Game Room lobby on Warp"
+description = "The Splitscreen Club Game Room lobby on Warp"
 
 [lib]
 path = "src/lib.rs"

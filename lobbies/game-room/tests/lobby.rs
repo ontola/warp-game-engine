@@ -140,7 +140,7 @@ fn the_mouse_is_nobody_but_works_the_room() {
     let door = lobby.screen_point(glam::Vec3::new(game_room_sim::layout::EXIT_DOOR as f32, 1.5, -2.0), size).unwrap();
     point(&mut lobby, door, false, 0.0);
     assert!(lobby.prompt_active["exit"] && lobby.prompts["exit"].mouse);
-    assert_eq!(lobby.prompts["exit"].items[0].1, "Quit Gamepad Party");
+    assert_eq!(lobby.prompts["exit"].items[0].1, "Quit Splitscreen Club");
     point(&mut lobby, door, true, 0.0);
     assert_eq!(lobby.prompts["exit"].items[0].1, "Click again to quit");
     point(&mut lobby, door, true, 0.0);
