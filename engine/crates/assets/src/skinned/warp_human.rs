@@ -23,6 +23,9 @@ pub(super) struct FaceRig {
 }
 
 const LID_RANGE: f32 = 0.016;
+// How far the lids rest open past the cooked neutral, as a share of a full
+// closure (the cooked opening is narrow: half-asleep up close).
+const LID_OPEN: f32 = 0.35;
 
 // Normalized hm08 joint positions (unit body height), each chain with the
 // point its last joint's segment ends at.
@@ -60,7 +63,7 @@ impl Character {
             palette[face.first+i] = head * Mat4::from_rotation_translation(gaze, pivot - gaze*pivot);
         }
         for (i, axis) in [Vec3::X, -Vec3::X, Vec3::Y, -Vec3::Y, Vec3::Z, -Vec3::Z].into_iter().enumerate() {
-            palette[face.first+2+i] = head * Mat4::from_translation(face.scale * axis * (LID_RANGE * blink));
+            palette[face.first+2+i] = head * Mat4::from_translation(face.scale * axis * (LID_RANGE * (blink * (1. + LID_OPEN) - LID_OPEN)));
         }
     }
 
@@ -153,6 +156,9 @@ impl Character {
         native: bool,
         gripping: bool,
     ) -> Result<Self, String> {
+        // A person's limbs are turned from this rig's bind onto the captures
+        // (the `warp` crate's humans); a player's legs play the rig's own clips.
+        let retargeted = native && !gripping;
         let mut fitted_joints = self.joints.clone();
         let scale = person.body_scale();
         let upper_body = self.upper_body(person)?;
@@ -197,6 +203,19 @@ impl Character {
                         stretch = at.distance(end) / (points[i].distance(points[i + 1]) * scale.y);
                     } else if names[i].ends_with("Hand") {
                         rotation = previous_rotation;
+                    } else if retargeted && names[i].ends_with("Foot") {
+                        // The rig's feet splay outward with its legs. Turn the
+                        // shoe the same way, so that whoever turns the rig's
+                        // foot straight ahead takes the shoe with it (left
+                        // facing ahead, it ended up pigeon-toed).
+                        let toe = names[i].replace("Foot", "ToeBase");
+                        if let Some((_, bind)) = self.joints.iter().find(|(n, _)| *n == toe) {
+                            let flat = |v: Vec3| Vec3::new(v.x, 0., v.z).normalize_or_zero();
+                            let (from, to) = (flat(source), flat(bind.w_axis.truncate() - at));
+                            if from != Vec3::ZERO && to != Vec3::ZERO {
+                                rotation = Quat::from_rotation_arc(from, to);
+                            }
+                        }
                     }
                     previous_rotation = rotation;
                     let along =
