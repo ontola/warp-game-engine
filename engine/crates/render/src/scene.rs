@@ -685,6 +685,9 @@ pub struct Scene {
     pub skinning: crate::skinning::Skinning,
     /// Skinned actor, head joint and fitted procedural strand descriptor.
     pub hair_grooms: Vec<(usize, usize, crate::humans::Groom)>,
+    /// Points of grown hair strands ([x, y, z, shade] in the groom's fit
+    /// space, ten per strand), for grooms of style 3 (humans/player_strands).
+    pub hair_strands: Vec<[f32; 4]>,
     /// Indoor irradiance probes in `aux` (`reserve_irradiance_volume`): the
     /// word offset of their header and the grid.
     pub irradiance_volume: Option<(usize, crate::irradiance_volume::Grid)>,

@@ -10,6 +10,7 @@ use render::{
     skinning::{self, Influence},
 };
 use serde::Deserialize;
+mod warp_hair;
 mod warp_human;
 mod warp_skin;
 use std::{
@@ -856,7 +857,16 @@ impl Character {
         scene.instances[instance].flags |= SKINNED;
         let actor = scene.skinning.actors.len();
         if let Some(face) = &self.face && material.is_none() {
-            scene.hair_grooms.push((actor, face.head, face.groom));
+            let mut groom = face.groom;
+            if !face.strands.is_empty() {
+                // Grown hair: the strands' own points (style 3), from where
+                // this head's lie in the scene's pool, and how many.
+                groom.info[2] = 3;
+                groom.info[3] = (scene.hair_strands.len() / warp_hair::POINTS) as u32;
+                groom.weights[0] = (face.strands.len() / warp_hair::POINTS) as f32;
+                scene.hair_strands.extend_from_slice(&face.strands);
+            }
+            scene.hair_grooms.push((actor, face.head, groom));
         }
         scene.skinning.actors.push(skinning::Actor {
             first_vertex,

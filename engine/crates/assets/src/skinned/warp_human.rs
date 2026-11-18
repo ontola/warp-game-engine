@@ -14,6 +14,8 @@ struct Bone {
 // Two eye pivots and six signed translation axes reproduce the sparse lid
 // target through ordinary GPU skinning. All eight inherit the animated head.
 pub(super) struct FaceRig {
+    /// Grown hair (warp_hair), empty for the crowd's fitted grooms.
+    pub(super) strands: std::sync::Arc<Vec<[f32; 4]>>,
     first: usize,
     pub(super) head: usize,
     eyes: [Vec3; 2],
@@ -290,7 +292,10 @@ impl Character {
                 tint: Vec3::from_array(hair.to_array().map(srgb_to_linear)).extend(1.).to_array(),
                 info: [0,0,person.hair_style(),(person.face_phase()*16777216.) as u32],
             };
-            FaceRig { first, head, eyes, scale, phase: person.face_phase(), groom }
+            // Hair grown from the seed out of this person's own scalp.
+            let cut = warp_hair::Cut::new((person.face_phase() * 16777216.) as u32);
+            let strands = std::sync::Arc::new(warp_hair::strands(&body, &indices, eye_midpoint(&body), skull, cut));
+            FaceRig { strands, first, head, eyes, scale, phase: person.face_phase(), groom }
         });
         let skin = |v: &BodyVertex| {
             let p = v.position;
@@ -379,17 +384,12 @@ impl Character {
                 inf,
             )
         };
-        // The cooked grooms carry loose triangles along the hairline that
-        // break up a distant crowd's outline. A fitted person has strands
-        // there up close, and the loose triangles read as saw teeth.
-        let mut shared = vec![0u8; body.len()];
-        for &i in &indices {
-            shared[i as usize] = shared[i as usize].saturating_add(1);
-        }
         let mut groups = BTreeMap::<u32, Vec<u32>>::new();
         for tri in indices.chunks_exact(3) {
             let a = &body[tri[0] as usize];
-            if native && a.material >= 20 && tri.iter().all(|&i| shared[i as usize] == 1) {
+            // A fitted person's hair is grown strands; the crowd's groom
+            // meshes stay with the crowd.
+            if native && a.material >= 20 {
                 continue;
             }
             let tag = if a.material == 3
@@ -433,6 +433,8 @@ impl Character {
                 &shared_tiles()[tile],
                 CHEEKS[tile],
                 warp_skin::Traits::new(seed, skin_color.dot(Vec3::new(0.3, 0.6, 0.1))),
+                // The face's tint multiplies this back to the hair's dark.
+                (hair * 0.42 * CHEEKS[tile] / skin_color.max(Vec3::splat(0.05))).min(Vec3::ONE),
                 render::frame::TEXTURE_SIZE as usize,
             );
             (

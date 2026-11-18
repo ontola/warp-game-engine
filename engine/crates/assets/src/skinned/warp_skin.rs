@@ -10,7 +10,7 @@ use render::humans::BodyVertex;
 /// The face surface's material in the cooked body.
 pub(super) const FACE: u32 = 11;
 /// Metres per unit of the normalized body, for sizing skin features.
-const METRES: f32 = 1.75;
+pub(super) const METRES: f32 = 1.75;
 
 pub(super) struct Maps {
     pub albedo: RgbaImage,
@@ -40,7 +40,7 @@ impl Traits {
     }
 }
 
-fn hash(mut x: u32) -> u32 {
+pub(super) fn hash(mut x: u32) -> u32 {
     x ^= x >> 16;
     x = x.wrapping_mul(0x7feb_352d);
     x ^= x >> 15;
@@ -57,11 +57,11 @@ fn hash3(c: [i32; 3], seed: u32) -> u32 {
     )
 }
 
-fn unit(h: u32) -> f32 {
+pub(super) fn unit(h: u32) -> f32 {
     (h & 0xff_ffff) as f32 / 16_777_216.
 }
 
-fn smooth(lo: f32, hi: f32, x: f32) -> f32 {
+pub(super) fn smooth(lo: f32, hi: f32, x: f32) -> f32 {
     let t = ((x - lo) / (hi - lo)).clamp(0., 1.);
     t * t * (3. - 2. * t)
 }
@@ -92,7 +92,7 @@ fn worley(p: Vec3, cell: f32, seed: u32) -> (f32, f32, u32) {
 }
 
 /// Smooth value noise in -1..1 with features of `cell` metres.
-fn noise(p: Vec3, cell: f32, seed: u32) -> f32 {
+pub(super) fn noise(p: Vec3, cell: f32, seed: u32) -> f32 {
     let q = p / cell;
     let base = q.floor();
     let f = q - base;
@@ -341,7 +341,9 @@ fn paint_eye(albedo: &mut RgbaImage, traits: Traits) {
 
 /// The face maps of one person at `size` texels square. `base` is the
 /// painted face (lips, lids, the fall of colour over the head) with the
-/// shading mask in its alpha, `cheek` that painting's cheek colour.
+/// shading mask in its alpha, `cheek` that painting's cheek colour,
+/// `under_hair` what the texture holds where hair grows (the dark between
+/// strands).
 pub(super) fn face(
     body: &[BodyVertex],
     indices: &[u32],
@@ -349,6 +351,7 @@ pub(super) fn face(
     base: &RgbaImage,
     cheek: Vec3,
     traits: Traits,
+    under_hair: Vec3,
     size: usize,
 ) -> Maps {
     let texels = unwrap(body, indices, eyes, size);
@@ -374,6 +377,10 @@ pub(super) fn face(
                         let (relief, tint) = skin(t, lips, traits);
                         *h = relief;
                         color *= tint;
+                        // Under the hair the scalp is seen through it, in
+                        // its shade.
+                        let hair = super::warp_hair::scalp(t.p);
+                        color = color.lerp(under_hair * 255., 0.7 * hair * hair);
                     }
                     let [r, g, b] = color.to_array().map(|c| c.clamp(0., 255.) as u8);
                     *out = [r, g, b, painted[3] as u8];
@@ -450,10 +457,10 @@ mod tests {
         let (body, indices, eyes) = fixture(7);
         let base = super::super::warp_human::tile(0);
         let cheek = Vec3::new(0.855, 0.659, 0.541);
-        let a = face(&body, &indices, eyes, &base, cheek, Traits::new(1, 0.8), 256);
-        let b = face(&body, &indices, eyes, &base, cheek, Traits::new(2, 0.8), 256);
+        let a = face(&body, &indices, eyes, &base, cheek, Traits::new(1, 0.8), Vec3::splat(0.2), 256);
+        let b = face(&body, &indices, eyes, &base, cheek, Traits::new(2, 0.8), Vec3::splat(0.2), 256);
         assert_ne!(a.albedo.as_raw(), b.albedo.as_raw());
-        assert_eq!(a.albedo.as_raw(), face(&body, &indices, eyes, &base, cheek, Traits::new(1, 0.8), 256).albedo.as_raw());
+        assert_eq!(a.albedo.as_raw(), face(&body, &indices, eyes, &base, cheek, Traits::new(1, 0.8), Vec3::splat(0.2), 256).albedo.as_raw());
         let bent = a.normal.pixels().filter(|p| p[0].abs_diff(128) > 2 || p[1].abs_diff(128) > 2).count();
         assert!(bent > 256 * 256 / 20, "relief bends the normals: {bent}");
         // The shading mask in the painted alpha survives (128 is skin).
@@ -483,7 +490,7 @@ mod tests {
         let base = super::super::warp_human::tile(person.face_tile());
         let traits = Traits { seed: 7, age: 0.6, freckles: 0.5, flush: 0.8, fair: 0.8 };
         let start = std::time::Instant::now();
-        let maps = face(&body, &indices, eyes, &base, Vec3::new(0.855, 0.659, 0.541), traits, 2048);
+        let maps = face(&body, &indices, eyes, &base, Vec3::new(0.855, 0.659, 0.541), traits, Vec3::splat(0.2), 2048);
         eprintln!("{:?}", start.elapsed());
         let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../build/human-skin");
         std::fs::create_dir_all(&out).unwrap();
