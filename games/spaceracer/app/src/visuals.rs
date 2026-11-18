@@ -313,9 +313,42 @@ fn pickup_mesh(scene: &mut Scene, material: u32) -> usize {
     }
     scene.add_mesh(&p.mesh())
 }
+/// The EMP pod: a dark emitter dish with four prongs around a bright cyan
+/// core held in two crossed field rings.
+fn emp_mesh(scene: &mut Scene, metal: u32) -> usize {
+    let field = material(scene, [0.18, 0.7, 1.], 0.3, 70.);
+    let mut body = Primitive { material: metal, ..Default::default() };
+    let mut glow = Primitive { material: field, ..Default::default() };
+    let add = |p: &mut Primitive, shape: Primitive, scale: Vec3, rot: Quat, pos: Vec3| {
+        let offset = p.vertices.len() as u32;
+        let xf = Affine3A::from_scale_rotation_translation(scale, rot, pos);
+        for mut v in shape.vertices {
+            v.pos = xf.transform_point3(Vec3::from(v.pos)).to_array();
+            v.normal = (rot * Vec3::from(v.normal)).to_array();
+            p.vertices.push(v);
+        }
+        p.indices.extend(shape.indices.into_iter().map(|i| i + offset));
+    };
+    add(&mut body, primitives::cylinder(metal, 0.75, 1., 20), Vec3::new(1., 0.28, 1.), Quat::IDENTITY, Vec3::new(0., -0.1, 0.));
+    add(&mut body, primitives::cylinder(metal, 0.3, 0.45, 12), Vec3::new(1., 0.35, 1.), Quat::IDENTITY, Vec3::new(0., 0.2, 0.));
+    for k in 0..4 {
+        let a = std::f32::consts::FRAC_PI_4 + k as f32 * std::f32::consts::FRAC_PI_2;
+        let out = Vec3::new(a.cos(), 0., a.sin());
+        let tilt = Quat::from_axis_angle(Vec3::Y.cross(out).normalize(), -0.35);
+        add(&mut body, primitives::cube(metal), Vec3::new(0.12, 0.95, 0.12), tilt, out * 0.82 + Vec3::Y * 0.45);
+        add(&mut glow, primitives::sphere(field, 6, 8), Vec3::splat(0.14), Quat::IDENTITY, out * 0.98 + Vec3::Y * 0.92);
+    }
+    add(&mut glow, primitives::sphere(field, 10, 14), Vec3::splat(0.3), Quat::IDENTITY, Vec3::Y * 0.75);
+    add(&mut glow, primitives::torus(field, 0.07, 24, 6), Vec3::splat(0.62), Quat::from_rotation_x(1.1), Vec3::Y * 0.75);
+    add(&mut glow, primitives::torus(field, 0.07, 24, 6), Vec3::splat(0.62), Quat::from_rotation_z(1.1), Vec3::Y * 0.75);
+    scene.add_mesh(&render::cluster::ClusterMesh::build(&[body.part(), glow.part()]))
+}
 fn weapon_mesh(scene: &mut Scene, kind: usize, metal: u32, glow: u32) -> usize {
     if kind == 0 {
         return super::missile_mesh::mesh(scene);
+    }
+    if kind == 3 {
+        return emp_mesh(scene, metal);
     }
     let mut p = Primitive {
         material: metal,
@@ -538,7 +571,7 @@ impl Visuals {
             );
             all_parts.push(parts);
         }
-        let pickup_mat = material(&mut scene, [0.6, 0.15, 0.95], 0.3, 100.);
+        let pickup_mat = material(&mut scene, [0.8, 0.4, 1.], 0.3, 320.);
         let pickup_mesh = pickup_mesh(&mut scene, pickup_mat);
         let missile_mat = material(&mut scene, [0.32, 0.36, 0.4], 0.25, 0.);
         progress(850);
@@ -762,7 +795,7 @@ impl Visuals {
         self.jets.update(race, &poses, time);
         for (k, p) in race.pickups.iter().enumerate() {
             let n = race.world.track.sample(p.distance);
-            let size = if p.cooldown > 0. { 0.001 } else { 3. };
+            let size = if p.cooldown > 0. { 0.001 } else { 3.6 };
             self.slots.set(
                 &mut self.scene,
                 self.pickup_slots[k],

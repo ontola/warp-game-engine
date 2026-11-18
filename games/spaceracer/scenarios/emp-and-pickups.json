@@ -1,0 +1,10 @@
+{
+  "size": [1920, 1080],
+  "steps": [
+    {"cmd": ["weapon-review emp", "blur off", "place 1 45"], "ticks": 1, "capture": "emp-carried.png"},
+    {"cmd": "fire 0", "ticks": 18, "capture": "emp-blast-early.png"},
+    {"expect": "/pilots/1/emp_time", "min": 1},
+    {"ticks": 30, "capture": "emp-blast-full.png"},
+    {"ticks": 50, "capture": "emp-after.png"}
+  ]
+}

@@ -181,5 +181,26 @@ fn game_sprite(s: GameSprite) -> vec4<f32> {
     if s.effect == 17u { // transparent blue shoulder around the white rail core
         return vec4<f32>(vec3<f32>(1.),exp(-x*x*6.)*(1.-smoothstep(.6,1.,abs(x)))*.3);
     }
+    if s.effect == 18u { // EMP data block: a crisp square pixel with an inner grid
+        let q=abs(s.uv*2.-1.);let m=max(q.x,q.y);
+        let edge=1.-smoothstep(.86,.98,m);
+        let grid=max(step(.82,fract(s.uv.x*3.)),step(.82,fract(s.uv.y*3.)));
+        return vec4<f32>(vec3<f32>(1.)+grid*.6,edge*(.55+.45*grid));
+    }
+    if s.effect == 20u { // pickup halo: a soft violet bloom with a bright centre
+        let q=s.uv*2.-1.;let r2=dot(q,q);
+        return vec4<f32>(vec3<f32>(1.)+exp(-r2*30.),(exp(-r2*4.)*.55+exp(-r2*30.)*.4)*(1.-smoothstep(.7,1.,sqrt(r2))));
+    }
+    if s.effect == 19u { // EMP shell: a glitching digital sphere, params time step, -, age
+        let q=s.uv*2.-1.;let r=length(q);
+        if r>1. {return vec4<f32>(0.);}
+        let a=atan2(q.y,q.x);
+        let cell=vec2<i32>(i32(floor((a+3.1416)*9.)),i32(floor(r*14.)));
+        let on=step(.42,vapor_hash(cell+vec2<i32>(i32(s.params.x)*7,i32(s.params.x)*13)));
+        let lines=max(step(.88,fract((a+3.1416)*9.)),step(.85,fract(r*14.)));
+        let rim=exp(-pow((r-.965)*22.,2.));
+        let body=smoothstep(.35,1.,r)*(.10+.5*on*lines+.12*on);
+        return vec4<f32>(mix(vec3<f32>(.55,.9,1.),vec3<f32>(1.6,1.8,2.),rim),rim*.95+body);
+    }
     return vec4<f32>(0.0);
 }

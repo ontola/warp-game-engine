@@ -21,6 +21,7 @@ struct Preview {
     weapon: PreviewWeapon,
     actor: ActorHandle,
     model: Character,
+    standing: characters::Standing,
     arms: TwoHandHold,
     mount: body::reach::JointMount,
     script: HandAnimation,
@@ -178,13 +179,7 @@ impl Game for Preview {
 
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
         let time = self.tick as f32 / 60.0;
-        let clip = "pistol_idle";
-        self.model.sample_into(clip, time, true, &mut self.pose)?;
-        let hand = self
-            .model
-            .sample_socket(clip, "RightHand", time, true)?
-            .w_axis
-            .truncate();
+        let hand = self.standing.pose(time, &mut self.pose);
         let body = characters::model_transform(Vec3::ZERO, 0.0);
         let contacts = self.rig.contacts_at(1.0);
         let (support, roll) = self.script.pose(contacts, time);
@@ -291,7 +286,7 @@ fn load_preview(seed: u64) -> Result<Preview, String> {
     let id = world.cards.find("sniper").ok_or("missing sniper card")?;
     world.give(0, id);
     let arms = body::reach::TwoHandHold::bind(model.joints()).ok_or("missing arm joints")?;
-    let pose = model.sample("pistol_idle", 0.0, true)?;
+    let (pose, _) = characters::standing_pose(&model, 0.0)?;
     let (index, (_, bind)) = model
         .joints()
         .enumerate()
@@ -323,6 +318,7 @@ fn load_preview(seed: u64) -> Result<Preview, String> {
         guns,
         large: Stats::of(&world.players[0]),
         actor,
+        standing: characters::Standing::bind(&model)?,
         model,
         arms,
         script: HandAnimation::load()?,

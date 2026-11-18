@@ -454,7 +454,7 @@ mod tests {
     #[test]
     fn support_foot_matches_root_distance_in_both_directions() {
         let (model, rig) = setup();
-        let mut palette = model.sample("pistol_idle", 0., true).unwrap();
+        let mut palette = vec![Mat4::IDENTITY; model.joint_count];
         for (cycle, speed) in rig.cycles.iter().zip([1.2, 5., 14.]) {
             for (dir, turn, sign) in [
                 (Vec3::Z, 0., 1.),
