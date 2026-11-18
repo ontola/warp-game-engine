@@ -123,6 +123,12 @@ local STRANGER_SHIRTS = { "#7a7a6a", "#6a5a7a", "#8a6a4a", "#4a6a6a" }
 -- The leg starts in the blue hour: the night sky, with the last light
 -- fading in the west (light_step), so there is no cut from a sunset sky.
 local TIMES = { [1] = "night:clear", [2] = "night:clear", [3] = "night:clear", [4] = "night:clear", [5] = "night:clear", [6] = "sunrise:clear", [7] = "morning:clear", [0] = "morning:clear" }
+-- For now the whole game is night (Joep, 2026-11-18): the dawn dash and
+-- the camp by day come back later. Set false to bring them back.
+local NIGHT_ONLY = true
+if NIGHT_ONLY then
+	for k in TIMES do TIMES[k] = "night:clear" end
+end
 
 -- What a container holds, by kind: { weight, item, min, max }.
 local LOOT = {
@@ -1086,12 +1092,13 @@ local function smooth(t) t = math.clamp(t, 0, 1) return t * t * (3 - 2 * t) end
 local function light_step(dt)
 	local x = (s.center or v(0, 0, 0)).x
 	local index = math.max(1, math.floor(x / CHUNK) + 1)
-	local _, in_day = chunk_day(index)
+	local day, in_day = chunk_day(index)
 	local u = (if in_day == 0 then land.DAY_CHUNKS else in_day - 1) + (x % CHUNK) / CHUNK
 	local ev, sun, lux
-	if in_day >= 1 and in_day <= 5 then
+	if NIGHT_ONLY or (in_day >= 1 and in_day <= 5) then
 		-- Blue hour fading to night over the first chunk and a half.
-		local t = smooth(u / 1.5)
+		-- Night only: just the first leg opens in the blue hour.
+		local t = if NIGHT_ONLY and (day > 1 or in_day == 0 or in_day >= 6) then 1 else smooth(u / 1.5)
 		ev = lerp(7.2, KNOBS.night_ev, t)
 		lux = KNOBS.moon * (30 ^ (1 - t))
 		local d = v(-0.9 + 0.55 * t, lerp(0.22, 0.8, t), lerp(0.25, 0.5, t))
