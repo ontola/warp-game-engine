@@ -687,6 +687,7 @@ local function has(cost)
 end
 
 local GLOW = "#f2e6b0"
+local VEIL = "#030304"
 local function place_weapon(kind, pos, dur)
 	local w = HELD[kind]
 	if not w then return end
@@ -1483,7 +1484,7 @@ local function die(u)
 	if alone then u.lives -= 1 end
 	u.state = "ghost"
 	u.t = if alone then 0.5 else KNOBS.ghost
-	u.ghost_ent = world.spawn("sphere", { pos = v(u.pos.x, 1.4, u.pos.z), size = 0.55, color = "#cfe6ff", emissive = 0.35, solid = false, tag = "ghost" })
+	u.ghost_ent = world.spawn("sphere", { pos = v(u.pos.x, 1.4, u.pos.z), size = 0.3, color = "#cfe6ff", emissive = 0.05, solid = false, tag = "ghost" })
 	u.cd_moan = 0
 	sfx("moan", u.pos, { pitch = 1.3 })
 end
@@ -2678,10 +2679,116 @@ local function blocks_step()
 				if hide then break end
 			end
 		end
-		if hide ~= (b.hidden or false) then
-			b.hidden = hide
-			for _, id in b.parts do world.set(id, { visible = not hide }) end
-			world.set(b.cut, { visible = hide })
+		b.occludes = hide
+	end
+	-- Closed buildings stay whole: whoever stands behind one shows as an
+	-- outline on the HUD instead (draw).
+	for _, u in s.survivors do
+		u.behind = false
+		if in_body(u) and u.pos then
+			local eye = s.eyes[u.group or 1] or s.eyes[1]
+			local p = v(u.pos.x, 1.2, u.pos.z)
+			for _, b in s.blocks do
+				if b.occludes and seg_hits_box(eye, p, b.x0, b.x1, 0, b.h, b.z0, b.z1) then u.behind = true break end
+			end
+		end
+	end
+end
+
+-- Inside and outside. From outside a building shows its roof, not what is
+-- in it. A view whose people are in a building loses that roof (hide_views),
+-- and when all of them are in the same one, the world outside closes in
+-- around it: a black veil just under the camera with a hole the building's
+-- shape, wiping in from the edges. Per view, so split screen works.
+local VEIL_Y = 11
+local function veil_ids(n)
+	s.veils = s.veils or {}
+	local vl = s.veils[n]
+	if not vl then
+		vl = { ids = {}, t = 0 }
+		for i = 1, 4 do
+			vl.ids[i] = world.spawn("cube", { pos = v(0, -50, 0), size = v(1, 0.1, 1), color = VEIL, roughness = 1, solid = false, visible = false, tag = "deco" })
+		end
+		s.veils[n] = vl
+	end
+	return vl
+end
+
+local function inside_of(p)
+	for _, b in s.buildings do
+		if #b.rooms > 0 and p.x > b.x0 and p.x < b.x1 and p.z > b.z0 and p.z < b.z1 then return b end
+	end
+	return nil
+end
+
+local function interiors_step(dt)
+	if not s.groups or not s.eyes then return end
+	-- Which views have somebody inside each building, and which view is
+	-- wholly inside one.
+	local open = {}
+	local whole = {}
+	for n, g in s.groups do
+		local bit = 2 ^ (n - 1)
+		local all, first, any = true, nil, false
+		for _, u in g.members do
+			if in_body(u) and u.pos then
+				local b = inside_of(u.pos)
+				u.inside = b
+				if b then
+					any = true
+					if not open[b] then open[b] = 0 end
+					if math.floor(open[b] / bit) % 2 == 0 then open[b] += bit end
+					if first == nil then first = b elseif first ~= b then all = false end
+				else
+					all = false
+				end
+			end
+		end
+		whole[n] = if any and all then first else nil
+	end
+	for _, b in s.buildings do
+		if b.roof then
+			local mask = open[b] or 0
+			if mask ~= (b.roof_mask or 0) then
+				b.roof_mask = mask
+				world.set(b.roof, { hide_views = mask })
+			end
+		end
+	end
+	for n = 1, 4 do
+		local b = whole[n]
+		local vl = (s.veils and s.veils[n]) or (b and veil_ids(n))
+		if vl then
+			-- 0: open, 1: closed in round the building.
+			local goal = if b then 1 else 0
+			if b then vl.b = b end
+			vl.t = math.clamp(vl.t + (if goal > vl.t then dt / 0.45 else -dt / 0.3), 0, 1)
+			local eye = s.eyes[n]
+			local on = vl.t > 0 and vl.b ~= nil and eye ~= nil
+			if on then
+				local bb = vl.b
+				-- Where the building's edges fall on the veil's plane, seen
+				-- from this view's camera, plus a margin that wipes in.
+				local k = (eye.y - VEIL_Y) / eye.y
+				local m = 30 * (1 - vl.t) * (1 - vl.t) + 0.4
+				local x0 = eye.x + (bb.x0 - m - eye.x) * k
+				local x1 = eye.x + (bb.x1 + m - eye.x) * k
+				local z0 = eye.z + (bb.z0 - m - eye.z) * k
+				local z1 = eye.z + (bb.z1 + m - eye.z) * k
+				local far = 40
+				local mask = 255 - 2 ^ (n - 1)
+				local function put(id, ax, az, bx, bz)
+					world.set(id, { pos = v((ax + bx) / 2, VEIL_Y, (az + bz) / 2), size = v(math.max(0.01, bx - ax), 0.1, math.max(0.01, bz - az)), visible = true, hide_views = mask })
+				end
+				put(vl.ids[1], eye.x - far, eye.z - far, x0, eye.z + far)
+				put(vl.ids[2], x1, eye.z - far, eye.x + far, eye.z + far)
+				put(vl.ids[3], x0, eye.z - far, x1, z0)
+				put(vl.ids[4], x0, z1, x1, eye.z + far)
+			elseif vl.shown then
+				for _, id in vl.ids do world.set(id, { visible = false }) end
+			end
+			vl.shown = on
+			if vl.t <= 0 then vl.b = nil end
 		end
 	end
 end
@@ -2796,7 +2903,8 @@ function warm_all()
 	world.warm("cube", figure.EYE_GLOW)
 	world.warm("cube", NO_GLOW)
 	world.warm("cube", figure.CORPSE)
-	world.warm("sphere", { color = "#cfe6ff", emissive = 0.35 })
+	world.warm("sphere", { color = "#cfe6ff", emissive = 0.05 })
+	world.warm("cube", { color = VEIL, roughness = 1 })
 	for _, b in BLOOD do world.warm("sphere", b) end
 	world.warm("cube", { color = "#3b3631", roughness = 0.8, metal = 0, emissive = 0 })
 	-- A searched container keeps its surface (wood, paint, indoor...).
@@ -3016,6 +3124,7 @@ local function tick(dt, input)
 
 	camera_step(dt)
 	if game.tick() % 4 == 0 then blocks_step() end
+	interiors_step(dt)
 	if game.tick() % 4 == 2 then sight_step() end
 	buildings_step(dt)
 	stream_land()
@@ -3360,6 +3469,19 @@ local function draw()
 				if u.state == "ok" then
 					-- A colour tag under the feet, a red cross when injured.
 					hud.box(px - 14 * k, py + 10 * k, 28 * k, 4 * k, c)
+					-- Behind a building: an outline where they stand.
+					if u.behind then
+						local hx, hy = proj(v(u.pos.x, 1.8, u.pos.z), u)
+						if hx then
+							local top, w = hy, 22 * k
+							local h = py - top
+							local cc = { c[1], c[2], c[3], 0.8 }
+							hud.box(px - w / 2, top, w, 2 * k, cc)
+							hud.box(px - w / 2, py, w, 2 * k, cc)
+							hud.box(px - w / 2, top, 2 * k, h, cc)
+							hud.box(px + w / 2 - 2 * k, top, 2 * k, h, cc)
+						end
+					end
 					if u.injured then
 						hud.box(px + 18 * k, py + 4 * k, 12 * k, 4 * k, "#e8382a")
 						hud.box(px + 22 * k, py, 4 * k, 12 * k, "#e8382a")

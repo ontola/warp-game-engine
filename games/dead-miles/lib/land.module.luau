@@ -546,10 +546,13 @@ local function building(c, x0, w, d, cols, rows, side, look, kinds, sleepers)
 			return deco(c, shape, pos, size, color, e)
 		end,
 	}
-	-- A ceiling no camera sees: the moon and the sun stay out, so inside it
-	-- is dark but for torches and what comes in through doors and holes.
-	add(c, mat.spawn("cube", { pos = v((b.x0 + b.x1) / 2, look.height[2] + 0.4, (b.z0 + b.z1) / 2 + ZC), size = v(b.x1 - b.x0 + 0.3, 0.2, b.z1 - b.z0 + 0.3),
-		color = SHROUD, roughness = 1, solid = false, shadow_only = true, tag = "deco" }))
+	-- The roof: from outside you see the building, not into it. main.luau
+	-- hides it (hide_views) from a view whose people went in; it still keeps
+	-- the moon out then, so inside it is dark but for torches and what comes
+	-- in through doors and holes.
+	b.roof = add(c, mat.spawn("cube", { pos = v((b.x0 + b.x1) / 2, look.height[2] + 0.3, (b.z0 + b.z1) / 2 + ZC), size = v(b.x1 - b.x0 + 0.3, 0.2, b.z1 - b.z0 + 0.3),
+		color = ROOFS[math.floor(math.abs(b.x0)) % #ROOFS + 1], roughness = 0.95, solid = false, tag = "deco" }))
+	b.roof_y = look.height[2] + 0.4
 	for _, r in b.rooms do
 		if random.chance(0.6) then
 			rubble(c, random.range(r.x0 + 0.6, r.x1 - 0.6), random.range(r.z0 + 0.6, r.z1 - 0.6), 0.6, { color = wall.color, indoor = true }, random.int(2, 5))
