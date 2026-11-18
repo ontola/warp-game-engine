@@ -464,7 +464,9 @@ impl Humans {
             if pool.models.is_empty() {
                 let skin = pool.cfg.skin.as_deref().and_then(parse_rgb);
                 for k in 0..pool.cfg.variety.max(1) {
-                    pool.models.push(rig.character.warp_human_person(&pool.person(name, k), skin)?);
+                    // Spread over the pool's age range, in no order.
+                    let age = pool.cfg.age.map(|[lo, hi]| lo + (hi - lo) * (hash(pool.cfg.seed ^ 0xa9e, k as u64) % 1000) as f32 / 999.);
+                    pool.models.push(rig.character.warp_human_person(&pool.person(name, k), skin, age)?);
                 }
             }
         }
