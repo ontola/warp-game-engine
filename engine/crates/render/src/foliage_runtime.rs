@@ -434,7 +434,7 @@ impl Runtime {
         let residency=Residency::new(gpu,&selector,spec.slots)?;
         crate::shaders::checked(gpu,|| {
             let upload=|label,data:&[u8]|gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some(label),contents:data,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST});
-            let uniform=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("GPU forest pose state"),size:32,usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
+            let uniform=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("GPU forest pose state"),size:48,usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
             let choices=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("GPU forest shared representation choices"),size:u64::from(spec.slots)*8,
                 usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false});
             let root_history=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("GPU forest root representation history"),size:spec.roots.len()as u64*32,usage:wgpu::BufferUsages::STORAGE,mapped_at_creation:false});
@@ -455,11 +455,11 @@ impl Runtime {
             let root_poses=scratch("shared root poses",spec.roots.len()as u64*48);
             let mut levels=vec![0u32;(max_depth as usize+1)*64];for d in 0..=max_depth {levels[d as usize*64]=d;}
             let levels=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some("immutable pose depth dispatch"),contents:bytemuck::cast_slice(&levels),usage:wgpu::BufferUsages::UNIFORM});
-            let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("GPU forest materialization"),entries:&(0..18).map(|binding|wgpu::BindGroupLayoutEntry {
+            let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("GPU forest materialization"),entries:&(0..18).filter(|&binding|binding!=2).map(|binding|wgpu::BindGroupLayoutEntry {
                 binding,visibility:wgpu::ShaderStages::COMPUTE,count:None,ty:wgpu::BindingType::Buffer {ty:if binding==0 || binding==16 {wgpu::BufferBindingType::Uniform}else{wgpu::BufferBindingType::Storage {read_only:binding<8 || binding==11 || binding==17}},has_dynamic_offset:binding==16,min_binding_size:None},
             }).collect::<Vec<_>>()});
             let buffers=[&uniform,&selector._instances.buffer,&selector._nodes.buffer,&branches,&reps,&residency.slots,&selector.fallback,&proxies,instances,volumes,&choices,&selector.demand,&root_history,&pose_cache,&pose_work,&root_poses,&levels,&selector.asset_pages];
-            let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("GPU forest materialization"),layout:&layout,entries:&buffers.iter().enumerate().map(|(i,b)|wgpu::BindGroupEntry {binding:i as u32,resource:if i==16 {wgpu::BindingResource::Buffer(wgpu::BufferBinding {buffer:b,offset:0,size:std::num::NonZeroU64::new(16)})}else if i==1 {selector._instances.binding()}else if i==2 {selector._nodes.binding()}else{b.as_entire_binding()}}).collect::<Vec<_>>()});
+            let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("GPU forest materialization"),layout:&layout,entries:&buffers.iter().enumerate().filter(|&(i,_)|i!=2).map(|(i,b)|wgpu::BindGroupEntry {binding:i as u32,resource:if i==16 {wgpu::BindingResource::Buffer(wgpu::BufferBinding {buffer:b,offset:0,size:std::num::NonZeroU64::new(16)})}else{b.as_entire_binding()}}).collect::<Vec<_>>()});
             let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("GPU forest materialization"),bind_group_layouts:&[Some(&layout)],immediate_size:0});
             let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("GPU forest materialization"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_materialize.wgsl").into())});
             let pipeline=gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some("GPU forest materialization"),layout:Some(&pl),module:&module,entry_point:Some("materialize"),compilation_options:Default::default(),cache:gpu.pipeline_cache()});
@@ -636,6 +636,8 @@ impl Runtime {
         let field=[wind.direction.x,wind.direction.y,wind.strength,(wind.time_seconds.rem_euclid(120.)/120.*std::f64::consts::TAU)as f32];
         gpu.queue.write_buffer(&self.uniform,0,bytemuck::cast_slice(&field));
         gpu.queue.write_buffer(&self.uniform,16,bytemuck::cast_slice(&[self.slots,first_owner,self.trees,self.branch_count]));
+        // State.catalog.x: first vec4 of the roots in the selector's catalog buffer.
+        gpu.queue.write_buffer(&self.uniform,32,bytemuck::cast_slice(&[(self.selector._instances.offset/16)as u32,0,0,0]));
         enc.clear_buffer(&self.pose_cache,0,None);enc.clear_buffer(&self.pose_work,0,Some(512));
         let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,&self.bind,&[0]);
         pass.set_pipeline(&self.pose_pipelines[0]);pass.dispatch_workgroups(self.trees.div_ceil(64),1,1);
