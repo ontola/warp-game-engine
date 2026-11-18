@@ -73,31 +73,87 @@ impl Cut {
     }
 }
 
-/// The skull as the hair rests on it: an ellipsoid through the head's skin
-/// above the ears, in metres from the eye midpoint.
+/// Directions round the head's middle in which its skin is measured.
+const AROUND: usize = 64;
+const UPWARD: usize = 32;
+
+/// The head as the hair rests on it, in metres from the eye midpoint: an
+/// ellipsoid through the skin above the ears for the way hair is combed,
+/// and how far the skin itself (ears included) reaches from the middle in
+/// every direction, for what hair may not pass.
 struct Skull {
     centre: Vec3,
     radii: Vec3,
+    reach: Vec<f32>,
 }
 
 impl Skull {
-    fn of(points: &[Vec3]) -> Self {
+    /// `triangles`: the head's skin, three corners each.
+    fn of(triangles: &[[Vec3; 3]]) -> Self {
         let mut lo = Vec3::splat(f32::MAX);
         let mut hi = Vec3::splat(f32::MIN);
-        for &p in points.iter().filter(|p| p.y > 0.03) {
+        for &p in triangles.iter().flatten().filter(|p| p.y > 0.03) {
             (lo, hi) = (lo.min(p), hi.max(p));
         }
         // The crown is the top of the ellipsoid; its middle sits at brow
         // height, where the head is widest.
         let centre = Vec3::new(0., 0.02, (lo.z + hi.z) * 0.5);
-        Self { centre, radii: Vec3::new(hi.x.max(-lo.x), hi.y - centre.y, (hi.z - lo.z) * 0.5) }
+        let radii = Vec3::new(hi.x.max(-lo.x), hi.y - centre.y, (hi.z - lo.z) * 0.5);
+        let mut reach = vec![0f32; AROUND * UPWARD];
+        for t in triangles {
+            // Points every few millimetres over the triangle.
+            let n = (((t[1] - t[0]).length().max((t[2] - t[0]).length()) / 0.003).ceil() as usize).clamp(1, 12);
+            for a in 0..=n {
+                for b in 0..=n - a {
+                    let (u, v) = (a as f32 / n as f32, b as f32 / n as f32);
+                    let d = t[0] * (1. - u - v) + t[1] * u + t[2] * v - centre;
+                    let (x, y) = Self::cell(d);
+                    let at = &mut reach[x as usize % AROUND + (y as usize).min(UPWARD - 1) * AROUND];
+                    *at = at.max(d.length());
+                }
+            }
+        }
+        // Where there is no skin (the open neck), the ellipsoid stands in.
+        for y in 0..UPWARD {
+            for x in 0..AROUND {
+                if reach[x + y * AROUND] == 0. {
+                    let lon = (x as f32 + 0.5) / AROUND as f32 * std::f32::consts::TAU - std::f32::consts::PI;
+                    let lat = (y as f32 + 0.5) / UPWARD as f32 * std::f32::consts::PI - std::f32::consts::FRAC_PI_2;
+                    let d = Vec3::new(lon.sin() * lat.cos(), lat.sin(), lon.cos() * lat.cos());
+                    reach[x + y * AROUND] = 1. / (d / radii).length();
+                }
+            }
+        }
+        Self { centre, radii, reach }
     }
 
-    /// Keep `p` at least `clear` metres outside.
+    /// Where direction `d` falls in the map, in cells.
+    fn cell(d: Vec3) -> (f32, f32) {
+        let lon = d.x.atan2(d.z);
+        let lat = (d.y / d.length().max(1e-9)).clamp(-1., 1.).asin();
+        (
+            (lon + std::f32::consts::PI) / std::f32::consts::TAU * AROUND as f32,
+            (lat + std::f32::consts::FRAC_PI_2) / std::f32::consts::PI * UPWARD as f32,
+        )
+    }
+
+    /// Keep `p` at least `clear` metres outside the skin.
     fn rest(&self, p: Vec3, clear: f32) -> Vec3 {
-        let q = (p - self.centre) / (self.radii + Vec3::splat(clear));
-        let r = q.length();
-        if r >= 1. || r < 1e-5 { p } else { self.centre + q / r * (self.radii + Vec3::splat(clear)) }
+        let d = p - self.centre;
+        let r = d.length();
+        if r < 1e-5 {
+            return p;
+        }
+        let (x, y) = Self::cell(d);
+        let (x, y) = (x - 0.5, (y - 0.5).clamp(0., UPWARD as f32 - 1.));
+        let (x0, y0) = (x.floor(), y.floor());
+        let at = |i: f32, j: f32| {
+            self.reach[(i.rem_euclid(AROUND as f32)) as usize % AROUND + (j as usize).min(UPWARD - 1) * AROUND]
+        };
+        let (fx, fy) = (x - x0, y - y0);
+        let skin = (at(x0, y0) * (1. - fx) + at(x0 + 1., y0) * fx) * (1. - fy)
+            + (at(x0, y0 + 1.) * (1. - fx) + at(x0 + 1., y0 + 1.) * fx) * fy;
+        if r >= skin + clear { p } else { self.centre + d / r * (skin + clear) }
     }
 
     fn outward(&self, p: Vec3) -> Vec3 {
@@ -114,7 +170,9 @@ fn grow(root: Vec3, normal: Vec3, cut: Cut, skull: &Skull, id: u32) -> [Vec3; PO
     let length = (cut.sides + (cut.top - cut.sides) * top) * (0.75 + 0.2 * lock(11) + 0.15 * roll(1));
     // The comb: away from the parting on top, back or forward at the front,
     // down everywhere else.
-    let away = if root.x >= cut.part { 1. } else { -1. };
+    // Next to the parting hair runs back along it before it turns aside,
+    // so the parting is a line and not a bare strip.
+    let away = smooth(-0.006, 0.006, root.x - cut.part) * 2. - 1.;
     let fore = smooth(-0.07, -0.01, root.z);
     let comb = Vec3::new(away * (0.35 + 0.65 * (1. - fore * cut.sweep.abs())), -0.15, -cut.sweep * fore - 0.25 * (1. - fore));
     let flat = |v: Vec3, n: Vec3| (v - n * v.dot(n)).normalize_or(Vec3::NEG_Y);
@@ -132,7 +190,12 @@ fn grow(root: Vec3, normal: Vec3, cut: Cut, skull: &Skull, id: u32) -> [Vec3; PO
         // Weight bends a strand more the longer it reaches past its root;
         // stray hairs stand off a little.
         let sag = (along / 0.06).min(1.) * 0.55 + 0.05;
-        dir = (dir + Vec3::NEG_Y * sag * step / 0.012 * 0.25).normalize();
+        // Hair follows the round of the head it lies on: what points away
+        // from the skull is bent back along it, less the more the hair is
+        // lifted, and not below the widest part of the head, where it hangs.
+        let out = skull.outward(p);
+        let hug = (1. - lift) * smooth(-0.03, 0.02, p.y - skull.centre.y);
+        dir = (dir - out * dir.dot(out).max(0.) * hug + Vec3::NEG_Y * sag * step / 0.012 * 0.25).normalize();
         let swing = cut.wave * (cut.pitch * along + phase).sin() * (along / 0.04).min(1.);
         let next = p + dir * step + across * (swing - cut.wave * (cut.pitch * (along - step) + phase).sin() * ((along - step) / 0.04).clamp(0., 1.));
         // Rest on the skull, lower layers under upper ones.
@@ -167,7 +230,7 @@ pub(super) fn strands(body: &[BodyVertex], indices: &[u32], eyes: Vec3, skull: f
         .map(|t| [0, 1, 2].map(|k| &body[t[k] as usize]))
         .filter(|t| t[0].material == FACE)
         .collect();
-    let head: Vec<Vec3> = triangles.iter().flat_map(|t| t.map(|v| metres(v.position))).collect();
+    let head: Vec<[Vec3; 3]> = triangles.iter().map(|t| t.map(|v| metres(v.position))).collect();
     let skull_shape = Skull::of(&head);
     // Hair-bearing area, to share the strands out evenly.
     let cover = |t: &[&BodyVertex; 3]| {

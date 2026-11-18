@@ -434,7 +434,7 @@ impl Character {
                 CHEEKS[tile],
                 warp_skin::Traits::new(seed, skin_color.dot(Vec3::new(0.3, 0.6, 0.1))),
                 // The face's tint multiplies this back to the hair's dark.
-                (hair * 0.42 * CHEEKS[tile] / skin_color.max(Vec3::splat(0.05))).min(Vec3::ONE),
+                (hair * 0.7 * CHEEKS[tile] / skin_color.max(Vec3::splat(0.05))).min(Vec3::ONE),
                 render::frame::TEXTURE_SIZE as usize,
             );
             (

@@ -25,3 +25,14 @@ Joep on the fitted groom shells: "super raar. Alsof er onder het haar een soort 
 - The ear shows through a slot in long hair seen from the side; long hair passes through the shoulders (no collision below the skull).
 - The fringe ends in a straight line with square corners at the temples.
 - Not yet looked at on a real GPU, nor in Growing Guns or Dead Miles.
+
+## Later the same day (main f7f1dcaf)
+
+Joep on the first version: odd round the ears of long hair, and the skull shows through a short cut at the crown.
+
+- Hair rested on an ellipsoid; the head's skin lies outside it in places, so flat hair sank into the scalp, and ears were not in it at all. It now rests on the measured skin (64 by 32 directions from the head's middle).
+- Lifted top hair ran straight on past the head and left a gap above the sides. Hair now bends along the head it lies on.
+- The parting was a bare strip (hair left it to both sides at once); hair beside it now runs back along it first.
+- Scalp tint under the hair 0.42 to 0.7 of the hair colour: under pale hair the roots read as a dark patch.
+
+Still open: a faint whorl on pale hair where the fringe leaves the crown, and the items above.
