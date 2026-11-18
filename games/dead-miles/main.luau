@@ -24,6 +24,7 @@ local body = require("lib/body")
 local land = require("lib/land")
 local props = require("lib/props")
 local dog = require("lib/dog")
+local icons = require("lib/icons")
 local v = vector.create
 
 -- Every encounter file in content/encounters, in name order.
@@ -489,7 +490,7 @@ local BLOOD_MAX = 90
 local function blood_drop(at, r)
 	s.blood = s.blood or {}
 	local look = BLOOD[random.int(1, #BLOOD)]
-	local id = world.spawn("sphere", { pos = v(at.x, 0.012 + #s.blood % 7 * 0.0012, at.z), size = v(r * random.range(0.8, 1.25), 0.012, r * random.range(0.8, 1.25)), rot = v(0, random.range(0, math.pi), 0), color = look.color, roughness = look.roughness, solid = false, tag = "deco" })
+	local id = world.spawn("sphere", { pos = v(at.x, 0.07 + #s.blood % 7 * 0.004, at.z), size = v(r * random.range(0.8, 1.25), 0.012, r * random.range(0.8, 1.25)), rot = v(0, random.range(0, math.pi), 0), color = look.color, roughness = look.roughness, solid = false, tag = "deco" })
 	table.insert(s.blood, id)
 	if #s.blood > BLOOD_MAX then world.remove(table.remove(s.blood, 1)) end
 end
@@ -520,7 +521,7 @@ local function kill_zombie(z, away, strength)
 	s.kills += 1
 end
 
-local function hurt_zombie(z, dmg, from, knock)
+local function hurt_zombie(z, dmg, from, knock, facing)
 	if z.state == "dead" then return end
 	z.hp -= dmg
 	local away = z.pos - from
@@ -532,6 +533,12 @@ local function hurt_zombie(z, dmg, from, knock)
 		return
 	end
 	z.knock = away * (knock or 2)
+	-- The body gives along the blow instead of turning its back: a blow
+	-- that lands off-centre twists it a little the way the weapon went.
+	if facing then
+		local side = away.x * facing.z - away.z * facing.x
+		z.yaw += math.clamp(side * 0.9 * heavy, -0.6, 0.6)
+	end
 	-- The blow carries through: the upper body snaps away and sways back.
 	body.hit(z.fig, away * heavy)
 	blood_splat(z.pos, away, 0.6 + 0.4 * heavy)
@@ -684,8 +691,8 @@ local function place_weapon(kind, pos, dur)
 	local w = HELD[kind]
 	if not w then return end
 	local ent = world.spawn("cube", { pos = v(pos.x, 0.06, pos.z), rot = v(0, random.range(0, math.pi), 0), size = v(w.w, w.w, w.len), color = w.color, metal = w.metal, roughness = w.roughness or 0.6, solid = false, tag = "pickup" })
-	-- A faint glow under it, so it stands out a little in the dark.
-	local ring = world.spawn("sphere", { pos = v(pos.x, 0.02, pos.z), size = v(0.75, 0.02, 0.75), color = GLOW, emissive = 0.35, roughness = 1, solid = false, tag = "pickup" })
+	-- No disc under it: a faint warm light that breathes (lights_step).
+	local ring = nil
 	local d = dur or (if MELEE[kind] then MELEE[kind].dur else GUNS[kind].dur)
 	table.insert(s.pickups, { kind = kind, pos = flat(pos), dur = d, ent = ent, ring = ring })
 end
@@ -1015,7 +1022,7 @@ local function drop_chunk(c)
 	s.pickups = filter(s.pickups, function(p)
 		if p.pos.x > c.x1 then return true end
 		world.remove(p.ent)
-		world.remove(p.ring)
+		if p.ring then world.remove(p.ring) end
 		return false
 	end)
 	s.strangers = filter(s.strangers, function(st)
@@ -1581,7 +1588,7 @@ local function swing_land(u)
 	if #hits == 0 then count("misses") end
 	local hit = 0
 	for i = 1, math.min(#hits, cleave) do
-		hurt_zombie(hits[i].z, w.dmg * power, u.pos, knock * (0.5 + 0.5 * math.min(1, u.swing_power or 1)))
+		hurt_zombie(hits[i].z, w.dmg * power, u.pos, knock * (0.5 + 0.5 * math.min(1, u.swing_power or 1)), dir(u.yaw))
 		hit += 1
 		count("melee_hits")
 	end
@@ -1992,7 +1999,7 @@ local function act(u, it, dt)
 		for i, p in s.pickups do
 			if dist(p.pos, u.pos) < 1.1 then
 				world.remove(p.ent)
-				world.remove(p.ring)
+				if p.ring then world.remove(p.ring) end
 				table.remove(s.pickups, i)
 				-- One thing in the hand: what you held goes down here.
 				drop_melee(u)
@@ -2316,7 +2323,9 @@ local function zombie_step(z, dt)
 	local before = z.pos
 	z.pos = collide(z.pos + (move + push) * dt, RADIUS)
 	local mv = vector.magnitude(move)
-	if mv > 0.3 and z.state ~= "strike" then
+	-- Knocked back (stagger, recover) they keep facing where they faced.
+	local pushed = z.state == "stagger" or z.state == "recover"
+	if mv > 0.3 and z.state ~= "strike" and not pushed then
 		z.yaw = yaw_of(move)
 		if dist(before, z.pos) < mv * dt * 0.25 then
 			z.stuck += dt
@@ -2699,7 +2708,7 @@ local function sight_step()
 	for _, b in s.buildings do
 		if #b.rooms > 0 and math.abs((b.x0 + b.x1) / 2 - cx) < 40 then
 			for _, r in b.rooms do
-				if r.shroud then
+				if r.floor and r.floor_surface then
 					local seen = false
 					for _, u in eyes do
 						local p = u.pos
@@ -2717,7 +2726,7 @@ local function sight_step()
 					local dark_now = r.seen_t <= 0
 					if dark_now ~= (r.dark ~= false) then
 						r.dark = dark_now
-						world.set(r.shroud, { visible = dark_now })
+						world.set(r.floor, { surface = r.floor_surface + (if dark_now then land.UNSEEN else 0) })
 					end
 				end
 			end
@@ -2800,7 +2809,6 @@ function warm_all()
 	for _, c in { "#5a1e18", "#6a2a20", "#8a1a14", "#6a1410" } do world.warm("cube", { color = c, emissive = 0.06 }) end
 	-- A breaking weapon bursts into bits of its own colour.
 	for _, w in HELD do world.warm("cube", { color = w.color, emissive = 0.06 }) end
-	world.warm("sphere", { color = GLOW, emissive = 0.35, roughness = 1 })
 	world.warm("cube", { color = "#fff2c0", emissive = 0.6 })
 	world.warm("cube", { color = "#ffd27a", emissive = 1.2 })
 	world.warm("cube", { color = "#e8dfc4", emissive = 0.05 })
@@ -3163,8 +3171,8 @@ end
 ----------------------------------------------------------------------------
 -- The HUD: stocks in a corner, injuries and wear under each survivor.
 
-local function icon(x, y, k, color, n)
-	hud.box(x, y + 4 * k, 16 * k, 16 * k, color)
+local function icon(x, y, k, kind, n)
+	icons.draw(kind, x, y + 3 * k, 18 * k)
 	hud.text(tostring(n), x + 22 * k, y, { size = 22 * k, color = if n == 0 then "#ff6a4a" else "#f4efe6" })
 end
 
@@ -3242,6 +3250,14 @@ local function torches()
 			if u.flash then table.insert(list, { pos = v(u.pos.x, 1.4, u.pos.z), color = "#ffd27a", intensity = 900, range = 14 }) end
 		end
 	end
+	-- Things to pick up: a subtle pulsing glow just over each one in view,
+	-- out of step with each other.
+	for _, p in s.pickups or {} do
+		if view_dist(p.pos) < 26 then
+			local pulse = 0.5 + 0.5 * math.sin(game.time() * 2.6 + p.pos.x * 1.7)
+			table.insert(list, { pos = v(p.pos.x, 0.35, p.pos.z), color = GLOW, intensity = 3 + 7 * pulse, range = 1.4 + 0.4 * pulse })
+		end
+	end
 	-- Street lights that still work, nearest the view first.
 	if dark() then
 		local near = {}
@@ -3305,18 +3321,18 @@ local function draw()
 		hud.text("NIGHT " .. (s.day - 1), 0, H * 0.38, { size = 64 * k, align = "center", width = W, color = "#f4efe6" })
 		hud.text(math.floor(s.route) .. " m walked", 0, H * 0.38 + 78 * k, { size = 26 * k, align = "center", width = W, color = "#b8b0a0" })
 		if s.camp_short > 0 then
-			hud.text("not enough food", 0, H * 0.38 + 118 * k, { size = 22 * k, align = "center", width = W, color = "#ff8a6a" })
+			icons.text("not enough food", 0, H * 0.38 + 118 * k, { size = 22 * k, align = "center", width = W, color = "#ff8a6a" })
 		end
 		return
 	end
 
 	local x, y = 24 * k, 18 * k
 	hud.box(x - 10 * k, y - 8 * k, 330 * k, 44 * k, { 0, 0, 0, 0.4 })
-	icon(x, y, k, ITEM_COLORS.ammo, s.ammo)
-	icon(x + 70 * k, y, k, ITEM_COLORS.food, s.food)
-	icon(x + 140 * k, y, k, ITEM_COLORS.meds, s.meds)
+	icon(x, y, k, "ammo", s.ammo)
+	icon(x + 70 * k, y, k, "food", s.food)
+	icon(x + 140 * k, y, k, "meds", s.meds)
 	-- The battery as a bar.
-	hud.box(x + 210 * k, y + 4 * k, 16 * k, 16 * k, ITEM_COLORS.battery)
+	icons.draw("battery", x + 210 * k, y + 3 * k, 18 * k)
 	bar(x + 234 * k, y + 8 * k, 70 * k, 8 * k, s.battery / 100, if s.battery < 15 then "#ff6a4a" else ITEM_COLORS.battery)
 	hud.text("DAY " .. s.day .. "   " .. math.max(0, math.floor(s.route)) .. " m", W - 260 * k, y, { size = 22 * k, width = 240 * k, align = "right", color = "#f4efe6" })
 
@@ -3363,7 +3379,7 @@ local function draw()
 					if gx then bar(gx - 24 * k, gy + 26 * k, 48 * k, 4 * k, 1 - u.t / KNOBS.ghost, c) end
 				end
 				if u.popup then
-					hud.text(u.popup.text, px - 100 * k, py - 140 * k - (1.8 - u.popup.t) * 20 * k, { size = 20 * k, align = "center", width = 200 * k, color = u.popup.color })
+					icons.text(u.popup.text, px - 100 * k, py - 140 * k - (1.8 - u.popup.t) * 20 * k, { size = 20 * k, align = "center", width = 200 * k, color = u.popup.color })
 				end
 				if not u.bot and u.state == "ok" and not u.talk then
 					if u.tip then
@@ -3391,13 +3407,13 @@ local function draw()
 						local cy = math.clamp(py - 150 * k - ch, 10 * k, H - ch - 10 * k)
 						hud.box(cx, cy, cw, ch, { 0.05, 0.05, 0.06, 0.88 })
 						hud.box(cx, cy, 4 * k, ch, c)
-						hud.text(e.says or e.title or "", cx + 16 * k, cy + 10 * k, { size = 19 * k, width = cw - 28 * k, color = "#e8e0d0" })
+						icons.text(e.says or e.title or "", cx + 16 * k, cy + 10 * k, { size = 19 * k, width = cw - 28 * k, color = "#e8e0d0" })
 						for i, choice in e.choices do
 							local yy = cy + (44 + 30 * (i - 1)) * k
 							local sel = i == u.talk_i
 							if sel then hud.box(cx + 8 * k, yy - 2 * k, cw - 16 * k, 26 * k, { 1, 1, 1, 0.1 }) end
 							local afford = has(choice.cost)
-							hud.text(choice.label, cx + 18 * k, yy, { size = 19 * k, width = cw - 30 * k, color = if not afford then "#7a746c" elseif sel then "#ffffff" else "#c8c0b4" })
+							icons.text(choice.label, cx + 18 * k, yy, { size = 19 * k, width = cw - 30 * k, color = if not afford then "#7a746c" elseif sel then "#ffffff" else "#c8c0b4", dim = not afford })
 						end
 					end
 				end

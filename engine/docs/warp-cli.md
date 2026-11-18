@@ -207,7 +207,7 @@ keyboard mapping is in `app::input`.
 | `players` | `list() -> players`, `get(id) -> player or nil`, `count()`, `rumble(id, strength, seconds?)` |
 | `camera` | `set(player, {pos, target, fov})`, `get(player)`, `views({[player] = view})` (who shares which part of a split screen; views from 1, so a game can split when players walk apart) |
 | `sound` | `play(name, {at, db, pitch, <param> = value}) -> handle`, `set_param(handle, param, value)`, `stop(handle)`, `list()` |
-| `hud` | `text(text, x, y, {size, color, align, width})`, `box(x, y, w, h, color)`, `size() -> w, h`, `view(player) -> x, y, w, h`, `project(pos, player?) -> x, y or nil` |
+| `hud` | `text(text, x, y, {size, color, align, width})`, `box(x, y, w, h, color)`, `size() -> w, h`, `measure(text, size?) -> w, h` (one line of `text` in the HUD font, in pixels), `view(player) -> x, y, w, h`, `project(pos, player?) -> x, y or nil` |
 | `post` | `set({bloom, bloom_radius, bloom_threshold, bloom_wide, contrast, saturation, vignette, grain, aberration})`, `reset()` |
 | `humans` | `spawn(pool, {pos, yaw})` → id or nil when the pool is full, `set(id, {pos, yaw, pose, t, tired, coil})`, `hit(id, dir)`, `ragdoll(id, push)`, `remove(id)`, `head(id)` and `joint(id, name)` → vector, `room(pool)` → free, total |
 | `lights` | `set({{pos, color, intensity, range}, ...})` (at most 32), `spots({{pos, dir, color, intensity, range, angle, inner}, ...})` (at most 8, with shadows), `clear()` |

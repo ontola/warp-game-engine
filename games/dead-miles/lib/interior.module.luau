@@ -318,9 +318,9 @@ function M.furnish(api, b, r, kind: string?, kinds: { string })
 	local mx, mz = (r.x0 + r.x1) / 2, (r.z0 + r.z1) / 2
 	local fc = C.floor[room]
 	if fc then
-		api.deco("cube", v(mx, 0.014, mz), v(r.x1 - r.x0 - 0.2, 0.004, r.z1 - r.z0 - 0.2), fc, { roughness = 0.6 })
+		api.deco("cube", v(mx, 0.06, mz), v(r.x1 - r.x0 - 0.2, 0.004, r.z1 - r.z0 - 0.2), fc, { roughness = 0.6 })
 	elseif room == "living" or room == "bedroom" then
-		api.deco("cube", v(mx + random.range(-0.3, 0.3), 0.016, mz + random.range(-0.3, 0.3)), v(random.range(1.6, 2.4), 0.008, random.range(1.2, 1.8)), C.rugs[random.int(1, #C.rugs)],
+		api.deco("cube", v(mx + random.range(-0.3, 0.3), 0.065, mz + random.range(-0.3, 0.3)), v(random.range(1.6, 2.4), 0.008, random.range(1.2, 1.8)), C.rugs[random.int(1, #C.rugs)],
 			{ roughness = 0.97, rot = v(0, random.range(-0.2, 0.2), 0) })
 	end
 	if room ~= "barn" and random.chance(0.5) then
