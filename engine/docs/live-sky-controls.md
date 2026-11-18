@@ -1,7 +1,7 @@
 # Live sky controls
 
 The procedural sky with time of day and weather is an engine feature,
-`render::sky`. Sideways uses it from its pause menu and Gamepad Party; Growing Guns
+`render::sky`. Sideways uses it from its pause menu and Splitscreen Club; Growing Guns
 uses it from `--sky` and the `sky` console command (also reachable through the
 live MCP server's `command` tool). The dated Sideways notes follow the engine
 and Growing Guns sections.
@@ -119,7 +119,7 @@ the cached menu is not presented after resuming with HUD off.
 - Resume and New stage retain their separate meanings. Only New stage rebuilds
   a route. Time and atmosphere changes preserve the current race and positions.
 
-Gamepad Party declares the same live choices as `sky_time` and `sky_weather`.
+Splitscreen Club declares the same live choices as `sky_time` and `sky_weather`.
 The existing `weather` setting is labelled **Road weather (next stage)** and
 continues to control the next race's road/weather behavior. Visual atmosphere
 changes do not silently change grip. A custom initial sun direction appears as
@@ -147,7 +147,7 @@ stage rebuilds. Sun and temporal histories invalidate through the renderer API.
 GPU update errors, worker creation failure and a disconnected worker leave the
 last applied sky intact and clear the updating state instead of quitting play.
 
-Polling happens before the Gamepad Party render-quiet early return. A host-paused
+Polling happens before the Splitscreen Club render-quiet early return. A host-paused
 game can finish/apply the requested sky without rendering the whole world or
 waiting for Resume. The standalone menu displays **Updating sky...**, then
 **Applied**, or a short error preserving the old sky.

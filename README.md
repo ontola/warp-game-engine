@@ -34,7 +34,7 @@ what is the default, what is opt-in and what is still open.
 - **The rest of a game:** Rapier physics with enhanced determinism, bodies
   that move from motion-captured clips and gaits, Warp Humans (people and
   crowds), synthesised audio, GPU particles, online play over iroh, and a
-  native [Gamepad Party](https://gamenight.ontola.io) client.
+  native [Splitscreen Club](https://gamenight.ontola.io) client.
 - **Tools in every game:** F3 stats overlay, F4 feedback capture (state,
   camera and GPU timings beside the PNG, replayable with `warp inspect`,
   `warp relight` and `warp compare`), F10 render debug menu and a
@@ -60,7 +60,7 @@ WebGPU minimum of 8 storage buffers per shader stage so it can get there.
 | [Pine Lab](games/pine-lab/README.md) | Jeffrey pines regrown live as growth rules change | Luau |
 | [Human Lab](games/human-lab/README.md) | Warp Humans up close: a row of people and fixed portrait cameras | Luau |
 | [Hello Warp](games/hello-warp/README.md) | The starter that `warp new` writes | Luau |
-| [Game Room](lobbies/game-room/README.md) | Gamepad Party's lobby | Rust |
+| [Game Room](lobbies/game-room/README.md) | Splitscreen Club's lobby | Rust |
 
 ## Quick start
 

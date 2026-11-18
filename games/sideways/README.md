@@ -1,9 +1,9 @@
 # Sideways
 
-A gravel rally game for Gamepad Party, running on [Warp](../../engine/README.md).
+A gravel rally game for Splitscreen Club, running on [Warp](../../engine/README.md).
 Up to four players share a 4K output. The 120 FPS target is not yet reached.
 
-`app/` contains the native application, HUD, visuals and Gamepad Party adapter.
+`app/` contains the native application, HUD, visuals and Splitscreen Club adapter.
 `sim/` contains stages, physics, AI and race state. `determinism/` retains
 stable RNG/noise/math behavior without a Godot runtime. Existing Cargo package
 names are retained for script compatibility.
@@ -23,7 +23,7 @@ successful build. Logs and executable manifests live in this game's
 `build/dev-runs/`. F4 or F12 opens Warp’s point overlay on a frozen frame and captures its source geometry and driving inputs. Click or tap the problem, or press Esc to resume without a point. Use `warp inspect` for pixel picking and `warp compare` to repeat a drive after a physics or rendering change. [Sideways feedback guide](../../engine/docs/warp-cli.md#sideways-feedback).
 Old `engine/build/` runs remain historical evidence.
 
-For a managed Gamepad Party preview, register the package with the graphics profile
+For a managed Splitscreen Club preview, register the package with the graphics profile
 from a recorded developer playtest. Copying only the executable is insufficient:
 `SIDEWAYS_PROCEDURAL_GRASS=field` selects the new GPU meadow; without it the
 legacy photographed grass is constructed. `KERN_MEADOW_AGGREGATE=1` alone does
@@ -75,8 +75,8 @@ games/sideways/tools/test-register-gamenight.ps1
 The package must include its verified executable, game assets and DLSS runtime.
 The helper copies the complete preview graphics profile, remaps packaged asset
 paths, preserves other games and backs up registration changes. `-ValidateOnly`
-reviews without writing. It does not launch or stop Gamepad Party. Its default is
-4K output with DLSS Performance; Gamepad Party supplies the actual player count.
+reviews without writing. It does not launch or stop Splitscreen Club. Its default is
+4K output with DLSS Performance; Splitscreen Club supplies the actual player count.
 These flags remain scoped to the registered preview, not engine defaults.
 After launch verify the log identifies `GPU meadow`, `full terrain field` and
 `no photographed grass or CPU tuft pool`; process startup alone is insufficient.
@@ -191,7 +191,7 @@ The [r60 handling trial](docs/history/handling-grip-r60.md) selects
 of [`data/cars.luau`](data/cars.luau), for more grip and earlier lateral bite.
 Both accept finite values from 0.5 to 1.5; `1.0/1.0` restores the original
 tuning. Edit the game's data copy: the next stage (N, or the end of this one)
-and Gamepad Party Prepare read it again; a file with an error keeps the cars
+and Splitscreen Club Prepare read it again; a file with an error keeps the cars
 from before and says why on screen.
 Flat-gravel tests show about 10% less sideways travel, with subjective driving
 acceptance still pending. Physics remains 120 Hz with four substeps.
@@ -233,5 +233,5 @@ games/sideways/tools/test-play-dev.ps1
 ```
 
 See the [diagnostics guide](../../engine/tools/frame-budget.md) for measurement
-contracts. Gamepad Party acceptance tools are in `tools/`. The Godot implementation,
+contracts. Splitscreen Club acceptance tools are in `tools/`. The Godot implementation,
 oracle comparison and export pipeline are removed.

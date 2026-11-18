@@ -132,7 +132,7 @@ pub fn draw(lobby: &Lobby, size: [u32; 2], _alpha: f32) -> HudDrawList {
     }
     if !lobby.host.demo && !lobby.host.connected {
         let fs = (24.0 * scale).floor();
-        let msg = "Connecting to Gamepad Party…";
+        let msg = "Connecting to Splitscreen Club…";
         let bw = width(msg, fs) + 48.0;
         c.rect([w / 2.0 - bw / 2.0, 24.0, bw, fs + 28.0], rgba(0.03, 0.03, 0.06, 0.9));
         text(&mut c, msg, [w / 2.0 - bw / 2.0 + 24.0, 24.0 + fs + 6.0], fs, AMBER);
