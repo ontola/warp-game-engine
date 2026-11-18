@@ -88,6 +88,8 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_VOXEL_SELF_SHADOW_COARSER` | unset | Coarser voxel self-shadow mip. |
 | `KERN_CUT_HYSTERESIS` | 1.25 | How much less error a tree the camera drew in detail last frame keeps that detail down to, so the cut does not flip each frame (`foliage_refine.rs`; values below 1 are ignored, 1 disables it). |
 | `KERN_RASTER_FLOOR` | 8388608 | Lowest raster budget for the GPU forest (`foliage_runtime.rs`); the budget is the larger of this and the sum of the proxies' work, at most 16777216. |
+| `KERN_VEGETATION_BUDGETS` | unset | Replaces the tier's steps for tuning: `error scale,source clusters,splats,slot share`, for example `1.5,2097152,8388608,1`. |
+| `KERN_VEGETATION_QUALITY` | by adapter | Vegetation tier `low`, `medium` or `high` (`vegetation_quality.rs`): scales the forest's pixel error target and caps its voxel splat, branch slot and (on low) needle budgets. Unset: discrete GPU high, integrated medium, unknown low; `app` steps it down when adaptive quality runs out. |
 | `KERN_SOURCE_CLUSTERS` | 2097152 | Source cluster budget that bounds the camera cut in a GPU forest (`foliage_runtime.rs`), at least 1. |
 | `KERN_BRANCH_CELL_M` | 0.075 | Finest branch voxel cell in metres for aggregate cooks (accepted from 0.01 up to the default); each halving adds a level and quadruples the brick and voxel caps (`recipe_forest.rs`). |
 | `KERN_FAR_TREE_SHADOW_FROM` | 0.35 | Where in the shared sun map (its clip-space radius) per-tree ground shadows start to take over (`shade.wgsl`). |
@@ -95,6 +97,8 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_FOREST_FLOOR_DARK` | 0.85 | How strongly the painted far ground darkens under forest stands (`terrain_surface.wgsl`). |
 | `KERN_NEEDLE_BRUSH_OWN` | 0.42 | The share of the sun a drawn needle crown keeps (`shade.wgsl`). |
 | `KERN_VOXEL_OWN_IN_CLIPMAP` | 0 | Share of a voxel cell's own sun march kept where the sun clipmap covers it; 1 keeps all of it (`shade.wgsl`). |
+| `KERN_VOXEL_LEAF_PARITY` | 1 | Voxel leaves take the needle brushes' own shade (`KERN_NEEDLE_BRUSH_OWN`) on sun and sky and read sky visibility at the surface, like mesh needles; 0 = the old voxel lighting (`shade.wgsl`). |
+| `KERN_VOXEL_DISC_DEPTH` | 1 | Voxel splat alpha uses the optical depth over the drawn disc's mean chord (cell/1.487) for camera and sun splats and the splat booking estimate; 0 = the old cube chord cell/L1 (`voxel_forest.wgsl` `volume_splat_append`). |
 | `KERN_FAR_CROWN` | unset | Comma-separated look values for the painted far forest in the order base, area, sun_loss, sky_loss, opacity, filter, gap, size, shadow_opacity, shadow_size; any may be left empty (`frame.rs`, `terrain_surface.wgsl`). |
 | `KERN_GRASS_PROXY` | 0.6,0.85,0.5 | `r,g,b` colour the ground takes past the grass disc in `terrain_fly`. |
 
@@ -147,3 +151,5 @@ note linked says why. They are candidates for removal from the code.
 | `KERN_MEADOW_VISIBILITY` (+ `KERN_MEADOW_SKIP_HIDDEN_SHADE`) | Meadow visibility pass | [r47](log/meadow-work-r47.md) |
 | `KERN_MEADOW_SPATIAL_FILTER`, `KERN_MEADOW_CONTACT_AO`, `KERN_MEADOW_EDGE_SHADOW` | Grass filtering and contact shading | [r59](log/meadow-contact-ao-r59.md), [r64](log/meadow-edge-grain-r64.md) |
 | `KERN_DIRECT_DRAWS`, `KERN_SKY_TILES`, `KERN_NEAR_SUN_SOURCE`, `KERN_SOURCE_CROWN_BOUNDS`, `KERN_CANOPY_COMPACT_SUPPORT`, `KERN_LEGACY_LIGHT_LOOKAHEAD`, `KERN_VOXEL_ANTIPODAL_NORMALS` | Direct draw arguments, tiled sky light, near sun from source geometry, crown bounds, legacy headlight lookahead, voxel normals | No note describes these; read the code before relying on them. |
+| `KERN_LIGHT_DEBUG` (terrain_fly) | Lighting debug view for crops: 1 sky visibility, 2 albedo, 3 direct, 4 indirect, 5 specular | terrain_fly.rs `draw` |
+| `KERN_REFINE_WAVE_PUBLISH`, `KERN_REFINE_ROUNDS` | Foliage refine: workgroup-aggregated record publishes (0 = one global atomic per task); fixed refine round count (diagnostic) | foliage_refine.rs / foliage_refine.wgsl `fast_round_wave` |

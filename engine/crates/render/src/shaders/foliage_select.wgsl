@@ -4,10 +4,23 @@ struct Node { sphere:vec4<f32>, error:vec4<f32>, links:vec4<u32> };
 struct Tree { x:vec4<f32>, y:vec4<f32>, z:vec4<f32>, scale:vec4<f32>, info:vec4<u32> };
 // info: root node, stable generation, reserved, reserved. scale.y: wind envelope.
 struct Consumer { vp:mat4x4<f32>, pixels:vec4<f32> };
-struct View { consumers:array<Consumer,32>, consumer_count:vec4<u32>, vp:mat4x4<f32>, previous_vp:mat4x4<f32>, pixels:vec4<f32>, counts:vec4<u32> };
+struct View { consumers:array<Consumer,32>, consumer_count:vec4<u32>, vp:mat4x4<f32>, previous_vp:mat4x4<f32>, pixels:vec4<f32>, counts:vec4<u32>, catalog:vec4<u32> };
 @group(0) @binding(0) var<uniform> view:View;
-@group(0) @binding(1) var<storage,read> nodes:array<Node>;
-@group(0) @binding(2) var<storage,read> trees:array<Tree>;
+@group(0) @binding(1) var<storage,read> catalog:array<vec4<u32>>;
+// Hierarchy nodes (three vec4 each) and trees (five each) in one read-only
+// binding (foliage_select.rs Region::catalog): nodes from 0, trees from
+// view.catalog.x. Read by field so a loop touching one field loads one vec4.
+fn catalog_trees()->u32 {return view.catalog.x;}
+fn node_sphere(i:u32)->vec4<f32> {return bitcast<vec4<f32>>(catalog[i*3u]);}
+fn node_error(i:u32)->vec4<f32> {return bitcast<vec4<f32>>(catalog[i*3u+1u]);}
+fn node_links(i:u32)->vec4<u32> {return catalog[i*3u+2u];}
+fn node_at(i:u32)->Node {return Node(node_sphere(i),node_error(i),node_links(i));}
+fn tree_x(i:u32)->vec4<f32> {return bitcast<vec4<f32>>(catalog[catalog_trees()+i*5u]);}
+fn tree_y(i:u32)->vec4<f32> {return bitcast<vec4<f32>>(catalog[catalog_trees()+i*5u+1u]);}
+fn tree_z(i:u32)->vec4<f32> {return bitcast<vec4<f32>>(catalog[catalog_trees()+i*5u+2u]);}
+fn tree_scale(i:u32)->vec4<f32> {return bitcast<vec4<f32>>(catalog[catalog_trees()+i*5u+3u]);}
+fn tree_info(i:u32)->vec4<u32> {return catalog[catalog_trees()+i*5u+4u];}
+fn tree_at(i:u32)->Tree {return Tree(tree_x(i),tree_y(i),tree_z(i),tree_scale(i),tree_info(i));}
 @group(0) @binding(3) var<storage,read_write> records:array<vec4<u32>>;
 @group(0) @binding(4) var<storage,read_write> deferred:array<vec2<u32>>;
 @group(0) @binding(5) var<storage,read_write> counters:array<atomic<u32>>;
@@ -109,10 +122,10 @@ fn error_pixels(s:vec4<f32>,error:f32)->f32 {
 // runs identically in count and publication; no partial sibling cut is emitted.
 // Requests remain shared logical asset requests, never a CPU tree shortlist.
 fn children_ready(tree:u32,node:u32)->bool {
- let t=trees[tree];let start=child_list[node*2u];let count=child_list[node*2u+1u];
+ let t=tree_at(tree);let start=child_list[node*2u];let count=child_list[node*2u+1u];
  var ready=true;
  for(var i=0u;i<count;i++) {
-  let child=nodes[child_list[start+i]];
+  let child=node_at(child_list[start+i]);
   if visible(sphere(t,child)) {
    // Do not short circuit: request every missing sibling in the same frame.
    let resident=asset_ready(child.links.z);ready=ready && resident;
@@ -121,17 +134,17 @@ fn children_ready(tree:u32,node:u32)->bool {
  return ready;
 }
 fn emit(tree:u32,node:u32) {
- if !asset_ready(nodes[node].links.z) {atomicStore(&fallback[tree],4u);return;}
- if (nodes[node].links.w&2u)!=0u {direct_roots[tree]=nodes[node].links.z+1u;atomicAdd(&counters[7],1u);return;}
+ if !asset_ready(node_links(node).z) {atomicStore(&fallback[tree],4u);return;}
+ if (node_links(node).w&2u)!=0u {direct_roots[tree]=node_links(node).z+1u;atomicAdd(&counters[7],1u);return;}
  let at=atomicAdd(&counters[0],1u);
- if at<view.counts.y {records[at]=vec4<u32>(tree,node,nodes[node].links.z,trees[tree].info.y);}
+ if at<view.counts.y {records[at]=vec4<u32>(tree,node,node_links(node).z,tree_info(tree).y);}
  else {atomicStore(&fallback[tree],1u);atomicAdd(&counters[3],1u);}
 }
 fn walk(tree:u32,start:u32,phase:u32) {
- let t=trees[tree];let end=nodes[start].links.y;var n=start;
+ let t=tree_at(tree);let end=node_links(start).y;var n=start;
  loop {
   if n>=end {break;}
-  let node=nodes[n];let s=sphere(t,node);atomicAdd(&counters[4],1u);
+  let node=node_at(n);let s=sphere(t,node);atomicAdd(&counters[4],1u);
   if !visible(s){atomicAdd(&counters[5],1u);n=node.links.y;continue;}
   let use_hzb=phase==2u || view.counts.w!=0u;
   var matrix=view.previous_vp;
@@ -150,8 +163,8 @@ fn walk(tree:u32,start:u32,phase:u32) {
  }
 }
 @compute @workgroup_size(64) fn first(@builtin(global_invocation_id) id:vec3<u32>) {
- if id.x<view.counts.x && trees[id.x].info.w==0u {
-  walk(id.x,trees[id.x].info.x,1u);
+ if id.x<view.counts.x && tree_info(id.x).w==0u {
+  walk(id.x,tree_info(id.x).x,1u);
  }
 }
 @compute @workgroup_size(1) fn finish() {
