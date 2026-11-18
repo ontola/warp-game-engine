@@ -845,7 +845,7 @@ impl Runtime {
                 if roles&256!=0 {consumers.push(crate::foliage_select::ConsumerView::camera(view));}
                 if roles&512!=0 {consumers.push(crate::foliage_select::ConsumerView::shadow(view));}
                 let mut enc=gpu.device.create_command_encoder(&Default::default());runtime.encode_timed(&gpu,&mut enc,&consumers,spec.first_owner,None).unwrap();gpu.queue.submit([enc.finish()]);
-                let raw=read(&runtime.selector.direct);let direct:&[u32]=bytemuck::cast_slice(&raw);assert_ne!(direct[0],0,"fixture must publish a complete resident ancestor");
+                let direct=runtime.selector.direct.read(&gpu);assert_ne!(direct[0],0,"fixture must publish a complete resident ancestor");
                 if fallback {
                     // Exercise the actual fallback materializer without changing consumer demand.
                     gpu.queue.write_buffer(&runtime.selector.fallback,0,bytemuck::cast_slice(&[2u32]));

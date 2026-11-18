@@ -15,26 +15,39 @@ struct AssetPage {resident:u32,requested:atomic<u32>,generation:u32,padding:u32}
 struct Proposal {old:vec4<u32>,replacement:vec4<u32>,prefix:vec4<u32>,control:vec4<u32>,output:vec4<u32>,publication:vec4<u32>};
 @group(0) @binding(4) var<storage,read_write> proposals:array<Proposal>;
 // task: root, node (NONE means emergency proxy), consumer mask, dormant index+2 (0=new).
-// Both work queues in one binding: this round's tasks at queue_half.x, the next
-// round's at queue_half.y, queue_half.z tasks each (foliage_refine.rs swaps the halves).
+// Both work queues in one binding: this round's tasks at refine_layout.queue.x, the next
+// round's at refine_layout.queue.y, refine_layout.queue.z tasks each (foliage_refine.rs swaps the halves).
 @group(0) @binding(5) var<storage,read_write> queue:array<vec4<u32>>;
-@group(0) @binding(6) var<uniform> queue_half:vec4<u32>;
+// queue: this round's half, the next round's, tasks per half. selected: word
+// offsets of the record consumers and direct roots within `selected`.
+struct RefineLayout {queue:vec4<u32>,selected:vec4<u32>};
+@group(0) @binding(6) var<uniform> refine_layout:RefineLayout;
 // 32 global priority totals, followed by 32 buckets per 256-task block.
 @group(0) @binding(7) var<storage,read_write> blocks:array<vec4<u32>>;
-@group(0) @binding(8) var<storage,read_write> records:array<vec4<u32>>;
+// Selected records (four words each), their consumer masks and the per-tree
+// direct roots in one binding (foliage_select.rs Region::selected); other
+// passes bind each range on its own. Plain words, read and written by field.
+@group(0) @binding(8) var<storage,read_write> selected:array<u32>;
+fn selected_consumers_base()->u32 {return refine_layout.selected.x;}
+fn selected_direct_base()->u32 {return refine_layout.selected.y;}
+fn record_at(i:u32)->vec4<u32> {let b=i*4u;return vec4<u32>(selected[b],selected[b+1u],selected[b+2u],selected[b+3u]);}
+fn set_record(i:u32,r:vec4<u32>,consumers:u32) {
+ let b=i*4u;selected[b]=r.x;selected[b+1u]=r.y;selected[b+2u]=r.z;selected[b+3u]=r.w;
+ selected[selected_consumers_base()+i]=consumers;
+}
+fn record_consumers_at(i:u32)->u32 {return selected[selected_consumers_base()+i];}
+fn set_direct(tree:u32,value:u32) {selected[selected_direct_base()+tree]=value;}
 // Selection counters (words 0..15) and, from word STATE_BASE, this pass's
 // allocation state, in one binding (foliage_refine.rs STATE_OFFSET).
 @group(0) @binding(9) var<storage,read_write> counters:array<atomic<u32>>;
 const STATE_BASE:u32=64u;
 @group(0) @binding(10) var<storage,read_write> fallback:array<atomic<u32>>;
-@group(0) @binding(11) var<storage,read_write> direct:array<u32>;
 struct Demand {count:atomic<u32>,bucket:u32,prefix:u32,failed:atomic<u32>};
 @group(0) @binding(12) var<storage,read_write> demand:array<Demand>;
 // used xyz, task count; snapshot xyz, next count; task and scan indirect args;
 // fault at15, peak16, retained-for-budget17. Never read back to schedule work.
 struct Parked { task:vec4<u32>, proposal:Proposal };
 @group(0) @binding(14) var<storage,read_write> parked:array<Parked>;
-@group(0) @binding(15) var<storage,read_write> record_consumers:array<u32>;
 @group(0) @binding(16) var<storage,read> seed_visibility:array<u32>;
 const NONE:u32=0xffffffffu;
 // Error-driven cut (fast_*): multiplier on the pixel targets, 1 = exact target.
@@ -201,8 +214,8 @@ var<workgroup> start_sums:array<u32,256>;
  let tree=id.x;if tree>=view.counts.x {return;}
  let roles=demand[tree].bucket;var at=blocks[32u+(tree/256u)*32u].y+atomicLoad(&demand[tree+view.counts.x].failed);
  atomicStore(&demand[tree+view.counts.x].failed,0u);
- if (roles&256u)!=0u {queue[queue_half.x+at]=vec4<u32>(tree,NONE,256u,0u);at++;}
- if (roles&512u)!=0u {queue[queue_half.x+at]=vec4<u32>(tree,NONE,512u,0u);}
+ if (roles&256u)!=0u {queue[refine_layout.queue.x+at]=vec4<u32>(tree,NONE,256u,0u);at++;}
+ if (roles&512u)!=0u {queue[refine_layout.queue.x+at]=vec4<u32>(tree,NONE,512u,0u);}
 }
 @compute @workgroup_size(1) fn prepare() {
  let count=atomicLoad(&counters[STATE_BASE+3]);
@@ -294,7 +307,7 @@ fn complete_endpoint(tree:u32,node:u32,old:vec4<u32>,used:vec4<u32>,request_page
 }
 @compute @workgroup_size(64) fn propose(@builtin(global_invocation_id) id:vec3<u32>) {
  let at=id.x;if at>=atomicLoad(&counters[STATE_BASE+3]) {return;}
- let task=queue[queue_half.x+at];var p:Proposal;
+ let task=queue[refine_layout.queue.x+at];var p:Proposal;
  // Cache lives only within this encode: camera, pages and nodes are immutable.
  // Available budget changes, so admission is always rechecked.
  if task.w>=2u {
@@ -412,7 +425,7 @@ var<workgroup> priority_source:array<u32,256>;
  // Only branch slots are shared across consumer budgets. A shadow-only
  // raster upgrade with no additional slot demand cannot starve the camera,
  // and admission to a resident ancestor must not wait behind camera work.
- if (queue[queue_half.x+at].z&256u)==0u && atomicLoad(&counters[STATE_BASE+18])!=0u && p.replacement.x>p.old.x {
+ if (queue[refine_layout.queue.x+at].z&256u)==0u && atomicLoad(&counters[STATE_BASE+18])!=0u && p.replacement.x>p.old.x {
   proposals[at].control.w=2u;return;
  }
  var before=plus(p.prefix,blocks[32u+(at/256u)*32u+p.control.x]);
@@ -430,7 +443,7 @@ var<workgroup> priority_source:array<u32,256>;
  for(var at=block.x*256u;at<end;at++) {
   proposals[at].output.x=sum;proposals[at].output.z=asleep;
   if proposals[at].control.w==1u {sum+=proposals[at].control.z;}
-  if proposals[at].control.w==2u && queue[queue_half.x+at].w<2u {asleep++;}
+  if proposals[at].control.w==2u && queue[refine_layout.queue.x+at].w<2u {asleep++;}
  }
  blocks[32u+block.x*32u]=vec4<u32>(sum,0u,asleep,0u);
 }
@@ -444,7 +457,7 @@ var<workgroup> priority_source:array<u32,256>;
  atomicStore(&counters[STATE_BASE+29],min(base+asleep,arrayLength(&parked)));
  if asleep>arrayLength(&parked)-base {atomicAdd(&counters[STATE_BASE+63],asleep-(arrayLength(&parked)-base));}
  atomicStore(&counters[STATE_BASE+7],sum);atomicMax(&counters[STATE_BASE+16],sum);
- if sum>queue_half.z {atomicOr(&counters[STATE_BASE+15],2u);}
+ if sum>refine_layout.queue.z {atomicOr(&counters[STATE_BASE+15],2u);}
 }
 fn publish(task:vec4<u32>) {
  if task.z==0u {return;}
@@ -455,20 +468,20 @@ fn publish(task:vec4<u32>) {
   let publication=task.x+select(0u,view.counts.x,task.z==512u);
   demand[publication].prefix=n.links.z+1u;
   // Compatibility diagnostic: camera root, or shadow root outside camera demand.
-  if task.z==256u || (demand[task.x].bucket&256u)==0u {direct[task.x]=n.links.z+1u;}
+  if task.z==256u || (demand[task.x].bucket&256u)==0u {set_direct(task.x,n.links.z+1u);}
   atomicAdd(&counters[7],1u);return;
  }
  let at=atomicAdd(&counters[0],1u);atomicAdd(&demand[task.x+select(0u,view.counts.x,task.z==512u)].count,1u);
- if at<view.counts.y {records[at]=vec4<u32>(task.x,task.y,n.links.z,trees[task.x].info.y);record_consumers[at]=task.z;}
+ if at<view.counts.y {set_record(at,vec4<u32>(task.x,task.y,n.links.z,trees[task.x].info.y),task.z);}
  else {atomicOr(&fallback[task.x],1u);atomicAdd(&counters[3],1u);}
 }
 fn state_park_index(at:u32,p:Proposal)->u32 {
- if queue[queue_half.x+at].w>=2u {return queue[queue_half.x+at].w-2u;}
+ if queue[refine_layout.queue.x+at].w>=2u {return queue[refine_layout.queue.x+at].w-2u;}
  return atomicLoad(&counters[STATE_BASE+31])+blocks[32u+(at/256u)*32u].w+p.output.z;
 }
 @compute @workgroup_size(64) fn apply(@builtin(global_invocation_id) id:vec3<u32>) {
  let at=id.x;if at>=atomicLoad(&counters[STATE_BASE+3]) {return;}
- let p=proposals[at];let task=queue[queue_half.x+at];
+ let p=proposals[at];let task=queue[refine_layout.queue.x+at];
  if p.control.w==2u && (atomicLoad(&counters[STATE_BASE+15])&2u)==0u {
   var destination=state_park_index(at,p);
   if destination<arrayLength(&parked) {
@@ -507,7 +520,7 @@ fn state_park_index(at:u32,p:Proposal)->u32 {
   let selected=candidate(task.x,child,true,task.z);let c=nodes[selected];let consumers=mask(sphere(t,c))&task.z;
   if consumers!=0u {
    let replacement=vec4<u32>(task.x,selected,consumers,0u);
-   if c.links.x==NONE {publish(replacement);}else{queue[queue_half.y+offset]=replacement;offset++;}
+   if c.links.x==NONE {publish(replacement);}else{queue[refine_layout.queue.y+offset]=replacement;offset++;}
   }
   child=nodes[child].links.y;
  }
@@ -518,7 +531,7 @@ fn state_park_index(at:u32,p:Proposal)->u32 {
 }
 // A depth-bounded final drain retains the current cut rather than dropping work.
 @compute @workgroup_size(64) fn drain(@builtin(global_invocation_id) id:vec3<u32>) {
- if id.x<atomicLoad(&counters[STATE_BASE+3]) {publish(queue[queue_half.x+id.x]);}
+ if id.x<atomicLoad(&counters[STATE_BASE+3]) {publish(queue[refine_layout.queue.x+id.x]);}
  if id.x<atomicLoad(&counters[STATE_BASE+29]) && parked[id.x].task.w==1u {publish(parked[id.x].task);}
 }
 // Stable wake compaction is skipped entirely while active traversal continues.
@@ -571,7 +584,7 @@ var<workgroup> wake_scan:array<vec2<u32>,256>;
  if parked[at].proposal.prefix.w==role {
   let base=select(blocks[32u+block.x*32u].w,blocks[32u+block.x*32u].z,role==1u);
   let offset=base+parked[at].proposal.output.w;
-  queue[queue_half.x+offset]=vec4<u32>(parked[at].task.xyz,at+2u);parked[at].task.w=0u;
+  queue[refine_layout.queue.x+offset]=vec4<u32>(parked[at].task.xyz,at+2u);parked[at].task.w=0u;
  }
 }
 fn sphere(t:Tree,n:Node)->vec4<f32> {
@@ -634,7 +647,7 @@ fn audit_node(tree:u32,node:u32,roles:u32) {
 @compute @workgroup_size(64) fn audit(@builtin(global_invocation_id) id:vec3<u32>) {
  let at=id.x;
  if at<min(atomicLoad(&counters[0]),view.counts.y) {
-  let r=records[at];let n=nodes[r.y];let failure=atomicLoad(&fallback[r.x]);var roles=record_consumers[at]&~failure;
+  let r=record_at(at);let n=nodes[r.y];let failure=atomicLoad(&fallback[r.x]);var roles=record_consumers_at(at)&~failure;
   if (failure&7u)!=0u {roles=0u;}if roles!=0u {audit_node(r.x,r.y,roles);
   let base=select(36u,32u,(n.links.w&4u)!=0u);
   atomicAdd(&counters[STATE_BASE+base+(roles>>8u)],1u);}
@@ -763,21 +776,21 @@ fn publish_reserve(task:vec4<u32>)->u32 {
  if (n.links.w&2u)!=0u {
   let publication=task.x+select(0u,view.counts.x,task.z==512u);
   demand[publication].prefix=n.links.z+1u;
-  if task.z==256u || (demand[task.x].bucket&256u)==0u {direct[task.x]=n.links.z+1u;}
+  if task.z==256u || (demand[task.x].bucket&256u)==0u {set_direct(task.x,n.links.z+1u);}
   atomicAdd(&wave_counts[1],1u);return NONE;
  }
  atomicAdd(&demand[task.x+select(0u,view.counts.x,task.z==512u)].count,1u);
  return atomicAdd(&wave_counts[0],1u);
 }
 fn publish_write(task:vec4<u32>,at:u32) {
- if at<view.counts.y {records[at]=vec4<u32>(task.x,task.y,nodes[task.y].links.z,trees[task.x].info.y);record_consumers[at]=task.z;}
+ if at<view.counts.y {set_record(at,vec4<u32>(task.x,task.y,nodes[task.y].links.z,trees[task.x].info.y),task.z);}
  else {atomicOr(&fallback[task.x],1u);atomicAdd(&counters[3],1u);}
 }
 // Returns the task to publish (z 0: none). Children that are leaves still
 // publish directly (few: near trees only).
 fn fast_round_phase(at:u32,phase_late:bool)->vec4<u32> {
  if at>=atomicLoad(&counters[STATE_BASE+3]) {return vec4<u32>(0u);}
- let task=queue[queue_half.x+at];if task.z==0u {return vec4<u32>(0u);}
+ let task=queue[refine_layout.queue.x+at];if task.z==0u {return vec4<u32>(0u);}
  let late=task.z==512u && !fast_shadow_retained(task);
  if late!=phase_late {return vec4<u32>(0u);}
  cut_scale=fast_scale(task.z);
@@ -829,10 +842,10 @@ fn fast_round_phase(at:u32,phase_late:bool)->vec4<u32> {
  let shadow=(task.z&256u)==0u;
  if !fast_reserve(replacement-min(replacement,old),shadow) {atomicAdd(&counters[STATE_BASE+17],1u);atomicAdd(&counters[STATE_BASE+select(select(75u,76u,(task.z&256u)!=0u),86u,!shadow && source_leaves)],1u);return task;}
  if shadow {atomicMax(&demand[task.x+view.counts.x].failed,atomicLoad(&counters[STATE_BASE+87])+1u);}
- let offset=atomicAdd(&counters[STATE_BASE+7],branching);let capacity=queue_half.z;
+ let offset=atomicAdd(&counters[STATE_BASE+7],branching);let capacity=refine_layout.queue.z;
  if offset>capacity || branching>capacity-offset {
   // Queue overflow: keep the parent and blank the claimed in-range entries.
-  for(var i=offset;i<min(offset+branching,capacity);i++) {queue[queue_half.y+i]=vec4<u32>(0u,NONE,0u,0u);}
+  for(var i=offset;i<min(offset+branching,capacity);i++) {queue[refine_layout.queue.y+i]=vec4<u32>(0u,NONE,0u,0u);}
   fast_refund(replacement-min(replacement,old),shadow);atomicOr(&counters[STATE_BASE+15],8u);return task;
  }
  fast_refund(old-min(old,replacement),shadow);
@@ -842,7 +855,7 @@ fn fast_round_phase(at:u32,phase_late:bool)->vec4<u32> {
   let selected=candidate(task.x,child,true,task.z);let c=nodes[selected];let consumers=mask(sphere(t,c))&task.z;
   if consumers!=0u {
    let replacement_task=vec4<u32>(task.x,selected,consumers,0u);
-   if c.links.x==NONE {publish(replacement_task);}else{queue[queue_half.y+out]=replacement_task;out++;}
+   if c.links.x==NONE {publish(replacement_task);}else{queue[refine_layout.queue.y+out]=replacement_task;out++;}
   }
   child=nodes[child].links.y;
  }
@@ -850,7 +863,7 @@ fn fast_round_phase(at:u32,phase_late:bool)->vec4<u32> {
 }
 @compute @workgroup_size(1) fn fast_advance() {
  atomicAdd(&counters[STATE_BASE+87],1u);
- let count=min(atomicLoad(&counters[STATE_BASE+7]),queue_half.z);atomicStore(&counters[STATE_BASE+7],0u);
+ let count=min(atomicLoad(&counters[STATE_BASE+7]),refine_layout.queue.z);atomicStore(&counters[STATE_BASE+7],0u);
  if count!=0u {atomicAdd(&counters[STATE_BASE+68],1u);}
  fast_set_args(count);
  // The drain after the last round covers the live frontier (and any parked
