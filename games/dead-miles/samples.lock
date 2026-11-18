@@ -239,6 +239,106 @@ author = "tonsil5"
 license = "CC0-1.0"
 link = "https://freesound.org/s/555412/"
 
+[file.big_punches]
+source = "freesound"
+row = 37865
+id = 369325
+sha256 = "ff3e3b664b9f6d64218554219281a252e63a38c2bac1467058b4646ad4fde15c"
+title = "CLARKS BIG Punches Hits Impacts extreme compression"
+author = "cryanrautha"
+license = "CC0-1.0"
+link = "https://freesound.org/s/369325/"
+
+[file.heavy_wet_impact]
+source = "freesound"
+row = 35098
+id = 626405
+sha256 = "98bce6809cd7b839a673a8b26d3505d4d5eb6dc1bd216569b5e1d99885d88376"
+title = "Heavy, wet impact"
+author = "puppetmaster685719"
+license = "CC0-1.0"
+link = "https://freesound.org/s/626405/"
+
+[file.punch_1]
+source = "freesound"
+row = 11140
+id = 269233
+sha256 = "1a6935deee127012f8b5b39224379fe5e697159dc9e6fcc7a9862afde7758076"
+title = "Punch (1)"
+author = "johnfolker"
+license = "CC0-1.0"
+link = "https://freesound.org/s/269233/"
+
+[file.wet_towel_impact]
+source = "freesound"
+row = 47509
+id = 74488
+sha256 = "9ec88826e9ab510b6a1e0bb7a23f0367b12f3cc4fdaf0e10b6be610338ed4f6c"
+title = "Wet Towel Floor Impact Punch Drop Bag Cloth"
+author = "qubodup"
+license = "CC0-1.0"
+link = "https://freesound.org/s/74488/"
+
+[file.gore_chew_4]
+source = "freesound"
+row = 31604
+id = 587261
+sha256 = "d65b74a7fbb7b0e4332b79d5149416f31306e905014bf29c6a06e531ce2df6e4"
+title = "chew 4"
+author = "rubberduckie"
+license = "CC0-1.0"
+link = "https://freesound.org/s/587261/"
+
+[file.bone_breaks_celery]
+source = "freesound"
+row = 49422
+id = 574752
+sha256 = "2af14df9c4db7e8e5e27f95f05f50d09812aca50f9be237d0355ffc76cacb0d3"
+title = "Bone Breaks (celery snaps)"
+author = "ericnorcross81"
+license = "CC0-1.0"
+link = "https://freesound.org/s/574752/"
+
+[file.bone_crack_4]
+source = "freesound"
+row = 48330
+id = 395423
+sha256 = "33f39120ff29b478842e0147b42b207fb96d75bb5e743bac8f844cbecb014483"
+title = "Bone break/crack 4"
+author = "ihitokage"
+license = "CC0-1.0"
+link = "https://freesound.org/s/395423/"
+
+[file.bone_crack_5]
+source = "freesound"
+row = 16179
+id = 395428
+sha256 = "e17d8106041e554f5137425be1cea61d1f16334cb20b4b3667ec2a059de7a705"
+title = "Bone break/crack 5"
+author = "ihitokage"
+license = "CC0-1.0"
+link = "https://freesound.org/s/395428/"
+
+[file.bones_breaking_1]
+source = "freesound"
+row = 7808
+id = 474001
+sha256 = "b8b610c097da25f5be53ec8c02483e504b03b5de45eeed0abdddfba2cb5e0aff"
+title = "Bones Breaking 1"
+author = "Gammelsmurfen778"
+license = "CC0-1.0"
+link = "https://freesound.org/s/474001/"
+
+[file.trekking_shoes_shuffle]
+source = "freesound"
+row = 49709
+id = 273380
+sha256 = "7b43cec767681f119cc24a2a89e9daa5d9f5190e999bb8090b29301b8f2f7ad8"
+title = "wood 16b trekkingshoes shuffle"
+author = "sturmankin"
+license = "CC0-1.0"
+link = "https://freesound.org/s/273380/"
+
 [[sample]]
 name = "groan.1"
 file = "deranged_zombie"
@@ -641,3 +741,206 @@ from = 0
 to = 20.9
 db = -1.8
 loop = true
+
+[[sample]]
+name = "hit.1"
+file = "big_punches"
+from = 0.39
+to = 0.84
+db = -3.1
+
+[[sample]]
+name = "hit.2"
+file = "big_punches"
+from = 1.44
+to = 1.87
+db = -1.6
+
+[[sample]]
+name = "hit.3"
+file = "big_punches"
+from = 2.6
+to = 3.04
+db = -3.2
+
+[[sample]]
+name = "hit.4"
+file = "big_punches"
+from = 5.01
+to = 5.46
+db = -3.2
+
+[[sample]]
+name = "hit.5"
+file = "big_punches"
+from = 7.19
+to = 7.64
+db = -2.8
+
+[[sample]]
+name = "hit.6"
+file = "heavy_wet_impact"
+from = 0.1
+to = 0.52
+db = -4.7
+
+[[sample]]
+name = "hit.7"
+file = "punch_1"
+from = 0.08
+to = 0.36
+db = -1.0
+
+[[sample]]
+name = "hit.8"
+file = "wet_towel_impact"
+from = 3.59
+to = 4.02
+db = 3.3
+
+[[sample]]
+name = "hit.9"
+file = "wet_towel_impact"
+from = 6.82
+to = 7.21
+db = -1.0
+
+[[sample]]
+name = "hit.10"
+file = "wet_towel_impact"
+from = 11.07
+to = 11.43
+db = 7.3
+
+[[sample]]
+name = "hit.11"
+file = "wet_towel_impact"
+from = 18.94
+to = 19.3
+db = 5.9
+
+[[sample]]
+name = "bone.1"
+file = "bone_breaks_celery"
+from = 1.2
+to = 1.48
+db = -1.0
+
+[[sample]]
+name = "bone.2"
+file = "bone_breaks_celery"
+from = 3.55
+to = 4.2
+db = -1.0
+
+[[sample]]
+name = "bone.3"
+file = "bone_breaks_celery"
+from = 5.47
+to = 5.95
+db = -1.0
+
+[[sample]]
+name = "bone.4"
+file = "bone_breaks_celery"
+from = 7.0
+to = 7.29
+db = -1.0
+
+[[sample]]
+name = "bone.5"
+file = "bone_breaks_celery"
+from = 7.69
+to = 7.97
+db = -1.0
+
+[[sample]]
+name = "bone.6"
+file = "bone_crack_4"
+from = 0
+to = 0.528
+db = 8.2
+
+[[sample]]
+name = "bone.7"
+file = "bone_crack_5"
+from = 0.09
+to = 0.82
+db = 4.3
+
+[[sample]]
+name = "bone.8"
+file = "bones_breaking_1"
+from = 11.59
+to = 11.93
+db = 1.9
+
+[[sample]]
+name = "bone.9"
+file = "bones_breaking_1"
+from = 13.77
+to = 14.1
+db = 2.3
+
+[[sample]]
+name = "splat.7"
+file = "gore_chew_4"
+from = 0.1
+to = 1.35
+db = -0.1
+
+[[sample]]
+name = "zstep.1"
+file = "trekking_shoes_shuffle"
+from = 0.27
+to = 0.56
+db = 9.8
+
+[[sample]]
+name = "zstep.2"
+file = "trekking_shoes_shuffle"
+from = 0.77
+to = 1.09
+db = 9.7
+
+[[sample]]
+name = "zstep.3"
+file = "trekking_shoes_shuffle"
+from = 1.63
+to = 1.93
+db = 4.7
+
+[[sample]]
+name = "zstep.4"
+file = "trekking_shoes_shuffle"
+from = 4.72
+to = 5.18
+db = 3.1
+
+[[sample]]
+name = "zstep.5"
+file = "trekking_shoes_shuffle"
+from = 7.88
+to = 8.3
+db = 7.8
+
+[[sample]]
+name = "zstep.6"
+file = "trekking_shoes_shuffle"
+from = 9.76
+to = 10.06
+db = 10.4
+
+[[sample]]
+name = "zstep.7"
+file = "trekking_shoes_shuffle"
+from = 11.22
+to = 11.53
+db = 5.8
+
+[[sample]]
+name = "zstep.8"
+file = "trekking_shoes_shuffle"
+from = 12.73
+to = 13.15
+db = 9.5

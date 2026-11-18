@@ -565,7 +565,7 @@ local BLOOD_MAX = 90
 local function blood_drop(at, r)
 	s.blood = s.blood or {}
 	local look = BLOOD[random.int(1, #BLOOD)]
-	local id = world.spawn("sphere", { pos = v(at.x, 0.07 + #s.blood % 7 * 0.004, at.z), size = v(r * random.range(0.8, 1.25), 0.012, r * random.range(0.8, 1.25)), rot = v(0, random.range(0, math.pi), 0), color = look.color, roughness = look.roughness, solid = false, tag = "deco" })
+	local id = world.spawn("sphere", { pos = v(at.x, 0.052 + #s.blood % 5 * 0.002, at.z), size = v(r * random.range(0.8, 1.25), 0.003, r * random.range(0.8, 1.25)), rot = v(0, random.range(0, math.pi), 0), color = look.color, roughness = look.roughness, solid = false, tag = "deco" })
 	table.insert(s.blood, id)
 	if #s.blood > BLOOD_MAX then world.remove(table.remove(s.blood, 1)) end
 end
@@ -599,6 +599,7 @@ local function kill_zombie(z, away, strength)
 	blood_splat(z.pos, away, 1.6 + (strength or 1) * 0.4)
 	blood_spray(v(z.pos.x, 0.8, z.pos.z), 8, 3, 0.08)
 	sfx("splat", z.pos, { pitch = random.range(0.85, 1.15) })
+	if sound.recorded("bone") then sfx("bone", z.pos, { pitch = 0.8 + (game.tick() % 9) / 40, db = 1 }) end
 	if game.tick() % 3 == 0 and sound.recorded("zdeath") then sfx("zdeath", z.pos, { pitch = 0.8 + (game.tick() % 7) / 20, db = -4 }) end
 	count("kills")
 	s.kills += 1
@@ -1753,7 +1754,15 @@ local function swing_land(u)
 		hit += 1
 		count("melee_hits")
 	end
-	sfx(if hit > 0 then "hit" else "swing", u.pos, { pitch = (if light then 1.15 else 0.85 - 0.12 * charge) * random.range(0.92, 1.05) })
+	sfx("swing", u.pos, { pitch = (if light then 1.15 else 0.85 - 0.12 * charge) * random.range(0.92, 1.05), db = if hit > 0 then -5 else 0 })
+	if hit > 0 then
+		-- The blow itself, where it lands: a body thump, and on a heavy
+		-- blow something gives way inside.
+		local at = hits[1].z.pos
+		local p = 0.92 + (game.tick() % 13) / 80
+		sfx("hit", at, { pitch = (if light then 1.12 else 0.92 - 0.08 * charge) * p, db = if light then 0 else 3 + 2 * charge })
+		if not light and sound.recorded("bone") then sfx("bone", at, { pitch = p, db = -3 + 3 * charge }) end
+	end
 	if hit > 0 then
 		-- A beat of stillness on contact sells the weight.
 		local heft = w.dmg * power
@@ -3582,6 +3591,40 @@ end
 -- night that fall silent when the dead come close, wind in the ruins, a
 -- dread that swells with danger. Without the recordings: silence, as before.
 
+-- The dead you can hear coming: the nearest few shuffle and groan, louder
+-- the closer they get (pitch and timing from the tick, not the game's dice).
+local function dead_near(dt)
+	local near = {}
+	for _, z in s.zombies do
+		if z.pos and z.state ~= "dead" and z.fig then
+			local best = 1e9
+			for _, u in s.survivors do
+				if u.pos and not u.recruit and u.state ~= "ghost" then best = math.min(best, dist(u.pos, z.pos)) end
+			end
+			if best < 16 then table.insert(near, { z = z, d = best }) end
+		end
+	end
+	table.sort(near, function(a, b) return a.d < b.d end)
+	for i = 1, math.min(#near, 5) do
+		local z, d = near[i].z, near[i].d
+		local close = 1 - d / 16
+		local h = (game.tick() * 7 + i * 131 + math.floor(z.pos.x * 13)) % 97 / 97
+		if z.heard_at then
+			z.stride = (z.stride or 0) + dist(z.heard_at, z.pos)
+			if z.stride > 0.75 then
+				z.stride = 0
+				sfx("zstep", z.pos, { pitch = 0.78 + 0.18 * h, db = -12 + 13 * close })
+			end
+		end
+		z.heard_at = z.pos
+		z.voice_t = (z.voice_t or (1 + 3 * h)) - dt
+		if z.voice_t <= 0 then
+			z.voice_t = 2.5 + 4 * h - 1.5 * close
+			sfx("groan", z.pos, { pitch = 0.75 + 0.35 * h, db = -9 + 12 * close })
+		end
+	end
+end
+
 local BEDS = { "bed_crickets", "bed_wind", "bed_night", "bed_dread" }
 
 local function ambience_step(dt)
@@ -3603,6 +3646,7 @@ local function ambience_step(dt)
 		end
 	end
 	if s.phase == "over" then danger = 1 end
+	dead_near(dt)
 	local night = if dark() then 1 else 0.25
 	local biome = "suburb"
 	for _, c in s.chunks do
