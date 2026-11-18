@@ -221,22 +221,25 @@ fn short(value: &str, length: usize) -> String {
 /// The Splitscreen Club wordmark as a neon sign (room.gd `_logo`).
 pub fn logo(c: &mut Canvas) {
     let wordmark = faces().wordmark;
-    // Two lines, "Club" under "Splitscreen" (Joep), both centred.
-    let lines = [("Splitscreen", AMBER), ("Club", NIGHT_LILAC)];
-    // Narrow enough to clear the wall shelves on both sides (Joep), and two
-    // lines plus their glow fit the 320 px tall sign.
-    let mut size: f32 = 132.0;
-    let widest = |size: f32| lines.iter().map(|l| render::hud::measure(l.0, wordmark, size)[0]).fold(0.0f32, f32::max);
-    let w = widest(size);
-    if w > 920.0 { size = (size * 920.0 / w).floor(); }
-    let spacing = size * 0.92;
-    for (i, (word, color)) in lines.into_iter().enumerate() {
-        let width = render::hud::measure(word, wordmark, size)[0];
-        let centre = 160.0 + (i as f32 - 0.5) * spacing;
-        let at = [(1280.0 - width) / 2.0, centre + size * 0.36];
+    // One line, written like the domain: "Splitscreen" amber, ".Club" lilac (Joep).
+    let words = [("Splitscreen", AMBER), (".Club", NIGHT_LILAC)];
+    // Narrow enough to clear the wall shelves on both sides (Joep).
+    let mut size = 140.0;
+    let widths = |size: f32| words.map(|w| render::hud::measure(w.0, wordmark, size)[0]);
+    let mut w = widths(size);
+    let mut total = w[0] + w[1];
+    if total > 920.0 {
+        size = (size * 920.0 / total).floor();
+        w = widths(size);
+        total = w[0] + w[1];
+    }
+    let mut x = (1280.0 - total) / 2.0;
+    for (i, (word, color)) in words.into_iter().enumerate() {
+        let at = [x, 160.0 + size * 0.36];
         for k in [30.0, 18.0, 10.0] { c.text_outline(wordmark, at, word, TextAlign::Left, -1.0, size, k, color.with_alpha(0.2)); }
         c.text_outline(wordmark, at, word, TextAlign::Left, -1.0, size, 4.0, color.lightened(0.2));
         c.text(wordmark, at, word, TextAlign::Left, -1.0, size, color);
+        x += w[i];
     }
 }
 
