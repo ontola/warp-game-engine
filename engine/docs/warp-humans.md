@@ -99,3 +99,7 @@ same seeded timing drives both rigs. The existing skin atlas carries a sheen
 mask for forehead, nose and lips. Sun and stadium lamps determine eye highlights.
 Fitted people (players and Luau humans) rest their lids a third of a closure wider than the cooked neutral, which reads half-asleep up close; the crowd keeps the cooked opening.
 The rest of the face holds a neutral expression.
+
+A fitted person (a player or a Luau human) gets their own face texture, grown from their seed when they are fitted (`assets::skinned::warp_skin`, about a second on four cores at 2048 texels). The painted face tile they share supplies the fall of colour over the head, the lips and the lids. Over it the seed adds the skin's relief as a normal map (millimetre polygons bounded by fine furrows, pores where they meet, lip creases, forehead lines and crow's feet with age) and its colour (shadow in pores, uneven redness on cheeks, nose and ears, freckles, moles). The relief is a function of the point on the head, so it crosses UV seams and keeps its size where the unwrap stretches. The same texture holds the person's eyes in a free corner: an iris with fibres, a collarette and a dark rim in a colour drawn from the seed (lighter colours only with fair skin), and a white that warms towards the corners. The crowd keeps the shared tiles.
+
+Sunlight passing through thin skin reads the sun shadow map for the thickness in its way and blends the four texels round the point; one nearest texel printed the map's grid on a cheek turned from the sun.
