@@ -896,10 +896,12 @@ fn fast_round_phase(at:u32,phase_late:bool)->vec4<u32> {
  atomicStore(&counters[STATE_BASE+83],bitcast<u32>(ratio));atomicStore(&counters[STATE_BASE+84],atomicLoad(&counters[STATE_BASE+1]));
  let used=used_now();let cap=max(fast_limits(),vec4<u32>(1u));
  let f=vec4<f32>(used)/vec4<f32>(cap);
- // Slots and source work are shared; splats are per class (y camera, z shadow).
+ // Slots are shared; splats are per class (y camera, z shadow).
  let shadow_slots=f32(atomicLoad(&counters[STATE_BASE+81]))/f32(max(fast_shadow_slots(),1u));
- // Source clusters drive the camera's source scale alone (state[85]).
- let fills=vec2<f32>(max(f.x,f.y),max(max(shadow_slots,f.z),f.w));
+ // Source clusters (f.w) drive the camera's source scale alone (state[85]).
+ // Shadows never book them, so they must not hold the shadow scale: a
+ // source fill inside the dead band froze it wherever startup left it.
+ let fills=vec2<f32>(max(f.x,f.y),max(shadow_slots,f.z));
  for(var c=0u;c<2u;c++) {
   let word=79u-c;var s=fast_scale_word(word);
   let blocked=atomicLoad(&counters[STATE_BASE+76u-c])!=0u;
