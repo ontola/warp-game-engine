@@ -306,7 +306,13 @@ keyboard mapping is in `app::input`.
   game.toml reserves (`[humans.zombie] count = 40, style = "zombie"`), so
   spawning never rebuilds the renderer. Set each one's feet `pos` and
   `yaw` (0 faces +z, a quarter turn +x) every tick: the legs walk, jog,
-  sprint (above about 5 m/s) or stand from how far it moved. `pose` lays an action over that: `walk`
+  sprint (above about 5 m/s) or stand from how far it moved. Standing, a
+  person is upright and relaxed (arms by the thighs, breathing, the weight
+  drifting, the head looking about, each in their own time); the dead keep
+  the capture's low, wide stance. Every person is posed on their own
+  skeleton: the legs are the rig's, the spine, head, shoulders and arms sit
+  where that body has them, so `joint` answers differ a little from person
+  to person. `pose` lays an action over that: `walk`
   (the default), `idle`, `crouch` (low: waiting on one knee, or walking
   crouched when it moves), `wave` (the right hand high, waving), `reach` and `raise` (arms ahead, arms over the
   head), `strike` (from raised to low over `t`), `aim`, `shove`,
@@ -333,7 +339,8 @@ keyboard mapping is in `app::input`.
   Looks only: they never collide, and the game keeps its own positions.
   Each human is a full skinned mesh skinned every frame, so keep pools to
   the crowd that is on screen. The rig is in `engine/assets/humans/rig`;
-  the captures are the `body` crate's.
+  the captures are the `body` crate's. `games/human-lab` shows a row of
+  them up close from fixed portrait cameras, for judging looks.
 - **Random**: SplitMix64 from the game's seed. `restart` reseeds it.
 
 ### Players

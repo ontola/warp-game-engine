@@ -1,0 +1,12 @@
+{ "size": [1280, 720],
+  "steps": [
+    { "ticks": 30 },
+    { "cmd": "lua state.view = 6; state.walk = 1.4", "ticks": 70, "capture": "walk-row.png" },
+    { "cmd": "lua state.view = 5; state.person = 1", "ticks": 13, "capture": "walk-body.png" },
+    { "cmd": "lua state.walk = 3.2; state.view = 6", "ticks": 70, "capture": "jog-row.png" },
+    { "cmd": "lua state.walk = 0; state.pose = 'wave'", "ticks": 40, "capture": "wave-row.png" },
+    { "cmd": "lua state.pose = 'aim'; state.view = 5", "ticks": 20, "capture": "aim-body.png" },
+    { "cmd": "lua state.pose = 'crouch'; state.view = 6", "ticks": 20, "capture": "crouch-row.png" },
+    { "expect": "/errors", "equals": [] }
+  ]
+}
