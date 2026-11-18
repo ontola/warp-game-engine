@@ -143,13 +143,22 @@ fn materialize(@builtin(global_invocation_id) id:vec3<u32>) {
   sources[owner]=source;
   var volume=bounds(branch.volume,m,branch.low.xyz,branch.high.xyz);volume.inverse=inverse(m);volume.identity.x=owner;
   volume.high.w=appearance_seed(slot.key.x,rep.x);
+  // A voxel choice publishes its selected mip and the coarser ones only:
+  // those are the pages the choice waits for (voxel_page_dependencies), so
+  // a far branch never holds its finest level resident. The camera draws
+  // the first published level; the shadow consumer may pick a coarser one.
+  if rep.y==1u {
+   let mip=min(rep.z,volume.identity.z-1u);
+   volume.identity.y+=mip;volume.identity.z-=mip;
+  }
   let roles=slot.history.w&768u;
   let visibility=select(1024u,0u,(roles&256u)!=0u)|select(2048u,0u,(roles&512u)!=0u);
-  volumes[i]=volume;choices[i]=select(3u,select(0u,1u|(rep.z<<2u)|512u|4096u,rep.y==1u),(roles&256u)!=0u)|visibility;
+  volumes[i]=volume;choices[i]=select(3u,select(0u,1u|512u|4096u,rep.y==1u),(roles&256u)!=0u)|visibility;
   // Preserve the independently selected shadow representation. Source
   // leaves cast source geometry; replacing them with adaptive voxels here
   // violates the selected error and unnecessarily couples source residency
-  // to every voxel mip. Voxel shadow selections retain adaptive mip choice.
+  // to every voxel mip. Voxel shadow selections retain adaptive mip choice
+  // among the published levels.
   choices[i+state.counts.x]=select(3u,select(0u,765u,rep.y==1u),(roles&512u)!=0u)|visibility;
  }else {
   let tree=i-state.counts.x;if tree>=state.counts.z {return;}

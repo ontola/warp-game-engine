@@ -48,8 +48,10 @@ impl Spec {
             } else if rep[1]==0 {Ok(Vec::new())}
             // Only voxel representations need voxel bytes. A source selection
             // renders source geometry for either consumer; it must not wait
-            // for an unrelated voxel shadow bundle. Voxel slots remain adaptive.
-            else{range(branch.volume)}
+            // for an unrelated voxel shadow bundle. A voxel slot publishes its
+            // selected mip and the coarser ones (foliage_materialize.wgsl), so
+            // it waits for those and never for a finer level it does not draw.
+            else{let levels=range(branch.volume)?;Ok(levels.get(rep[2]as usize..).filter(|l|!l.is_empty()).ok_or("voxel mip outside catalog")?.to_vec())}
         }).collect::<Result<Vec<_>,String>>()?;
         for template in &self.templates {
             let node=&self.nodes[template.node as usize];
@@ -726,7 +728,9 @@ impl Runtime {
                 assert_eq!(deps[i],vec![(branch.volume.meta[1]+rep[2])as usize]);
                 if !pins[deps[i][0]] {fine+=1;}
             }else if rep[1]==0 {assert!(deps[i].is_empty(),"source geometry must not depend on voxel pages for shadows");}
-            else {assert_eq!(deps[i].len(),branch.volume.meta[2]as usize,"adaptive voxel selections retain their mip bundle");}
+            else {
+                assert_eq!(deps[i],((branch.volume.meta[1]+rep[2])as usize..(branch.volume.meta[1]+branch.volume.meta[2])as usize).collect::<Vec<_>>(),"a voxel selection waits for its mip and the coarser ones only");
+            }
         }
         let work=forest.raster_work_bounds().unwrap();
         for node in &spec.nodes {
