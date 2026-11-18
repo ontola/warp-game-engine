@@ -931,7 +931,7 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
         ("set", f!(core, move |_, (id, opts): (u32, Table)| {
             let mut c = lock(&core);
             sim(&c, "humans.set")?;
-            let o = options(&opts, &["pos", "yaw", "pose", "t", "tired"], "humans.set")?;
+            let o = options(&opts, &["pos", "yaw", "pose", "t", "tired", "coil"], "humans.set")?;
             let Some(p) = c.humans.people.get_mut(&id) else { return Ok(false) };
             let mut up = false;
             for (k, v) in o {
@@ -940,6 +940,7 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
                     "yaw" => p.yaw = number(&v, "humans.set yaw")?,
                     "t" => p.t = number(&v, "humans.set t")?.clamp(0.0, 1.0),
                     "tired" => p.tired = number(&v, "humans.set tired")?.clamp(0.0, 1.0),
+                    "coil" => p.coil = number(&v, "humans.set coil")?.clamp(-1.0, 1.0),
                     "pose" => {
                         let name = match &v { Value::String(s) => s.to_str()?.to_string(), _ => return Err(rt("humans.set pose: expected a string".to_string())) };
                         if !crate::humans::POSES.contains(&name.as_str()) { return Err(rt(format!("humans.set: pose {name:?} (one of {})", crate::humans::POSES.join(", ")))); }
