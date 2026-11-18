@@ -18,6 +18,8 @@ local VIEWS = {
 	{ name = "bust", dist = 1.5, side = 0.35, up = 0.05, drop = 0.22, fov = 30 },
 	{ name = "body", dist = 4.4, side = 0.35, up = -0.3, drop = 0.75, fov = 30 },
 	{ name = "row", dist = 7.5, side = 0.2, up = 0.3, drop = 0.8, fov = 40 },
+	{ name = "crown", dist = 0.45, side = 0.25, up = 0.6, drop = -0.06, fov = 30 },
+	{ name = "back", dist = 0.74, side = 2.6, up = 0.1, drop = 0.03, fov = 30 },
 }
 
 -- state.walk (m/s, set from a script or the console) walks everyone ahead.
