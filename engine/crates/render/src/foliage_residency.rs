@@ -27,7 +27,6 @@ pub struct Residency {
     /// failures, published, reserved. Diagnostic readback only.
     pub counters: wgpu::Buffer,
     consumer_union: wgpu::Buffer,table: wgpu::Buffer,
-    _free: wgpu::Buffer,
     _uniform: wgpu::Buffer,
     bind: wgpu::BindGroup,
     pipelines: [wgpu::ComputePipeline; 5],
@@ -61,33 +60,35 @@ impl Residency {
                 mapped_at_creation: false,
             });
             let slots = buffer("GPU resident branch slots", capacity as u64 * 32);
-            let request_slots = buffer("GPU selected branch slots", records as u64 * 4);
+            // Each request's slot, then the free list, in one buffer (slot_lists).
+            let request_slots = buffer("GPU selected branch slots and free list", records as u64 * 4 + capacity as u64 * 4);
             let counters = buffer("GPU branch residency counters", 32);
             let consumer_union=buffer("GPU branch consumer union",records as u64*4);
             let table = buffer("GPU branch request hash", table_size as u64 * 4);
-            let free = buffer("GPU branch free slots", capacity as u64 * 4);
             let uniform = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("GPU branch residency bounds"),
-                contents: bytemuck::cast_slice(&[records, capacity, table_size, trees, 64u32.min(table_size), 0, 0, 0]),
+                contents: bytemuck::cast_slice(&[records, capacity, table_size, trees, 64u32.min(table_size), 0, 0, 0,
+                    (selector.record_consumers.offset/16) as u32, records, 0, 0]),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
-            let entries = (0..12).map(|binding| wgpu::BindGroupLayoutEntry {
+            let entries = [0u32,1,2,3,4,5,6,8,9,11].into_iter().map(|binding| wgpu::BindGroupLayoutEntry {
                 binding, visibility: wgpu::ShaderStages::COMPUTE, count: None,
                 ty: wgpu::BindingType::Buffer {
                     ty: if binding == 0 { wgpu::BufferBindingType::Uniform }
-                        else { wgpu::BufferBindingType::Storage { read_only: binding <= 2 || binding == 9 || binding == 10 } },
+                        else { wgpu::BufferBindingType::Storage { read_only: binding <= 2 || binding == 9 } },
                     has_dynamic_offset: false, min_binding_size: None,
                 },
             }).collect::<Vec<_>>();
             let layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("GPU branch residency"), entries: &entries,
             });
-            let buffers = [uniform.as_entire_binding(), selector.records.binding(), selector.counters.as_entire_binding(), selector.fallback.as_entire_binding(),
-                slots.as_entire_binding(), table.as_entire_binding(), request_slots.as_entire_binding(), free.as_entire_binding(), counters.as_entire_binding(), selector.asset_pages.as_entire_binding(),selector.record_consumers.binding(),consumer_union.as_entire_binding()];
+            // Bindings 7 (free list) and 10 (record consumers) live inside 6 and 1.
+            let buffers = [uniform.as_entire_binding(), selector.records.buffer.as_entire_binding(), selector.counters.as_entire_binding(), selector.fallback.as_entire_binding(),
+                slots.as_entire_binding(), table.as_entire_binding(), request_slots.as_entire_binding(), counters.as_entire_binding(), selector.asset_pages.as_entire_binding(),consumer_union.as_entire_binding()];
             let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("GPU branch residency"), layout: &layout,
-                entries: &buffers.into_iter().enumerate().map(|(i, resource)| wgpu::BindGroupEntry {
-                    binding: i as u32, resource,
+                entries: &buffers.into_iter().zip([0u32,1,2,3,4,5,6,8,9,11]).map(|(resource, binding)| wgpu::BindGroupEntry {
+                    binding, resource,
                 }).collect::<Vec<_>>(),
             });
             let layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -102,7 +103,7 @@ impl Residency {
                     label: Some(entry), layout: Some(&layout), module: &module, entry_point: Some(entry),
                     compilation_options: Default::default(), cache: gpu.pipeline_cache(),
                 }));
-            Self { slots, request_slots, counters, consumer_union, table, _free: free, _uniform: uniform, bind,
+            Self { slots, request_slots, counters, consumer_union, table, _uniform: uniform, bind,
                 pipelines, indirect: selector.arguments.clone(), capacity }
         })
     }
