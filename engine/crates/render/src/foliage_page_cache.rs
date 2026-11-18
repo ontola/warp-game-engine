@@ -10,7 +10,7 @@ impl Default for Budget {
     // 256 MiB of cells: at 64 MiB the lowland view missed ~600 pages a frame
     // forever and kept 9.8 px cells 14 m from the camera; 256 MiB serves the
     // whole view (2252 pages, 233 MB allocated, RTX 5070 Ti, 2026-11-06).
-    fn default()->Self {Self {index_words:16*1024*1024,cells:256*1024*1024/128,splats:2*1024*1024,upload_bytes:8*1024*1024,uploads:32}}
+    fn default()->Self {Self {index_words:16*1024*1024,cells:128*1024*1024/64,splats:2*1024*1024,upload_bytes:8*1024*1024,uploads:32}}
 }
 #[derive(Clone)]
 struct Resident {index:Allocation,cell:Allocation,splat:Allocation,last_used:u64}
@@ -48,14 +48,14 @@ impl Cache {
         // Each arena is one binding: shrink to the device's binding limit (WebGPU's
         // default is 128 MiB) rather than fail. Coarser fallbacks cover the rest.
         let limit=gpu.device.limits().max_storage_buffer_binding_size as u64;
-        let fit=[limit/4,limit/128,(limit/8).saturating_sub(2*pages.len()as u64)];
+        let fit=[limit/4,limit/64,(limit/8).saturating_sub(2*pages.len()as u64)];
         let capacities=[(budget.index_words as u64).min(total(|p|p.index_words())).min(fit[0])as u32,
             (budget.cells as u64).min(total(|p|p.cells.len())).min(fit[1])as u32,(budget.splats as u64).min(total(|p|p.splats.len())).min(fit[2])as u32];
         let pinned_sizes=[pages.iter().enumerate().filter(|(i,_)|pinned[*i]).map(|(_,p)|p.index_words()as u64).sum::<u64>(),
             pages.iter().enumerate().filter(|(i,_)|pinned[*i]).map(|(_,p)|p.cells.len()as u64).sum::<u64>(),
             pages.iter().enumerate().filter(|(i,_)|pinned[*i]).map(|(_,p)|p.splats.len()as u64).sum::<u64>()];
         if (0..3).any(|i|pinned_sizes[i]>capacities[i]as u64) {return Err("pinned voxel ancestors exceed physical cache budget".into());}
-        let sizes=[pages.len()as u64*32,capacities[0]as u64*4,capacities[1]as u64*128,(2*pages.len()as u64+capacities[2]as u64)*8];
+        let sizes=[pages.len()as u64*32,capacities[0]as u64*4,capacities[1]as u64*64,(2*pages.len()as u64+capacities[2]as u64)*8];
         if sizes.iter().any(|&s|s>gpu.device.limits().max_storage_buffer_binding_size as u64) {return Err("voxel cache exceeds device buffer limit".into());}
         let buffers=std::array::from_fn(|i|gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("bounded voxel asset arena"),size:sizes[i].max(176),usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false}));
         let last_requested=vec![0;deps.len()];let finer=vec![Vec::new();deps.len()];
@@ -87,7 +87,7 @@ impl Cache {
     fn advance(&mut self,gpu:&Gpu,budget:u64)->Result<u64,String> {
         let Some(p)=self.pending.as_mut()else{return Ok(0);};let mut remaining=budget&!3;let initial=remaining;
         let bytes:[&[u8];3]=[bytemuck::cast_slice(&p.indices),bytemuck::cast_slice(&p.cells),bytemuck::cast_slice(&p.splats)];
-        let bases=[p.resident.index.range.start as u64*4,p.resident.cell.range.start as u64*128,(2*self.pages.len()as u64+p.resident.splat.range.start as u64)*8];
+        let bases=[p.resident.index.range.start as u64*4,p.resident.cell.range.start as u64*64,(2*self.pages.len()as u64+p.resident.splat.range.start as u64)*8];
         let mut begin=0u64;
         for i in 0..3 {
             let end=begin+bytes[i].len()as u64;
@@ -130,7 +130,9 @@ impl Cache {
         let mut updates=Vec::new();
         for (id,deps) in self.deps.iter().enumerate() {
             let ready=deps.iter().all(|&p|self.resident[p].is_some()) && self.source.as_ref().is_none_or(|s|s.ready(id));let old=self.publication[id];
-            if ready!=old.0 || deps.iter().any(|p|self.dirty.contains(p)) || self.source.as_ref().is_some_and(|s|s.changed(id)) {
+            // A finer level arriving or leaving changes what the sun pass draws
+            // for this selection, so its generation moves as well.
+            if ready!=old.0 || deps.iter().chain(&self.finer[id]).any(|p|self.dirty.contains(p)) || self.source.as_ref().is_some_and(|s|s.changed(id)) {
                 updates.push((id as u32,ready,old.1.checked_add(1).ok_or("voxel asset generation exhausted")?));
             }
         }
@@ -275,7 +277,7 @@ mod tests {
             let raw=read(&cache.buffers[1]);let word=|i:usize|->u32{bytemuck::pod_read_unaligned(&raw[i*4..][..4])};
             assert_eq!(level.dims_offset[3]>>30,3);let record=word((level.dims_offset[3]&0x3fff_ffff)as usize)as usize;
             assert_eq!([word(record-1),word(record)],[1,0]);let index=word(record+1);
-            let raw=read(&cache.buffers[2]);let cell:crate::foliage_volume_data::PackedCell=bytemuck::pod_read_unaligned(&raw[(index as usize-1)*128..][..128]);
+            let raw=read(&cache.buffers[2]);let cell:crate::foliage_volume_data::PackedCell=bytemuck::pod_read_unaligned(&raw[(index as usize-1)*64..][..64]);
             assert_eq!(bytemuck::bytes_of(&cell),bytemuck::bytes_of(&crate::foliage_volume_data::PackedCell::from(&forest.cells[target])));
             let raw=read(&cache.buffers[3]);let header:[u32;2]=bytemuck::pod_read_unaligned(&raw[target*8..][..8]);assert_eq!(header[1],1);
             let splat:[u32;2]=bytemuck::pod_read_unaligned(&raw[header[0]as usize*8..][..8]);assert_eq!(splat,[index-1,0]);
