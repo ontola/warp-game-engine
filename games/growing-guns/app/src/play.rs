@@ -72,6 +72,10 @@ pub struct Gg {
     since_snap: f32,
     since_poll: u32,
     rebuild: bool,
+    /// Prepared, not reported ready yet: ready waits for the first frame with
+    /// the match's scene built (a cold pipeline cache takes ~30 s on Windows),
+    /// so the host keeps its loading screen up instead of showing nothing.
+    ready_due: bool,
     environment_dirty: bool,
     split_hint_left: f32,
     /// The atmosphere shown is the island arenas' (Godot's sky only).
@@ -150,7 +154,7 @@ impl Gg {
         let mut vis = view::Visuals::build(&world);
         vis.hide_own_bodies(&slots);
         Gg { recorder: Default::default(), replay: None, replay_size: [1600, 900], replay_alpha: 1.0, prev: view::Pose::all(&world), stepped: true, xr_gun: None, xr_aim: None, xr_stereo: false, vis, light: view::lighting(),
-            hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, environment_dirty: false, split_hint_left: 0.0, inferno: false, sounds: None, crowd_tx: None, crowd_audible: true, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), party_colors: Vec::new(), roster_seed, aim_synced: Vec::new(), live: None,
+            hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, ready_due: false, environment_dirty: false, split_hint_left: 0.0, inferno: false, sounds: None, crowd_tx: None, crowd_audible: true, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), party_colors: Vec::new(), roster_seed, aim_synced: Vec::new(), live: None,
             sky: crate::sky::Sky::new(crate::sky::SkyChoice::Godot), sky_upload: None, before_blackout: None, light_overrides: Vec::new(), scatter: Default::default(),
             split: false, binding: Vec::new(), connected: Vec::new(), last_pad: None, pad_last: false, joined_now: Vec::new(), player_menu: None, joining: None, saved_name: String::new(), probe_tries: Vec::new(), lan: false, lan_hosts: None, lan_beacon: None, xr_head: None, explosions:crate::explosion_editor::ExplosionEditor::new(), debug: Default::default() }
             .with_split()
@@ -293,7 +297,7 @@ impl Gg {
                     self.party_colors = humans.iter().map(crate::party::PlayerColors::of).collect();
                     self.reset(world, (0..humans.len()).collect());
                     self.names = humans.into_iter().map(|s| s.name).collect();
-                    self.party.as_mut().expect("party").ready();
+                    self.ready_due = true;
                 }
                 crate::party::Ev::Profiles(seats) => {
                     let colors: Vec<_> = seats.iter().map(crate::party::PlayerColors::of).collect();
@@ -1308,6 +1312,7 @@ impl app::Game for Gg {
         // The lava flows on the game clock.
         light.time = (self.world.tick as f32 - 1.0 + alpha) * DT;
         hitch("draw (game side)", draw_t);
+        if std::mem::take(&mut self.ready_due) && let Some(p) = self.party.as_mut() { p.ready(); }
         Ok(Draw { cameras, light, hud: list })
     }
 
@@ -1325,6 +1330,7 @@ impl app::Game for Gg {
     fn gpu_reset(&mut self) { self.plates.reset(); self.sky_upload = None; self.rebuild = true; }
 
     fn screen(&self) -> app::Screen { self.party.as_ref().map_or(app::Screen::Normal, |p| p.screen()) }
+    fn hidden_frame_due(&self) -> bool { self.ready_due }
 
     fn split(&self) -> render::SplitLayout { render::SplitLayout::SideBySide }
 
@@ -1841,6 +1847,52 @@ mod tests {
         g.ui.open(hud::menus::Screen::Play);
         g.hud.fb[0].burned = Some(2.4);
         assert_eq!(g.mouse_capture(), Some(false));
+    }
+
+    /// A cold start built its scene for 32 s after telling the host it was
+    /// ready, so the host dropped its loading screen onto nothing. Ready now
+    /// waits for the first frame with the match's scene.
+    #[test]
+    fn ready_waits_for_the_first_frame_with_the_scene() {
+        use std::net::TcpListener;
+        use tungstenite::Message;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (got_tx, got) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(30))).unwrap();
+            let mut ws = tungstenite::accept(stream).unwrap();
+            let send = |ws: &mut tungstenite::WebSocket<std::net::TcpStream>, v: serde_json::Value| ws.send(Message::Text(v.to_string().into())).unwrap();
+            send(&mut ws, serde_json::json!({"type":"welcome","protocol_version":1,"godot_sdk":6,"party":{}}));
+            send(&mut ws, serde_json::json!({"type":"prepare","game":"growing-guns","session":"s1",
+                "seats":[{"index":0,"controller":"pad-a","occupant":{"kind":"local","player_id":"p1"}},{"index":1,"occupant":{"kind":"ai"}}],
+                "players":[{"id":"p1","name":"Joep","couch":0}]}));
+            while let Ok(m) = ws.read() {
+                if let Message::Text(t) = m {
+                    let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap();
+                    if got_tx.send(v["type"].as_str().unwrap_or("").to_string()).is_err() { break; }
+                }
+            }
+        });
+        let client = gamenight::Client::connect(gamenight::Config { url: format!("ws://{address}"), game_id: "growing-guns".into(), token: String::new(), launched_by_daemon: true }).unwrap();
+        let mut game = Gg::new(World::new(5, &[false, true]), Session::Local, vec![0]);
+        game.party = Some(crate::party::Party::new(gamenight::party::Party::new(client)));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !game.ready_due && std::time::Instant::now() < deadline {
+            game.tick(&[Controls::default()]);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(game.ready_due, "the prepare arrived");
+        assert!(game.hidden_frame_due(), "a hidden window draws the frame that reports ready");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!got.try_iter().any(|t| t == "ready"), "no ready before a frame");
+        let gpu = render::Gpu::new().unwrap();
+        let mut headless = app::Headless::new(&gpu, [320, 180], TICK_HZ as f32).unwrap();
+        headless.frame(&mut game).unwrap();
+        assert!(!game.ready_due);
+        let ready = std::iter::from_fn(|| got.recv_timeout(std::time::Duration::from_secs(5)).ok()).any(|t| t == "ready");
+        assert!(ready, "ready after the first frame");
     }
 
     #[test]
