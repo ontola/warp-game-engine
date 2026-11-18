@@ -339,6 +339,86 @@ author = "sturmankin"
 license = "CC0-1.0"
 link = "https://freesound.org/s/273380/"
 
+[file.car_alarm]
+source = "freesound"
+row = 40290
+id = 185474
+sha256 = "656171fda8efa90a32de0456301c4213df369901e81b6036f20647d7d79f8a21"
+title = "Car Alarm"
+author = "qubodup"
+license = "CC0-1.0"
+link = "https://freesound.org/s/185474/"
+
+[file.classic_car_boot]
+source = "freesound"
+row = 39488
+id = 630539
+sha256 = "d38199a89a0c656c11280ea427a83058046cc5572cbd5a16f43bb25c4974fed2"
+title = "Classic Car Dolomite Boot Open And Close"
+author = "mincedbeats"
+license = "CC0-1.0"
+link = "https://freesound.org/s/630539/"
+
+[file.car_trunk]
+source = "freesound"
+row = 33336
+id = 264892
+sha256 = "d843927bb46c9afd590c821e5e6e21286ef703af6071d810206fd9fe86c3149a"
+title = "Car Trunk"
+author = "Tokyoshowdown"
+license = "CC0-1.0"
+link = "https://freesound.org/s/264892/"
+
+[file.car_glove_compartment]
+source = "freesound"
+row = 29515
+id = 109196
+sha256 = "32b444d103c77160e50fbc22daa78f39806123257ae2119ba6b5443715beb39f"
+title = "Car glove compartment - searching"
+author = "Gutek"
+license = "CC0-1.0"
+link = "https://freesound.org/s/109196/"
+
+[file.scrap_metal_rummaging]
+source = "freesound"
+row = 11177
+id = 340575
+sha256 = "623acfbe8a212789446e54051f836ebab3c568eff80aa4a5fcca21d059d97717"
+title = "Scrap Metal Rummaging"
+author = "mickyman5000"
+license = "CC0-1.0"
+link = "https://freesound.org/s/340575/"
+
+[file.digging_through_box]
+source = "freesound"
+row = 26400
+id = 242188
+sha256 = "cf40894c479e94b105d1fd6ed0d9317dcb327322f9b461ad7627a8e6ff0054b6"
+title = "digging through box"
+author = "thebrendanbrown"
+license = "CC0-1.0"
+link = "https://freesound.org/s/242188/"
+
+[file.car_door_exterior]
+source = "freesound"
+row = 24220
+id = 187074
+sha256 = "ba09e2c52b2854bb55ab2cf1e59fc484055e3ce3b4b373f0dc3ec15e380aa0cc"
+title = "Car Door 01 Exterior"
+author = "samararaine"
+license = "CC0-1.0"
+link = "https://freesound.org/s/187074/"
+
+[file.car_door_open_close_3]
+source = "freesound"
+row = 13675
+id = 556690
+sha256 = "71d2d2a67693c6fab68f0feaa8b905ec83bf580509ca549743785ba15589569a"
+title = "Car Door open and close 3"
+author = "NachtmahrTV"
+license = "CC0-1.0"
+link = "https://freesound.org/s/556690/"
+
 [[sample]]
 name = "groan.1"
 file = "deranged_zombie"
@@ -610,21 +690,35 @@ name = "car_door.1"
 file = "squeaky_car_door"
 from = 7.42
 to = 8.9
-db = 8.1
+db = 12.2
 
 [[sample]]
 name = "car_door.2"
 file = "squeaky_car_door"
 from = 11.04
 to = 11.91
-db = 9.5
+db = 10.7
 
 [[sample]]
 name = "car_door.3"
 file = "car_door_close"
 from = 1.64
 to = 2.92
-db = 0.7
+db = 5.7
+
+[[sample]]
+name = "car_door.4"
+file = "car_door_open_close_3"
+from = 0.62
+to = 1.09
+db = 5.3
+
+[[sample]]
+name = "car_door.5"
+file = "car_door_open_close_3"
+from = 1.09
+to = 1.57
+db = 3.2
 
 [[sample]]
 name = "car_glass.1"
@@ -638,7 +732,169 @@ name = "car_glass.2"
 file = "glass_jar_shards"
 from = 0
 to = 0.5
+db = 4.2
+
+[[sample]]
+name = "car_thump.1"
+file = "classic_car_boot"
+from = 2.55
+to = 2.91
+db = 3.2
+
+[[sample]]
+name = "car_thump.2"
+file = "classic_car_boot"
+from = 5.13
+to = 5.47
+db = 1.2
+
+[[sample]]
+name = "car_thump.3"
+file = "classic_car_boot"
+from = 7.84
+to = 8.22
+db = 1.6
+
+[[sample]]
+name = "car_thump.4"
+file = "classic_car_boot"
+from = 10.1
+to = 10.4
+db = 1.1
+
+[[sample]]
+name = "car_thump.5"
+file = "classic_car_boot"
+from = 13.45
+to = 13.87
+db = 1.6
+
+[[sample]]
+name = "car_thump.6"
+file = "car_trunk"
+from = 0.56
+to = 1.32
+db = 5.5
+
+[[sample]]
+name = "car_thump.7"
+file = "car_trunk"
+from = 6.17
+to = 7.6
+db = 1.3
+
+[[sample]]
+name = "car_thump.8"
+file = "car_door_exterior"
+from = 2.48
+to = 3.0
+db = -0.6
+
+[[sample]]
+name = "car_thump.9"
+file = "car_door_exterior"
+from = 6.29
+to = 6.9
+db = -6.4
+
+[[sample]]
+name = "car_thump.10"
+file = "car_door_open_close_3"
+from = 4.34
+to = 5.22
+db = -5.2
+
+[[sample]]
+name = "rummage.1"
+file = "car_glove_compartment"
+from = 0.17
+to = 0.91
+db = 2.3
+
+[[sample]]
+name = "rummage.2"
+file = "car_glove_compartment"
+from = 2.69
+to = 3.95
+db = 7.6
+
+[[sample]]
+name = "rummage.3"
+file = "car_glove_compartment"
+from = 3.95
+to = 4.75
+db = 6.8
+
+[[sample]]
+name = "rummage.4"
+file = "car_glove_compartment"
+from = 5.03
+to = 5.76
+db = 1.7
+
+[[sample]]
+name = "rummage.5"
+file = "digging_through_box"
+from = 3.09
+to = 3.63
+db = 5.3
+
+[[sample]]
+name = "rummage.6"
+file = "digging_through_box"
+from = 4.05
+to = 4.4
+db = -1.7
+
+[[sample]]
+name = "rummage.7"
+file = "digging_through_box"
+from = 6.89
+to = 7.4
+db = 5.3
+
+[[sample]]
+name = "rummage.8"
+file = "digging_through_box"
+from = 9.88
+to = 10.55
+db = 3.4
+
+[[sample]]
+name = "rummage.9"
+file = "digging_through_box"
+from = 11.0
+to = 11.78
 db = 0.5
+
+[[sample]]
+name = "rummage.10"
+file = "digging_through_box"
+from = 12.47
+to = 12.93
+db = 0.5
+
+[[sample]]
+name = "rummage.11"
+file = "scrap_metal_rummaging"
+from = 0.06
+to = 1.5
+db = -3.2
+
+[[sample]]
+name = "rummage.12"
+file = "scrap_metal_rummaging"
+from = 5.05
+to = 6.3
+db = 0.8
+
+[[sample]]
+name = "alarm_loop"
+file = "car_alarm"
+from = 0
+to = 9.3
+db = -3.6
+loop = true
 
 [[sample]]
 name = "step.1"

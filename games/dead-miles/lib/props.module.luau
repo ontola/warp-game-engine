@@ -32,8 +32,8 @@ M.DEFS = {
 			p("cube", v(0.2, 1.3, 0), v(2.1, 0.6, 1.6), DARK),
 			p("cube", v(0.1, 1.66, -0.3), v(0.5, 0.12, 0.5), "#1d3a8a", { glow = 1.2 }),
 			p("cube", v(0.1, 1.66, 0.3), v(0.5, 0.12, 0.5), "#8a1d1d", { glow = 1.2 }),
-			-- The boot lid, ajar.
-			p("cube", v(-2.0, 1.15, 0), v(0.9, 0.08, 1.7), WHITE, { rough = 0.4, metal = 0.3, rot = v(0, 0, -0.5) }),
+			-- The boot lid: shut until someone forces it (a result's `open`).
+			p("cube", v(-1.75, 1.1, 0), v(0.75, 0.08, 1.7), WHITE, { rough = 0.4, metal = 0.3, open = { pos = v(-2.0, 1.32, 0), rot = v(0, 0, -0.9) } }),
 		},
 	},
 	ambulance = {
@@ -191,13 +191,18 @@ function M.build(name, pos, yaw)
 	local d = M.DEFS[name]
 	if not d then error("props: no prop " .. tostring(name)) end
 	yaw = yaw or 0
-	local ents = {}
+	local ents, lids = {}, nil
 	local root = mat.spawn("cube", { pos = pos, rot = v(0, yaw, 0), size = 0.05, visible = false, solid = false })
 	table.insert(ents, root)
 	for _, t in d.parts do
 		local o = look(t)
 		o.pos, o.size, o.rot, o.solid, o.tag = t.pos, t.size, t.rot, false, "deco"
-		mat.spawn(t.shape, o, root) -- goes with the root
+		local id = mat.spawn(t.shape, o, root) -- goes with the root
+		-- Parts that move when opened (a boot lid, a door).
+		if t.open then
+			lids = lids or {}
+			table.insert(lids, { id = id, pos = t.open.pos, rot = t.open.rot })
+		end
 	end
 	-- The footprint, turned to the nearest quarter.
 	local w, dd, h = d.foot[1], d.foot[2], d.foot[3]
@@ -206,7 +211,12 @@ function M.build(name, pos, yaw)
 	local wall = mat.spawn("cube", { pos = v(pos.x, h / 2, pos.z), size = v(w, h, dd), visible = false, tag = "wall" })
 	table.insert(ents, wall)
 	local rect = { x0 = pos.x - w / 2, x1 = pos.x + w / 2, z0 = pos.z - dd / 2, z1 = pos.z + dd / 2, h = h, id = wall }
-	return { ents = ents, rect = rect, root = root }
+	return { ents = ents, rect = rect, root = root, lids = lids }
+end
+
+-- Swing a prop's moving parts open (the `lids` build returned).
+function M.open(lids)
+	for _, l in lids or {} do world.set(l.id, { pos = l.pos, rot = l.rot or v(0, 0, 0) }) end
 end
 
 return M
