@@ -764,7 +764,9 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
         })),
         ("set_param", f!(core, move |_, (h, param, value): (u32, String, f32)| { lock(&core).sounds.set(h, &param, value); Ok(()) })),
         ("stop", f!(core, move |_, h: u32| { lock(&core).sounds.stop(h); Ok(()) })),
-        ("list", f!(core, move |lua, ()| lua.create_sequence_from(lock(&core).sounds.bank.patches.keys().cloned().collect::<Vec<_>>()))),
+        ("list", f!(core, move |lua, ()| { let c = lock(&core); let b = &c.sounds.bank; let mut names: Vec<String> = b.patches.keys().chain(b.sampled.keys()).cloned().collect(); names.sort(); names.dedup(); lua.create_sequence_from(names) })),
+        ("has", f!(core, move |_, name: String| { let c = lock(&core); Ok(c.sounds.bank.has(&name)) })),
+        ("recorded", f!(core, move |_, name: String| { let c = lock(&core); Ok(c.sounds.bank.is_sampled(&name)) })),
     ])?;
 
     table("hud", vec![

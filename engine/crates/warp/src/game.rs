@@ -156,7 +156,7 @@ impl LuaGame {
         if fresh { cfg.seed = fresh_seed(0); }
         let default_sky = SkyChoice::parse(over.sky.as_deref().unwrap_or(&cfg.sky))?;
         let sounds_dir = dir.join("sounds");
-        let mut bank = Bank::new(sounds_dir.is_dir().then_some(sounds_dir));
+        let mut bank = Bank::new(sounds_dir.is_dir().then_some(sounds_dir)).with_samples(dir);
         let lines = bank.scan();
         let mut world = World::new(dir, cfg.max_entities);
         world.scene.style = crate::surface::load_style(dir)?;

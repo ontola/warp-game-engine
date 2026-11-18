@@ -30,6 +30,7 @@ warp run my-game --live                # ... and let Claude change it over MCP
 | `warp script DIR FILE.json --out OUT [--players N] [--sky SKY] [--seed N]` | A headless playtest in the [`app::script` format](building-and-running.md): ticks with controls, `cmd` lines, `expect` and `until` checks, `capture` (PNG), `state` (JSON) and `audio` (WAV). Exits with status 1 when a check fails. |
 | `warp serve DIR [--live [PORT]] [--seconds T] [--size WxH]` | Headless in real time with live control on (port 7878 by default). Renders a frame only for a screenshot. Sound plays into a mixer that is never heard. |
 | `warp check DIR [--ticks N]` | Load, run `init` and N idle ticks (default 120) without a GPU, then print the state. Exits with status 1 on any script or patch error. The fastest check of an edit. |
+| `warp samples DIR [--bundle] [--credits]` | Fetch the recordings `samples.lock` lists into the cache, checking each sha256 (`--bundle`: into `DIR/samples/` for a package; `--credits`: who made them). See [audio.md](audio.md#recorded-samples-in-a-warp-game-sampleslock). |
 | `warp audio render FILE.luau [...]`, `check FILES`, `units` | The [`warp-audio`](audio.md#warp-audio) tool: render a patch and print its levels and a text spectrogram, check patches, list units. |
 | `warp new DIR [--title TITLE]` | Write the starter game into a new folder; `warp new GAME.luau` writes it as [one file](#a-game-in-one-file). |
 

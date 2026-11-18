@@ -50,8 +50,8 @@ Try it offline: `cargo run --release -p cli -- sound out.wav --car ID`.
 
 ## Effects: `audio::sfx`
 
-- Clips: `load_clip` decodes WAV (PCM 8/16/24/32-bit or float) and Ogg
-  Vorbis to mono at `SAMPLE_RATE`.
+- Clips: `load_clip` decodes WAV (PCM 8/16/24/32-bit or float), Ogg
+  Vorbis and FLAC to mono at `SAMPLE_RATE`.
 - `sfx(max_voices, sr)` returns a sender for the game and a mixer for the
   audio callback. The sender plays clips with gain, pitch, equal-power pan
   and a distance low-pass, and runs looping beds whose gain the game moves
@@ -60,6 +60,52 @@ Try it offline: `cargo run --release -p cli -- sound out.wav --car ID`.
   listeners; in split screen each sound is heard from the nearest player.
 - `SfxMixer::render_stereo(seconds)` mixes offline. A script `audio` step
   uses this to record what played.
+
+## Recorded samples in a Warp game: `samples.lock`
+
+A Luau game can play real recordings without putting audio files in git.
+`samples.lock` (TOML, beside main.luau) lists where each file comes from and
+its sha256; `[[sample]]` entries cut sounds out of the files:
+
+```toml
+[source.freesound]   # a Hugging Face datasets-server rows endpoint
+rows = "https://datasets-server.huggingface.co/rows?dataset=MoamenElSayed/freesound-commercial-50k&config=default&split=train"
+id_field = "freesound_id"
+
+[file.sick_zombie]
+source = "freesound"
+row = 10345          # or url = "https://..." for a direct download
+id = 341518          # checked against the row's id_field
+sha256 = "..."
+title = "Sick Zombie"
+author = "Massivecarcrash"
+license = "CC0-1.0"
+
+[[sample]]
+name = "groan.1"     # groan.1, groan.2 ... are variants of `groan`
+file = "sick_zombie"
+from = 6.11          # seconds into the file
+to = 6.73
+db = 0.3             # level to one loudness
+# loop = true        # a bed: plays until stopped, end crossfaded into start
+```
+
+- `warp run` fetches missing files in the background (with the system's
+  `curl`) into the user cache (`WARP_SAMPLES_CACHE` overrides it) and checks
+  each hash; `warp samples DIR` does it in the foreground, `--bundle` copies
+  them into `DIR/samples/` for a package (gitignored), `--credits` prints
+  who made them.
+- A group replaces the synth patch of the same name once its file is here:
+  `sound.play("groan")` plays a different recording each time (never the
+  same twice in a row), else `sounds/groan.luau`. A recording takes only
+  `rate` and `gain` (linear, for beds: `sound.set_param(h, "gain", g)`);
+  other parameters the game passes are dropped. `sound.recorded(name)` says
+  which one plays now, `sound.has(name)` whether anything does.
+- Headless runs (`script`, `check`, tests) never fetch; they use what the
+  cache already holds, so a test behaves the same either way (a sound never
+  touches the game's random numbers).
+- Pick sources whose licence allows it: Dead Miles uses only CC0 rows of a
+  public Freesound mirror (games/dead-miles/samples.lock).
 
 ## The procedural synth: `audio::synth`
 
