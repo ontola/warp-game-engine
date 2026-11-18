@@ -55,6 +55,9 @@ fn instance_for(windows: wgpu::Backends) -> wgpu::Instance {
 thread_local! {
     /// Tests on this thread get devices with this largest texture side.
     pub(crate) static TEST_MAX_TEXTURE: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+    /// Limit sampled textures independently from storage buffers in device fixtures.
+    pub(crate) static TEST_SAMPLED_TEXTURES: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+    pub(crate) static TEST_STORAGE_BUFFERS: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
 }
 
 impl Gpu {
@@ -161,6 +164,13 @@ impl Gpu {
                 (features & (wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::INDIRECT_FIRST_INSTANCE | wgpu::Features::TEXTURE_COMPRESSION_BC), web.or_worse_values_from(&al))
             }
             _ => (features, limits),
+        };
+        #[cfg(test)]
+        let limits = match TEST_STORAGE_BUFFERS.with(|c| c.get()) { Some(n) => wgpu::Limits { max_storage_buffers_per_shader_stage: limits.max_storage_buffers_per_shader_stage.min(n), ..limits }, None => limits };
+        #[cfg(test)]
+        let limits = match TEST_SAMPLED_TEXTURES.with(|c| c.get()) {
+            Some(n) => wgpu::Limits { max_sampled_textures_per_shader_stage: limits.max_sampled_textures_per_shader_stage.min(n), ..limits },
+            None => limits,
         };
         let descriptor = wgpu::DeviceDescriptor {
             label: Some("kern"),

@@ -217,6 +217,16 @@ to the headlights and local lights, which still work.
   shadowed. On an RTX 5070 Ti at 2560x1440 the chapel frame went from 5.94
   to 5.54 ms (shade 5.05 to 4.52, shadow tiles 0.13 ms).
 
+### Terrain shadows during camera motion
+
+Procedural terrain selection includes the shadow a patch can cast onto a
+nearby receiver. It projects the patch bounds along the sun direction and
+compares terrain error with the camera pixel footprint there and the solar
+disc footprint at the caster. The view can therefore keep an off-screen
+ridge detailed when its shadow crosses a nearby meadow. Cached clipmap
+levels accumulate damage across deferred frames and consume it on the
+next draw on the same grid.
+
 ### Everything else
 
 - Physical units: sun and sky in lux, exposure in EV100, emissive

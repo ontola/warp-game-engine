@@ -54,6 +54,7 @@
     {"name": "load.forest120", "world": ["--style", "alpine", "--regions", "polder", "--town", "--seed", "1", "--voxel-raster-profile"], "at": "0,1150,1.7,0,-0.05", "frames": 120, "about": "two seconds after arriving"}
   ],
   "clips": [
+    {"name": "swiss.shadow-walk", "world": ["--style", "swiss", "--spruce-forest", "--seed", "1"], "at": "-21,-116,1.7,0.4,0", "speed": 4, "seconds": 1, "size": "2560x1440", "warm": 300, "about": "grazing mountain shadow on a meadow at walking speed"},
     {"name": "tree", "at": "-390.4,573.0,10,-5.4018,0", "speed": 38, "seconds": 5, "about": "toward one tree from 200 m to 10 m"},
     {"name": "boulder", "at": "-102.9,-3.6,16,-0.7133,-0.1", "speed": 20, "seconds": 5, "about": "toward the popping rock"},
     {"name": "descent", "at": "449.9,526.4,150,-2.348,-1.2", "speed": 31, "seconds": 5, "about": "down from 150 m to 5 m over grass"}
