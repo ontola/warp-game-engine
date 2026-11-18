@@ -549,6 +549,9 @@ impl Game for Fly {
         }
         let mut light = self.light.clone();
         light.time = (self.ticks as f32 - 1.0 + frame.alpha) / TICK_HZ;
+        // KERN_LIGHT_DEBUG=N: the renderer's lighting debug view (1 sky
+        // visibility, 2 albedo, 3 direct, 4 indirect, 5 specular), for crops.
+        if let Some(d) = std::env::var("KERN_LIGHT_DEBUG").ok().and_then(|d| d.parse().ok()) { light.debug = d; }
         Ok(Draw { cameras: vec![cam], light, hud })
     }
 

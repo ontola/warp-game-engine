@@ -10,7 +10,7 @@ impl Default for Budget {
     // 256 MiB of cells: at 64 MiB the lowland view missed ~600 pages a frame
     // forever and kept 9.8 px cells 14 m from the camera; 256 MiB serves the
     // whole view (2252 pages, 233 MB allocated, RTX 5070 Ti, 2026-11-06).
-    fn default()->Self {Self {index_words:16*1024*1024,cells:256*1024*1024/128,splats:2*1024*1024,upload_bytes:8*1024*1024,uploads:32}}
+    fn default()->Self {Self {index_words:16*1024*1024,cells:128*1024*1024/64,splats:2*1024*1024,upload_bytes:8*1024*1024,uploads:32}}
 }
 #[derive(Clone)]
 struct Resident {index:Allocation,cell:Allocation,splat:Allocation,last_used:u64}
@@ -20,13 +20,15 @@ struct Feedback {buffer:wgpu::Buffer,sequence:u64,pending:Option<mpsc::Receiver<
 pub struct Stats {pub allocated_bytes:u64,pub resident_pages:u32,pub pending_pages:u32,pub uploads:u64,pub evictions:u64,pub uploaded_bytes:u64,pub frame_upload_bytes:u64,pub misses:u64,pub feedback_skipped:u64,pub source:Option<super::source::Stats>}
 pub struct Cache {
     pub source:Option<super::source::Cache>,source_wanted:BTreeSet<usize>,
-    pages:Vec<VoxelPage>,deps:Vec<Vec<usize>>,pinned:Vec<bool>,resident:Vec<Option<Resident>>,
+    pages:Vec<VoxelPage>,deps:Vec<Vec<usize>>,finer:Vec<Vec<usize>>,pinned:Vec<bool>,resident:Vec<Option<Resident>>,
     capacities:[u32;3],last_requested:Vec<u64>,
     /// Urgency the GPU last asked for each page with (projected pixel error
     /// of the cut waiting on it, x16; camera x4). Uploads go most urgent first.
     priority:Vec<u32>,index:Arena,cell:Arena,splat:Arena,pending:Option<Pending>,budget:Budget,
-    pub buffers:[wgpu::Buffer;4], // levels, indices + brick descriptors, cells, splats (two logical headers + pool)
-    publication:Vec<(bool,u32)>,dirty:BTreeSet<usize>,wanted:BTreeSet<usize>,frame:u64,
+    pub buffers:[wgpu::Buffer;4], // levels (= buffers[1], from level_offset), indices + brick descriptors, cells, splats (two logical headers + pool)
+    /// Byte offset of the level headers inside the index buffer.
+    pub level_offset:u64,
+    publication:Vec<(bool,u32)>,dirty:BTreeSet<usize>,cleared:Vec<usize>,wanted:BTreeSet<usize>,frame:u64,
     feedback:Vec<Feedback>,last_feedback:u64,stats:Stats,
 }
 impl Cache {
@@ -34,6 +36,8 @@ impl Cache {
         let Some(spec)=&scene.gpu_forest else{return Ok(None);};let forest=scene.voxel_forest.as_ref().ok_or("GPU forest missing voxel assets")?;
         let(deps,pinned)=spec.voxel_page_dependencies(forest.levels.len())?;
         let mut cache=Self::new(gpu,forest,deps,pinned,spec.page_budget)?;
+        cache.finer=spec.voxel_page_finer();
+        if cache.finer.iter().flatten().any(|&p|p>=cache.pages.len()) {return Err("finer voxel page outside catalog".into());}
         cache.source=Some(super::source::Cache::new(gpu,scene,&spec.source_page_instances(),spec.source_budget)?);
         Ok(Some(cache))
     }
@@ -46,20 +50,25 @@ impl Cache {
         // Each arena is one binding: shrink to the device's binding limit (WebGPU's
         // default is 128 MiB) rather than fail. Coarser fallbacks cover the rest.
         let limit=gpu.device.limits().max_storage_buffer_binding_size as u64;
-        let fit=[limit/4,limit/128,(limit/8).saturating_sub(2*pages.len()as u64)];
+        let fit=[limit/4,limit/64,(limit/8).saturating_sub(2*pages.len()as u64)];
         let capacities=[(budget.index_words as u64).min(total(|p|p.index_words())).min(fit[0])as u32,
             (budget.cells as u64).min(total(|p|p.cells.len())).min(fit[1])as u32,(budget.splats as u64).min(total(|p|p.splats.len())).min(fit[2])as u32];
         let pinned_sizes=[pages.iter().enumerate().filter(|(i,_)|pinned[*i]).map(|(_,p)|p.index_words()as u64).sum::<u64>(),
             pages.iter().enumerate().filter(|(i,_)|pinned[*i]).map(|(_,p)|p.cells.len()as u64).sum::<u64>(),
             pages.iter().enumerate().filter(|(i,_)|pinned[*i]).map(|(_,p)|p.splats.len()as u64).sum::<u64>()];
         if (0..3).any(|i|pinned_sizes[i]>capacities[i]as u64) {return Err("pinned voxel ancestors exceed physical cache budget".into());}
-        let sizes=[pages.len()as u64*32,capacities[0]as u64*4,capacities[1]as u64*128,(2*pages.len()as u64+capacities[2]as u64)*8];
+        // Level headers follow the index arena in its buffer (voxel_forest.wgsl
+        // volume_level_*), from the next 256-byte boundary.
+        let level_offset=(capacities[0]as u64*4).div_ceil(256)*256;
+        let sizes=[pages.len()as u64*32,level_offset+pages.len()as u64*32,capacities[1]as u64*64,(2*pages.len()as u64+capacities[2]as u64)*8];
         if sizes.iter().any(|&s|s>gpu.device.limits().max_storage_buffer_binding_size as u64) {return Err("voxel cache exceeds device buffer limit".into());}
-        let buffers=std::array::from_fn(|i|gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("bounded voxel asset arena"),size:sizes[i].max(176),usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false}));
-        let last_requested=vec![0;deps.len()];
+        let buffers:[wgpu::Buffer;4]=std::array::from_fn(|i|gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("bounded voxel asset arena"),size:sizes[i].max(176),usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false}));
+        let mut buffers=buffers;buffers[0]=buffers[1].clone();
+        let last_requested=vec![0;deps.len()];let finer=vec![Vec::new();deps.len()];
         let priority=vec![0;deps.len()];
-        let mut this=Self {source:None,source_wanted:BTreeSet::from([0]),capacities,last_requested,priority,resident:vec![None;pages.len()],pages,deps,pinned,index:Arena::new(capacities[0]),cell:Arena::new(capacities[1]),splat:Arena::new(capacities[2]),pending:None,budget,buffers,publication:Vec::new(),dirty:BTreeSet::new(),wanted:BTreeSet::new(),frame:0,feedback:Vec::new(),last_feedback:0,stats:Stats {allocated_bytes:sizes.iter().map(|s|(*s).max(176)).sum(),..Default::default()}};
+        let mut this=Self {level_offset,finer,source:None,source_wanted:BTreeSet::from([0]),capacities,last_requested,priority,resident:vec![None;pages.len()],pages,deps,pinned,index:Arena::new(capacities[0]),cell:Arena::new(capacities[1]),splat:Arena::new(capacities[2]),pending:None,budget,buffers,publication:Vec::new(),dirty:BTreeSet::new(),cleared:Vec::new(),wanted:BTreeSet::new(),frame:0,feedback:Vec::new(),last_feedback:0,stats:Stats {allocated_bytes:sizes.iter().map(|s|(*s).max(176)).sum(),..Default::default()}};
         this.publication=vec![(true,1);this.deps.len()];
+        for id in 0..this.pages.len() {this.clear_header(gpu,id);}
         this.dirty.extend(0..this.pages.len());
         // Ancestors are uploaded at construction, before any selector can use
         // the cache. Startup uploads are distinct from per-frame upload budget.
@@ -84,7 +93,7 @@ impl Cache {
     fn advance(&mut self,gpu:&Gpu,budget:u64)->Result<u64,String> {
         let Some(p)=self.pending.as_mut()else{return Ok(0);};let mut remaining=budget&!3;let initial=remaining;
         let bytes:[&[u8];3]=[bytemuck::cast_slice(&p.indices),bytemuck::cast_slice(&p.cells),bytemuck::cast_slice(&p.splats)];
-        let bases=[p.resident.index.range.start as u64*4,p.resident.cell.range.start as u64*128,(2*self.pages.len()as u64+p.resident.splat.range.start as u64)*8];
+        let bases=[p.resident.index.range.start as u64*4,p.resident.cell.range.start as u64*64,(2*self.pages.len()as u64+p.resident.splat.range.start as u64)*8];
         let mut begin=0u64;
         for i in 0..3 {
             let end=begin+bytes[i].len()as u64;
@@ -98,7 +107,7 @@ impl Cache {
         // Data first, logical headers last. A partially uploaded page is never
         // marked resident and cannot be selected by any camera/shadow consumer.
         if p.cursor==begin && remaining>=48 {
-            gpu.queue.write_buffer(&self.buffers[0],p.id as u64*32,bytemuck::bytes_of(&p.level));
+            gpu.queue.write_buffer(&self.buffers[0],self.level_offset+p.id as u64*32,bytemuck::bytes_of(&p.level));
             gpu.queue.write_buffer(&self.buffers[3],p.id as u64*8,bytemuck::cast_slice(&[2*self.pages.len()as u32+p.resident.splat.range.start,p.splats.len()as u32]));
             let page=&self.pages[p.id];
             gpu.queue.write_buffer(&self.buffers[3],(self.pages.len()+p.id)as u64*8,bytemuck::cast_slice(&[p.resident.index.range.start+page.indices.len()as u32,page.splat_bricks.len()as u32]));
@@ -108,15 +117,28 @@ impl Cache {
     }
     fn evict(&mut self,id:usize)->Result<(),String> {
         if self.pinned[id]{return Err("cannot evict pinned voxel ancestor".into());}
-        if let Some(r)=self.resident[id].take(){self.index.release(r.index)?;self.cell.release(r.cell)?;self.splat.release(r.splat)?;self.dirty.insert(id);self.stats.evictions+=1;}
+        if let Some(r)=self.resident[id].take(){self.index.release(r.index)?;self.cell.release(r.cell)?;self.splat.release(r.splat)?;self.dirty.insert(id);self.cleared.push(id);self.stats.evictions+=1;}
         Ok(())
     }
+    /// A page that is out keeps its grid (cell size and dimensions never
+    /// change, and shaders read the finest level's cell size of a volume
+    /// whose finest page is out) but has no cells and no bricks: that empty
+    /// range is how the sun pass sees it is not resident.
+    fn clear_header(&self,gpu:&Gpu,id:usize) {
+        gpu.queue.write_buffer(&self.buffers[0],self.level_offset+id as u64*32,bytemuck::bytes_of(&self.pages[id].level));
+        gpu.queue.write_buffer(&self.buffers[3],id as u64*8,bytemuck::cast_slice(&[0u32,0]));
+        gpu.queue.write_buffer(&self.buffers[3],(self.pages.len()+id)as u64*8,bytemuck::cast_slice(&[0u32,0]));
+    }
     fn publish(&mut self,gpu:&Gpu,runtime:&Selector)->Result<(),String> {
+        // An evicted page may have been uploaded again since: only clear what is still out.
+        for id in std::mem::take(&mut self.cleared) {if self.resident[id].is_none() && self.pending.as_ref().is_none_or(|p|p.id!=id) {self.clear_header(gpu,id);}}
         if self.dirty.is_empty() && self.source.as_ref().is_none_or(|s|s.dirty.is_empty()){return Ok(());}
         let mut updates=Vec::new();
         for (id,deps) in self.deps.iter().enumerate() {
             let ready=deps.iter().all(|&p|self.resident[p].is_some()) && self.source.as_ref().is_none_or(|s|s.ready(id));let old=self.publication[id];
-            if ready!=old.0 || deps.iter().any(|p|self.dirty.contains(p)) || self.source.as_ref().is_some_and(|s|s.changed(id)) {
+            // A finer level arriving or leaving changes what the sun pass draws
+            // for this selection, so its generation moves as well.
+            if ready!=old.0 || deps.iter().chain(&self.finer[id]).any(|p|self.dirty.contains(p)) || self.source.as_ref().is_some_and(|s|s.changed(id)) {
                 updates.push((id as u32,ready,old.1.checked_add(1).ok_or("voxel asset generation exhausted")?));
             }
         }
@@ -164,13 +186,23 @@ impl Cache {
             let cost=|id:usize|[self.pages[id].index_words()as u64,self.pages[id].cells.len()as u64,self.pages[id].splats.len()as u64];
             let mut wanted=self.pinned.iter().enumerate().filter_map(|(id,&pin)|pin.then_some(id)).collect::<BTreeSet<_>>();
             let mut used=[0u64;3];for &id in &wanted {let c=cost(id);for i in 0..3 {used[i]+=c[i];}}
-            for id in requests {
+            for &id in &requests {
                 let mut extra=[0u64;3];for &page in &self.deps[id] {if !wanted.contains(&page){let c=cost(page);for i in 0..3{extra[i]+=c[i];}}}
                 let mut source_extra=[0u64;3];if let Some(s)=&self.source{for &p in &s.deps[id]{if !source_wanted.contains(&p){let c=s.cost(p);for i in 0..3{source_extra[i]+=c[i];}}}}
                 if (0..3).all(|i|used[i]+extra[i]<=self.capacities[i]as u64) && self.source.as_ref().is_none_or(|s|(0..3).all(|i|source_used[i]+source_extra[i]<=s.capacities[i])) {
                     for i in 0..3{used[i]+=extra[i];}wanted.extend(self.deps[id].iter().copied());
                     if let Some(s)=&self.source{source_wanted.extend(s.deps[id].iter().copied());for i in 0..3{source_used[i]+=source_extra[i];}}
                 }else {self.stats.misses+=1;}
+            }
+            // What is left goes to finer levels for the sun pass, nearest level
+            // first, and only for selections whose own pages were admitted.
+            for &id in &requests {
+                if !self.deps[id].iter().all(|p|wanted.contains(p)) {continue;}
+                for &page in &self.finer[id] {
+                    if wanted.contains(&page) {continue;}
+                    let c=cost(page);if (0..3).any(|i|used[i]+c[i]>self.capacities[i]as u64) {break;}
+                    for i in 0..3{used[i]+=c[i];}wanted.insert(page);
+                }
             }
             self.wanted=wanted;self.source_wanted=source_wanted;
         }
@@ -227,7 +259,7 @@ mod tests {
         let nodes=(0..3).map(|i|Node {sphere:[0.,0.,0.,1.],error:[0.;4],links:[NONE,i+1,i,if i==0{2}else{0}]}).collect::<Vec<_>>();
         let roots=[Instance {rows:[[1.,0.,0.,0.],[0.,1.,0.,0.],[0.,0.,1.,0.]],scale:[1.,0.,0.,0.],info:[0;4]}];
         let selector=Selector::new(&gpu,&nodes,&roots,8,8).unwrap();
-        let budget=Budget {index_words:10,cells:2,splats:2,upload_bytes:52,uploads:1};
+        let budget=Budget {index_words:16,cells:2,splats:2,upload_bytes:52,uploads:1};
         let mut cache=Cache::new(&gpu,&forest,vec![vec![0],vec![1],vec![2]],vec![true,false,false],budget).unwrap();
         cache.initialize(&gpu,&selector).unwrap();assert_eq!(cache.stats().resident_pages,1);assert!(cache.evict(0).is_err());
         let bytes=cache.stats().allocated_bytes;
@@ -246,9 +278,12 @@ mod tests {
                 if cache.publication[target].0 {break;}
             }
             assert!(cache.publication[target].0,"requested page eventually becomes resident");
-            let raw=read(&cache.buffers[0]);let level:GpuLevel=bytemuck::pod_read_unaligned(&raw[target*32..target*32+32]);
-            let raw=read(&cache.buffers[1]);let index:u32=bytemuck::pod_read_unaligned(&raw[level.dims_offset[3]as usize*4..][..4]);
-            let raw=read(&cache.buffers[2]);let cell:crate::foliage_volume_data::PackedCell=bytemuck::pod_read_unaligned(&raw[(index as usize-1)*128..][..128]);
+            let raw=read(&cache.buffers[0]);let at=cache.level_offset as usize+target*32;let level:GpuLevel=bytemuck::pod_read_unaligned(&raw[at..at+32]);
+            // One occupied brick: the directory entry points at [mask, mask, first cell].
+            let raw=read(&cache.buffers[1]);let word=|i:usize|->u32{bytemuck::pod_read_unaligned(&raw[i*4..][..4])};
+            assert_eq!(level.dims_offset[3]>>30,3);let record=word((level.dims_offset[3]&0x3fff_ffff)as usize)as usize;
+            assert_eq!([word(record-1),word(record)],[1,0]);let index=word(record+1);
+            let raw=read(&cache.buffers[2]);let cell:crate::foliage_volume_data::PackedCell=bytemuck::pod_read_unaligned(&raw[(index as usize-1)*64..][..64]);
             assert_eq!(bytemuck::bytes_of(&cell),bytemuck::bytes_of(&crate::foliage_volume_data::PackedCell::from(&forest.cells[target])));
             let raw=read(&cache.buffers[3]);let header:[u32;2]=bytemuck::pod_read_unaligned(&raw[target*8..][..8]);assert_eq!(header[1],1);
             let splat:[u32;2]=bytemuck::pod_read_unaligned(&raw[header[0]as usize*8..][..8]);assert_eq!(splat,[index-1,0]);
@@ -258,9 +293,20 @@ mod tests {
         }
         assert!(cache.stats().evictions>=2);assert!(cache.publication[1].1>2);
         assert!(Cache::new(&gpu,&forest,vec![vec![0]],vec![true,true,true],budget).is_err());
+        // A finer level is loaded with leftover budget only, and nothing waits for it.
+        for (cells,loaded) in [(3,true),(2,false)] {
+            let selector=Selector::new(&gpu,&nodes,&roots,8,8).unwrap();
+            let mut cache=Cache::new(&gpu,&forest,vec![vec![0],vec![1],vec![2]],vec![true,false,false],Budget{index_words:24,cells,splats:3,upload_bytes:512,uploads:2}).unwrap();
+            cache.finer[1]=vec![2];cache.initialize(&gpu,&selector).unwrap();
+            for _ in 0..40 {
+                gpu.queue.write_buffer(&selector.asset_requests,0,bytemuck::cast_slice(&[1u32,0,0,0,1,0,cache.publication[1].1,0]));
+                cache.service(&gpu,&selector).unwrap();gpu.wait();
+            }
+            assert!(cache.publication[1].0);assert_eq!(cache.resident[2].is_some(),loaded);assert!(!cache.publication[2].0 || loaded);
+        }
         // Voxel readiness alone may not publish a source representation.
         let selector=Selector::new(&gpu,&nodes,&roots,8,8).unwrap();
-        let mut combined=Cache::new(&gpu,&forest,vec![vec![0],vec![1],vec![2]],vec![true,true,true],Budget{index_words:15,cells:3,splats:3,upload_bytes:512,uploads:2}).unwrap();
+        let mut combined=Cache::new(&gpu,&forest,vec![vec![0],vec![1],vec![2]],vec![true,true,true],Budget{index_words:24,cells:3,splats:3,upload_bytes:512,uploads:2}).unwrap();
         let(scene,reps)=super::super::source::tests::scene();
         combined.source=Some(super::super::source::Cache::new(&gpu,&scene,&reps,super::super::source::Budget{vertices:195,cluster_vertices:195,triangles:65}).unwrap());
         combined.initialize(&gpu,&selector).unwrap();assert!(combined.publication[0].0);assert!(!combined.publication[1].0);assert!(!combined.publication[2].0);

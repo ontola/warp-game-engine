@@ -2,8 +2,14 @@
 //! the CPU submits a cooked depth bound, never a current population shortlist.
 use crate::{Gpu,foliage_select::Selector};
 
+/// The selection counters (16 words) and the refine allocation state share
+/// one buffer: counters at 0, state from STATE_OFFSET (256-byte aligned).
+pub(crate) const STATE_OFFSET:u64=256;
 pub(crate) struct Refiner {
-    capacity:u32,proposals:wgpu::Buffer,parked:wgpu::Buffer,queues:[wgpu::Buffer;2],blocks:wgpu::Buffer,
+    capacity:u32,proposals:wgpu::Buffer,parked:wgpu::Buffer,
+    /// Both work queues in one binding (two halves of `capacity` tasks); `halves[front]`
+    /// tells the shader which half is this round's (x) and the next round's (y).
+    queue:wgpu::Buffer,halves:[wgpu::Buffer;2],blocks:wgpu::Buffer,
     pub state:wgpu::Buffer,args:wgpu::Buffer,layout:wgpu::BindGroupLayout,
     pipelines:Vec<wgpu::ComputePipeline>,
     binds:std::sync::Mutex<crate::frame::resource_cache::BindGroups<2>>,
@@ -30,11 +36,12 @@ pub const CAMERA_CUT_FLOOR: f32 = 4.0;
 /// cut do not flip each frame. KERN_CUT_HYSTERESIS overrides it (1 disables).
 pub const CUT_HYSTERESIS: f32 = 1.25;
 
-fn refine_source() -> String {
+pub(crate) fn refine_source() -> String {
     let floor = crate::switches::CAMERA_CUT_FLOOR.parse::<f32>().filter(|v| v.is_finite() && *v >= 1.0).unwrap_or(CAMERA_CUT_FLOOR);
     let hysteresis = crate::switches::CUT_HYSTERESIS.parse::<f32>().filter(|v| v.is_finite() && *v >= 1.0).unwrap_or(CUT_HYSTERESIS);
     let per_tree = !crate::switches::SOURCE_PER_TREE.off();
-    format!("const CAMERA_CUT_FLOOR: f32 = {floor:?};\nconst CUT_HYSTERESIS: f32 = {hysteresis:?};\nconst SOURCE_PER_TREE: bool = {per_tree};\n{}", include_str!("shaders/foliage_refine.wgsl"))
+    let wave = !crate::switches::REFINE_WAVE_PUBLISH.off();
+    format!("const CAMERA_CUT_FLOOR: f32 = {floor:?};\nconst CUT_HYSTERESIS: f32 = {hysteresis:?};\nconst SOURCE_PER_TREE: bool = {per_tree};\nconst WAVE_PUBLISH: bool = {wave};\n{}", include_str!("shaders/foliage_refine.wgsl"))
 }
 struct Rounds {cameras:Vec<(glam::Vec3,glam::Vec3,f32)>,stale:u64,full:bool,used:Option<u32>,hint:Option<u32>,encoded:u32,frame:u64,newest:u64,slots:Vec<RoundSlot>}
 struct RoundSlot {buffer:wgpu::Buffer,encoded:u32,frame:u64,pending:Option<std::sync::mpsc::Receiver<Result<(),wgpu::BufferAsyncError>>>}
@@ -55,21 +62,25 @@ impl Rounds {
     fn count(&self,bound:u32)->u32 {if self.full {return bound;}self.hint.map_or(bound,|h|(h+(h&1)).clamp(2,bound))}
 }
 impl Refiner {
-    pub fn new(gpu:&Gpu,capacity:u32)->Self {
+    /// `selected`: word offsets of the record consumers and direct roots in
+    /// the selector's shared record buffer (foliage_select.rs Region::selected),
+    /// the first vec4 of the trees in the catalog buffer, and the node count.
+    pub fn new(gpu:&Gpu,capacity:u32,selected:[u32;4])->Self {
         let storage=|label,size|gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label:Some(label),size,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::COPY_DST,
             mapped_at_creation:false});
-        let entries=(0..17).map(|binding|wgpu::BindGroupLayoutEntry {binding,visibility:wgpu::ShaderStages::COMPUTE,count:None,
-            ty:wgpu::BindingType::Buffer {ty:if binding==0 {wgpu::BufferBindingType::Uniform} else {wgpu::BufferBindingType::Storage {read_only:binding==1||binding==2||binding==16}},has_dynamic_offset:false,min_binding_size:None}}).collect::<Vec<_>>();
+        let entries=Self::BINDINGS.into_iter().map(|binding|wgpu::BindGroupLayoutEntry {binding,visibility:wgpu::ShaderStages::COMPUTE,count:None,
+            ty:wgpu::BindingType::Buffer {ty:if binding==0 || binding==6 {wgpu::BufferBindingType::Uniform} else {wgpu::BufferBindingType::Storage {read_only:binding==1||binding==2||binding==16}},has_dynamic_offset:false,min_binding_size:None}}).collect::<Vec<_>>();
         let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("foliage complete-cut refinement"),entries:&entries});
         let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:None,bind_group_layouts:&[Some(&layout)],immediate_size:0});
         let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("foliage incremental admission"),source:wgpu::ShaderSource::Wgsl(refine_source().into())});
-        let pipelines=["seed","start","prepare","propose","priority_scan","priority_totals","decide","output_scan","output_totals","apply","advance","drain","audit","wake_count","wake_prefix","wake_scatter","seed_scatter","fast_begin","fast_round","fast_advance","fast_adapt","fast_mode","fast_phase"].into_iter().map(|entry|
+        let pipelines=["seed","start","prepare","propose","priority_scan","priority_totals","decide","output_scan","output_totals","apply","advance","drain","audit","wake_count","wake_prefix","wake_scatter","seed_scatter","fast_begin","fast_round","fast_advance","fast_adapt","fast_mode","fast_round_late"].into_iter().map(|entry|
             gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some(entry),layout:Some(&pl),module:&module,entry_point:Some(entry),compilation_options:Default::default(),cache:gpu.pipeline_cache()})).collect();
         Self {capacity,proposals:storage("foliage active proposals",capacity as u64*96),parked:storage("foliage dormant proposals",capacity as u64*112),
-            queues:[storage("foliage complete cut A",capacity as u64*16),storage("foliage complete cut B",capacity as u64*16)],
+            queue:storage("foliage complete cut queues",capacity as u64*32),
+            halves:[[0u32,capacity,capacity,0,selected[0],selected[1],selected[2],selected[3]],[capacity,0,capacity,0,selected[0],selected[1],selected[2],selected[3]]].map(|h|{use wgpu::util::DeviceExt;gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some("foliage queue halves"),contents:bytemuck::cast_slice(&h),usage:wgpu::BufferUsages::UNIFORM})}),
             blocks:storage("foliage refinement prefixes",(capacity.div_ceil(256)as u64+1)*32*16),
-            state:storage("foliage refinement allocation",384),
+            state:storage("foliage selection counters and refinement allocation",STATE_OFFSET+384),
             args:gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("foliage refinement indirect"),size:36,usage:wgpu::BufferUsages::INDIRECT|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false}),
             pipelines,layout,binds:Default::default(),fast:std::sync::atomic::AtomicBool::new(Self::default_fast()),
             worked:gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("foliage refinement rounds used"),size:4,usage:wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false}),
@@ -107,7 +118,10 @@ impl Refiner {
                 slot.pending=Some(rx);slot.encoded=encoded;slot.frame=frame;
             }
         }
-        r.frame+=1;r.encoded=r.count(bound);r.encoded
+        // KERN_REFINE_ROUNDS=N (diagnostic): encode exactly N rounds (even,
+        // at most the bound), to see what a round costs.
+        let fixed=crate::switches::REFINE_ROUNDS.parse::<u32>().map(|n|(n+(n&1)).clamp(2,bound));
+        r.frame+=1;r.encoded=fixed.unwrap_or_else(||r.count(bound));r.encoded
     }
     /// A camera that jumps, turns fast or zooms needs refinement the last
     /// readback did not see: go back to the full bound, and ignore readbacks
@@ -125,9 +139,15 @@ impl Refiner {
     #[cfg(test)] pub(crate) fn test_full_rounds(&self) {self.rounds.lock().unwrap().full=true;}
     /// Pretend the GPU last needed this few rounds.
     #[cfg(test)] pub(crate) fn test_hint(&self,rounds:u32) {self.rounds.lock().unwrap().hint=Some(rounds);}
+    /// Bindings in use: 2 (trees), 11 (direct roots), 13 (state) and 15 (record
+    /// consumers) now live inside 1 (catalog), 8 (selected) and 9 (counters).
+    const BINDINGS:[u32;13]=[0,1,3,4,5,6,7,8,9,10,12,14,16];
+    /// Bindings 10 (fallback) and 12 (demand) are the selector's per-tree ranges.
+    fn entries<'a>(buffers:[&'a wgpu::Buffer;13],s:&'a Selector)->Vec<wgpu::BindGroupEntry<'a>> {
+        Self::BINDINGS.iter().zip(buffers).map(|(&binding,b)|wgpu::BindGroupEntry {binding,resource:match binding {10=>s.fallback.binding(),12=>s.demand.binding(),_=>b.as_entire_binding()}}).collect()
+    }
     fn bind(&self,gpu:&Gpu,s:&Selector,front:usize)->wgpu::BindGroup {
-        let buffers=[&s.uniform,&s._nodes,&s._instances,&s.asset_pages,&self.proposals,&self.queues[front],&self.queues[1-front],&self.blocks,&s.records,&s.counters,&s.fallback,&s.direct,&s.demand,&self.state,&self.parked,&s.record_consumers,&s.seed_visibility];
-        let entries=buffers.iter().enumerate().map(|(binding,b)|wgpu::BindGroupEntry {binding:binding as u32,resource:b.as_entire_binding()}).collect::<Vec<_>>();
+        let entries=Self::entries([&s.uniform,&s._nodes.buffer,&s.asset_pages,&self.proposals,&self.queue,&self.halves[front],&self.blocks,&s.records.buffer,&s.counters,&s.fallback.buffer,&s.demand.buffer,&self.parked,&s.seed_visibility],s);
         self.binds.lock().unwrap().entries(gpu,&self.layout,"foliage refinement buffers",&entries)
     }
     fn dispatch(&self,enc:&mut wgpu::CommandEncoder,bind:&wgpu::BindGroup,pipeline:usize,groups:Option<u32>,offset:u64) {
@@ -136,7 +156,7 @@ impl Refiner {
     }
     fn prepare(&self,enc:&mut wgpu::CommandEncoder,bind:&wgpu::BindGroup) {
         self.dispatch(enc,bind,2,Some(1),0);
-        enc.copy_buffer_to_buffer(&self.state,64*4,&self.args,24,12);
+        enc.copy_buffer_to_buffer(&self.state,STATE_OFFSET+64*4,&self.args,24,12);
         {
             let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,bind,&[]);
             for (pipeline,direct) in [(13,false),(14,true),(15,false)] {
@@ -144,8 +164,8 @@ impl Refiner {
                 if direct {pass.dispatch_workgroups(1,1,1);}else {pass.dispatch_workgroups_indirect(&self.args,24);}
             }
         }
-        enc.copy_buffer_to_buffer(&self.state,32,&self.args,0,12);
-        enc.copy_buffer_to_buffer(&self.state,48,&self.args,12,12);
+        enc.copy_buffer_to_buffer(&self.state,STATE_OFFSET+32,&self.args,0,12);
+        enc.copy_buffer_to_buffer(&self.state,STATE_OFFSET+48,&self.args,12,12);
     }
     /// Offline replay of the actual GPU proposal kernel, against final frame
     /// residency/budget. Scratch resources preserve all live queues and counters.
@@ -153,17 +173,16 @@ impl Refiner {
         if tasks.is_empty(){return Ok(Vec::new());}
         if tasks.len()>self.capacity as usize{return Err("too many offline foliage proposals".into());}
         let scratch=|label,size|gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some(label),size,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
-        let state=scratch("offline proposal state",self.state.size());let proposals=scratch("offline proposals",tasks.len()as u64*96);
+        let state=scratch("offline proposal counters and state",self.state.size());let proposals=scratch("offline proposals",tasks.len()as u64*96);
         let queue=scratch("offline proposal tasks",tasks.len()as u64*16);gpu.queue.write_buffer(&queue,0,bytemuck::cast_slice(tasks));
-        let pages=scratch("offline proposal pages",s.asset_pages.size());let counters=scratch("offline proposal counters",s.counters.size());
+        let pages=scratch("offline proposal pages",s.asset_pages.size());
         let count=scratch("offline proposal count",4);gpu.queue.write_buffer(&count,0,bytemuck::bytes_of(&(tasks.len()as u32)));
-        let buffers=[&s.uniform,&s._nodes,&s._instances,&pages,&proposals,&queue,&self.queues[1],&self.blocks,&s.records,&counters,&s.fallback,&s.direct,&s.demand,&state,&self.parked,&s.record_consumers,&s.seed_visibility];
-        let entries=buffers.iter().enumerate().map(|(binding,b)|wgpu::BindGroupEntry {binding:binding as u32,resource:b.as_entire_binding()}).collect::<Vec<_>>();
+        let entries=Self::entries([&s.uniform,&s._nodes.buffer,&pages,&proposals,&queue,&self.halves[0],&self.blocks,&s.records.buffer,&state,&s.fallback.buffer,&s.demand.buffer,&self.parked,&s.seed_visibility],s);
         let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("offline proposal replay"),layout:&self.layout,entries:&entries});
         let out=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("offline proposal readback"),size:proposals.size(),usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
         let mut enc=gpu.device.create_command_encoder(&Default::default());
-        enc.copy_buffer_to_buffer(&self.state,0,&state,0,self.state.size());enc.copy_buffer_to_buffer(&self.state,0,&state,16,12);enc.copy_buffer_to_buffer(&self.state,69*4,&state,70*4,4);
-        enc.copy_buffer_to_buffer(&count,0,&state,12,4);enc.copy_buffer_to_buffer(&s.asset_pages,0,&pages,0,pages.size());
+        enc.copy_buffer_to_buffer(&self.state,STATE_OFFSET,&state,STATE_OFFSET,self.state.size()-STATE_OFFSET);enc.copy_buffer_to_buffer(&self.state,STATE_OFFSET,&state,STATE_OFFSET+16,12);enc.copy_buffer_to_buffer(&self.state,STATE_OFFSET+69*4,&state,STATE_OFFSET+70*4,4);
+        enc.copy_buffer_to_buffer(&count,0,&state,STATE_OFFSET+12,4);enc.copy_buffer_to_buffer(&s.asset_pages,0,&pages,0,pages.size());
         self.dispatch(&mut enc,&bind,3,Some((tasks.len()as u32).div_ceil(64)),0);
         enc.copy_buffer_to_buffer(&proposals,0,&out,0,proposals.size());gpu.queue.submit([enc.finish()]);
         let(tx,rx)=std::sync::mpsc::sync_channel(1);out.slice(..).map_async(wgpu::MapMode::Read,move|r|{let _=tx.send(r);});gpu.wait();rx.recv().map_err(|e|e.to_string())?.map_err(|e|e.to_string())?;
@@ -171,15 +190,16 @@ impl Refiner {
         Ok(data.chunks_exact(96).map(bytemuck::pod_read_unaligned).collect())
     }
     pub fn audit(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,s:&Selector) {
-        enc.clear_buffer(&self.state,19*4,Some(9*4));
-        enc.clear_buffer(&self.state,72*4,Some(4));
-        enc.clear_buffer(&self.state,32*4,Some(23*4));
+        enc.clear_buffer(&self.state,STATE_OFFSET+19*4,Some(9*4));
+        enc.clear_buffer(&self.state,STATE_OFFSET+72*4,Some(4));
+        enc.clear_buffer(&self.state,STATE_OFFSET+32*4,Some(23*4));
         self.dispatch(enc,&self.bind(gpu,s,0),12,Some(s.count.max(s.dimensions().0).div_ceil(64)),0);
     }
     pub fn encode(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,s:&Selector) {
+        // state[88] persists too: the shadow slot allowance from the last fast_adapt.
         // state[78..80] persists across encodes (error-cut scales: 79 camera, 78 shadow; 85 camera source),
         // and 82..85 (splat feedback: stored camera splats, booking ratio, reserved).
-        let binds=[self.bind(gpu,s,0),self.bind(gpu,s,1)];enc.clear_buffer(&self.state,0,Some(78*4));enc.clear_buffer(&self.state,80*4,Some(2*4));enc.clear_buffer(&self.state,86*4,None);
+        let binds=[self.bind(gpu,s,0),self.bind(gpu,s,1)];enc.clear_buffer(&self.state,STATE_OFFSET+0,Some(78*4));enc.clear_buffer(&self.state,STATE_OFFSET+80*4,Some(2*4));enc.clear_buffer(&self.state,STATE_OFFSET+86*4,Some(2*4));enc.clear_buffer(&self.state,STATE_OFFSET+89*4,None);
         // state[80]: error cut active, so work() books visible splats (set before seed).
         if self.error_cut() {self.dispatch(enc,&binds[0],21,Some(1),0);}
         self.dispatch(enc,&binds[0],0,Some(s.count.div_ceil(256)),0);
@@ -194,18 +214,18 @@ impl Refiner {
             self.dispatch(enc,&binds[0],17,Some(1),0);
             for round in 0..rounds {
                 let bind=&binds[round as usize%2];
-                enc.copy_buffer_to_buffer(&self.state,32,&self.args,0,12);
+                enc.copy_buffer_to_buffer(&self.state,STATE_OFFSET+32,&self.args,0,12);
                 let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,bind,&[]);
-                // Retained shadow budget first, then the rest (fast_phase).
-                for _ in 0..2 {
-                    pass.set_pipeline(&self.pipelines[18]);pass.dispatch_workgroups_indirect(&self.args,0);
-                    pass.set_pipeline(&self.pipelines[22]);pass.dispatch_workgroups(1,1,1);
-                }
+                // Retained shadow budget first, then the rest (fast_round_late).
+                for pipeline in [18,22] {pass.set_pipeline(&self.pipelines[pipeline]);pass.dispatch_workgroups_indirect(&self.args,0);}
                 pass.set_pipeline(&self.pipelines[19]);pass.dispatch_workgroups(1,1,1);
             }
-            let bind=&binds[rounds as usize%2];self.dispatch(enc,bind,11,Some(self.capacity.div_ceil(64)),0);
+            // The drain covers the live frontier (fast_advance/fast_begin size
+            // it), not the whole 1M-task capacity.
+            enc.copy_buffer_to_buffer(&self.state,STATE_OFFSET+89*4,&self.args,0,12);
+            let bind=&binds[rounds as usize%2];self.dispatch(enc,bind,11,None,0);
             self.dispatch(enc,bind,20,Some(1),0);
-            enc.copy_buffer_to_buffer(&self.state,68*4,&self.worked,0,4);
+            enc.copy_buffer_to_buffer(&self.state,STATE_OFFSET+68*4,&self.worked,0,4);
             return;
         }
         for round in 0..rounds {
@@ -221,10 +241,11 @@ impl Refiner {
             }
         }
         let bind=&binds[rounds as usize%2];self.dispatch(enc,bind,11,Some(self.capacity.div_ceil(64)),0);
-        enc.copy_buffer_to_buffer(&self.state,68*4,&self.worked,0,4);
+        enc.copy_buffer_to_buffer(&self.state,STATE_OFFSET+68*4,&self.worked,0,4);
     }
 }
 #[cfg(test)] mod tests {
+    use super::STATE_OFFSET;
     #[test]
     fn rounds_follow_need_and_recover_from_a_short_frame() {
         let mut r=super::Rounds {cameras:Vec::new(),stale:0,full:false,used:None,hint:None,encoded:0,frame:0,newest:0,slots:Vec::new()};
@@ -254,7 +275,7 @@ impl Refiner {
         let r=&selector.refiner;let bind=r.bind(&gpu,&selector,0);
         let mut parked=[0u32;56];parked[..4].copy_from_slice(&[0,0,256,1]);parked[28..32].copy_from_slice(&[1,0,512,1]);
         gpu.queue.write_buffer(&r.parked,0,bytemuck::cast_slice(&parked));
-        gpu.queue.write_buffer(&r.state,29*4,bytemuck::cast_slice(&[2u32]));
+        gpu.queue.write_buffer(&r.state,STATE_OFFSET+29*4,bytemuck::cast_slice(&[2u32]));
         fn read(gpu:&crate::Gpu,b:&wgpu::Buffer)->Vec<u32> {
             let out=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:None,size:b.size(),usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
             let mut enc=gpu.device.create_command_encoder(&Default::default());enc.copy_buffer_to_buffer(b,0,&out,0,b.size());let submission=gpu.queue.submit([enc.finish()]);
@@ -263,14 +284,14 @@ impl Refiner {
             let bytes=out.slice(..).get_mapped_range().unwrap();bytes.chunks_exact(4).map(bytemuck::pod_read_unaligned).collect()
         }
         for (root,role,pending) in [(0,256,1),(1,512,0)] {
-            gpu.queue.write_buffer(&r.state,3*4,bytemuck::cast_slice(&[0u32]));
+            gpu.queue.write_buffer(&r.state,STATE_OFFSET+3*4,bytemuck::cast_slice(&[0u32]));
             let mut enc=gpu.device.create_command_encoder(&Default::default());r.prepare(&mut enc,&bind);gpu.queue.submit([enc.finish()]);
-            let state=read(&gpu,&r.state);assert_eq!(state[3],1);assert_eq!(state[30],pending);
-            let queue=read(&gpu,&r.queues[0]);assert_eq!(&queue[..4],&[root,0,role,root+2]);
+            let state=read(&gpu,&r.state)[(STATE_OFFSET/4) as usize..].to_vec();assert_eq!(state[3],1);assert_eq!(state[30],pending);
+            let queue=read(&gpu,&r.queue);assert_eq!(&queue[..4],&[root,0,role,root+2]);
         }
-        gpu.queue.write_buffer(&r.state,3*4,bytemuck::cast_slice(&[0u32]));
+        gpu.queue.write_buffer(&r.state,STATE_OFFSET+3*4,bytemuck::cast_slice(&[0u32]));
         let mut enc=gpu.device.create_command_encoder(&Default::default());r.prepare(&mut enc,&bind);gpu.queue.submit([enc.finish()]);
-        let state=read(&gpu,&r.state);assert_eq!(state[3],0);assert_eq!(state[60],2,"no repeated wake without new work or capacity changes");
+        let state=read(&gpu,&r.state)[(STATE_OFFSET/4) as usize..].to_vec();assert_eq!(state[3],0);assert_eq!(state[60],2,"no repeated wake without new work or capacity changes");
     }
     #[test]
     #[ignore="exclusive GPU exhausted dormant queue publication oracle"]
@@ -280,12 +301,12 @@ impl Refiner {
         let node=Node {sphere:[0.,0.,0.5,0.1],error:[0.;4],links:[NONE,1,0,2]};
         let root=Instance {rows:[[1.,0.,0.,0.],[0.,1.,0.,0.],[0.,0.,1.,0.]],scale:[1.,0.,0.,0.],info:[0,1,0,0]};
         let selector=crate::foliage_select::Selector::with_work_capacity(&gpu,&[node],&[root],2,2,2).unwrap();let r=&selector.refiner;
-        gpu.queue.write_buffer(&r.queues[0],0,bytemuck::cast_slice(&[0u32,0,256,0]));
+        gpu.queue.write_buffer(&r.queue,0,bytemuck::cast_slice(&[0u32,0,256,0]));
         let mut proposal=[0u32;20];proposal[15]=2;gpu.queue.write_buffer(&r.proposals,0,bytemuck::cast_slice(&proposal));
-        gpu.queue.write_buffer(&r.state,3*4,bytemuck::cast_slice(&[1u32]));gpu.queue.write_buffer(&r.state,31*4,bytemuck::cast_slice(&[2u32]));
+        gpu.queue.write_buffer(&r.state,STATE_OFFSET+3*4,bytemuck::cast_slice(&[1u32]));gpu.queue.write_buffer(&r.state,STATE_OFFSET+31*4,bytemuck::cast_slice(&[2u32]));
         let mut enc=gpu.device.create_command_encoder(&Default::default());r.dispatch(&mut enc,&r.bind(&gpu,&selector,0),9,Some(1),0);
         let out=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:None,size:4,usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
-        enc.copy_buffer_to_buffer(&selector.direct,0,&out,0,4);gpu.queue.submit([enc.finish()]);out.slice(..).map_async(wgpu::MapMode::Read,|_|{});gpu.wait();
+        enc.copy_buffer_to_buffer(&selector.direct.buffer,selector.direct.offset,&out,0,4);gpu.queue.submit([enc.finish()]);out.slice(..).map_async(wgpu::MapMode::Read,|_|{});gpu.wait();
         assert_eq!(bytemuck::pod_read_unaligned::<u32>(&out.slice(..).get_mapped_range().unwrap()),1,"full parked storage must publish the complete resident ancestor");
     }
     #[test]
@@ -299,11 +320,11 @@ impl Refiner {
         let projection=|x|crate::part_wind::AnimationView {view_projection:glam::Mat4::from_scale(glam::Vec3::new(x,1.,1.)),viewport:[128;2]};
         let empty=gpu.device.create_texture(&wgpu::TextureDescriptor {label:None,size:wgpu::Extent3d {width:1,height:1,depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::R32Float,usage:wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&[]}).create_view(&Default::default());
         for empty_world in [false,true] {
-            if empty_world {for root in &mut roots {root.info[3]=1;}gpu.queue.write_buffer(&selector._instances,0,bytemuck::cast_slice(&roots));}
+            if empty_world {for root in &mut roots {root.info[3]=1;}selector._instances.write(&gpu,0,bytemuck::cast_slice(&roots));}
             let mut enc=gpu.device.create_command_encoder(&Default::default());selector.union_consumers(&gpu,&mut enc,&[ConsumerView::camera(projection(1.)),ConsumerView::shadow(projection(0.1))],1.,8,&empty).unwrap();
             let bind=r.bind(&gpu,&selector,0);enc.clear_buffer(&r.state,0,None);r.dispatch(&mut enc,&bind,0,Some(3),0);r.dispatch(&mut enc,&bind,1,Some(1),0);r.dispatch(&mut enc,&bind,16,Some(9),0);
             let out=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:None,size:96,usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
-            enc.copy_buffer_to_buffer(&r.state,0,&out,0,16);enc.copy_buffer_to_buffer(&r.queues[0],0,&out,16,80);gpu.queue.submit([enc.finish()]);out.slice(..).map_async(wgpu::MapMode::Read,|_|{});gpu.wait();
+            enc.copy_buffer_to_buffer(&r.state,STATE_OFFSET,&out,0,16);enc.copy_buffer_to_buffer(&r.queue,0,&out,16,80);gpu.queue.submit([enc.finish()]);out.slice(..).map_async(wgpu::MapMode::Read,|_|{});gpu.wait();
             let bytes=out.slice(..).get_mapped_range().unwrap();let words:&[u32]=bytemuck::cast_slice(&bytes);
             if empty_world {assert_eq!(&words[..4],&[0,0,0,0]);}else {
                 assert_eq!(&words[..4],&[0,6,15,5]);
@@ -318,7 +339,7 @@ impl Refiner {
         let gpu=crate::Gpu::new().unwrap();let node=Node {sphere:[0.,0.,0.5,0.1],error:[0.;4],links:[NONE,1,0,2]};
         let root=Instance {rows:[[1.,0.,0.,0.],[0.,1.,0.,0.],[0.,0.,1.,0.]],scale:[1.,0.,0.,0.],info:[0,1,0,0]};
         let selector=crate::foliage_select::Selector::new(&gpu,&[node],&[root],2,2).unwrap();let r=&selector.refiner;
-        gpu.queue.write_buffer(&r.queues[0],0,bytemuck::cast_slice(&[0u32,NONE,512,0]));gpu.queue.write_buffer(&r.state,3*4,bytemuck::cast_slice(&[1u32]));gpu.queue.write_buffer(&r.state,18*4,bytemuck::cast_slice(&[1u32]));
+        gpu.queue.write_buffer(&r.queue,0,bytemuck::cast_slice(&[0u32,NONE,512,0]));gpu.queue.write_buffer(&r.state,STATE_OFFSET+3*4,bytemuck::cast_slice(&[1u32]));gpu.queue.write_buffer(&r.state,STATE_OFFSET+18*4,bytemuck::cast_slice(&[1u32]));
         gpu.queue.write_buffer(&selector.uniform,32*80,bytemuck::cast_slice(&[0u32,2,0,2]));
         for (cost,expected) in [([0u32,0,0],1u32),([1,0,0],2),([0,0,1],1)] {
             let mut proposal=[0u32;20];proposal[4..7].copy_from_slice(&cost);proposal[13]=1;gpu.queue.write_buffer(&r.proposals,0,bytemuck::cast_slice(&proposal));

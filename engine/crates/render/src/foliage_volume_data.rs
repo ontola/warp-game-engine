@@ -127,28 +127,50 @@ pub struct GpuCell {
     pub normals: [[f32; 4]; 6],
 }
 
-/// Storage form: full-precision colour/extinction, bounded normal moments in
-/// signed normalized16. Do not normalize centroids before packing: their length
-/// carries the distribution's concentration. Logical/cooked cells remain f32.
+/// Storage form, 64 bytes (sixteen words): fourteen extinction values as
+/// half floats (words 0..7, value `i` in word `i/2`, half `i%2`), colour and
+/// roughness as unorm16 (words 7, 8), six normal moments as snorm8 xyzw
+/// (words 9..15), one spare word. Do not normalize centroids before packing:
+/// their length carries the distribution's concentration. Logical/cooked
+/// cells remain f32.
 #[repr(C)]
 #[derive(Clone,Copy,Debug,Pod,Zeroable)]
-pub struct PackedCell {
-    pub albedo_rough:[f32;4],
-    pub extinction:[[f32;4];4],
-    pub normals:[[u32;2];6],
+pub struct PackedCell(pub [u32;16]);
+/// Nearest half float of a non-negative value. A positive value never packs
+/// to zero (an occupied direction stays occupied) and never to infinity.
+fn half(v:f32)->u32 {
+    if v.is_nan() {return 0x7e00;}
+    if v<=0. {return 0;}
+    let bits=v.min(65504.).to_bits();let e=((bits>>23)&0xff)as i32-112;let m=bits&0x7f_ffff;
+    if e<=0 {
+        if e< -10 {return 1;}
+        let shift=(14-e)as u32;return (((m|0x80_0000)+(1<<(shift-1)))>>shift).max(1);
+    }
+    ((((e as u32)<<10)|(m>>13))+((m>>12)&1)).min(0x7bff)
+}
+fn half_value(h:u32)->f32 {
+    let e=(h>>10)&31;let m=(h&0x3ff)as f32;
+    if e==0 {m*2f32.powi(-24)} else if e==31 {if m==0. {f32::INFINITY}else{f32::NAN}} else {(1.+m/1024.)*2f32.powi(e as i32-15)}
 }
 impl From<&GpuCell> for PackedCell {
     fn from(cell:&GpuCell)->Self {
-        let snorm=|v:f32|->u32 { (v.clamp(-1.0,1.0)*32767.0).round() as i16 as u16 as u32 };
-        Self {albedo_rough:cell.albedo_rough,extinction:cell.extinction,
-            normals:cell.normals.map(|n|[snorm(n[0])|(snorm(n[1])<<16),snorm(n[2])|(snorm(n[3])<<16)])}
+        let mut w=[0u32;16];
+        for i in 0..14 {w[i/2]|=half(cell.extinction[i/4][i%4])<<(16*(i%2));}
+        let unorm=|v:f32|(v.clamp(0.,1.)*65535.).round()as u32;
+        w[7]=unorm(cell.albedo_rough[0])|(unorm(cell.albedo_rough[1])<<16);w[8]=unorm(cell.albedo_rough[2])|(unorm(cell.albedo_rough[3])<<16);
+        let snorm=|v:f32|(v.clamp(-1.,1.)*127.).round()as i8 as u8 as u32;
+        for (i,n) in cell.normals.iter().enumerate() {w[9+i]=snorm(n[0])|(snorm(n[1])<<8)|(snorm(n[2])<<16)|(snorm(n[3])<<24);}
+        Self(w)
     }
 }
 impl PackedCell {
     pub fn decode(&self)->GpuCell {
-        let unpack=|w:u32|[(w as u16 as i16 as f32/32767.0).max(-1.0),((w>>16)as u16 as i16 as f32/32767.0).max(-1.0)];
-        GpuCell {albedo_rough:self.albedo_rough,extinction:self.extinction,
-            normals:self.normals.map(|n|{let a=unpack(n[0]);let b=unpack(n[1]);[a[0],a[1],b[0],b[1]]})}
+        let w=&self.0;let mut cell=GpuCell::zeroed();
+        for i in 0..14 {cell.extinction[i/4][i%4]=half_value((w[i/2]>>(16*(i%2)))&0xffff);}
+        let unorm=|v:u32|(v&0xffff)as f32/65535.;
+        cell.albedo_rough=[unorm(w[7]),unorm(w[7]>>16),unorm(w[8]),unorm(w[8]>>16)];
+        for i in 0..6 {cell.normals[i]=std::array::from_fn(|k|((w[9+i]>>(8*k))as u8 as i8 as f32/127.).max(-1.));}
+        cell
     }
 }
 pub fn packed_cells(cells:&[GpuCell])->Vec<PackedCell> {cells.iter().map(PackedCell::from).collect()}
@@ -201,12 +223,15 @@ impl GpuForest {
     /// Count grid entries, not unique payloads: aliases rasterize once per
     /// coordinate. Computed once for the shared asset catalog.
     pub(crate) fn raster_work_bounds(&self) -> Result<Vec<u32>, String> {
+        // Largest chord over a cell in units of its size: the drawn disc's mean
+        // chord 1/1.48711 (KERN_VOXEL_DISC_DEPTH), else the cube chord's maximum 1.
+        let chord = if crate::switches::VOXEL_DISC_DEPTH.off() { 1.0 } else { 1.0 / 1.48711f32 };
         let kept: Vec<f32> = self.cells.iter().map(|c| c.extinction.as_flattened()[..13].iter().fold(0f32, |m, &v| m.max(v))).collect();
         let payload = |entries: &[u32], size: f32| -> Result<f64, String> {
             let mut sum = 0f64;
             for &i in entries.iter().filter(|&&i| i != 0) {
                 let sigma = *kept.get(i as usize - 1).ok_or("raster work references a missing voxel cell")?;
-                let alpha = 1.0 - (-sigma.max(0.0) * size).exp();
+                let alpha = 1.0 - (-sigma.max(0.0) * size * chord).exp();
                 if alpha >= 1.0 / 255.0 { sum += f64::from((alpha / SPLAT_MIN_ALPHA).min(1.0)); }
             }
             Ok(sum)
@@ -246,11 +271,17 @@ impl GpuForest {
 /// Aggregate levels use a sparse directory of 4x4x4 bricks. Bit31 of the
 /// level offset tags this encoding; ordinary providers retain dense indices.
 pub const BRICK_INDIRECTION: u32 = 1 << 31;
+/// Bit30 on a bricked level: an occupied brick is three words (occupancy
+/// mask low and high, address of its first cell) instead of 64 cell
+/// addresses, its cells stored in mask-bit order. Voxel pages use it
+/// (foliage_pages.rs): needles fill a brick thinly, and 64 words per brick
+/// made the directory of a fine level several times the size of its cells.
+pub const COMPACT_BRICKS: u32 = 1 << 30;
 /// voxel_forest.wgsl VOLUME_SPLAT_MIN_ALPHA: fainter cells are thinned to this alpha.
 pub(crate) const SPLAT_MIN_ALPHA: f32 = 0.5;
 pub(crate) fn cell_index(forest:&GpuForest,level:&GpuLevel,c:[u32;3])->Option<u32> {
     if (0..3).any(|a|c[a]>=level.dims_offset[a]) {return Some(0);}
-    let base=(level.dims_offset[3]&!BRICK_INDIRECTION)as usize;
+    let base=(level.dims_offset[3]&!(BRICK_INDIRECTION|COMPACT_BRICKS))as usize;
     if level.dims_offset[3]&BRICK_INDIRECTION==0 {
         return forest.indices.get(base+c[0]as usize+level.dims_offset[0]as usize*
             (c[1]as usize+level.dims_offset[1]as usize*c[2]as usize)).copied();
@@ -258,13 +289,25 @@ pub(crate) fn cell_index(forest:&GpuForest,level:&GpuLevel,c:[u32;3])->Option<u3
     let dx=level.dims_offset[0].div_ceil(4)as usize;let dy=level.dims_offset[1].div_ceil(4)as usize;
     let brick=*forest.indices.get(base+(c[0]/4)as usize+dx*((c[1]/4)as usize+dy*(c[2]/4)as usize))?;
     if brick==0 {return Some(0);}
-    forest.indices.get((brick-1)as usize+(c[0]%4+4*(c[1]%4)+16*(c[2]%4))as usize).copied()
+    let bit=c[0]%4+4*(c[1]%4)+16*(c[2]%4);
+    if level.dims_offset[3]&COMPACT_BRICKS!=0 {
+        let record=forest.indices.get((brick-1)as usize..(brick+2)as usize)?;
+        let mask=record[0]as u64|(record[1]as u64)<<32;
+        if mask>>bit&1==0 {return Some(0);}
+        return Some(record[2]+(mask&((1u64<<bit)-1)).count_ones());
+    }
+    forest.indices.get((brick-1)as usize+bit as usize).copied()
 }
 
 /// Convert only an aggregate provider after packing. Every level is bounded
 /// independently; failure leaves the original provider unchanged.
+/// Most bricks one packed level may hold. The splat pass walks a level's
+/// bricks 64 at a time in one workgroup, so this bounds that loop, not a
+/// GPU structure; cooks keep 128 (MAX_BRICKS_PER_LEVEL) unless
+/// KERN_BRANCH_BRICKS raises it for fine branch cells.
+pub const MAX_PACKED_BRICKS_PER_LEVEL: usize = 4096;
 pub fn pack_bricks(forest:&mut GpuForest,max_bricks_per_level:usize)->Result<Vec<usize>,String> {
-    if max_bricks_per_level==0||max_bricks_per_level>128 {return Err("aggregate brick limit must be1..128".into());}
+    if max_bricks_per_level==0||max_bricks_per_level>MAX_PACKED_BRICKS_PER_LEVEL {return Err("aggregate brick limit must be 1..MAX_PACKED_BRICKS_PER_LEVEL".into());}
     let mut indices=Vec::new();let mut levels=forest.levels.clone();let mut counts=Vec::new();
     for level in &mut levels {
         let dims=[level.dims_offset[0],level.dims_offset[1],level.dims_offset[2]];
@@ -283,7 +326,7 @@ pub fn pack_bricks(forest:&mut GpuForest,max_bricks_per_level:usize)->Result<Vec
             return Err("invalid original aggregate directory/grid range".into());
         }
         let base=indices.len();let end=base.checked_add(count).ok_or("brick directory overflow")?;
-        if end>=BRICK_INDIRECTION as usize {return Err("brick directory exceeds31bit addressing".into());}
+        if end>=COMPACT_BRICKS as usize {return Err("brick directory exceeds 30 bit addressing".into());}
         indices.resize(end,0);let mut occupied=0;
         for z in 0..bd[2] {for y in 0..bd[1] {for x in 0..bd[0] {
             let mut cells=[0u32;64];
@@ -294,8 +337,8 @@ pub fn pack_bricks(forest:&mut GpuForest,max_bricks_per_level:usize)->Result<Vec
                 cells[(cx+4*cy+16*cz)as usize]=reference;
             }}}
             if cells.iter().all(|v|*v==0){continue;}
-            occupied+=1;if occupied>max_bricks_per_level {return Err("aggregate level exceeds128-brick cluster budget".into());}
-            if indices.len().checked_add(64).is_none_or(|end|end>=BRICK_INDIRECTION as usize) {
+            occupied+=1;if occupied>max_bricks_per_level {return Err("aggregate level exceeds its brick budget".into());}
+            if indices.len().checked_add(64).is_none_or(|end|end>=COMPACT_BRICKS as usize) {
                 return Err("brick payload exceeds31bit addressing".into());
             }
             indices[base+x as usize+bd[0]as usize*(y as usize+bd[1]as usize*z as usize)]=indices.len()as u32+1;
@@ -808,7 +851,7 @@ mod tests {
     #[test]
     fn pack_bricks_failure_rolls_back_completed_levels_and_all_original_payloads() {
         let original=brick_fixture();
-        for cap in [0,1,129] {
+        for cap in [0,1,MAX_PACKED_BRICKS_PER_LEVEL+1] {
             let mut forest=original.clone();
             assert!(pack_bricks(&mut forest,cap).is_err());
             assert_same_forest(&original,&forest);
@@ -882,23 +925,31 @@ mod packed_cell_tests {
         let bytes=read.slice(..).get_mapped_range().unwrap();
         for (raw,expected) in bytes.chunks_exact(176).zip(&packed) {
             let got:GpuCell=bytemuck::pod_read_unaligned(raw);let expected=expected.decode();
-            assert_eq!(got.albedo_rough,expected.albedo_rough);assert_eq!(got.extinction,expected.extinction);
+            for (a,b) in got.albedo_rough.iter().zip(&expected.albedo_rough){assert!((a-b).abs()<1e-7,"{a} != {b}");}
+            assert_eq!(got.extinction,expected.extinction);
             for (a,b) in got.normals.iter().flatten().zip(expected.normals.iter().flatten()){assert!((a-b).abs()<1e-7,"{a} != {b}");}
         }
         drop(bytes);read.unmap();
     }
     #[test]
     fn foliage_packed_moments_preserve_direction_length_and_optics() {
-        assert_eq!(std::mem::size_of::<PackedCell>(),128);
+        assert_eq!(std::mem::size_of::<PackedCell>(),64);
         let mut c=GpuCell::zeroed();c.albedo_rough=[0.11,0.75,0.31,0.9];
-        c.extinction=[[1e-15,1e8,0.0,7.5];4];
+        // Tiny and huge densities stay occupied and finite; ordinary ones keep 11 bits.
+        c.extinction=[[1e-15,1e8,0.0,7.5],[0.013,431.7,3e-6,65.],[0.5,1.,2.,1e-4],[19.3,0.75,0.,0.]];
+        let d=PackedCell::from(&c).decode();
+        for (a,b) in c.extinction.iter().flatten().zip(d.extinction.iter().flatten()) {
+            assert_eq!(*a==0.,*b==0.,"{a} -> {b}");assert!(b.is_finite());
+            if (1e-4..6e4).contains(a) {assert!((a-b).abs()<=a/2048.,"{a} -> {b}");}
+        }
+        assert_eq!(half_value(half(1e8)),65504.);assert_eq!(half(1e-15),1);assert_eq!(half(1.),0x3c00);assert_eq!(half(65519.),0x7bff);
         for sample in 0..4097 {
             let v=-1.0+sample as f32/2048.0;
             c.normals=std::array::from_fn(|i|[v,-v,v*0.31,(i as f32+1.0)/21.0]);
             let d=PackedCell::from(&c).decode();
-            assert_eq!(d.albedo_rough,c.albedo_rough);assert_eq!(d.extinction,c.extinction);
+            for (a,b) in c.albedo_rough.iter().zip(&d.albedo_rough) {assert!((a-b).abs()<=0.5/65535.+1e-7,"{a} -> {b}");}
             for (a,b) in c.normals.iter().flatten().zip(d.normals.iter().flatten()) {
-                assert!((a-b).abs()<=1.0/65534.0+1e-7,"{a} -> {b}");
+                assert!((a-b).abs()<=1.0/254.0+1e-6,"{a} -> {b}");
             }
         }
         c.normals[0]=[0.,-1.,1.,0.];assert_eq!(PackedCell::from(&c).decode().normals[0],c.normals[0]);
