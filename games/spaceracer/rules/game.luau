@@ -97,7 +97,7 @@ local function pickup(c)
 end
 local function balance(_)
     return {countdown=3,respawn_seconds=2,race_timeout=240,refill_rate=1,pickup_seconds=2,
-        pickup_spacing=1300,warp_seconds=2.8,warp_speed=630,sentry_seconds=8,sentry_interval=.05,
+        pickup_spacing=1750,warp_seconds=2.8,warp_speed=630,sentry_seconds=8,sentry_interval=.05,
         sentry_damage=.5,rail_damage=50,emp_seconds=3,emp_radius=100,missile_damage=60,missile_radius=55,
         bomb_damage=145,bomb_radius=120,projectile_timeout=12}
 end

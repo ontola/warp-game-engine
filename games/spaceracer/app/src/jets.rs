@@ -611,10 +611,56 @@ impl Jets {
                 }
             }
         }
+        // Pickups pulse with a violet halo so they read from far down the road.
+        for (k,p) in race.pickups.iter().enumerate() {
+            if p.cooldown>0. {continue;}
+            let at=race.world.track.sample(p.distance).point(p.x,4.);
+            let pulse=0.75+0.25*(time*4.+k as f32*1.7).sin();
+            self.sprites.push(glow(at,[9.,9.],Vec3::new(0.75,0.35,1.)*radiance*1.6*pulse,20));
+        }
         for blast in &race.blasts {
-            if blast.kind==spaceracer::race::Weapon::Emp && blast.age<0.18 {
-                let fade=(1.-blast.age as f32/0.18).powi(2);
-                self.sprites.push(glow(blast.position+Vec3::Y*2.,[7.,7.],Vec3::new(0.4,0.8,1.)*radiance*fade*3.,2));
+            // EMP: a digital shell races out to the full range in about half
+            // a second, glitching cell by cell, with a ring of data blocks on
+            // the ground; everything it passes stays disabled (EMP sparks).
+            if blast.kind==spaceracer::race::Weapon::Emp && blast.age<1.1 {
+                let age=blast.age as f32;
+                let t=(age/0.5).min(1.);
+                let r=(blast.radius as f32*(1.-(1.-t).powi(3))).max(2.);
+                let fade=1.-smooth(0.55,1.1,age);
+                let step=(time*24.).floor();
+                let color=Vec3::new(0.35,0.75,1.);
+                if age<0.25 {
+                    let flash=(1.-age/0.25).powi(2);
+                    self.sprites.push(glow(blast.position+Vec3::Y*2.,[34.,34.],Vec3::new(0.6,0.9,1.)*radiance*flash*4.,2));
+                }
+                let mut shell=glow(blast.position+Vec3::Y*2.,[r*2.;2],color*radiance*1.4*fade,19);
+                shell.facing=render::sprites::Facing::Screen;shell.params=[step,0.,age,0.];
+                self.sprites.push(shell);
+                // The city walls and hills hide a flat ring, so the wave front
+                // rides the road: a wall of data blocks sweeps out along the
+                // track ahead and behind, the width of the road.
+                let reference=race.pilots.iter().zip(poses).min_by(|a,b|a.1.origin.distance_squared(blast.position).total_cmp(&b.1.origin.distance_squared(blast.position))).map_or(0.,|(p,_)|p.distance);
+                let (at,_,_)=race.world.track.project(blast.position,reference,400.);
+                for (side,dir) in [(0u32,1.),(1u32,-1.)] {
+                    let node=race.world.track.sample(at+dir*r as f64);
+                    let width=node.geometry.width;
+                    let a=node.point(-width,0.4);let b=node.point(width,0.4);
+                    self.sprites.push(shaft(a,b,0.9,color*radiance*5.*fade,11,[0.;4]));
+                    let columns=((2.*width)/2.6).ceil() as u32;
+                    for c in 0..columns {
+                        for layer in 0..4u32 {
+                            let seed=side*7919+c*131+layer*17;
+                            if hash(seed+step as u32*31)<0.35 {continue;}
+                            let x=-width+(c as f64+0.5)*2.*width/columns as f64;
+                            let h=0.9+layer as f64*2.2+hash(seed+5) as f64*0.6;
+                            let size=1.4+hash(seed+9)*1.2;
+                            let tint=if hash(seed+step as u32*7)<0.15 {Vec3::new(1.,0.35,0.9)} else {color};
+                            let mut block=glow(node.point(x,h),[size,size],tint*radiance*3.*fade*(1.-layer as f32*0.15),18);
+                            block.facing=render::sprites::Facing::Screen;
+                            self.sprites.push(block);
+                        }
+                    }
+                }
             }
         }
         // World lenses are shared by all cameras; view lenses are explicitly
@@ -890,6 +936,27 @@ mod tests {
     }
     #[test]
     #[ignore = "headless GPU diagnostic; run without a simultaneous game"]
+    fn emp_sprites_draw_gpu() {
+        let gpu=render::Gpu::new().unwrap();
+        render::sprites::set_game_sprite(&gpu,include_str!("../shaders/jets.wgsl")).unwrap();
+        let mut scene=render::Scene::default();scene.graphics.minimal_forward=true;
+        let material=scene.add_material(render::scene::Material{tint:[0.;3],layer:-1,roughness:1.,flags:render::scene::EMISSIVE,scale:1.,metal:0.});
+        let mesh=scene.add_mesh(&render::primitives::quad(material).mesh());
+        scene.add_instance(mesh,Affine3A::from_scale_rotation_translation(Vec3::new(20.,12.,1.),glam::Quat::IDENTITY,Vec3::new(0.,0.,-2.)));
+        let light=render::Lighting{sun_lux:0.,sky_lux:0.,ev100:0.,..Default::default()};
+        let renderer=render::Renderer::new(&gpu,&scene,&light);
+        renderer.set_sprite_image(&gpu,IMAGE,&render::picture::Picture::solid(2,2,[255;4]),render::hud::ImageFilter::Nearest);
+        let camera=render::Camera{pos:Vec3::new(0.,0.,14.),target:Vec3::ZERO,fov_y:50_f32.to_radians(),near:0.1};
+        for effect in [2u32,18,19,20] {
+            let mut s=glow(Vec3::ZERO,[4.;2],Vec3::splat(4.),effect);s.facing=render::sprites::Facing::Screen;
+            renderer.set_sprites(&gpu,&[s]).unwrap();
+            let (pixels,_)=renderer.render(&gpu,&camera,&light,256,128);
+            let peak=pixels.chunks(4).map(|p|p[0]).max().unwrap();
+            eprintln!("effect {effect} peak {peak}");
+        }
+    }
+    #[test]
+    #[ignore = "headless GPU diagnostic; run without a simultaneous game"]
     fn vapor_sprite_edges_gpu() {
         let gpu=render::Gpu::new().unwrap();
         render::sprites::set_game_sprite(&gpu,include_str!("../shaders/jets.wgsl")).unwrap();
@@ -1020,6 +1087,21 @@ mod tests {
         assert!(!jets.sprites.iter().any(|s|s.effect==5));
     }
     #[test]
+    fn emp_blast_spreads_a_digital_shell_to_its_range() {
+        let root=Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut jets=Jets::new(root).unwrap();let mut race=Race::new(31,"normal","city",1,3);
+        let poses:Vec<_>=(0..6).map(|i|race.pose(i)).collect();
+        race.blasts.push(spaceracer::race::Blast{position:poses[0].origin,radius:100.,age:0.1,kind:spaceracer::race::Weapon::Emp});
+        jets.update(&race,&poses,1.);
+        let shell=|j:&Jets|j.sprites.iter().find(|s|s.effect==19).map(|s|s.size[0]);
+        let early=shell(&jets).expect("EMP shell");
+        assert!(jets.sprites.iter().filter(|s|s.effect==18).count()>20,"data blocks wall the road");
+        race.blasts[0].age=0.6;jets.update(&race,&poses,1.5);
+        assert!(shell(&jets).unwrap()>early && (shell(&jets).unwrap()-200.).abs()<1.,"the shell reaches the full range");
+        race.blasts[0].age=1.15;jets.update(&race,&poses,2.);
+        assert!(shell(&jets).is_none(),"and is gone after a second");
+    }
+    #[test]
     fn a_weapon_hit_sets_a_jet_burning_for_a_moment() {
         let root=Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut jets=Jets::new(root).unwrap();let mut race=Race::new(31,"normal","city",1,3);
@@ -1059,7 +1141,8 @@ mod tests {
         assert_eq!(race.pilots[0].speed, 0.);
         assert_eq!(jets.lights.len(), 12); // small idle lamps on all six waiting ships
         assert!(jets.heat.is_empty());
-        assert!(jets.sprites.iter().all(|s|s.effect==2));
+        // Pickup halos (20) light the road too; the ships show only lamps.
+        assert!(jets.sprites.iter().filter(|s|s.effect!=20).all(|s|s.effect==2));
         race.countdown = 0.;
         race.pilots[0].boost = 1.;
         jets.update(&race, &poses, 0.1);
@@ -1088,7 +1171,7 @@ mod tests {
         );
         race.pilots[0].crashed = true;
         jets.update(&race, &poses, 0.4);
-        assert!(jets.sprites.is_empty());
+        assert!(jets.sprites.iter().all(|s| s.effect == 20));
     }
     #[test]
     fn minigun_events_render_once_and_warp_has_separate_world_and_view_lenses() {

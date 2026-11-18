@@ -117,8 +117,15 @@ bounds. Scenery and the aircraft hull remain collision proxies, not per-triangle
 vehicle contacts. F12 now records flight position, velocity and orientation.
 
 EMP reaches 100 metres in 3D, leaves its owner immune, and disables only nearby
-cruise missiles. Hit ships short-circuit with fading blue-white arcs. Pickups are
-spaced 1300 metres apart (previously 650); catch-up weighting is unchanged.
+cruise missiles. Hit ships short-circuit with fading blue-white arcs. Firing it
+sends a digital blast along the road: a glitching shell plus a wall of glowing
+data blocks that sweeps out to the 100 m range in half a second. The carried EMP
+is a dish with four prongs, a cyan core and two crossed field rings.
+Pickups come one per row, cycling left, centre and right lanes, and rows are
+spaced 1750 metres apart (about a quarter of the old three per 1300 m); each
+pickup is emissive and carries a pulsing violet halo. Catch-up weighting is
+unchanged. On-screen button glyphs are a dark disc with a smooth anti-aliased
+ring (`HudDrawList::ring`) and a centred letter.
 Sentry tracers consume at most one new shot per owner/presentation and leave
 brief surface sparks. Boost lightning decays from a long onset to smaller arcs
 with road-contact glows. Warp refraction is stronger, with per-view isolation.
