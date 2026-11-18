@@ -4,7 +4,7 @@ struct Branch {rest:array<vec4<f32>,3>,source:Source,volume:Volume,low:vec4<f32>
 struct Root {rows:array<vec4<f32>,3>,scale:vec4<f32>,info:vec4<u32>};
 struct Node {sphere:vec4<f32>,error:vec4<f32>,links:vec4<u32>};
 struct Slot {key:vec4<u32>,history:vec4<u32>};
-struct State {wind:vec4<f32>,counts:vec4<u32>,catalog:vec4<u32>,tables:vec4<u32>};
+struct State {wind:vec4<f32>,counts:vec4<u32>,catalog:vec4<u32>,tables:vec4<u32>,roots:vec4<u32>};
 @group(0) @binding(0) var<uniform> state:State;
 // The selector's hierarchy (nodes from 0) and roots (from vec4 state.catalog.x)
 // in one read-only binding (foliage_select.rs Region::catalog), read by field.
@@ -29,14 +29,21 @@ fn proxy_at(i:u32)->Volume {return table_volume(state.tables.y+i*6u);}
 @group(0) @binding(6) var<storage,read> fallback:array<u32>;
 @group(0) @binding(8) var<storage,read_write> sources:array<Source>;
 @group(0) @binding(9) var<storage,read_write> volumes:array<Volume>;
+// Choices (2 per slot, from 0, read by the cull and shadow damage as their
+// own buffer), then per-root history (state.roots.x) and root poses
+// (state.roots.y), all plain words in one binding.
 @group(0) @binding(10) var<storage,read_write> choices:array<u32>;
+fn history_at(i:u32)->vec4<u32> {let b=state.roots.x+i*4u;return vec4<u32>(choices[b],choices[b+1u],choices[b+2u],choices[b+3u]);}
+fn set_history(i:u32,v:vec4<u32>) {let b=state.roots.x+i*4u;choices[b]=v.x;choices[b+1u]=v.y;choices[b+2u]=v.z;choices[b+3u]=v.w;}
+fn pose_row(b:u32)->vec4<f32> {return bitcast<vec4<f32>>(vec4<u32>(choices[b],choices[b+1u],choices[b+2u],choices[b+3u]));}
+fn root_pose_at(i:u32)->array<vec4<f32>,3> {let b=state.roots.y+i*12u;return array<vec4<f32>,3>(pose_row(b),pose_row(b+4u),pose_row(b+8u));}
+fn set_pose_row(b:u32,r:vec4<f32>) {let u=bitcast<vec4<u32>>(r);choices[b]=u.x;choices[b+1u]=u.y;choices[b+2u]=u.z;choices[b+3u]=u.w;}
+fn set_root_pose(i:u32,m:array<vec4<f32>,3>) {let b=state.roots.y+i*12u;set_pose_row(b,m[0]);set_pose_row(b+4u,m[1]);set_pose_row(b+8u,m[2]);}
 @group(0) @binding(11) var<storage,read> root_publication:array<vec4<u32>>; // branch count, consumer roles, direct representation+1, fault
-@group(0) @binding(12) var<storage,read_write> root_history:array<vec4<u32>>;
 // Frame-local shared ancestry, bounded by selected slots and cooked depth.
 struct PoseEntry {key:atomic<u32>,pad0:u32,pad1:u32,pad2:u32,rows:array<vec4<f32>,3>};
 @group(0) @binding(13) var<storage,read_write> pose_cache:array<PoseEntry>;
 @group(0) @binding(14) var<storage,read_write> pose_work:array<atomic<u32>>;
-@group(0) @binding(15) var<storage,read_write> root_poses:array<array<vec4<f32>,3>>;
 @group(0) @binding(16) var<uniform> pose_level:vec4<u32>;
 @group(0) @binding(17) var<storage,read> asset_pages:array<vec4<u32>>;
 fn pose_hash(key:u32)->u32 {var h=key;h=(h^(h>>16u))*0x7feb352du;h=(h^(h>>15u))*0x846ca68bu;return (h^(h>>16u))&(arrayLength(&pose_cache)-1u);}
@@ -84,7 +91,7 @@ fn pose(root:Root,branch:u32)->array<vec4<f32>,3> {
  return m;
 }
 fn cached_pose(root:u32,branch:u32)->array<vec4<f32>,3> {
- if branch_info(branch).x==0xffffffffu {return root_poses[root];}
+ if branch_info(branch).x==0xffffffffu {return root_pose_at(root);}
  let at=pose_find(pose_key(root,branch));
  if at!=0xffffffffu {return pose_cache[at].rows;}
  // Bounded hash overflow cannot lose a pose or substitute an old generation.
@@ -93,7 +100,7 @@ fn cached_pose(root:u32,branch:u32)->array<vec4<f32>,3> {
 @compute @workgroup_size(64)
 fn prepare_root_poses(@builtin(global_invocation_id) id:vec3<u32>) {
  let i=id.x;if i>=state.counts.z || root_info(i).w!=0u {return;}
- root_poses[i]=pose(root_at(i),root_info(i).z);
+ set_root_pose(i,pose(root_at(i),root_info(i).z));
 }
 @compute @workgroup_size(64)
 fn request_poses(@builtin(global_invocation_id) id:vec3<u32>) {
@@ -175,10 +182,10 @@ fn materialize(@builtin(global_invocation_id) id:vec3<u32>) {
    var hidden=original;hidden.low.w=1.;volumes[i]=hidden;volumes[i+state.counts.z]=hidden;
    sources[original.identity.x].sphere.w=-1.;return;
   }
-  let m=root_poses[tree];let delta=multiply(m,original.inverse);
+  let m=root_pose_at(tree);let delta=multiply(m,original.inverse);
   let roles=root_publication[tree].y&768u;
   var histories:array<u32,2>;var changed=false;
-  let previous=root_history[tree];var epoch=previous.z&128u;
+  let previous=history_at(tree);var epoch=previous.z&128u;
   for(var consumer=0u;consumer<2u;consumer++) {
    let publication=tree+consumer*state.counts.z;let role=256u<<consumer;
    let direct=root_publication[publication].z;
@@ -197,13 +204,13 @@ fn materialize(@builtin(global_invocation_id) id:vec3<u32>) {
    if history!=0u && (roles&role)!=0u {volume.low.w=select(3.,2.,consumer==1u);}
    volume.high.w=appearance_seed(tree,root.info.z);volumes[i+consumer*state.counts.z]=volume;
    histories[consumer]=history;
-   let old=root_history[publication];let live_role=select(0u,role,history!=0u && (roles&role)!=0u);
+   let old=history_at(publication);let live_role=select(0u,role,history!=0u && (roles&role)!=0u);
    changed=changed || old.w!=asset_pages[0].w || old.x!=history || old.y!=root.info.y || (live_role&~old.z)!=0u;
   }
   if changed {epoch^=128u;}
   for(var consumer=0u;consumer<2u;consumer++) {
    let role=256u<<consumer;let live_role=select(0u,role,histories[consumer]!=0u && (roles&role)!=0u);
-   root_history[tree+consumer*state.counts.z]=vec4<u32>(histories[consumer],root.info.y,epoch|live_role,asset_pages[0].w);
+   set_history(tree+consumer*state.counts.z,vec4<u32>(histories[consumer],root.info.y,epoch|live_role,asset_pages[0].w));
   }
   let owner=original.identity.x;var source=sources[owner];source.rows=m;
   source.flags=(source.flags&~128u)|epoch;
