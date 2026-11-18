@@ -1387,7 +1387,9 @@ local function bot_intent(u)
 	if u.state == "down" then return it end
 	it.torch = dark() ~= u.torch and s.battery > 0
 
-	-- A sidekick: stays near its person, a step behind, and lets them lead.
+	-- A sidekick: stays close to its person, a step behind, lets them lead
+	-- and plays it safe: it fights what comes at the two of them, not what
+	-- it could go and find.
 	local lead = nil
 	if #humans > 0 then
 		local h, hd = nil, math.huge
@@ -1398,10 +1400,13 @@ local function bot_intent(u)
 			end
 		end
 		lead = h
-		if h and hd > 7 then
+		-- (Off to search something close to its person is still close.)
+		local c = u.going_to
+		local searching = c and h and not c.searched and c.claim == u.id and dist(v(c.x, 0, c.z), h.pos) < 6.5
+		if h and hd > (if searching then 7 else 4.5) and not nearest_zombie(u.pos, 1.6, true) then
 			it.mx, it.mz = steer(u, h.pos)
 			-- Left behind: a short sprint to catch up, with breath to spare.
-			it.run = hd > 10 and (u.stamina or 1) > 0.5 * (u.stamina_max or 1)
+			it.run = hd > 9 and (u.stamina or 1) > 0.5 * (u.stamina_max or 1)
 			return it
 		end
 	elseif s.center and dist(u.pos, s.center) > 9 and not nearest_zombie(u.pos, 2.5, true) then
@@ -1432,7 +1437,12 @@ local function bot_intent(u)
 	if u.injured and s.meds > 0 then it.med = true end
 
 	-- Fight what is close or in the way; walk away from the rest.
-	local z, d = nearest_zombie(u.pos, if lead then 4.5 else 7, true)
+	local z, d = nearest_zombie(u.pos, if lead then 2.4 else 7, true)
+	-- One on its person: go and help.
+	if lead and not z then
+		local lz, ld = nearest_zombie(lead.pos, 2.2, true)
+		if lz and dist(lz.pos, u.pos) < 5 then z, d = lz, dist(lz.pos, u.pos) end
+	end
 	-- Not through a wall: one in the next room is no fight yet.
 	if z and d > 0.6 then
 		local to = z.pos - u.pos
@@ -1459,8 +1469,14 @@ local function bot_intent(u)
 		elseif d < w.range - 0.3 and not gun and not tired then
 			it.melee = true
 		elseif tired and d < 2.5 then
-			-- Out of breath: step back from it.
-			it.mx, it.mz = -to.x / d, -to.z / d
+			-- Out of breath: step back from it, towards its person.
+			local back = v(-to.x / d, 0, -to.z / d)
+			if lead then
+				local tl = lead.pos - u.pos
+				local m = vector.magnitude(tl)
+				if m > 0.5 then back = (back + tl / m) * 0.5 end
+			end
+			it.mx, it.mz = back.x, back.z
 		elseif d < 4 and chasing(u, z, dt) then
 			it.mx, it.mz = to.x / d, to.z / d
 		end
@@ -1495,6 +1511,7 @@ local function bot_intent(u)
 			best.claim = nil
 			best = nil
 		end
+		u.going_to = best
 		if best then
 			best.claim = u.id
 			if to_rect(u.pos, best.rect) < 0.75 then
