@@ -189,15 +189,23 @@ fn volume_interval(tree:VolumeTree,origin:vec3<f32>,direction:vec3<f32>,limit:f3
 // Resource-dependent adapters deliberately stay out of the shared module.
 // 4^3 aggregate-brick directory, or the legacy dense level encoding.
 fn volume_cell_address(level:VolumeLevel,c:vec3<u32>)->u32 {
-    let base=level.dims_offset.w&0x7fffffffu;
+    let base=level.dims_offset.w&0x3fffffffu;
     if (level.dims_offset.w&0x80000000u)==0u {
         return volume_indices[base+c.x+level.dims_offset.x*(c.y+level.dims_offset.y*c.z)];
     }
     let bd=(level.dims_offset.xyz+vec3<u32>(3u))/4u;let b=c/4u;
     let address=volume_indices[base+b.x+bd.x*(b.y+bd.y*b.z)];
     if address==0u {return 0u;}
-    let k=c%4u;
-    return volume_indices[address-1u+k.x+4u*k.y+16u*k.z];
+    let k=c%4u;let bit=k.x+4u*k.y+16u*k.z;
+    if (level.dims_offset.w&0x40000000u)!=0u {
+        // Compact brick (foliage_volume_data.rs COMPACT_BRICKS): occupancy
+        // mask low and high, then the address of its first cell.
+        let low=volume_indices[address-1u];
+        let word=select(low,volume_indices[address],bit>=32u);let shift=bit&31u;
+        if ((word>>shift)&1u)==0u {return 0u;}
+        return volume_indices[address+1u]+countOneBits(word&((1u<<shift)-1u))+select(0u,countOneBits(low),bit>=32u);
+    }
+    return volume_indices[address-1u+bit];
 }
 fn volume_sample_level(level:VolumeLevel,local:vec3<f32>,direction:VolumeDirection)->VolumeSample {
     let grid=(local-level.origin_cell.xyz)/level.origin_cell.w-0.5;
@@ -1524,6 +1532,10 @@ fn volume_sun_splats_impl(index:u32,lane:u32,damaged:bool) {
                 let finest=volume_levels[tree.identity.y].origin_cell.w*length(vec3<f32>(owner.r0.x,owner.r1.x,owner.r2.x));
                 let ceiling=select(min(tree.identity.z-1u,selected.y),tree.identity.z-1u,volume_proxy(index));
                 level=u32(clamp(floor(log2(max(sun.w/max(finest,1e-6),1e-8))),0.0,f32(ceiling)));
+                // A paged slot only holds its selected mip and the coarser
+                // ones for certain: a level whose page is out has an empty
+                // cell range (foliage_page_cache.rs), so take the next one.
+                while level<ceiling && volume_splat_cells[tree.identity.y+level].y==0u {level++;}
                 volume_splat_tree(index,level);
             }
         }

@@ -48,9 +48,10 @@ impl Spec {
             } else if rep[1]==0 {Ok(Vec::new())}
             // Only voxel representations need voxel bytes. A source selection
             // renders source geometry for either consumer; it must not wait
-            // for an unrelated voxel shadow bundle. A voxel slot publishes its
-            // selected mip and the coarser ones (foliage_materialize.wgsl), so
-            // it waits for those and never for a finer level it does not draw.
+            // for an unrelated voxel shadow bundle. A voxel slot waits for its
+            // selected mip and the coarser ones, never for a finer level the
+            // camera does not draw: its shadow uses a finer one only when that
+            // happens to be resident (voxel_forest.wgsl volume_sun_splats_impl).
             else{let levels=range(branch.volume)?;Ok(levels.get(rep[2]as usize..).filter(|l|!l.is_empty()).ok_or("voxel mip outside catalog")?.to_vec())}
         }).collect::<Result<Vec<_>,String>>()?;
         for template in &self.templates {
