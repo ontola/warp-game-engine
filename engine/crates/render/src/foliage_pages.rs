@@ -24,48 +24,40 @@ impl VoxelPage {
         let [dx,dy,dz,offset]=level.dims_offset;
         if dx==0 || dy==0 || dz==0 || dx>1024 || dy>1024 || dz>1024 {return Err("invalid voxel page dimensions".into());}
         let bricked=offset&BRICK_INDIRECTION!=0;
-        let count=if bricked {dx.div_ceil(4)as usize*dy.div_ceil(4)as usize*dz.div_ceil(4)as usize}
+        let source_count=if bricked {dx.div_ceil(4)as usize*dy.div_ceil(4)as usize*dz.div_ceil(4)as usize}
             else {dx as usize*dy as usize*dz as usize};
         let base=(offset&!BRICK_INDIRECTION)as usize;
-        if base.checked_add(count).is_none_or(|end|end>forest.indices.len()) {return Err("invalid voxel page directory".into());}
-        let mut page=Self {level,indices:vec![0;count],cells:Vec::new(),splats:Vec::new(),directory:if bricked{count}else{0},splat_bricks:Vec::new()};
-        let mut remap=BTreeMap::new();
-        // Bricked pages do not expand into dense grids, and store each
-        // occupied brick compactly (COMPACT_BRICKS): its cells are appended
-        // here in mask-bit order, so the first address and the mask find any.
-        if bricked {
-            for i in 0..count {
-                let address=forest.indices[base+i];if address==0 {continue;}
-                let source=forest.indices.get(address as usize-1..address as usize-1+64).ok_or("invalid voxel page brick")?;
-                let mut mask=0u64;let mut first=0;
-                for (bit,&cell) in source.iter().enumerate() {
-                    if cell==0 {continue;}
-                    // A cell shared between positions is stored once per
-                    // position: the mask addresses cells by their order.
-                    page.cells.push(*forest.cells.get(cell as usize-1).ok_or("invalid voxel page sparse cell")?);
-                    let value=page.cells.len()as u32;remap.entry(cell).or_insert(value);
-                    if mask==0 {first=value;}
-                    mask|=1<<bit;
-                }
-                if mask==0 {continue;}
-                page.indices[i]=page.indices.len()as u32+1;
-                page.indices.extend([mask as u32,(mask>>32)as u32,first]);
+        if base.checked_add(source_count).is_none_or(|end|end>forest.indices.len()) {return Err("invalid voxel page directory".into());}
+        // Every page is stored as compact bricks (COMPACT_BRICKS), whatever
+        // the source encoding: a directory of 4x4x4 bricks, and per occupied
+        // brick its occupancy mask and the address of its first cell, the
+        // brick's cells appended here in mask-bit order. A dense grid of a
+        // fine level is mostly empty words (3.75 cm spruce branches: eight
+        // index words per cell), and it is what filled the index arena.
+        let bd=[dx.div_ceil(4),dy.div_ceil(4),dz.div_ceil(4)];
+        let count=bd[0]as usize*bd[1]as usize*bd[2]as usize;
+        let mut page=Self {level,indices:vec![0;count],cells:Vec::new(),splats:Vec::new(),directory:count,splat_bricks:Vec::new()};
+        for bz in 0..bd[2] {for by in 0..bd[1] {for bx in 0..bd[0] {
+            let mut mask=0u64;let mut first=0;
+            for bit in 0..64u32 {
+                let c=[bx*4+bit%4,by*4+bit/4%4,bz*4+bit/16];
+                if c[0]>=dx || c[1]>=dy || c[2]>=dz {continue;}
+                let cell=cell_index(forest,&level,c).ok_or("invalid voxel page cell address")?;
+                if cell==0 {continue;}
+                // A cell shared between positions is stored once per
+                // position: the mask addresses cells by their order.
+                page.cells.push(*forest.cells.get(cell as usize-1).ok_or("invalid voxel page sparse cell")?);
+                if mask==0 {first=page.cells.len()as u32;}
+                mask|=1<<bit;
+                page.splats.push([page.cells.len()as u32-1,c[0]|c[1]<<10|c[2]<<20]);
             }
-        }else {
-            for i in 0..count {page.indices[i]=page.local_cell(forest,forest.indices[base+i],&mut remap)?;}
-        }
-        for z in 0..dz {for y in 0..dy {for x in 0..dx {
-            let cell=cell_index(forest,&level,[x,y,z]).ok_or("invalid voxel page cell address")?;
-            if cell==0 {continue;}
-            // A bricked page addresses a cell by its own position's copy.
-            let local=if bricked {
-                let record=page.indices[(x/4+dx.div_ceil(4)*(y/4+dy.div_ceil(4)*(z/4)))as usize]as usize-1;
-                let mask=page.indices[record]as u64|(page.indices[record+1]as u64)<<32;let bit=x%4+4*(y%4)+16*(z%4);
-                page.indices[record+2]+(mask&((1u64<<bit)-1)).count_ones()
-            } else {*remap.get(&cell).ok_or("voxel page missing cell")?};
-            page.splats.push([local-1,x|y<<10|z<<20]);
+            if mask==0 {continue;}
+            page.indices[(bx+bd[0]*(by+bd[1]*bz))as usize]=page.indices.len()as u32+1;
+            page.indices.extend([mask as u32,(mask>>32)as u32,first]);
         }}}
-        page.level.dims_offset[3]=if bricked{BRICK_INDIRECTION|COMPACT_BRICKS}else{0};
+        // The catalog order of a level's splat cells: z, then y, then x.
+        page.splats.sort_by_key(|s|s[1]);
+        page.level.dims_offset[3]=BRICK_INDIRECTION|COMPACT_BRICKS;
         Ok(page)
     }
     /// Group occupied cells once per asset page, not per world instance.
@@ -83,12 +75,9 @@ impl VoxelPage {
         }
     }
     fn index_words(&self)->usize {self.indices.len()+self.splat_bricks.len()*4}
-    fn local_cell(&mut self,forest:&GpuForest,cell:u32,remap:&mut BTreeMap<u32,u32>)->Result<u32,String> {
-        if cell==0{return Ok(0);}
-        if let Some(&local)=remap.get(&cell){return Ok(local);}
-        let value=*forest.cells.get(cell as usize-1).ok_or("invalid voxel page sparse cell")?;
-        self.cells.push(value);let local=self.cells.len()as u32;remap.insert(cell,local);Ok(local)
-    }
+    /// Cell size, then words of directory, brick records and splat bricks, then cells (diagnostics).
+    pub(crate) fn sizes(&self)->(f32,[usize;4]) {(self.level.origin_cell[3],[self.directory,self.indices.len()-self.directory,self.splat_bricks.len()*4,self.cells.len()])}
+    pub(crate) fn grouped(mut self)->Self {self.group_splats();self}
     /// Materialize a page at independent physical arena offsets. All address
     /// arithmetic is checked before returning any upload payload.
     pub fn relocate(&self,index_base:u32,cell_base:u32)->Result<(GpuLevel,Vec<u32>,Vec<[u32;2]>),String> {
@@ -98,10 +87,9 @@ impl VoxelPage {
         let mut indices=self.indices.clone();
         // Directory entries move with the index arena. After them: cell
         // addresses (a dense page), or brick records whose third word is one.
-        let bricked=self.level.dims_offset[3]&BRICK_INDIRECTION!=0;
         for (i,value) in indices.iter_mut().enumerate() {
             if i<self.directory {if *value!=0 {*value+=index_base;}}
-            else if !bricked || (i-self.directory)%3==2 {if *value!=0 {*value+=cell_base;}}
+            else if (i-self.directory)%3==2 {*value+=cell_base;}
         }
         let splats=self.splats.iter().map(|s|[s[0]+cell_base,s[1]]).collect();
         Ok((level,indices,splats))
