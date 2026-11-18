@@ -56,7 +56,7 @@ pub(super) fn hash(mut x: u32) -> u32 {
     x ^ (x >> 16)
 }
 
-fn hash3(c: [i32; 3], seed: u32) -> u32 {
+pub(super) fn hash3(c: [i32; 3], seed: u32) -> u32 {
     hash(
         (c[0] as u32).wrapping_mul(0x8da6_b343)
             ^ (c[1] as u32).wrapping_mul(0xd816_3841)
