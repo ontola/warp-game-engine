@@ -27,14 +27,6 @@ fn tree_at(i:u32)->Tree {return Tree(tree_x(i),tree_y(i),tree_z(i),tree_scale(i)
 @group(0) @binding(6) var<storage,read_write> fallback:array<atomic<u32>>;
 @group(0) @binding(7) var hzb:texture_2d<f32>;
 @group(0) @binding(8) var<storage,read_write> direct_roots:array<u32>;
-// Per-root demand and stable prefix within a projected-size priority bucket.
-// bucket low 5 bits: priority; bit 8: camera demand; bit 9: shadow demand.
-struct Demand { count:atomic<u32>, bucket:u32, prefix:u32, failed:atomic<u32> };
-@group(0) @binding(9) var<storage,read_write> demand:array<Demand>;
-@group(0) @binding(10) var<storage,read_write> bucket_cost:array<u32>;
-struct WorkQueue { count:atomic<u32>, padding:array<u32,3>, tasks:array<vec2<u32>> };
-@group(0) @binding(11) var<storage,read_write> input_work:WorkQueue;
-@group(0) @binding(12) var<storage,read_write> output_work:WorkQueue;
 @group(0) @binding(13) var<storage,read> child_list:array<u32>;
 // Logical representation pages. Physical allocation/upload is a separate owner.
 struct AssetPage {resident:u32,requested:atomic<u32>,generation:u32,padding:u32};

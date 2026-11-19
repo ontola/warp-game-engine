@@ -37,13 +37,13 @@ def main():
         frames = out / clip["name"]
         shutil.rmtree(frames, ignore_errors=True)
         relative = frames.relative_to(ROOT).as_posix()
-        command = [str(Path(args.exe).resolve()), *clip.get("world", suite["world"]), "--no-hud", "--at", clip["at"], "--speed", str(clip["speed"]), "--size", "960x540",
-                   "--dump", str(clip["seconds"] * 60), relative, "--dump-warm", "150", "--dump-every", "2", "--dump-forward"]
+        command = [str(Path(args.exe).resolve()), *clip.get("world", suite["world"]), "--no-hud", "--at", clip["at"], "--speed", str(clip["speed"]), "--size", clip.get("size", "960x540"),
+                   "--dump", str(clip["seconds"] * 60), relative, "--dump-warm", str(clip.get("warm", 150)), "--dump-every", "2", "--dump-forward"]
         done = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True, errors="replace")
         if done.returncode:
             raise SystemExit(f"{clip['name']} failed ({done.returncode})\n{done.stderr[-800:]}")
         target = out / f"{clip['name']}.mp4"
-        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-framerate", "30", "-i", str(frames / "%03d.png"), "-c:v", "libx264", "-crf", "27", "-preset", "slow",
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-framerate", "30", "-i", str(frames / "%03d.png"), "-vf", "scale=960:-2", "-c:v", "libx264", "-crf", "27", "-preset", "slow",
                         "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(target)], check=True)
         shutil.rmtree(frames)
         print(f"{target}: {target.stat().st_size / 2**20:.1f} MiB", flush=True)

@@ -28,8 +28,8 @@ pub struct Residency {
     pub counters: wgpu::Buffer,
     consumer_union: wgpu::Buffer,table: wgpu::Buffer,
     _uniform: wgpu::Buffer,
-    bind: wgpu::BindGroup,
-    pipelines: [wgpu::ComputePipeline; 5],
+    /// Each pass's pipeline and its own bind group (Self::PASSES).
+    passes: [(wgpu::ComputePipeline, wgpu::BindGroup); 5],
     indirect: wgpu::Buffer,
     capacity: u32,
 }
@@ -38,6 +38,22 @@ impl Residency {
     /// One allocation domain per selector/view. Do not re-use a domain for a
     /// different camera or shadow cut in the same frame. Immutable recipes and
     /// root placement buffers may be shared; these mutable outputs may not.
+    /// Entry points in dispatch order and the storage bindings each reads
+    /// (foliage_residency.wgsl): 1 selected, 2 selection counts, 3 fallback,
+    /// 4 slots, 5 table, 6 slot lists, 8 stats, 9 asset pages, 11 consumer union.
+    const PASSES: [(&'static str, &'static [u32]); 5] = [
+        ("index_requests", &[1, 2, 3, 5, 6, 8, 11]),
+        ("retain_slots", &[1, 3, 4, 5, 6, 8, 9, 11]),
+        ("allocate_slots", &[1, 2, 3, 4, 5, 6, 8, 9]),
+        ("publish_slots", &[1, 3, 4, 5, 8, 11]),
+        ("resolve_requests", &[1, 2, 3, 6]),
+    ];
+    /// The most storage buffers one pass binds.
+    const STORAGE_BUFFERS: u32 = {
+        let (mut most, mut i) = (0, 0);
+        while i < Self::PASSES.len() { if Self::PASSES[i].1.len() > most { most = Self::PASSES[i].1.len(); } i += 1; }
+        most as u32
+    };
     pub fn new(gpu: &Gpu, selector: &Selector, capacity: u32) -> Result<Self, String> {
         let (records, trees) = selector.dimensions();
         let table_size = records.checked_mul(2).and_then(u32::checked_next_power_of_two)
@@ -45,7 +61,7 @@ impl Residency {
         let limit = gpu.device.limits();
         if capacity == 0 || capacity.div_ceil(64) > limit.max_compute_workgroups_per_dimension
             || records.div_ceil(64) > limit.max_compute_workgroups_per_dimension
-            || limit.max_storage_buffers_per_shader_stage < 11 {
+            || limit.max_storage_buffers_per_shader_stage < Self::STORAGE_BUFFERS {
             return Err("foliage residency exceeds device dispatch/binding limits".into());
         }
         for bytes in [capacity as u64 * 32, capacity as u64 * 4, records as u64 * 4, table_size as u64 * 4] {
@@ -71,40 +87,43 @@ impl Residency {
                     (selector.record_consumers.offset/16) as u32, records, 0, 0]),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
-            let entries = [0u32,1,2,3,4,5,6,8,9,11].into_iter().map(|binding| wgpu::BindGroupLayoutEntry {
-                binding, visibility: wgpu::ShaderStages::COMPUTE, count: None,
-                ty: wgpu::BindingType::Buffer {
-                    ty: if binding == 0 { wgpu::BufferBindingType::Uniform }
-                        else { wgpu::BufferBindingType::Storage { read_only: binding <= 2 || binding == 9 } },
-                    has_dynamic_offset: false, min_binding_size: None,
-                },
-            }).collect::<Vec<_>>();
-            let layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("GPU branch residency"), entries: &entries,
-            });
             // Bindings 7 (free list) and 10 (record consumers) live inside 6 and 1.
-            let buffers = [uniform.as_entire_binding(), selector.records.buffer.as_entire_binding(), selector.counters.as_entire_binding(), selector.fallback.binding(),
-                slots.as_entire_binding(), table.as_entire_binding(), request_slots.as_entire_binding(), counters.as_entire_binding(), selector.asset_pages.as_entire_binding(),consumer_union.as_entire_binding()];
-            let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("GPU branch residency"), layout: &layout,
-                entries: &buffers.into_iter().zip([0u32,1,2,3,4,5,6,8,9,11]).map(|(resource, binding)| wgpu::BindGroupEntry {
-                    binding, resource,
-                }).collect::<Vec<_>>(),
-            });
-            let layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("GPU branch residency"), bind_group_layouts: &[Some(&layout)], immediate_size: 0,
-            });
+            let resource = |binding: u32| match binding {
+                0 => uniform.as_entire_binding(), 1 => selector.records.buffer.as_entire_binding(), 2 => selector.counters.as_entire_binding(),
+                3 => selector.fallback.binding(), 4 => slots.as_entire_binding(), 5 => table.as_entire_binding(), 6 => request_slots.as_entire_binding(),
+                8 => counters.as_entire_binding(), 9 => selector.asset_pages.as_entire_binding(), _ => consumer_union.as_entire_binding(),
+            };
             let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("GPU branch residency"),
                 source: wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_residency.wgsl").into()),
             });
-            let pipelines = ["index_requests", "retain_slots", "allocate_slots", "publish_slots", "resolve_requests"]
-                .map(|entry| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            // Each pass binds only the storage buffers it reads.
+            let passes = Self::PASSES.map(|(entry, storage)| {
+                let bindings = std::iter::once(0).chain(storage.iter().copied()).collect::<Vec<u32>>();
+                let layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some(entry), entries: &bindings.iter().map(|&binding| wgpu::BindGroupLayoutEntry {
+                        binding, visibility: wgpu::ShaderStages::COMPUTE, count: None,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: if binding == 0 { wgpu::BufferBindingType::Uniform }
+                                else { wgpu::BufferBindingType::Storage { read_only: binding <= 2 || binding == 9 } },
+                            has_dynamic_offset: false, min_binding_size: None,
+                        },
+                    }).collect::<Vec<_>>(),
+                });
+                let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some(entry), layout: &layout,
+                    entries: &bindings.iter().map(|&binding| wgpu::BindGroupEntry { binding, resource: resource(binding) }).collect::<Vec<_>>(),
+                });
+                let layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some(entry), bind_group_layouts: &[Some(&layout)], immediate_size: 0,
+                });
+                (gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                     label: Some(entry), layout: Some(&layout), module: &module, entry_point: Some(entry),
                     compilation_options: Default::default(), cache: gpu.pipeline_cache(),
-                }));
-            Self { slots, request_slots, counters, consumer_union, table, _uniform: uniform, bind,
-                pipelines, indirect: selector.arguments.clone(), capacity }
+                }), bind)
+            });
+            Self { slots, request_slots, counters, consumer_union, table, _uniform: uniform,
+                passes, indirect: selector.arguments.clone(), capacity }
         })
     }
 
@@ -115,11 +134,11 @@ impl Residency {
         encoder.clear_buffer(&self.table, 0, None);
         encoder.clear_buffer(&self.consumer_union,0,None);
         encoder.clear_buffer(&self.counters, 0, None);
-        for (index, pipeline) in self.pipelines.iter().enumerate() {
+        for (index, (pipeline, bind)) in self.passes.iter().enumerate() {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("GPU branch residency"), ..Default::default()
             });
-            pass.set_pipeline(pipeline); pass.set_bind_group(0, &self.bind, &[]);
+            pass.set_pipeline(pipeline); pass.set_bind_group(0, bind, &[]);
             if index == 1 || index == 3 { pass.dispatch_workgroups(self.capacity.div_ceil(64), 1, 1); }
             else { pass.dispatch_workgroups_indirect(&self.indirect, 12); }
         }

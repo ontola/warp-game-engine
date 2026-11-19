@@ -2196,6 +2196,21 @@ struct Footprint {
 
 var<private> fp: Footprint;
 
+fn set_pixel_footprint(ndc:vec2<f32>, p:vec3<f32>, geo_n:vec3<f32>, dist:f32) {
+    // Ray differentials: where the neighbouring pixels' rays meet this
+    // triangle's plane. Gives exact, anisotropic texture footprints.
+    let px_x = view.inv_view_proj * vec4<f32>(ndc + vec2<f32>(2.0 * view.size.z, 0.0), 1e-4, 1.0);
+    let px_y = view.inv_view_proj * vec4<f32>(ndc - vec2<f32>(0.0, 2.0 * view.size.w), 1e-4, 1.0);
+    let dir_x = normalize(px_x.xyz / px_x.w - view.cam.xyz);
+    let dir_y = normalize(px_y.xyz / px_y.w - view.cam.xyz);
+    let plane_d = dot(p - view.cam.xyz, geo_n);
+    let hit_x = view.cam.xyz + dir_x * (plane_d / select(dot(dir_x, geo_n), 1e-6, abs(dot(dir_x, geo_n)) < 1e-6));
+    let hit_y = view.cam.xyz + dir_y * (plane_d / select(dot(dir_y, geo_n), 1e-6, abs(dot(dir_y, geo_n)) < 1e-6));
+    let reach = dist * 0.05 + 0.05; // grazing hits run off towards infinity
+    fp.dx = clamp(hit_x - p, vec3<f32>(-reach), vec3<f32>(reach));
+    fp.dy = clamp(hit_y - p, vec3<f32>(-reach), vec3<f32>(reach));
+}
+
 fn track_tile(key:vec2<i32>)->vec4<i32> {
     var h=(bitcast<u32>(key.x)*0x9e3779b9u) ^ (bitcast<u32>(key.y)*0x85ebca6bu);
     h^=h>>16u;h*=0x7feb352du;h^=h>>15u;
@@ -3201,18 +3216,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     // traced around a flat triangle normal changes abruptly at every edge.
     let surface_n = n;
     let dist = distance(p, view.cam.xyz);
-    // Ray differentials: where the neighbouring pixels' rays meet this
-    // triangle's plane. Gives exact, anisotropic texture footprints.
-    let px_x = view.inv_view_proj * vec4<f32>(ndc + vec2<f32>(2.0 * view.size.z, 0.0), 1e-4, 1.0);
-    let px_y = view.inv_view_proj * vec4<f32>(ndc - vec2<f32>(0.0, 2.0 * view.size.w), 1e-4, 1.0);
-    let dir_x = normalize(px_x.xyz / px_x.w - view.cam.xyz);
-    let dir_y = normalize(px_y.xyz / px_y.w - view.cam.xyz);
-    let plane_d = dot(p - view.cam.xyz, geo_n);
-    let hit_x = view.cam.xyz + dir_x * (plane_d / select(dot(dir_x, geo_n), 1e-6, abs(dot(dir_x, geo_n)) < 1e-6));
-    let hit_y = view.cam.xyz + dir_y * (plane_d / select(dot(dir_y, geo_n), 1e-6, abs(dot(dir_y, geo_n)) < 1e-6));
-    let reach = dist * 0.05 + 0.05; // grazing hits run off towards infinity
-    fp.dx = clamp(hit_x - p, vec3<f32>(-reach), vec3<f32>(reach));
-    fp.dy = clamp(hit_y - p, vec3<f32>(-reach), vec3<f32>(reach));
+    set_pixel_footprint(ndc, p, geo_n, dist);
     // Reconstruct output-resolution detail rather than selecting coarse
     // input-resolution mip levels. Zero retains native and shadow behavior.
     let mip_scale = select(1.0, view.extra.z, view.extra.z > 0.0);
@@ -3925,8 +3929,7 @@ fn bake_sky_visibility(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 // Low-cost material lighting for the shared low graphics profile.
-@compute @workgroup_size(8, 8)
-fn shade_simple(@builtin(global_invocation_id) gid:vec3<u32>) {
+fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool) {
     if any(gid.xy>=vec2<u32>(view.size.xy)) {return;}
     let px=vec2<i32>(gid.xy);
     let ndc=(vec2<f32>(gid.xy)+0.5)/view.size.xy*vec2<f32>(2.0,-2.0)+vec2<f32>(-1.0,1.0);
@@ -3954,10 +3957,31 @@ fn shade_simple(@builtin(global_invocation_id) gid:vec3<u32>) {
     var n=normalize(wind_normal(member_slot(vis.x),xform_dir(inst,authored)));
     if dot(n,dir)>0.0 {n=-n;}
     let m=material(cl.material);var base=m.tint;
-    if m.layer>=0 {let uv=uvs[0]*b0+uvs[1]*b1+uvs[2]*b2;
+    var sun_vis = 1.0;
+    if terrain_lighting {
+        let geometric_n = safe_normalize(cross(e1, e2));
+        let plane_n = faceForward(geometric_n, dir, geometric_n);
+        if (m.flags & 32770u) == 32770u {
+            set_pixel_footprint(ndc, p, plane_n, distance(p, view.cam.xyz));
+            let si = SurfaceIn(0u, vis.x, p, p, n, dir, vec3<f32>(b0,b1,b2), uvs[0],uvs[1],uvs[2],
+                               fp.dx, fp.dy, m.tint, m.roughness, m.metal, m.scale, light.anim.x);
+            let ground = field_surface(si, m.layer);
+            base = ground.albedo;
+            n = ground.normal;
+        } else if m.layer == -3 && (m.flags & (4608u | 32768u)) == 0u {
+            let bark = bark_surface(p, n, m.scale);
+            base = bark.albedo;
+            n = bark.normal;
+        }
+        if sun_visibility_required() {
+            sun_vis = shadow_detail_receiver(p, n, plane_n);
+            if world_visibility.params.w > 0.5 { sun_vis = min(sun_vis, world_terrain_baked_sun(p)); }
+        }
+    }
+    if m.layer>=0 && !(terrain_lighting && (m.flags&32770u)==32770u) {let uv=uvs[0]*b0+uvs[1]*b1+uvs[2]*b2;
         base*=textureSampleLevel(albedo,samp,uv,m.layer,max(log2(max(distance(p,view.cam.xyz)*0.03,1.0)),albedo_lod_floor(m.layer))).rgb;}
     let ambient=sky_irradiance(n);
-    var rad=base*(ambient+light.sun_color.rgb*light.sun_dir.w*max(dot(n,light.sun_dir.xyz),0.0))/3.14159265;
+    var rad=base*(ambient+light.sun_color.rgb*light.sun_dir.w*sun_vis*max(dot(n,light.sun_dir.xyz),0.0))/3.14159265;
     for(var index=0u;index<incident_light_count(p);index++) {
         if dot(n,incident_light_position(index)-p)<=0.0 {continue;}
         let sample=incident_light_sample(index,p,n);
@@ -3975,3 +3999,9 @@ fn shade_simple(@builtin(global_invocation_id) gid:vec3<u32>) {
     if light.sky.z==11.0 {rad=(n*0.5+0.5)*6000.0;}
     textureStore(out_hdr,px,vec4<f32>(min(rad,vec3<f32>(65504.0)),style_alpha(style.tag)));
 }
+
+@compute @workgroup_size(8, 8)
+fn shade_simple(@builtin(global_invocation_id) gid:vec3<u32>) { shade_simple_material(gid, false); }
+
+@compute @workgroup_size(8, 8)
+fn shade_compact(@builtin(global_invocation_id) gid:vec3<u32>) { shade_simple_material(gid, true); }
