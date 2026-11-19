@@ -204,8 +204,12 @@ fn skin(t: &Texel, lips: f32, traits: Traits, build: Build) -> (f32, Vec3) {
 
     // Expression lines that age leaves: across the forehead, fanning from
     // the outer eye corners.
-    if traits.age > 0.25 {
-        let a = smooth(0.25, 0.9, traits.age);
+    // A face is lined by fifty; after that the lines only get deeper.
+    let lined = smooth(0.10, 0.55, traits.age);
+    let late = smooth(0.55, 1.0, traits.age).powf(1.3);
+    let deep = lined * (1. + 1.6 * late);
+    if lined > 0. {
+        let a = deep;
         let wave = p.y + 0.0025 * noise(Vec3::new(p.x, 0., 0.), 0.02, 61);
         let line = 1. - smooth(0., 0.35, ((wave / 0.0085).fract() - 0.5).abs() * 2.);
         height -= 0.000_22 * a * line * forehead * smooth(0.06, 0.03, p.x.abs())
@@ -222,7 +226,7 @@ fn skin(t: &Texel, lips: f32, traits: Traits, build: Build) -> (f32, Vec3) {
     // and spots where the sun has been.
     let old = smooth(0.30, 1.0, traits.age);
     let mut fold = 0.;
-    if old > 0. {
+    if lined > 0. {
         // No fold is a ruled line.
         let at = Vec2::new(q.x.abs() + 0.0018 * noise(Vec3::new(0., p.y, p.x.signum()), 0.011, seed ^ 0xf1), q.y);
         let groove = |line: &[Vec2], width: f32| {
@@ -235,13 +239,19 @@ fn skin(t: &Texel, lips: f32, traits: Traits, build: Build) -> (f32, Vec3) {
         let marionette = groove(&[Vec2::new(0.031, -0.084), Vec2::new(0.034, -0.108)], 0.004);
         let trough = groove(&[Vec2::new(0.013, -0.015), Vec2::new(0.027, -0.025), Vec2::new(0.046, -0.021)], 0.0035);
         let frown = groove(&[Vec2::new(0.006, 0.010), Vec2::new(0.008, 0.028)], 0.0022) * unit(hash(seed ^ 0xf0)).max(0.3);
-        fold = (nasolabial + 0.4 * marionette + 0.55 * trough + 0.5 * frown).min(1.) * front * skin;
-        height -= 0.000_55 * old * fold;
+        // Late in life the bag under the eye has a lower edge of its own.
+        let bag = groove(&[Vec2::new(0.013, -0.022), Vec2::new(0.028, -0.034), Vec2::new(0.047, -0.028)], 0.003) * late;
+        fold = (nasolabial + 0.4 * marionette + 0.55 * trough + 0.5 * frown + 0.5 * bag).min(1.) * front * skin;
+        height -= 0.000_55 * deep * fold;
+        // And fine lines run down into the upper lip.
+        let above = smooth(0.026, 0.016, p.x.abs()) * smooth(-0.050, -0.056, q.y) * smooth(-0.074, -0.066, q.y) * front * (1. - lips);
+        let down = 1. - smooth(0., 0.4, (((p.x + 0.0012 * noise(Vec3::new(0., p.y, 0.), 0.006, seed ^ 0xf3)) / 0.0032).fract().abs() - 0.5).abs() * 2.);
+        height -= 0.000_20 * late * above * down * skin;
         // Slack skin creases finely across the pull of its weight.
         let slack = noise(Vec3::new(p.x * 0.45, p.y * 1.6, p.z * 0.45), 0.0022, 97);
         let crepe = (1. - smooth(0., 0.45, slack.abs())) * (cheeks + 0.8 * eye + 0.5 * (1. - front)).min(1.);
-        height -= 0.000_13 * old * old * crepe * skin;
-        fold = (fold + 0.4 * crepe * old).min(1.);
+        height -= 0.000_13 * lined * (1. + 0.6 * late) * crepe * skin;
+        fold = (fold + 0.4 * crepe * lined).min(1.);
     }
 
     // Colour. Pores and furrows hold shadow; blood shows unevenly, more on
@@ -276,9 +286,10 @@ fn skin(t: &Texel, lips: f32, traits: Traits, build: Build) -> (f32, Vec3) {
         tint *= Vec3::ONE.lerp(Vec3::new(0.38, 0.25, 0.20), spot * 0.85 * skin);
         height += 0.000_12 * spot * skin;
     }
+    // Folds hold shadow.
+    tint *= 1. - 0.10 * deep.min(1.8) * fold;
     if old > 0. {
-        // Folds hold shadow; old lips lose their red.
-        tint *= 1. - 0.12 * old * fold;
+        // Old lips lose their red.
         tint *= Vec3::ONE.lerp(Vec3::new(0.95, 1.07, 1.07), 0.7 * old * lips);
         // Age spots: flat brown patches a few millimetres across, on the
         // temples, cheeks and forehead.
@@ -345,7 +356,12 @@ fn sag(q: Vec3, old: f32) -> Vec3 {
     let mut d = Vec3::ZERO;
     d += Vec3::new(0.0018, -0.0065, 0.0020) * lump(Vec3::new(0.036, -0.100, 0.005), 0.026);
     d += Vec3::new(-0.0014, -0.0032, -0.0022) * lump(Vec3::new(0.046, -0.052, 0.008), 0.028);
-    d += Vec3::new(0., -0.0008, 0.0017) * lump(Vec3::new(0.031, -0.022, 0.012), 0.010);
+    d += Vec3::new(0., -0.0014, 0.0022) * lump(Vec3::new(0.031, -0.023, 0.012), 0.011);
+    // The upper lid hoods, the corners of the mouth turn down.
+    d += Vec3::new(0., -0.0009, 0.0004) * lump(Vec3::new(0.040, 0.008, 0.010), 0.008);
+    d += Vec3::new(0., -0.0008, -0.0004) * lump(Vec3::new(0.029, -0.080, 0.018), 0.010);
+    // Loose skin hangs forward on the throat.
+    d += Vec3::new(0., -0.0030, 0.0045) * lump(Vec3::new(0., -0.172, -0.018), 0.030);
     d += Vec3::new(0., -0.0016, 0.) * lump(Vec3::new(0.038, 0.018, 0.012), 0.012);
     d += Vec3::new(-0.0018, 0., 0.) * lump(Vec3::new(0.058, 0.030, -0.020), 0.020);
     d += Vec3::new(0., -0.0022, 0.0008) * lump(Vec3::new(0., -0.043, 0.035), 0.012);
@@ -356,7 +372,8 @@ fn sag(q: Vec3, old: f32) -> Vec3 {
 /// Move a fitted body's head to its age (0 young adult to 1 old, as
 /// `Traits::age`) and turn its normals with the surface.
 pub(super) fn settle(body: &mut [BodyVertex], indices: &[u32], eyes: Vec3, age: f32) {
-    let old = smooth(0.30, 1.0, age);
+    // A little by fifty, most of it after.
+    let old = 0.4 * smooth(0.25, 0.55, age) + 1.8 * smooth(0.55, 1.0, age).powf(1.3);
     if old <= 0. {
         return;
     }
