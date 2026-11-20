@@ -2266,6 +2266,13 @@ fn nrm(l: i32, uv: vec2<f32>, gx: vec2<f32>, gy: vec2<f32>) -> vec2<f32> {
     return textureSampleGrad(normal_tex, samp, uv, l, gx * k, gy * k).xy * 2.0 - 1.0;
 }
 
+// The same with the map's alpha in z.
+fn nrm_a(l: i32, uv: vec2<f32>, gx: vec2<f32>, gy: vec2<f32>) -> vec3<f32> {
+    let k = normal_grad(l, gx, gy);
+    let t = textureSampleGrad(normal_tex, samp, uv, l, gx * k, gy * k);
+    return vec3<f32>(t.xy * 2.0 - 1.0, t.a);
+}
+
 // Occlusion, roughness and metalness factors of layer l's material map
 // (glTF packing), sampled like the albedo; white when it has none.
 fn orm_w(l: i32, uv: vec2<f32>, gx: vec2<f32>, gy: vec2<f32>) -> vec3<f32> {
@@ -2820,7 +2827,7 @@ fn strand_lobe(t: vec3<f32>, h: vec3<f32>, exponent: f32) -> f32 {
 // sun's visibility, `sun_open` the sun's illuminance without it.
 fn skin_hair_direct(albedo: vec3<f32>, n: vec3<f32>, surface_n: vec3<f32>, geo_n: vec3<f32>, v: vec3<f32>, l: vec3<f32>,
     p: vec3<f32>, uv: vec2<f32>, up: vec3<f32>, ahead: vec3<f32>, shadow: f32, far_shadow: f32, sun_open: vec3<f32>,
-    skin: f32, hair: f32) -> vec3<f32> {
+    skin: f32, hair: f32, gloss: f32) -> vec3<f32> {
     let ndl = dot(n, l);
     var out = vec3<f32>(0.0);
     if skin > 0.0 {
@@ -2849,7 +2856,7 @@ fn skin_hair_direct(albedo: vec3<f32>, n: vec3<f32>, surface_n: vec3<f32>, geo_n
         // Two specular lobes: a thin oily sheen over the broader skin.
         let f0 = vec3<f32>(0.028);
         let spec = mix(ggx(n, v, l, min(SKIN_ROUGHNESS * 1.3, 1.0), f0), ggx(n, v, l, SKIN_ROUGHNESS * 0.6, f0), 0.3);
-        rad += sun_open * lit * spec;
+        rad += sun_open * lit * spec * gloss;
         out += rad * skin;
     }
     if hair > 0.0 {
@@ -2868,7 +2875,7 @@ fn skin_hair_direct(albedo: vec3<f32>, n: vec3<f32>, surface_n: vec3<f32>, geo_n
             * (0.75 + jitter);
         let lit = sun_open * shadow;
         let facing = clamp(ndl + 0.25, 0.0, 1.25) / 1.25;
-        var rad = lit * facing * (0.0025 * r + 0.02 * albedo * trt);
+        var rad = lit * facing * (0.0025 * r + 0.02 * albedo * trt) * gloss;
         // Diffuse: hair scatters light around the strands; wrap generously.
         let diffuse_wrap = clamp((ndl + 0.35) / 1.35, 0.0, 1.0);
         rad += albedo / PI * lit * diffuse_wrap;
@@ -3230,6 +3237,9 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     var tex_alpha = 1.0;
     var nn = n; // the normal after normal maps
     var orm = vec3<f32>(1.0); // material map: occlusion, roughness, metalness
+    // How much of its sheen a SKIN surface shows: its normal map's alpha
+    // (0 where hair stands over it, the scalp of a head of grown hair).
+    var gloss = 1.0;
     var meadow_ground_sky = 1.0;
     field_sun = 1.0;
     if FEATURE_TERRAIN && (m.flags & 2u) != 0u && (m.flags & 32768u) == 0u {
@@ -3421,7 +3431,9 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
             frame[0] = -frame[0];
             frame[1] = -frame[1];
         }
-        nn = perturb(n, nrm(m.layer, uv, duv_x, duv_y), frame[0], frame[1]);
+        let relief = nrm_a(m.layer, uv, duv_x, duv_y);
+        nn = perturb(n, relief.xy, frame[0], frame[1]);
+        if FEATURE_SKIN_HAIR && (m.flags & 0x40000000u) != 0u { gloss = relief.z; }
     }
     n = nn;
     // Car parts get a procedural surface (car_material.wgsl): flags bits
@@ -3728,7 +3740,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
             let sun_open=light.sun_color.rgb*light.sun_dir.w*meadow_edge.y*field_sun;
             let up=normalize(vec3<f32>(inst.r0.y,inst.r1.y,inst.r2.y));
             let ahead=normalize(vec3<f32>(inst.r0.z,inst.r1.z,inst.r2.z));
-            let sh=skin_hair_direct(base*(1.0-metal),n,surface_n,geo_n,v,l,p,uv,up,ahead,shadow,far_shadow,sun_open,skin,hair);
+            let sh=skin_hair_direct(base*(1.0-metal),n,surface_n,geo_n,v,l,p,uv,up,ahead,shadow,far_shadow,sun_open,skin,hair,gloss);
             direct=direct*(1.0-skin-hair)+sh;
         }
         // Authored diffuse room return; retain crevice and contact occlusion.
@@ -3737,10 +3749,10 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         // The live first bounce of clustered lights (rsm.wgsl), irradiance.
         if FEATURE_CLUSTERED_LIGHTS { ambient += rsm_irradiance(px, p) * ao; }
         indirect=diffuse*ambient;
-        specular=env*env_brdf(f0,rough,ndv)*ao;
+        specular=env*env_brdf(f0,rough,ndv)*ao*gloss;
         // Stochastic reflections: the resolve adds weight * reflection (the
         // environment where rays miss), so shade leaves the term out.
-        if stochastic { sssr_write(px,size,p,visibility_n,v,rough,env_brdf(f0,rough,ndv)*ao,env,dist); specular=vec3<f32>(0.0); }
+        if stochastic { sssr_write(px,size,p,visibility_n,v,rough,env_brdf(f0,rough,ndv)*ao*gloss,env,dist); specular=vec3<f32>(0.0); }
     }
     // Flake and swirl-mark glints sit under (or in) the coat. Non-car
     // materials retain a zero glint and their existing material coat.
