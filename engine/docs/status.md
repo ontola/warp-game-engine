@@ -19,11 +19,25 @@ The Warp desktop game shell opens a point-selection overlay on F4; the frozen fr
 
 ## Target
 
-One 3840 Ã— 2160 output, four players, 120 FPS (8.33 ms per frame). **Not
-reached.** The latest controlled four-view, 4K-output Sideways route measured
-about 38 to 44.5 ms of GPU time with DLSS Quality. Smaller scenes such as
-Growing Guns' arena are much cheaper (see its README). Always report the real
-resolution, reconstruction mode, sample count and scene with a number.
+One 3840 × 2160 output, four players, 120 FPS (8.33 ms per frame). How
+close a game gets depends almost entirely on its content:
+
+- **Regular game content: at or near the target, and smooth in play.** RTX
+  5070 Ti, Vulkan, native 4K, no upscaling, four views: a full Growing Guns
+  match with a packed crowd measured 8.39 to 8.63 ms median GPU time
+  ([crowd density](log/2026-11-09-growing-guns-crowd-density.md), 9 November);
+  Space Racer's city, its heaviest biome, 8.96 ms p50 / 9.73 ms p95
+  ([native 4K](log/spaceracer-native4k-2026-11-01.md), 1 November); its other
+  biomes are cheaper. CPU submission tails are the open part there.
+- **Dense procedural vegetation: far over.** The Sideways forest and meadow
+  route measured about 38 to 44.5 ms of GPU time with DLSS Quality (r27,
+  October), and `terrain_fly` is in the same class. That is the cost of the
+  vegetation system, tracked in the [vegetation checklist](vegetation-architecture.md);
+  it says nothing about split screen in general and is no reason to avoid Warp
+  for a four-player game with normal scenes.
+
+Always report the real resolution, reconstruction mode, sample count and scene
+with a number.
 
 ## Renderer core
 
