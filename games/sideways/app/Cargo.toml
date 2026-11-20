@@ -2,7 +2,8 @@
 name = "cli"
 edition.workspace = true
 version.workspace = true
-description = "Sideways native application, scene adapters, controller and GameNight integration"
+license.workspace = true
+description = "Sideways native application, scene adapters, controller and Splitscreen Club integration"
 
 [[bin]]
 name = "sideways"

@@ -2,6 +2,7 @@
 name = "spellstorm"
 edition.workspace = true
 version.workspace = true
+license.workspace = true
 description = "Spellstorm gameplay simulation on Warp: spells, wizards, monsters, levels and the run"
 
 [dependencies]

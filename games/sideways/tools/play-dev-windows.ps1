@@ -135,7 +135,7 @@ try {
         throw 'WindTime must be finite and nonnegative.'
     }
     if (-not $BuildOnly -and (@('GAMENIGHT', 'GAMENIGHT_ADDR', 'GAMENIGHT_GAME_ID', 'GAMENIGHT_TOKEN') | Where-Object { [Environment]::GetEnvironmentVariable($_) })) {
-        throw 'This helper is for standalone play. Launch managed sessions through GameNight; no host credentials are recorded.'
+        throw 'This helper is for standalone play. Launch managed sessions through Splitscreen Club; no host credentials are recorded.'
     }
     $treeSettings = Resolve-DevTreeSettings -ParameterFullness $TreeFullness -ParameterOcclusion ([bool]$TreeOcclusion) `
         -FullnessBound $PSBoundParameters.ContainsKey('TreeFullness') -OcclusionBound $PSBoundParameters.ContainsKey('TreeOcclusion') `

@@ -2,6 +2,7 @@
 name = "game-room"
 edition.workspace = true
 version.workspace = true
+license.workspace = true
 description = "The Splitscreen Club Game Room lobby on Warp"
 
 [lib]
@@ -20,7 +21,7 @@ serde = { workspace = true }
 serde_json.workspace = true
 gdcompat.workspace = true
 game-room-sim = { path = "sim" }
-gamenight = { path = "../../engine/crates/gamenight" }
+splitscreen-club = { path = "../../engine/crates/splitscreen-club" }
 
 [dev-dependencies]
 tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }

@@ -16,7 +16,7 @@ spaceracer = { path = "../sim" }
 app = { path = "../../../engine/crates/app" }
 render = { path = "../../../engine/crates/render" }
 assets = { path = "../../../engine/crates/assets" }
-gamenight.workspace = true
+splitscreen-club.workspace = true
 glam = "0.31"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

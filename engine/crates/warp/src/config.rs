@@ -8,14 +8,14 @@ use std::path::Path;
 pub struct GameToml {
     /// Window title and the name in `state`.
     pub title: String,
-    /// The GameNight game id (lowercase letters, digits and dashes). Default:
+    /// The Splitscreen Club game id (lowercase letters, digits and dashes). Default:
     /// the folder name. A party host's GAMENIGHT_GAME_ID wins.
     pub id: String,
     pub storage: bool,
     /// Simulation ticks per second; `tick(dt, input)` gets `dt = 1 / tick_rate`.
     pub tick_rate: f32,
     /// People playing without a party host (split screen), 1 to 4.
-    /// `--players` overrides it. Under GameNight the host's seats decide.
+    /// `--players` overrides it. Under Splitscreen Club the host's seats decide.
     pub players: usize,
     /// One view per person (split screen, the default), or false for one
     /// shared view: every `camera.set` then moves the same camera.

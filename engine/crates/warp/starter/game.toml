@@ -3,8 +3,8 @@
 title = "Hello Warp"
 # tick(dt, input) runs this many times a second, with dt = 1 / tick_rate.
 tick_rate = 60
-# People playing without GameNight (split screen), 1 to 4, and bots.
-# `warp run --players N --bots N` overrides them. Under GameNight the
+# People playing without Splitscreen Club (split screen), 1 to 4, and bots.
+# `warp run --players N --bots N` overrides them. Under Splitscreen Club the
 # party's seats decide; `min_players` fills up with bots either way.
 players = 1
 bots = 0

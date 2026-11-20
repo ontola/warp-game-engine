@@ -1,5 +1,5 @@
 //! Profile changes repaint one cached atlas; the hull shader projects it onto paint.
-use gamenight::artwork::{avatar, hex_color};
+use splitscreen_club::artwork::{avatar, hex_color};
 use render::{
     Gpu, Renderer, Scene,
     hud::{HudDrawList, HudImage, ImageFilter},

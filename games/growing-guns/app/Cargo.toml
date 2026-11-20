@@ -2,6 +2,7 @@
 name = "growing-guns-app"
 edition.workspace = true
 version.workspace = true
+license.workspace = true
 description = "Growing Guns on Warp: split-screen renderer, input and headless captures"
 
 [[bin]]
@@ -24,7 +25,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 wgpu = "30"
 net = { path = "../../../engine/crates/net" }
 script = { path = "../../../engine/crates/script" }
-gamenight = { path = "../../../engine/crates/gamenight" }
+splitscreen-club = { path = "../../../engine/crates/splitscreen-club" }
 tokio = { version = "1", features = ["sync"] }
 serde = { workspace = true, features = ["rc"] }
 serde_json.workspace = true

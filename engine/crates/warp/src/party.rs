@@ -1,4 +1,4 @@
-//! GameNight: a party host runs a Luau game. The host prepares a session
+//! Splitscreen Club: a party host runs a Luau game. The host prepares a session
 //! with its seats; the game starts over with those players (local seats are
 //! people, AI seats bots, and `min_players` fills up with bots), reports
 //! ready and waits hidden until `start`. Then it takes the screen and the
@@ -7,12 +7,12 @@
 //! (`players_updated`); a seat that joins or leaves mid-session joins or
 //! leaves the game without a restart.
 use app::{Buttons, Controls};
-use gamenight::party::hex;
-use gamenight::{button, Command, Pad, Seat};
+use splitscreen_club::party::hex;
+use splitscreen_club::{button, Command, Pad, Seat};
 use std::path::PathBuf;
 use std::time::Instant;
 
-pub use gamenight::party::Phase;
+pub use splitscreen_club::party::Phase;
 
 /// A seated person or AI seat, as the game sees it.
 #[derive(Clone, Debug, PartialEq)]
@@ -33,7 +33,7 @@ pub enum Ev {
 }
 
 pub struct Party {
-    host: gamenight::party::Party,
+    host: splitscreen_club::party::Party,
     triggers: Vec<u32>,
     /// Live control to offer the session assistant: what it can change and
     /// the token file. Declared again after every (re)connect.
@@ -43,12 +43,12 @@ pub struct Party {
 impl Party {
     /// When launched by a party host (GAMENIGHT=1) or pointed at one (GAMENIGHT_ADDR).
     pub fn connect(game_id: &str) -> Option<Party> {
-        gamenight::party::Party::connect(game_id).map(Party::from_host)
+        splitscreen_club::party::Party::connect(game_id).map(Party::from_host)
     }
 
-    pub fn new(client: gamenight::Client) -> Party { Party::from_host(gamenight::party::Party::new(client)) }
+    pub fn new(client: splitscreen_club::Client) -> Party { Party::from_host(splitscreen_club::party::Party::new(client)) }
 
-    fn from_host(host: gamenight::party::Party) -> Party { Party { host, triggers: Vec::new(), live: None } }
+    fn from_host(host: splitscreen_club::party::Party) -> Party { Party { host, triggers: Vec::new(), live: None } }
 
     pub fn phase(&self) -> Phase { self.host.phase }
 
@@ -74,22 +74,22 @@ impl Party {
             for c in cmds {
                 match c {
                     Command::Prepare { session, seats } => {
-                        println!("{} [gamenight] prepare {session} ({} seats)", app::manners::stamp(), seats.len());
+                        println!("{} [splitscreen-club] prepare {session} ({} seats)", app::manners::stamp(), seats.len());
                         self.host.setting_up(&session);
                         out.push(Ev::Prepare(Self::seats(&seats)));
                         self.host.prepare(session);
                     }
-                    Command::Start { session } => if self.host.start(&session) { println!("{} [gamenight] start {session}", app::manners::stamp()); },
-                    Command::Pause { session } => if self.host.pause(&session) { println!("{} [gamenight] pause", app::manners::stamp()); },
-                    Command::Resume { session } => if self.host.resume(&session) { println!("{} [gamenight] resume", app::manners::stamp()); },
+                    Command::Start { session } => if self.host.start(&session) { println!("{} [splitscreen-club] start {session}", app::manners::stamp()); },
+                    Command::Pause { session } => if self.host.pause(&session) { println!("{} [splitscreen-club] pause", app::manners::stamp()); },
+                    Command::Resume { session } => if self.host.resume(&session) { println!("{} [splitscreen-club] resume", app::manners::stamp()); },
                     Command::Dispose { session } => if self.host.dispose(&session) {
-                        println!("{} [gamenight] dispose", app::manners::stamp());
+                        println!("{} [splitscreen-club] dispose", app::manners::stamp());
                         out.push(Ev::Dispose);
                     },
                     Command::Roster { seats } | Command::PlayersUpdated { seats } if !self.host.session.is_empty() => out.push(Ev::Seats(Self::seats(&seats))),
                     Command::Connected => self.declare_live(),
-                    Command::Disconnected(e) => { eprintln!("gamenight: {e}"); self.host.disconnected(); }
-                    Command::Error(e) => eprintln!("gamenight: {e}"),
+                    Command::Disconnected(e) => { eprintln!("splitscreen-club: {e}"); self.host.disconnected(); }
+                    Command::Error(e) => eprintln!("splitscreen-club: {e}"),
                     _ => {}
                 }
             }
@@ -111,7 +111,7 @@ impl Party {
 
     fn declare_live(&self) {
         let Some((description, file)) = &self.live else { return };
-        if let Err(e) = self.host.client.declare_commands(description, &[], Some(file)) { eprintln!("gamenight: {e}"); }
+        if let Err(e) = self.host.client.declare_commands(description, &[], Some(file)) { eprintln!("splitscreen-club: {e}"); }
     }
 
     pub fn room_log(&self, text: &str) { let _ = self.host.client.room_log(text); }

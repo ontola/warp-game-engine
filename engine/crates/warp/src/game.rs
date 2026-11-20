@@ -1,7 +1,7 @@
 //! A game folder as an `app::Game`: the Luau modules' hooks at a fixed
 //! tick, the world drawn from the entities, hot reload of scripts and
 //! sound patches, debug commands, live control over MCP, the players (from
-//! a GameNight party host when one launched the game) and the start menu.
+//! a Splitscreen Club party host when one launched the game) and the start menu.
 use crate::api::{self, Cam, Core, HudItem, Phase, Player, Requests, Rng, Shared};
 use crate::party::{self, Party, SeatInfo};
 use crate::config::GameToml;
@@ -91,7 +91,7 @@ pub struct LuaGame {
     default_sky: SkyChoice,
     /// Print log lines to stdout (off for tests that read `logs()`).
     pub echo: bool,
-    /// The GameNight party host that launched the game, if any.
+    /// The Splitscreen Club party host that launched the game, if any.
     pub party: Option<Party>,
     /// The start menu, when open: the selected item.
     menu: Option<usize>,
@@ -115,7 +115,7 @@ pub struct LuaGame {
     editor_pages: (Vec<render::debug_ui::DebugMenu>, Vec<render::debug_ui::DebugControl>),
 }
 
-/// The start menu's items: Joep's convention for every GameNight game
+/// The start menu's items: Joep's convention for every Splitscreen Club game
 /// (the title on top, Resume, then New round; no button hints).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuItem { Resume, NewRound, Quit }
@@ -300,19 +300,19 @@ impl LuaGame {
         self.start_new();
     }
 
-    /// The GameNight game id: game.toml's `id`, else the folder name.
+    /// The Splitscreen Club game id: game.toml's `id`, else the folder name.
     pub fn game_id(&self) -> String { if self.cfg.id.is_empty() { self.live_name() } else { self.cfg.id.clone() } }
 
     /// Connect to the party host that launched the game (GAMENIGHT=1 or
     /// GAMENIGHT_ADDR). The game then waits for the host's `prepare`.
     pub fn connect_party(&mut self) -> bool {
         self.party = Party::connect(&self.game_id());
-        if self.party.is_some() { self.say(format!("gamenight: waiting for the party host ({})", self.game_id())); }
+        if self.party.is_some() { self.say(format!("splitscreen-club: waiting for the party host ({})", self.game_id())); }
         self.party.is_some()
     }
 
     /// Players for these seats (people first, then bots), filled up with
-    /// bots to `min_players`. `seated` keeps the GameNight seat numbers.
+    /// bots to `min_players`. `seated` keeps the Splitscreen Club seat numbers.
     fn seat_all(&mut self, seats: &[SeatInfo], seated: bool) {
         // A new session numbers its players from 1 again.
         self.next_id = 1;
@@ -402,7 +402,7 @@ impl LuaGame {
         if changed || !joined.is_empty() || !left.is_empty() { self.hook("players_changed", || Ok(mlua::MultiValue::new())); }
     }
 
-    /// GameNight's lifecycle. None without a party; Some(None) while the
+    /// Splitscreen Club's lifecycle. None without a party; Some(None) while the
     /// game waits or is paused by the host; else the seats' controls.
     fn party_tick(&mut self, dt: f32) -> Option<Option<Vec<Controls>>> {
         let evs = self.party.as_mut()?.poll();
@@ -438,7 +438,7 @@ impl LuaGame {
 
     pub fn menu_items(&self) -> Vec<MenuItem> {
         let mut items = vec![MenuItem::Resume, MenuItem::NewRound];
-        // Under GameNight the host's overlay (Back) leaves the game.
+        // Under Splitscreen Club the host's overlay (Back) leaves the game.
         if self.party.is_none() { items.push(MenuItem::Quit); }
         items
     }
@@ -979,7 +979,7 @@ impl Game for LuaGame {
     /// The people; bots need no controls.
     fn local_players(&self) -> usize { self.core().roster.iter().filter(|p| !p.bot).count().max(1) }
 
-    /// Under GameNight the party's controllers play: never grab the mouse
+    /// Under Splitscreen Club the party's controllers play: never grab the mouse
     /// (and so no click-to-capture hint on the TV).
     fn mouse_capture(&self) -> Option<bool> { self.party.as_ref().map(|_| false) }
 
@@ -994,7 +994,7 @@ impl Game for LuaGame {
         if self.polls % POLL_TICKS == 0 && self.polls > 0 { self.reload(); }
         self.polls += 1;
         let dt = 1.0 / self.cfg.tick_rate;
-        // Under GameNight the party's controllers drive the seats; the game
+        // Under Splitscreen Club the party's controllers drive the seats; the game
         // only runs while the host says so.
         let controls = match self.party_tick(dt) {
             None => controls.to_vec(),

@@ -1,9 +1,9 @@
 [package]
-name = "gamenight"
+name = "splitscreen-club"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
-description = "GameNight client for Warp games and lobbies: party sessions, seats, settings, actions, controller frames, the lobby role, room links and party artwork"
+description = "Splitscreen Club client for Warp games and lobbies: party sessions, seats, settings, actions, controller frames, the lobby role, room links and party artwork"
 
 [dependencies]
 serde_json.workspace = true

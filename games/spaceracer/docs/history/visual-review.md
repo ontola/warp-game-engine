@@ -143,7 +143,7 @@ host store and uses synthetic profiles; it does not touch the running party.
 Physical pads, rumble, foreground/window transitions and sustained gameplay
 performance were not measured. These are headless integration/visual checks,
 not full content/visual parity or a certification of the downloadable release.
-Run `tools/test-gamenight.py` with an SDK6 daemon and a new output directory to
+Run `tools/test-splitscreen-club.py` with an SDK6 daemon and a new output directory to
 repeat. See `README.md` for build/registration commands and settings timing.
 
 # Crash effects and motion blur - 31 October 2026

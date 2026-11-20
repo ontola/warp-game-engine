@@ -1,4 +1,4 @@
-use gamenight::{Client, Command, Seat, button};
+use splitscreen_club::{Client, Command, Seat, button};
 use serde_json::{Value, json};
 use spaceracer::{handling::Input, race::Controls};
 pub enum Event {
@@ -8,14 +8,14 @@ pub enum Event {
     Setting(String, Value),
 }
 pub struct Party {
-    pub host: gamenight::party::Party,
+    pub host: splitscreen_club::party::Party,
     pub seats: Vec<Seat>,
     pub declarations: Value,
 }
 impl Party {
     pub fn connect(declarations: Value) -> Result<Option<Self>, String> {
         Ok(Client::connect_from_env("spaceracer")?.map(|client| Self {
-            host: gamenight::party::Party::new(client),
+            host: splitscreen_club::party::Party::new(client),
             seats: vec![],
             declarations,
         }))
@@ -127,7 +127,7 @@ impl Party {
             .iter()
             .map(|seat| {
                 let p = if seat.ai {
-                    gamenight::Pad::default()
+                    splitscreen_club::Pad::default()
                 } else {
                     self.host.client.state.pad_for_seat(seat.index, now, false)
                 };
@@ -158,7 +158,7 @@ impl Party {
 }
 
 /// A host pad as local menu input (buttons and left stick only).
-fn menu_pad(p: &gamenight::Pad) -> app::Controls {
+fn menu_pad(p: &splitscreen_club::Pad) -> app::Controls {
     const MAP: [(u16, u32); 9] = [
         (button::A, app::Buttons::SOUTH),
         (button::B, app::Buttons::EAST),
@@ -191,7 +191,7 @@ mod tests {
     use tungstenite::Message;
     #[test]
     fn start_reaches_the_race_menu() {
-        let pad = gamenight::Pad { buttons: button::START | button::DOWN, pressed: button::START, axes: [0.; 6] };
+        let pad = splitscreen_club::Pad { buttons: button::START | button::DOWN, pressed: button::START, axes: [0.; 6] };
         let c = menu_pad(&pad);
         assert!(c.pressed.has(app::Buttons::START));
         assert!(c.held.has(app::Buttons::DOWN));
@@ -247,7 +247,7 @@ mod tests {
                 ack_rx.recv_timeout(Duration::from_secs(5)).unwrap();
             }
         });
-        let client = Client::connect(gamenight::Config {
+        let client = Client::connect(splitscreen_club::Config {
             url: format!("ws://{address}"),
             game_id: "spaceracer".into(),
             token: "test-only".into(),
@@ -255,7 +255,7 @@ mod tests {
         })
         .unwrap();
         let mut p = Party {
-            host: gamenight::party::Party::new(client),
+            host: splitscreen_club::party::Party::new(client),
             seats: vec![],
             declarations: json!([]),
         };

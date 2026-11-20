@@ -410,7 +410,7 @@ pub enum Event {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum ExplosionKind { #[default] Conventional, Ion }
 
-/// Multipliers the party can set for the next round (Godot GameNight
+/// Multipliers the party can set for the next round (Godot Splitscreen Club
 /// `round_rules`): gravity, bullet drop, body-shot damage, pickup rate.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Rules { pub gravity: f32, pub bullet_drop: f32, pub body_damage: f32, pub pickup_rate: f32 }
@@ -499,14 +499,14 @@ pub struct World {
     /// The rifle before cards (mods/base/gun.luau through the app's mods):
     /// weapons are rebuilt on it, so a change applies at the next round.
     pub gun: weapon::Gun,
-    /// Party rules on top of the modifier (GameNight settings; 1 is Godot's game).
+    /// Party rules on top of the modifier (Splitscreen Club settings; 1 is Godot's game).
     pub rules: Rules,
     /// Seconds a picker has before a card is chosen for them (Godot 10).
     pub card_pick_seconds: f64,
     /// Force this modifier every round (debug).
     pub forced_modifier: Option<Modifier>,
     /// The next round only: this modifier, or `Some(None)` for none
-    /// (GameNight's "Next round" pick). Taken when the round starts.
+    /// (Splitscreen Club's "Next round" pick). Taken when the round starts.
     pub next_modifier: Option<Option<Modifier>>,
     /// Every new arena is an island arena (Godot `force_all_floor_lava`;
     /// `--island`, the `arena island` command).

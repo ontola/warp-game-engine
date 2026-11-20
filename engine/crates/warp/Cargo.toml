@@ -15,7 +15,7 @@ render = { path = "../render" }
 audio = { path = "../audio", features = ["luau"] }
 script = { path = "../script" }
 live = { path = "../live" }
-gamenight = { path = "../gamenight" }
+splitscreen-club = { path = "../splitscreen-club" }
 assets = { path = "../assets" }
 body = { path = "../body" }
 physics = { path = "../physics" }

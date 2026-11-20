@@ -2,6 +2,7 @@
 name = "growing-guns"
 edition.workspace = true
 version.workspace = true
+license.workspace = true
 description = "Growing Guns gameplay simulation on Warp: arena, movement, weapon, bots, rounds"
 
 [dependencies]

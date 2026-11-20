@@ -44,7 +44,7 @@
 //! another thread. A dedicated player is shorter, exact, and cheap: silent
 //! stems only advance their playheads and silent sets skip their bus.
 // The whole ProceduralMusic surface is kept; the volume setting and the
-// GameNight host-music hook have no callers in the Rust app yet.
+// Splitscreen Club host-music hook have no callers in the Rust app yet.
 #![allow(dead_code)]
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -495,7 +495,7 @@ impl Music {
     /// the settings behaviour.
     pub fn set_volume_db(&mut self, db: f32) { self.music_db = db; }
 
-    /// Host (GameNight) music takes priority: mute while it plays.
+    /// Host (Splitscreen Club) music takes priority: mute while it plays.
     pub fn set_host_music_playing(&mut self, playing: bool) { self.host_music = playing; }
 
     // ---- game.gd's music logic ---------------------------------------------

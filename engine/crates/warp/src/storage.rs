@@ -30,7 +30,7 @@ pub struct Document {
 type Error = Box<dyn std::error::Error + Send + Sync>;
 type Result<T> = std::result::Result<T, Error>;
 
-// GameNight publishes a document with one object definition. A JSON Schema
+// Splitscreen Club publishes a document with one object definition. A JSON Schema
 // validator only applies that definition when the root references it.
 fn read_schema(path: &Path, kind: &str) -> Result<Json> {
     let mut schema: Json =

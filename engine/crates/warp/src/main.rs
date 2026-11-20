@@ -19,13 +19,13 @@ const USAGE: &str = "warp: run a game made of Luau scripts, synth patches and as
 
   warp run DIR [--players N] [--bots N] [--live [PORT]] [--sky SKY] [--seed N] [--size WxH] [--fullscreen] [--frames N]
       play fullscreen (--windowed opts out); --live serves MCP for an AI (engine/docs/live-control.md).
-      A GameNight party host (GAMENIGHT=1 or GAMENIGHT_ADDR) decides the players.
+      A Splitscreen Club party host (GAMENIGHT=1 or GAMENIGHT_ADDR) decides the players.
   warp DIR
       the same as warp run DIR
   warp run GAME.luau, warp GAME.luau (and script, serve, check)
       a one-file game: settings in its leading `--! key = value` lines
   warp
-      a packaged game: runs the game folder next to warp.exe (how GameNight starts it)
+      a packaged game: runs the game folder next to warp.exe (how Splitscreen Club starts it)
   warp script DIR FILE.json --out OUT [--players N] [--sky SKY] [--seed N]
       a headless scripted playtest (app::script format); exits 1 on a failed check
   warp serve DIR [--live [PORT]] [--seconds T] [--size WxH]
@@ -113,7 +113,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         },
         Some("help" | "--help" | "-h") => { println!("{USAGE}"); Ok(()) }
         // A game folder (or one-file game) on its own: a runtime launch (the
-        // GameNight installer passes the folder; a file manager, the file).
+        // Splitscreen Club installer passes the folder; a file manager, the file).
         Some(d) if is_game(Path::new(d)) => play(&[vec!["run".to_string()], args].concat()),
         Some(other) => Err(format!("unknown command {other}\n\n{USAGE}")),
     }
@@ -174,7 +174,7 @@ fn play(args: &[String]) -> Result<(), String> {
     if game.connect_party() { println!("{} warp: connected to the party host", app::manners::stamp()); }
     if let Some(cfg) = live::Config::from_args(&game.live_name(), args)? { game.start_live(cfg)?; }
     else if game.party.is_some() && std::env::var("WARP_LIVE").as_deref() != Ok("0") {
-        // Under GameNight the session assistant changes the game through
+        // Under Splitscreen Club the session assistant changes the game through
         // live control (engine/docs/live-control.md): any free local port.
         let mut cfg = live::Config::new(&game.live_name());
         cfg.port = 0;

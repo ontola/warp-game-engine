@@ -25,7 +25,7 @@ warp run my-game --live                # ... and let Claude change it over MCP
 
 | Command | What it does |
 | --- | --- |
-| `warp run DIR [--players N] [--bots N] [--live [PORT]] [--sky SKY] [--seed N] [--size WxH] [--fullscreen] [--frames N]` | Play fullscreen, with sound (`--windowed` opts out). `--live` serves MCP ([live control](live-control.md); all its `--live-*` flags work). `--frames N` quits after N frames (a smoke test). Launched by a Splitscreen Club party host, the host's seats decide the players (see [Splitscreen Club](#gamenight)). |
+| `warp run DIR [--players N] [--bots N] [--live [PORT]] [--sky SKY] [--seed N] [--size WxH] [--fullscreen] [--frames N]` | Play fullscreen, with sound (`--windowed` opts out). `--live` serves MCP ([live control](live-control.md); all its `--live-*` flags work). `--frames N` quits after N frames (a smoke test). Launched by a Splitscreen Club party host, the host's seats decide the players (see [Splitscreen Club](#splitscreen-club)). |
 | `warp DIR` | The same as `warp run DIR`. This is how a Splitscreen Club host starts an installed game: the runtime gets the game folder. |
 | `warp script DIR FILE.json --out OUT [--players N] [--sky SKY] [--seed N]` | A headless playtest in the [`app::script` format](building-and-running.md): ticks with controls, `cmd` lines, `expect` and `until` checks, `capture` (PNG), `state` (JSON) and `audio` (WAV). Exits with status 1 when a check fails. |
 | `warp serve DIR [--live [PORT]] [--seconds T] [--size WxH]` | Headless in real time with live control on (port 7878 by default). Renders a frame only for a screenshot. Sound plays into a mixer that is never heard. |
@@ -377,7 +377,7 @@ confirms, B or Start closes. Scripts and agents use the console:
 
 `warp run` and `warp DIR` connect to a party host when one launched them
 (`GAMENIGHT=1`) or `GAMENIGHT_ADDR` points at one, using the
-[`gamenight` crate](../crates/gamenight/src/lib.rs) as Growing Guns does:
+[`splitscreen-club` crate](../crates/splitscreen-club/src/lib.rs) as Growing Guns does:
 
 - The window stays hidden until the host starts the session, then goes
   fullscreen.
@@ -399,7 +399,7 @@ confirms, B or Start closes. Scripts and agents use the console:
 
 The session lifecycle is shared by every Rust game that a party host
 launches (Growing Guns, Spellstorm, Spaceracer and `warp`):
-`gamenight::party::Party` holds the client, the session id, the `Phase`
+`splitscreen_club::party::Party` holds the client, the session id, the `Phase`
 (`Idle`, `Warm`, `Running`, `Paused`) and the finished flag. It applies
 `prepare`, `start`, `pause`, `resume` and `dispose` (only for the current
 session), `ready` (progress, then ready), `finished` (once per session),

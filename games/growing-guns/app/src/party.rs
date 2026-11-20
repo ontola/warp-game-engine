@@ -1,4 +1,4 @@
-//! GameNight: a party host runs Growing Guns, as Godot's
+//! Splitscreen Club: a party host runs Growing Guns, as Godot's
 //! `gamenight_bridge.gd` does. The host prepares a session with its seats;
 //! the game builds the match (local seats are players, AI seats bots, at
 //! least two in all), reports progress and waits, minimised and frozen,
@@ -7,8 +7,8 @@
 //! party's settings (Godot's `gamenight_settings.gd`) set the match and the
 //! next round's rules.
 use app::{Buttons, Controls};
-use gamenight::{button, Command, Pad, Seat};
-use gamenight::party::hex_strict;
+use splitscreen_club::{button, Command, Pad, Seat};
+use splitscreen_club::party::hex_strict;
 use growing_guns::{Modifier, Rules, World, MODIFIERS};
 use serde_json::{json, Value};
 use std::time::Instant;
@@ -99,7 +99,7 @@ impl Settings {
     }
 }
 
-/// Profile colours from GameNight, in sRGB.
+/// Profile colours from Splitscreen Club, in sRGB.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct PlayerColors {
     pub shirt: Option<[f32; 3]>,
@@ -124,7 +124,7 @@ pub enum Ev {
 }
 
 pub struct Party {
-    host: gamenight::party::Party,
+    host: splitscreen_club::party::Party,
     pub settings: Settings,
     /// The seated humans, in slot order.
     seats: Vec<Seat>,
@@ -140,10 +140,10 @@ pub struct Party {
 impl Party {
     /// When launched by a party host (GAMENIGHT=1) or pointed at one (GAMENIGHT_ADDR).
     pub fn connect() -> Option<Party> {
-        gamenight::party::Party::connect("growing-guns").map(Party::new)
+        splitscreen_club::party::Party::connect("growing-guns").map(Party::new)
     }
 
-    pub(crate) fn new(host: gamenight::party::Party) -> Party {
+    pub(crate) fn new(host: splitscreen_club::party::Party) -> Party {
         Party { host, settings: Settings::default(), seats: Vec::new(), triggers: Vec::new(), live: None, next_modifier: None, sticks: Default::default() }
     }
 
@@ -169,13 +169,13 @@ impl Party {
                     Command::Connected => { self.declare(); }
                     Command::Setting { key, value } if key == NEXT_MODIFIER => match parse_next_modifier(value.as_str().unwrap_or("")) {
                         Ok(m) => { self.next_modifier = m; out.push(Ev::NextModifier(m)); }
-                        Err(e) => eprintln!("gamenight: {e}"),
+                        Err(e) => eprintln!("splitscreen-club: {e}"),
                     },
                     Command::Setting { key, value } => match crate::knobs::from_setting(&key, &value) {
                         // A knob: written into its mod, which reloads by itself.
-                        Some(Ok(file)) => println!("[gamenight] {key} = {value} (mods/{file})"),
-                        Some(Err(e)) => eprintln!("gamenight: {e}"),
-                        None => if !self.settings.change(&key, &value) { eprintln!("gamenight: ignored setting {key} = {value}"); },
+                        Some(Ok(file)) => println!("[splitscreen-club] {key} = {value} (mods/{file})"),
+                        Some(Err(e)) => eprintln!("splitscreen-club: {e}"),
+                        None => if !self.settings.change(&key, &value) { eprintln!("splitscreen-club: ignored setting {key} = {value}"); },
                     },
                     Command::PlayerSettings { player_id, values } => {
                         if let Some(v) = values.get(STICK).and_then(Value::as_f64).filter(|v| v.is_finite()) {
@@ -184,7 +184,7 @@ impl Party {
                         }
                     }
                     Command::Prepare { session, seats } => {
-                        println!("[gamenight] prepare {session} ({} seats)", seats.len());
+                        println!("[splitscreen-club] prepare {session} ({} seats)", seats.len());
                         self.host.setting_up(&session);
                         self.seats = Self::humans(&seats);
                         // Versus needs two: bots fill the gap (Godot `_configure_meta_from_seats`).
@@ -194,7 +194,7 @@ impl Party {
                         out.push(self.sticks_ev());
                         self.host.prepare(session);
                     }
-                    Command::Start { session } => if self.host.start(&session) { println!("[gamenight] start {session}"); },
+                    Command::Start { session } => if self.host.start(&session) { println!("[splitscreen-club] start {session}"); },
                     Command::Pause { session } => { self.host.pause(&session); }
                     Command::Resume { session } => { self.host.resume(&session); }
                     Command::Dispose { session } => if self.host.dispose(&session) {
@@ -213,8 +213,8 @@ impl Party {
                         }
                         out.push(Ev::Profiles(self.seats.clone()));
                     }
-                    Command::Disconnected(e) => { eprintln!("gamenight: {e}"); self.host.disconnected(); }
-                    Command::Error(e) => eprintln!("gamenight: {e}"),
+                    Command::Disconnected(e) => { eprintln!("splitscreen-club: {e}"); self.host.disconnected(); }
+                    Command::Error(e) => eprintln!("splitscreen-club: {e}"),
                     _ => {}
                 }
             }
@@ -231,7 +231,7 @@ impl Party {
             all.push(json!({"key": k.key, "label": k.label, "kind": "number", "default": k.value, "min": k.min, "max": k.max}));
         }
         let _ = self.host.client.declare_settings(Value::Array(all));
-        if let Some((description, file)) = &self.live && let Err(e) = self.host.client.declare_commands(description, &[], Some(file)) { eprintln!("gamenight: {e}"); }
+        if let Some((description, file)) = &self.live && let Err(e) = self.host.client.declare_commands(description, &[], Some(file)) { eprintln!("splitscreen-club: {e}"); }
     }
 
     /// Let the session assistant change the game through live control.
@@ -244,7 +244,7 @@ impl Party {
     pub fn knob_changed(&mut self, name: &str, value: &str) {
         let Ok(v) = value.trim().parse::<f64>() else { return };
         let key = format!("{}{name}", crate::knobs::SETTING_PREFIX);
-        if let Err(e) = self.host.client.send_json(json!({"type": "set_setting", "key": key, "value": (v * 100.0).round() as i64})) { eprintln!("gamenight: {e}"); }
+        if let Err(e) = self.host.client.send_json(json!({"type": "set_setting", "key": key, "value": (v * 100.0).round() as i64})) { eprintln!("splitscreen-club: {e}"); }
     }
 
     fn sticks_ev(&self) -> Ev {
@@ -258,19 +258,19 @@ impl Party {
         if self.sticks.get(&seat.player_id).is_some_and(|&old| (old - v).abs() < 0.005) { return; }
         self.sticks.insert(seat.player_id.clone(), v);
         let msg = json!({"type": "set_player_setting", "player_id": seat.player_id, "key": STICK, "value": (v * 100.0).round() as i64});
-        if let Err(e) = self.host.client.send_json(msg) { eprintln!("gamenight: {e}"); }
+        if let Err(e) = self.host.client.send_json(msg) { eprintln!("splitscreen-club: {e}"); }
     }
 
     /// The picked round has started: the app's buttons go back to Random.
     pub fn next_modifier_used(&mut self) {
-        if self.next_modifier.take().is_some() && let Err(e) = self.host.client.send_json(json!({"type": "set_setting", "key": NEXT_MODIFIER, "value": RANDOM})) { eprintln!("gamenight: {e}"); }
+        if self.next_modifier.take().is_some() && let Err(e) = self.host.client.send_json(json!({"type": "set_setting", "key": NEXT_MODIFIER, "value": RANDOM})) { eprintln!("splitscreen-club: {e}"); }
     }
 
     /// Change setting `k` from the game's own menu (Godot `_gn_open_advanced`):
-    /// here at once, and through GameNight so the phones and lobby show it.
+    /// here at once, and through Splitscreen Club so the phones and lobby show it.
     pub fn set(&mut self, k: usize, value: i64) {
         let Some(key) = self.settings.0.get(k).map(|e| e.0.clone()) else { return };
-        if self.settings.change(&key, &json!(value)) && let Err(e) = self.host.client.send_json(json!({"type": "set_setting", "key": key, "value": value})) { eprintln!("gamenight: {e}"); }
+        if self.settings.change(&key, &json!(value)) && let Err(e) = self.host.client.send_json(json!({"type": "set_setting", "key": key, "value": value})) { eprintln!("splitscreen-club: {e}"); }
     }
 
     /// The match is built: tell the host, then wait frozen for `start`.
@@ -315,7 +315,7 @@ pub fn to_controls(pad: &Pad, prev_triggers: u32, dt: f32) -> Controls {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gamenight::Client;
+    use splitscreen_club::Client;
 
     /// The README's status (games/growing-guns/README.md) names what the
     /// game has: every round modifier, party setting and live knob, the
@@ -417,8 +417,8 @@ mod tests {
                 if m["type"] == "set_player_setting" { assert_eq!((m["player_id"].as_str(), m["key"].as_str(), m["value"].as_i64()), (Some("p1"), Some(STICK), Some(80))); break; }
             }
         });
-        let client = Client::connect(gamenight::Config { url: format!("ws://{address}"), game_id: "growing-guns".into(), token: String::new(), launched_by_daemon: true }).unwrap();
-        let mut party = Party::new(gamenight::party::Party::new(client));
+        let client = Client::connect(splitscreen_club::Config { url: format!("ws://{address}"), game_id: "growing-guns".into(), token: String::new(), launched_by_daemon: true }).unwrap();
+        let mut party = Party::new(splitscreen_club::party::Party::new(client));
         let deadline = Instant::now() + std::time::Duration::from_secs(5);
         let (mut prepared, mut fired, mut stick, mut recolored) = (None, false, None, false);
         assert_eq!(party.screen(), app::Screen::Hidden);

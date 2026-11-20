@@ -1,5 +1,5 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
-//! The GameNight Game Room lobby on Warp.
+//! The Splitscreen Club Game Room lobby on Warp.
 //!
 //!   game-room shot [--dump DIR] --out room.png [--size 1280x720]
 //!   game-room play [--players 1] [--bots 3] [--fullscreen]
@@ -16,7 +16,7 @@ use std::path::PathBuf;
 
 
 fn main() {
-    app::startup::init("Splitscreen Club", Some(include_bytes!("../assets/gamenight-icon.png"))); if let Err(e) = run() { eprintln!("game-room: {e}"); std::process::exit(1); } }
+    app::startup::init("Splitscreen Club", Some(include_bytes!("../assets/splitscreen-club-icon.png"))); if let Err(e) = run() { eprintln!("game-room: {e}"); std::process::exit(1); } }
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
@@ -32,11 +32,11 @@ fn run() -> Result<(), String> {
         print!("{text}");
         return Ok(());
     }
-    // Started by the GameNight host (bundled or registered lobby): the env
+    // Started by the Splitscreen Club host (bundled or registered lobby): the env
     // carries GAMENIGHT_LOBBY_API, so no subcommand means "be the lobby".
     let hosted = args.len() == 1 && std::env::var("GAMENIGHT_LOBBY_API").is_ok_and(|v| v == "1");
     if hosted || args.get(1).map(String::as_str) == Some("lobby") {
-        // The GameNight lobby: connects to the host from GAMENIGHT_ADDR,
+        // The Splitscreen Club lobby: connects to the host from GAMENIGHT_ADDR,
         // fullscreen unless --windowed.
         let options = game_room::stage::Options::from_args(numf, flag, |k| arg(k).is_some());
         let mut lobby = game_room::live::Lobby::connect(options)?;
@@ -50,7 +50,7 @@ fn run() -> Result<(), String> {
     }
     if matches!(args.get(1).map(String::as_str), Some("play") | Some("live-shot")) {
         // The live lobby: `play` in a window, `live-shot` headless after
-        // --ticks; with --host it joins the GameNight host instead of a demo.
+        // --ticks; with --host it joins the Splitscreen Club host instead of a demo.
         let options = game_room::stage::Options::from_args(numf, flag, |k| arg(k).is_some());
         let local = numf("--players", 1.0) as usize;
         let bots = numf("--bots", 3.0) as usize;

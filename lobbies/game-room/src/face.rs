@@ -1,4 +1,4 @@
-//! Profile art as GameNight sends it (addons/gamenight/face.gd `decode`):
+//! Profile art as Splitscreen Club sends it (addons/gamenight/face.gd `decode`):
 //! JSON `{"v": 1, "w", "h", "px": ["#rrggbb" | null, ...]}`, or the legacy
 //! square array whose `#0f172a` pixels are transparent.
 

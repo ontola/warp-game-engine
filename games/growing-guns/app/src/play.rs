@@ -9,7 +9,7 @@
 //! seat's Start opens its PLAYER MENU (RESUME / LEAVE); leaving hands the
 //! seat back to a bot. Seats change between ticks on the host only, so the
 //! simulation stays deterministic and clients just follow the snapshots.
-//! Under GameNight the party owns the seats and there is no hot-join.
+//! Under Splitscreen Club the party owns the seats and there is no hot-join.
 use crate::session::Session;
 use crate::{hud, view, Args};
 use app::{Buttons, Controls, Device, Draw, Frame};
@@ -95,19 +95,19 @@ pub struct Gg {
     pub no_kbm: bool,
     /// The mods (cards, rules), hot-reloaded.
     pub(crate) scripts: Option<std::sync::Arc<crate::scripts::Scripts>>,
-    /// A GameNight party host, when it launched us.
+    /// A Splitscreen Club party host, when it launched us.
     pub party: Option<crate::party::Party>,
     /// The music volume last applied.
     music_db: Option<f32>,
     /// Where the settings persist (`play` only; scripts keep the defaults).
     pub settings_file: Option<std::path::PathBuf>,
-    /// `menu gamenight`: the GameNight pause menu without a party (scripts).
+    /// `menu club`: the Splitscreen Club pause menu without a party (scripts).
     gn_preview: Option<crate::party::Settings>,
     /// Party names for the seated players, in slot order.
     pub names: Vec<String>,
     party_colors: Vec<crate::party::PlayerColors>,
     roster_seed: u64,
-    /// `ui.aim` as last sent to or taken from GameNight (players' own setting).
+    /// `ui.aim` as last sent to or taken from Splitscreen Club (players' own setting).
     aim_synced: Vec<(String, f32)>,
     /// Live control (`--live`, live.rs).
     pub(crate) live: Option<Box<crate::live::GgLive>>,
@@ -280,7 +280,7 @@ impl Gg {
         if let Some((_, d)) = &mut self.music { *d = Default::default(); }
     }
 
-    /// GameNight's lifecycle; returns the party's controls while it runs,
+    /// Splitscreen Club's lifecycle; returns the party's controls while it runs,
     /// or None when the match is frozen (warming, paused, between sessions).
     fn party_tick(&mut self) -> Option<Option<Vec<Controls>>> {
         let party = self.party.as_mut()?;
@@ -550,7 +550,7 @@ impl Gg {
     }
 }
 
-/// `GG_HITCH=MS` (default 12 under GameNight, else off): print any step of
+/// `GG_HITCH=MS` (default 12 under Splitscreen Club, else off): print any step of
 /// a tick or frame slower than that, to find what freezes the screen.
 pub(crate) fn hitch(what: &str, since: std::time::Instant) {
     static LIMIT: std::sync::LazyLock<Option<f32>> = std::sync::LazyLock::new(|| {
@@ -578,7 +578,7 @@ fn blackout_light(light: &mut Lighting) {
 const BLACKOUT_EV: f32 = 8.0;
 static BLACKOUT_EV100: std::sync::LazyLock<f32> = std::sync::LazyLock::new(|| std::env::var("GG_BLACKOUT_EV").ok().and_then(|v| v.parse().ok()).unwrap_or(BLACKOUT_EV));
 
-/// What the menus show of the session; `party`: GameNight's settings.
+/// What the menus show of the session; `party`: Splitscreen Club's settings.
 fn menu_ctx<'a>(session: &Session, world: &World, start_seats: &[usize], ticket: Option<&'a str>, party: Option<&crate::party::Settings>, names: &[String], xr: bool) -> hud::menus::Ctx<'a> {
     let status = if world.coop { format!("WAVE SURVIVAL  /  WAVE {}", world.waves.wave) } else { format!("VERSUS  /  ROUND {}  /  FIRST TO {}", world.round, world.rounds_to_win) };
     let bots = (0..world.players.len()).filter(|i| world.players[*i].bot && !start_seats.contains(i)).count();
@@ -1055,7 +1055,7 @@ impl app::Game for Gg {
             Some(None) => return,
             Some(Some(c)) => Some(c),
         };
-        // Each GameNight player's own aim sensitivity (Godot `stick_sens_for`).
+        // Each Splitscreen Club player's own aim sensitivity (Godot `stick_sens_for`).
         let party_controls = party_controls.map(|mut c| {
             for (k, c) in c.iter_mut().enumerate() { let m = self.names.get(k).map_or(self.ui.stick, |n| self.ui.aim_for(n)); c.look = c.look.map(|v| v * m); }
             c
@@ -1437,7 +1437,7 @@ impl app::Game for Gg {
             if p < world.players.len() { Ok(p) } else { Err(format!("no player {p}")) }
         };
         match w.first().copied().unwrap_or("") {
-            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | debug [on|off] | debug tab cards|items|sky|modes | debug player P | debug focus search|N | focus join|name | split on|off | leave K | copy | names NAME,NAME.. | net-error TEXT|none | give P CARD | remove P CARD | pickup KIND X Z [Y] | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | arena island [SEED] | lava [SECONDS] | cards | lua CODE | mods | knobs | knob NAME VALUE | fx [NAME VALUE] | special P NAME | modifier ID|none | sky [godot|TIME[:WEATHER]|rounds|cycle] | light [KEY=VALUE..|reset] | round | lan host|join | graphics auto|full|low|minimum | cage | rematch | extend".into()),
+            "help" => Ok("menu start|pause|settings|club|advanced|none | debug [on|off] | debug tab cards|items|sky|modes | debug player P | debug focus search|N | focus join|name | split on|off | leave K | copy | names NAME,NAME.. | net-error TEXT|none | give P CARD | remove P CARD | pickup KIND X Z [Y] | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | arena island [SEED] | lava [SECONDS] | cards | lua CODE | mods | knobs | knob NAME VALUE | fx [NAME VALUE] | special P NAME | modifier ID|none | sky [godot|TIME[:WEATHER]|rounds|cycle] | light [KEY=VALUE..|reset] | round | lan host|join | graphics auto|full|low|minimum | cage | rematch | extend".into()),
             // The keyboard focus on a text field of the open menu.
             "focus" => {
                 use hud::menus::Field;
@@ -1462,7 +1462,7 @@ impl app::Game for Gg {
                 self.ui.error = (t != "none" && !t.is_empty()).then(|| t.to_string());
                 Ok(format!("net error {:?}", self.ui.error))
             }
-            // Party names for the local seats, comma separated (GameNight's `names`).
+            // Party names for the local seats, comma separated (Splitscreen Club's `names`).
             "names" => {
                 self.names = cmd.trim_start().strip_prefix("names").unwrap_or("").split(',').map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).collect();
                 self.hud.set_names(&self.world, &self.slots, &self.names);
@@ -1475,9 +1475,9 @@ impl app::Game for Gg {
                     "pause" => self.ui.open(Screen::Pause),
                     "settings" => self.ui.open(Screen::Settings { from_start: false }),
                     "none" => self.ui.open(Screen::Play),
-                    "gamenight" => { self.gn_preview.get_or_insert_with(Default::default); self.ui.open(Screen::Pause) }
+                    "club" => { self.gn_preview.get_or_insert_with(Default::default); self.ui.open(Screen::Pause) }
                     "advanced" => { self.gn_preview.get_or_insert_with(Default::default); self.ui.open(Screen::Advanced) }
-                    m => return Err(format!("menu start|pause|settings|gamenight|advanced|none, not {m}")),
+                    m => return Err(format!("menu start|pause|settings|club|advanced|none, not {m}")),
                 }
                 Ok(format!("menu {:?}", self.ui.screen))
             }
@@ -1757,7 +1757,7 @@ pub fn run(args: &Args) -> Result<(), String> {
     // Start lighting preparation while the rest of the arena is being built.
     game.vis.stadium.bake_in_background = true;
     game.party = crate::party::Party::connect();
-    if game.party.is_some() { println!("gamenight: waiting for the party host"); }
+    if game.party.is_some() { println!("splitscreen-club: waiting for the party host"); }
     game.live = crate::live::start(args, game.party.is_some())?.map(Box::new);
     if let (Some(party), Some(file)) = (game.party.as_mut(), game.live.as_ref().and_then(|l| l.token_file())) {
         party.offer_live("Growing Guns can be changed live while you play: damage, fire rate, run and bullet speed, explosions, health, cards for a player, bots, rounds, rules and sounds. Send any request to change the game as it is said.".into(), file);
@@ -1875,9 +1875,9 @@ mod tests {
                 }
             }
         });
-        let client = gamenight::Client::connect(gamenight::Config { url: format!("ws://{address}"), game_id: "growing-guns".into(), token: String::new(), launched_by_daemon: true }).unwrap();
+        let client = splitscreen_club::Client::connect(splitscreen_club::Config { url: format!("ws://{address}"), game_id: "growing-guns".into(), token: String::new(), launched_by_daemon: true }).unwrap();
         let mut game = Gg::new(World::new(5, &[false, true]), Session::Local, vec![0]);
-        game.party = Some(crate::party::Party::new(gamenight::party::Party::new(client)));
+        game.party = Some(crate::party::Party::new(splitscreen_club::party::Party::new(client)));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !game.ready_due && std::time::Instant::now() < deadline {
             game.tick(&[Controls::default()]);

@@ -1,4 +1,4 @@
-//! The live lobby against a fake GameNight host: party snapshots seat
+//! The live lobby against a fake Splitscreen Club host: party snapshots seat
 //! players, controller frames move them, and stations send host commands.
 
 use game_room::live::Lobby;
@@ -66,7 +66,7 @@ fn a_seated_player_starts_the_queued_game_at_the_tv() {
         "playlist": {"entries": [{"game": "spaceracer", "title": "Space Racer"}], "current": null},
     });
     let (url, to_lobby, from_lobby) = fake_host(party);
-    let config = gamenight::lobby::Config { url, lobby_id: "game-room".into(), token: "secret".into(), links_base: String::new() };
+    let config = splitscreen_club::lobby::Config { url, lobby_id: "game-room".into(), token: "secret".into(), links_base: String::new() };
     let mut lobby = Lobby::connect_with(options(), config).unwrap();
     run_until(&mut lobby, |l| l.world.player("p0").is_some() && l.host.connected);
     let hello = from_lobby.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -101,7 +101,7 @@ fn the_mouse_is_nobody_but_works_the_room() {
         "playlist": {"entries": [{"game": "spaceracer", "title": "Space Racer"}], "current": null},
     });
     let (url, _to_lobby, from_lobby) = fake_host(party);
-    let config = gamenight::lobby::Config { url, lobby_id: "game-room".into(), token: "secret".into(), links_base: String::new() };
+    let config = splitscreen_club::lobby::Config { url, lobby_id: "game-room".into(), token: "secret".into(), links_base: String::new() };
     let mut lobby = Lobby::connect_with(options(), config).unwrap();
     run_until(&mut lobby, |l| l.accepts_input());
     let size = [1920, 1080];
@@ -147,7 +147,7 @@ fn the_mouse_is_nobody_but_works_the_room() {
     sent(&from_lobby, "quit_party");
     point(&mut lobby, tv, false, 0.0);
 
-    // Escape opens the room's own menu; clicking Quit twice quits GameNight.
+    // Escape opens the room's own menu; clicking Quit twice quits Splitscreen Club.
     // (Not in the first moments after taking the screen: that Escape may
     // be the one that closed the game in front.)
     std::thread::sleep(Duration::from_millis(800));
@@ -170,7 +170,7 @@ fn new_rooms_show_where_to_start_and_where_scanned_profiles_wait() {
         "playlist": {"entries": [{"game": "spaceracer", "title": "Space Racer"}], "current": null},
     });
     let (url, to_lobby, _from_lobby) = fake_host(party);
-    let config = gamenight::lobby::Config { url, lobby_id: "game-room".into(), token: "secret".into(), links_base: String::new() };
+    let config = splitscreen_club::lobby::Config { url, lobby_id: "game-room".into(), token: "secret".into(), links_base: String::new() };
     let mut lobby = Lobby::connect_with(options(), config).unwrap();
     run_until(&mut lobby, |l| l.accepts_input());
     // An empty room nudges nobody, even with a profile waiting.

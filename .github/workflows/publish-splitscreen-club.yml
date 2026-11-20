@@ -1,11 +1,13 @@
-# Uploads each green main build to the GameNight preview catalog, so
+# Uploads each green main build to the Splitscreen Club preview catalog, so
 # playtesters get it on their shelf, once the repository variable
 # GAMENIGHT_PUBLISH_ENABLED is 'true' (off by default) and the
 # GAMENIGHT_API_TOKEN secret holds a publish key for sideways.
+# Only pushes to main in this repository publish: CI also runs for pull
+# requests from forks, and those builds must never reach the catalog.
 # Hello Warp (a Luau game: warp.exe with its game folder) needs the
 # variable HELLO_WARP_PUBLISH_ENABLED and a publish key for hello-warp in
 # the secret GAMENIGHT_API_TOKEN_HELLO_WARP.
-name: Publish GameNight preview
+name: Publish Splitscreen Club preview
 on:
   workflow_run:
     workflows: [Native checks and Windows build]
@@ -15,7 +17,7 @@ permissions:
   actions: read
 jobs:
   upload:
-    if: vars.GAMENIGHT_PUBLISH_ENABLED == 'true'
+    if: vars.GAMENIGHT_PUBLISH_ENABLED == 'true' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository && github.event.workflow_run.conclusion == 'success'
     uses: ontola/gamepad-party/.github/workflows/publish-game.yml@ac5e9b65272ac18cc74aee9f5694c6960c1c0a90
     secrets:
       GAMENIGHT_API_TOKEN: ${{ secrets.GAMENIGHT_API_TOKEN }}
@@ -25,7 +27,7 @@ jobs:
       file: sideways-windows.zip
       entrypoint: Sideways.exe
   hello-warp:
-    if: vars.HELLO_WARP_PUBLISH_ENABLED == 'true'
+    if: vars.HELLO_WARP_PUBLISH_ENABLED == 'true' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository && github.event.workflow_run.conclusion == 'success'
     uses: ontola/gamepad-party/.github/workflows/publish-game.yml@ac5e9b65272ac18cc74aee9f5694c6960c1c0a90
     secrets:
       GAMENIGHT_API_TOKEN: ${{ secrets.GAMENIGHT_API_TOKEN_HELLO_WARP }}

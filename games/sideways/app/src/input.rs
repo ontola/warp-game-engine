@@ -156,7 +156,7 @@ impl Input {
                 out.control.brake = trigger(Button::LeftTrigger2);
                 out.control.handbrake = if pad.is_pressed(Button::South) { 1.0 } else { 0.0 };
                 // Orbit owns one radial/hysteretic deadzone, shared with
-                // GameNight. Per-axis remapping here distorts stick angles.
+                // Splitscreen Club. Per-axis remapping here distorts stick angles.
                 out.look = [pad.value(Axis::RightStickX), pad.value(Axis::RightStickY)];
                 now = Buttons { recover: pad.is_pressed(Button::West), camera: pad.is_pressed(Button::North), pause: pad.is_pressed(Button::Start), up: pad.is_pressed(Button::RightTrigger), down: pad.is_pressed(Button::LeftTrigger) };
                 if focused && (out.control.throttle>0.05 || out.control.brake>0.05 || out.control.steer.abs()>0.05 || out.control.handbrake>0.0 || out.look.iter().any(|x|x.abs()>0.05) || now.recover || now.camera || now.pause || now.up || now.down) { self.native_active_samples += 1; }

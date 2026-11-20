@@ -68,8 +68,8 @@ debug UI and closes the panel; the saved size 2.0/density 0.55 baseline stays
 unchanged. Verify the resolved values in capture metadata after launch.
 
 ```powershell
-games/sideways/tools/register-gamenight-windows.ps1 -PackageDirectory C:/path/to/package -ReferencePlaytestManifest C:/path/to/dev-run/iteration.json -DebugUi
-games/sideways/tools/test-register-gamenight.ps1
+games/sideways/tools/register-splitscreen-club-windows.ps1 -PackageDirectory C:/path/to/package -ReferencePlaytestManifest C:/path/to/dev-run/iteration.json -DebugUi
+games/sideways/tools/test-register-splitscreen-club.ps1
 ```
 
 The package must include its verified executable, game assets and DLSS runtime.

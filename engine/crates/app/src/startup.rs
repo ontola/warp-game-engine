@@ -89,8 +89,8 @@ mod windows {
         fn SetStdHandle(kind:u32,handle:Handle)->i32;
     }
     fn wide(s:&str)->Vec<u16> {s.encode_utf16().chain([0]).collect()}
-    /// Join the host's taskbar entry: GameNight passes its AppUserModelID,
-    /// so the lobby groups under a pinned GameNight instead of opening as a
+    /// Join the host's taskbar entry: Splitscreen Club passes its AppUserModelID,
+    /// so the lobby groups under a pinned Splitscreen Club instead of opening as a
     /// separate app with its own icon.
     pub fn app_id() {
         #[link(name="shell32")] unsafe extern "system" {fn SetCurrentProcessExplicitAppUserModelID(id:*const u16)->i32;}

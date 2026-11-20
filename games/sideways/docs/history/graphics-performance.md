@@ -333,7 +333,7 @@ artifacts and are not bundled into the game.
 ## Historical 21 October validation and remaining work
 
 - Project import and per-script parsing passed (standalone checks exclude the
-  known autoload-only `GameNight` identifier diagnostic).
+  known autoload-only `Splitscreen Club` identifier diagnostic).
 - New geometry regression passed: 16/32-bit LOD indices, actual stump LODs,
   unchanged full-detail indices/materials, and near/far grass bounds. Added
   to CI.

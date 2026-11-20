@@ -39,7 +39,7 @@ KERN_ADAPTER=software target/debug/growing-guns script games/growing-guns/script
 | `ui-hotjoin.json` | `--players 1` | splitscreen hint, SPLITSCREEN, PRESS X TO JOIN, pads joining over bots, PLAYER MENU, LEAVE, splitscreen off |
 | `golden.json` | `tools/golden.sh` | the pixel references (HUD included) |
 
-Debug commands for scripts: `menu start|pause|settings|gamenight|advanced|none`,
+Debug commands for scripts: `menu start|pause|settings|club|advanced|none`,
 `focus join|name`, `split on|off`, `leave K`, `copy`, `names A,B`,
 `net-error TEXT|none` (and the gameplay ones, `help`). Script steps can
 type (`text`, `keys`, `clipboard`) and drive virtual pads (`pads`, `device`);
