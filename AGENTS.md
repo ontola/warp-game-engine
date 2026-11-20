@@ -157,8 +157,13 @@ are separate. Geometry omission deltas are non-additive. On macOS (Metal) a
 fullscreen window in another Space is not presented, so its fps is meaningless;
 use headless GPU pass times instead.
 
-Target: one 4K output, four players, 120 FPS (8.33 ms); not reached. Report actual
-resolution, reconstruction, sample count and scene. No further Godot comparison.
+Target: one 4K output, four players, 120 FPS (8.33 ms). Regular game content is
+at or near it (Growing Guns four views at native 4K: about 8.4 to 8.6 ms GPU; Space
+Racer city: about 9 ms) and plays smoothly. Only the dense vegetation stress
+cases (Sideways forest/meadow, `terrain_fly`) are far over, at about 40 ms; that
+is a vegetation cost, not a split-screen limit, so it is no reason to avoid Warp
+for a new four-player game. Report actual resolution, reconstruction, sample count
+and scene. No further Godot comparison.
 
 See both READMEs, engine/docs/status.md and, for vegetation,
 engine/docs/vegetation-architecture.md.

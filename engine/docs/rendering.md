@@ -306,11 +306,12 @@ next draw on the same grid.
 ## Where it stands
 
 The target is four players on one 3840 × 2160 output at 120 FPS (8.33 ms
-per frame). **It is not reached.** The latest controlled four-player,
-4K-output route measured about 38 to 44.5 ms with DLSS Quality; that is
-not native 4K and not a typical-gameplay guarantee. A smaller scene such
-as Growing Guns' arena is much cheaper (see its README for measured,
-dated numbers).
+per frame). Regular game content is at or near it: four native-4K views of
+a full Growing Guns match measured about 8.4 to 8.6 ms of GPU time and Space
+Racer's city about 9 ms on the RTX 5070 Ti ([status](status.md#target)).
+Only the dense vegetation stress cases are far over: the Sideways forest and
+meadow route measured about 38 to 44.5 ms with DLSS Quality. That number
+describes the vegetation system, not split screen.
 
 The cost in Sideways' forest is dominated by grass source geometry, tree
 raster, dynamic sun shadows and shading. In `terrain_fly` much of the forest

@@ -97,7 +97,15 @@ One Cargo workspace and lockfile at the root. Engine crates are in
 [`engine/crates/`](engine/README.md), games in `games/`, the lobby in
 `lobbies/`. Games depend on the engine, never the reverse.
 
-The performance target is four players in one 4K output at 120 FPS. It is
-not reached yet.
+Four-player split screen runs smoothly with regular game content. On the
+RTX 5070 Ti test PC at native 3840 × 2160 with no upscaling, four views
+measured a median of about 8.4 to 8.6 ms of GPU time in a full Growing Guns
+match with a packed crowd, and 9 ms in Space Racer's city, its heaviest biome
+(November 2026). The goal is 120 FPS (8.33 ms) in that setup; these scenes are
+at or just over it. The much higher numbers you may find elsewhere in the docs
+(about 40 ms) come from the dense procedural vegetation stress cases: the
+Sideways forest and meadow route and `terrain_fly`. They measure the vegetation
+system, not split screen, so do not use them to decide whether Warp suits a game.
+See [status](engine/docs/status.md#target).
 
 [Third-party asset credits](games/sideways/CREDITS.md).

@@ -94,9 +94,10 @@ game's own tools while you play. See [live control](live-control.md).
 
 - A general scene editor. Games are code and data files with focused [visual editing tools](editor-tools.md).
 - Comparing against Godot. The Godot versions are retired as references.
-- Claiming the frame-rate target before it is measured. The Sideways target
-  is four players on one 4K output at 120 FPS (8.33 ms per frame); it is
-  not reached. See [rendering](rendering.md).
+- Claiming the frame-rate target before it is measured. The target is four
+  players on one 4K output at 120 FPS (8.33 ms per frame). Regular game
+  content is at or near it; only the dense vegetation of Sideways' forest
+  route is far over. See [status](status.md#target).
 
 ### Gameplay attachments to feedback screenshots
 
