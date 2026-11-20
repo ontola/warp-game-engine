@@ -81,8 +81,13 @@ How the build differs from native:
   standard layout, in the order they first press a button, with
   `vibrationActuator` rumble. A browser shows a pad to the page only after
   one of its buttons is pressed.
-- No sound yet: the synth needs a WebAudio output (an AudioWorklet pulling
-  from `audio::synth::mixer`).
+- Sound: `app::sound::open` plays through cpal's WebAudio host on the
+  page's thread (no audio thread); the example opens one synth mixer for
+  the page and gives every game a sender into it. Browsers start audio only
+  after a click or key press on the page (a gamepad button does not count):
+  the page remembers each AudioContext and resumes it then. While the page
+  thread is busy (a long frame) the sound can stutter; an AudioWorklet would
+  take it off that thread.
 
 ## What the browser needs
 

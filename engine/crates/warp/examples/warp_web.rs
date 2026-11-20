@@ -21,6 +21,37 @@ fn main() {
 }
 
 #[cfg(target_arch = "wasm32")]
+thread_local! {
+    /// The speakers and the synth mixer playing on them, opened once and
+    /// shared by every game the page switches to.
+    static SOUND: std::cell::RefCell<Option<(app::sound::Speaker, audio::synth::SoundSender)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// A sender into the page's one synth mixer, opening WebAudio the first time.
+#[cfg(target_arch = "wasm32")]
+fn sound() -> Option<audio::synth::SoundSender> {
+    SOUND.with(|s| {
+        let mut s = s.borrow_mut();
+        if s.is_none() {
+            let mut sender = None;
+            match app::sound::open(|rate, channels| {
+                let (tx, mix) = audio::synth::mixer(audio::synth::Layout::for_channels(channels), 128, rate);
+                tx.room(1.2, 0.4, 0.5);
+                sender = Some(tx);
+                Box::new(mix)
+            }) {
+                Ok(speaker) => {
+                    app::web::log(&format!("sound: WebAudio, {} Hz, {} channels", speaker.rate, speaker.channels));
+                    *s = Some((speaker, sender.expect("made in open")));
+                }
+                Err(e) => app::web::log(&format!("sound off: {e}")),
+            }
+        }
+        s.as_ref().map(|(_, tx)| tx.clone())
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
 fn param(k: &str) -> Option<String> {
     let query = web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default();
     query.trim_start_matches('?').split('&').find_map(|kv| kv.split_once('=').filter(|(key, _)| *key == k).map(|(_, v)| v.to_owned()))
@@ -56,7 +87,7 @@ async fn load(name: &str) -> Result<(app::Config, warp::LuaGame), String> {
     // `?players=2`: local players (keyboard, then pads in the order they wake up).
     let players = param("players").and_then(|p| p.parse().ok());
     let over = warp::Overrides { fresh: true, players, ..Default::default() };
-    let game = warp::LuaGame::load_with_storage(&dir, &over, None, warp::storage::Location::Memory)?;
+    let game = warp::LuaGame::load_with_storage(&dir, &over, sound(), warp::storage::Location::Memory)?;
     app::web::log(&format!("{name}: scripts loaded and init ran in {:.0} ms", t1.elapsed().as_secs_f32() * 1000.0));
     let cfg = app::Config { title: game.cfg.title.clone(), size: game.cfg.size, tick_hz: game.cfg.tick_rate, keyboard: true, pointer: false, ..Default::default() };
     Ok((cfg, game))

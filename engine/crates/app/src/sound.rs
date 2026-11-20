@@ -4,15 +4,28 @@
 //! The stream lives on its own thread, which opens it again on the default
 //! device when it dies (the display sleeping takes HDMI audio with it, a
 //! headset unplugged): the game keeps its [`Speaker`] and its source.
+//!
+//! In a browser (wasm32) cpal plays through WebAudio on the page's own
+//! thread, and the speaker holds the stream itself. Browsers start an
+//! AudioContext only after the player clicks or presses a key on the page
+//! (the warp page resumes it then, engine/docs/browser.md).
 use audio::sfx::{sfx, SfxSender};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::mpsc;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 type Shared = Arc<Mutex<Box<dyn audio::Source>>>;
 
-pub struct Speaker { stop: Arc<AtomicBool>, thread: Option<std::thread::Thread>, pub rate: f32, pub channels: usize }
+pub struct Speaker {
+    stop: Arc<AtomicBool>, thread: Option<std::thread::Thread>, pub rate: f32, pub channels: usize,
+    /// Browser: the stream itself (no audio thread there).
+    #[cfg(target_arch = "wasm32")]
+    _stream: Option<cpal::Stream>,
+}
 
 impl Drop for Speaker {
     fn drop(&mut self) {
@@ -30,16 +43,25 @@ pub fn open(make: impl FnOnce(f32, usize) -> Box<dyn audio::Source>) -> Result<S
     let channels = supported.channels() as usize;
     let src: Shared = Arc::new(Mutex::new(make(rate as f32, channels)));
     let stop = Arc::new(AtomicBool::new(false));
-    let (ready, started) = mpsc::channel();
-    let (s, flag) = (src.clone(), stop.clone());
-    let thread = std::thread::Builder::new().name("audio-out".into()).spawn(move || run(device, supported, s, flag, ready))
-        .map_err(|e| format!("audio thread: {e}"))?;
-    started.recv().map_err(|_| "audio thread ended".to_string())??;
-    Ok(Speaker { stop, thread: Some(thread.thread().clone()), rate: rate as f32, channels })
+    #[cfg(target_arch = "wasm32")]
+    {
+        let stream = play(&device, &supported, &src, &Arc::new(AtomicBool::new(false)))?;
+        Ok(Speaker { stop, thread: None, rate: rate as f32, channels, _stream: Some(stream) })
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let (ready, started) = mpsc::channel();
+        let (s, flag) = (src.clone(), stop.clone());
+        let thread = std::thread::Builder::new().name("audio-out".into()).spawn(move || run(device, supported, s, flag, ready))
+            .map_err(|e| format!("audio thread: {e}"))?;
+        started.recv().map_err(|_| "audio thread ended".to_string())??;
+        Ok(Speaker { stop, thread: Some(thread.thread().clone()), rate: rate as f32, channels })
+    }
 }
 
 /// Hold the stream; when it fails, open the default device again (with the
 /// first device's rate and channels where it can) until it plays.
+#[cfg(not(target_arch = "wasm32"))]
 fn run(device: cpal::Device, supported: cpal::SupportedStreamConfig, src: Shared, stop: Arc<AtomicBool>, ready: mpsc::Sender<Result<(), String>>) {
     let (rate, channels) = (supported.sample_rate(), supported.channels());
     let broken = Arc::new(AtomicBool::new(false));
@@ -68,6 +90,7 @@ fn run(device: cpal::Device, supported: cpal::SupportedStreamConfig, src: Shared
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn reopen(rate: u32, channels: u16, src: &Shared, broken: &Arc<AtomicBool>) -> Result<(String, cpal::Stream), String> {
     let device = cpal::default_host().default_output_device().ok_or("no audio output device")?;
     let fallback = device.default_output_config().map_err(|e| format!("audio config: {e}"))?;

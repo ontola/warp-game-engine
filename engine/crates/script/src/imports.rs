@@ -25,7 +25,7 @@ impl Libraries {
                 // A browser has no real paths to resolve: its files are only
                 // the game's own.
                 #[cfg(target_arch = "wasm32")]
-                let source = vfs::read_to_string(file).map_err(|err| format!("{path}: {err}"));
+                let source = { let _ = root; vfs::read_to_string(file).map_err(|err| format!("{path}: {err}")) };
                 #[cfg(not(target_arch = "wasm32"))]
                 let source = file
                     .canonicalize()

@@ -32,6 +32,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / 'build/web'
 # The ground textures terrain_fly reads (WEB_TEXTURES in the example).
+# Browsers keep an AudioContext suspended until the player clicks or
+# presses a key on the page (a gamepad button does not count): remember
+# every context the engine makes and resume them on the first such event.
+AUDIO_UNLOCK = '''<script>
+(() => {
+  const made = [], Real = window.AudioContext || window.webkitAudioContext;
+  if (!Real) return;
+  window.AudioContext = class extends Real { constructor(...a) { super(...a); made.push(this); } };
+  const resume = () => made.forEach(c => c.state !== 'running' && c.resume());
+  for (const e of ['pointerdown', 'keydown', 'touchend']) addEventListener(e, resume, { capture: true });
+  window.warpAudio = made;
+})();
+</script>
+'''
+
 # The --warp page's game buttons: each switches games in the running
 # engine (switch_game in examples/warp_web.rs), without a reload.
 WARP_PICKER = '''<div id="warp-games" style="position:fixed;top:8px;right:8px;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;max-width:70vw"></div>
@@ -139,7 +154,7 @@ if not args.no_build:
     if args.warp:
         page = page.replace('<title>Terrain fly</title>', '<title>Warp</title>')
         page = page.replace("import init from './pkg/warp_web.js';", "import init, * as warp from './pkg/warp_web.js';\nwindow.warp = warp;")
-        page = page.replace('</body>', WARP_PICKER + '</body>')
+        page = page.replace('</body>', WARP_PICKER + '</body>').replace('</head>', AUDIO_UNLOCK + '</head>')
     (OUT / 'index.html').write_text(page)
     (OUT / 'assets').mkdir(exist_ok=True)
     if args.example == 'terrain_fly':

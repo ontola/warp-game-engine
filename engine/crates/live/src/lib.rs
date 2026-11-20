@@ -30,7 +30,9 @@ mod server;
 
 use serde_json::Value;
 use std::collections::VecDeque;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr};
+#[cfg(not(target_arch = "wasm32"))]
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use serde_json::json;
