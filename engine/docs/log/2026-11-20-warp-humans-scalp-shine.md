@@ -27,3 +27,21 @@ through from the back, the side or above.
 
 Checked on lavapipe, human-lab at 30, all eight from four sides. Open:
 strands still cast no shadow.
+
+## The hairline after it
+
+Playtester on the front view: the step from forehead to scalp looks odd.
+Two faults. The hair mask and the missing sheen began at the hairline
+itself, so a centimetre of skin in plain view was lit as hair: a matte
+orange band with a hard edge. And of long coiled hair each strand is drawn
+over a stretch at a random depth, so hardly any was drawn at its root: under
+the afro a bare strip of painted scalp.
+
+- Mask from `grows` squared: the band went near black, since the fill was
+  opaque and 60 % darker right at the line. Rejected.
+- Tint, darkening, mask and sheen now build up with depth behind the
+  hairline (`Cut::under`, 3 to 28 mm; the tint from 0 to 16 mm).
+- Coiled strands rooted within 2 cm of the hairline are drawn from the skin.
+
+Checked on lavapipe, human-lab at 30, all eight from four sides; the crown
+stays without a white ring. Open: the hairline is a smooth line in y.

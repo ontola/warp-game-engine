@@ -250,6 +250,17 @@ impl Cut {
         scalp(p, self.recede) * (1. - self.thin * smooth(0.085, 0.025, p.distance(crown)))
     }
 
+    /// How far `p` lies under this person's hair, 0 at the hairline (where
+    /// the skin is in plain view and light) to 1 a few centimetres in.
+    pub fn under(&self, p: Vec3) -> f32 {
+        self.inside(p, 0.003, 0.028)
+    }
+
+    /// The same between `from` and `to` metres behind the hairline.
+    pub fn inside(&self, p: Vec3, from: f32, to: f32) -> f32 {
+        smooth(from, to, p.y - hairline(p, self.recede)) * self.grows(p) * self.full
+    }
+
     /// The length in metres to which hair is cut where it grows at, or lies
     /// over, `p`.
     fn length(&self, p: Vec3, crown: f32) -> f32 {
@@ -560,7 +571,10 @@ fn grow(root: Vec3, normal: Vec3, cut: Cut, skull: &Skull, id: u32) -> [Vec3; PO
     // they fill the mass with coils from the scalp to its surface.
     let shell = SHELL * loose;
     if cut.coil > 0.5 && along > shell {
-        let start = (along - shell) * roll(19).powf(0.85);
+        // At the edge of the hair nothing stands in front of the roots:
+        // there every strand is drawn from the skin.
+        let inside = smooth(0.002, 0.022, root.y - hairline(root, cut.recede));
+        let start = (along - shell) * roll(19).powf(0.85) * inside;
         let from = laid.iter().position(|&a| a >= start).unwrap_or(0);
         let to = laid.iter().position(|&a| a > start + shell).unwrap_or(path.len());
         path.truncate(to.max(from + 2).min(path.len()));
