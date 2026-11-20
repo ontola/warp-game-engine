@@ -1,99 +1,135 @@
--- The same physical pad and paper map appear on either side of the atlas.
+-- Pocket-chart illustrations, printed on a two-pixel grid in room coordinates.
 local M={}
-local ink,edge,paper="#16303c","#527178","#fff0c6"
+local ink,paper,tide="#37565a","#f4e6c5","#84aaa5"
 
-local function controller(box,x,y,face)
-    local body,shade,well="#c6d5c9","#91aca7","#25404a"
-    -- Shoulder caps, two angled grips and the central cutout form the silhouette.
-    box(x+9,y+2,13,4,shade)
-    box(x+37,y+2,13,4,shade)
-    box(x+9,y+5,41,23,body)
-    box(x+6,y+8,47,17,body)
-    for i=0,3 do
-        local h=16-i*2
-        box(x+6-i*2,y+17+i*3,h,6,body)
-        box(x+53+i*2-h,y+17+i*3,h,6,body)
+-- Coastline, a small compass rose, and a sounding route across the folded sheet.
+local coastline={
+    "........................", "........................",
+    "...c..............:::~~~", "...c............::~~~~~~",
+    ".ccccc...........:~~o~~~", "...c.............:~~~~~~",
+    "...c..........::::~~~~~~", "...........:::~~~~o~~~~~",
+    "..........:~~~~~~~~~~~:.", "....::::..:~~~~~o~~~~:..",
+    "...:~~~~::~~~~~~~~~~:...", "...:~~~~~~~~o~~~~~::....",
+    ".::~~~~~o~~~~~~~::......", ".:~~~~~~~~~~~:::........",
+    "........................", "........................",
+}
+local folds={3,3,2,2,1,1,0,0, 0,0,1,1,2,2,3,3, 3,3,2,2,1,1,0,0}
+local paperInks={
+    {["."]="#fff0ca",["~"]="#91c0b7",[":"]="#6c9d93",o="#976544",c="#73948c"},
+    {["."]="#d7c9a5",["~"]="#70a298",[":"]="#578279",o="#825438",c="#668c82"},
+    {["."]="#f1e4be",["~"]="#88b8ad",[":"]="#68998f",o="#976544",c="#73948c"},
+}
+
+-- Collapse neighboring pixels into an ink run. All drawing below uses flat ink.
+local function printRuns(rows)
+    local runs={}
+    for y,row in rows do
+        local x=1
+        while x<=#row do
+            local c=row[x]
+            local right=x+1
+            while right<=#row and row[right]==c do right+=1 end
+            if c then table.insert(runs,{x-1,y-1,right-x,c}) end
+            x=right
+        end
     end
-    box(x+1,y+31,10,3,shade)
-    box(x+49,y+31,10,3,shade)
-    box(x+19,y+24,21,4,shade)
-    -- The D-pad sits on the left. Two low thumbsticks anchor the orientation.
-    box(x+13,y+10,5,13,well)
-    box(x+9,y+14,13,5,well)
-    for _,sx in {22,31} do
-        box(x+sx,y+22,5,2,shade)
-        box(x+sx-1,y+24,7,3,well)
-        box(x+sx,y+27,5,2,well)
+    return runs
+end
+
+local function printChart()
+    local rows={}
+    -- False is unprinted paper outside the silhouette, and keeps each row dense.
+    for y=1,21 do rows[y]=table.create(26,false) end
+    for x,offset in folds do
+        for y=0,17 do
+            rows[y+offset+1][x]=ink
+            rows[y+offset+1][x+2]=ink
+        end
     end
-    box(x+24,y+12,4,2,shade)
-    box(x+31,y+12,4,2,shade)
-    local positions={{44,10},{50,16},{44,22},{38,16}}
-    for i,p in positions do
-        local cx,cy=x+p[1],y+p[2]
+    for x,offset in folds do
+        local palette=paperInks[math.ceil(x/8)]
+        for y=1,#coastline do
+            rows[y+offset+1][x+1]=palette[coastline[y]:sub(x,x)]
+        end
+    end
+    return printRuns(rows)
+end
+local chart=printChart()
+
+local function foldedChart(box,x,y,open)
+    if open<=0 then return end
+    local width=2*(0.32+open*0.68)
+    local right=x+52
+    y-=math.floor(63*(1-open))
+    for _,r in chart do
+        local left=math.floor(right+(r[1]-26)*width)
+        local edge=math.floor(right+(r[1]+r[3]-26)*width)
+        if edge>left then box(left,y+r[2]*2,edge-left,2,r[4]) end
+    end
+end
+
+-- An outline controller with a D-pad and four face buttons, engraved in two inks.
+-- The active button has a paper collar so it also reads on a dark district sky.
+local function gesture(box,x,y,face,reveal)
+    if reveal<=0 then return end
+    local alpha=string.format("%02x",math.floor(reveal*255+0.5))
+    local outline,fill=ink..alpha,paper..alpha
+    local function r(dx,dy,w,h,c) box(x+dx,y+dy,w,h,c) end
+    r(6,2,31,16,outline)
+    r(3,5,37,13,outline)
+    r(1,10,12,12,outline)
+    r(30,10,12,12,outline)
+    r(1,20,8,4,outline)
+    r(34,20,8,4,outline)
+    r(6,5,31,10,fill)
+    r(4,9,9,9,fill)
+    r(31,9,8,9,fill)
+    r(3,16,6,5,fill)
+    r(35,16,5,5,fill)
+    r(11,6,3,9,outline)
+    r(8,9,9,3,outline)
+    for i,p in {{31,6},{35,10},{31,14},{27,10}} do
         if i==face then
-            box(cx-3,cy-5,6,10,ink)
-            box(cx-5,cy-3,10,6,ink)
-            local c=if face==1 then "#ffd258" elseif face==3 then "#84e1a3" else "#85cef1"
-            box(cx-3,cy-4,6,8,c)
-            box(cx-4,cy-3,8,6,c)
-            box(cx-2,cy-3,3,2,paper)
+            r(p[1]-3,p[2]-3,6,6,outline)
+            r(p[1]-2,p[2]-2,4,4,(if i==1 then "#edb85f" elseif i==3 then "#76bfa6" else "#79b3c8")..alpha)
         else
-            box(cx-2,cy-2,5,5,well)
+            r(p[1]-1,p[2]-1,3,3,outline)
         end
     end
 end
 
-local function foldedMap(box,x,y,close)
-    -- Unequal ridges make the concertina recognizable even in monochrome.
-    local facets={paper,"#a6c7bb","#f1dca4"}
-    for i=0,8 do
-        local fold=math.floor(i/3)+1
-        local rise=if fold==2 then 2-i%3 else i%3
-        local xx,yy=x+4*i,y+4-2*rise
-        box(xx,yy,4,27,facets[fold])
-    end
-    box(x+4,y+16,7,3,"#678f8e")
-    box(x+9,y+18,5,3,"#678f8e")
-    box(x+15,y+17,5,3,"#678f8e")
-    -- A red pin with a punched centre and a tapered tip.
-    box(x+20,y+2,9,2,ink)
-    box(x+18,y+4,13,8,ink)
-    box(x+20,y+12,9,3,ink)
-    box(x+22,y+15,5,3,ink)
-    box(x+24,y+18,2,2,ink)
-    box(x+21,y+4,7,8,"#e87856")
-    box(x+20,y+6,9,4,"#e87856")
-    box(x+23,y+12,3,3,"#e87856")
-    box(x+23,y+6,3,3,paper)
-    if close then
-        box(x+27,y+20,14,13,ink)
-        for i=0,2 do
-            box(x+30+i*3,y+22+i*3,3,3,paper)
-            box(x+36-i*3,y+22+i*3,3,3,paper)
-        end
-    end
+local function note(box,x,y)
+    box(x+2,y,30,20,ink)
+    box(x,y+2,34,16,ink)
+    box(x+5,y+18,7,6,ink)
+    box(x+3,y+3,28,13,paper)
+    box(x+7,y+15,4,5,paper)
+    box(x+10,y+8,3,3,tide)
+    box(x+16,y+8,3,3,tide)
+    box(x+22,y+8,3,3,tide)
 end
 
-function M.draw(box,x,y,action)
-    box(x+4,y,119,47,ink)
-    box(x,y+4,127,39,ink)
-    box(x+4,y+44,119,3,edge)
-    local face=if action=="feedback" then 4 elseif action=="play" then 3 else 1
-    controller(box,x+6,y+5,face)
-    for n=0,2 do
-        box(x+69+n*2,y+18+n*2,3,3,"#8baaa6")
-        box(x+69+n*2,y+26-n*2,3,3,"#8baaa6")
-    end
-    if action=="feedback" then
-        box(x+85,y+9,31,21,paper)
-        box(x+89,y+29,9,4,paper)
-        box(x+89,y+32,5,3,paper)
-        box(x+94,y+14,4,11,ink)
-        box(x+102,y+14,4,11,ink)
-    elseif action=="play" then
-        for i=0,5 do box(x+91+i*4,y+10+i*2,4,24-i*4,paper) end
+function M.corner(box,s)
+    local reviewing=s.review~=nil
+    local rest=s.promptRest or 0
+    local reveal=math.clamp((rest-1)/0.4,0,1)
+    if s.atlasSeen and not reviewing then reveal=0 end
+    if reviewing and s.review.held then reveal=1 end
+    local button=if reviewing then 4 else 1
+    local shift=math.floor(8*(1-reveal)+0.5)
+    gesture(box,1074+shift,31,button,reveal)
+    if reviewing then
+        note(box,1137,28)
     else
-        foldedMap(box,x+82,y+8,action=="close")
+        local k=math.clamp((rest-0.15)/0.55,0,1)
+        foldedChart(box,1129,18,k*k*(3-2*k))
     end
+end
+
+function M.atlas(box)
+    gesture(box,30,595,3,1)
+    for i=0,4 do box(85+i*3,598+i*2,3,20-i*4,paper) end
+    gesture(box,1074,595,1,1)
+    foldedChart(box,1129,586,1)
 end
 return M

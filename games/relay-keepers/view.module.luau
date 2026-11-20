@@ -24,7 +24,9 @@ local function draw(rooms,s)
     if s.mapRoom then atlasmap.draw(box,rooms,s) return end
     coast.draw(box,l,s)
     tidepool.draw(box,xy,l,s)
-    prompts.draw(box,1053,14,if s.review then "feedback" else "map")
+    if s.crew[1].id~=0 and s.crew[2].id~=0 and (s.phase=="play" or s.review) then
+        prompts.corner(box,s)
+    end
     decks.draw(box,xy,l,s)
     if s.ferry then
         local f,spec=s.ferry,l.ferry

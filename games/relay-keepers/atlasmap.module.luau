@@ -182,8 +182,7 @@ function M.draw(box,rooms,s)
         box(x-3,607,7,8,c)
         if row==focus then box(x-5,617,11,2,ivory) end
     end
-    prompts.draw(box,22,584,"play")
-    prompts.draw(box,1053,584,"close")
+    prompts.atlas(box)
     shoulders(box,left-46,603,true,s.mapRoom>1)
     shoulders(box,left+width+46,603,false,s.mapRoom<count)
 end

@@ -1,7 +1,11 @@
 {
   "size": [960,540],
   "steps": [
-    {"press":["Y"]}, {"expect":"/state/mapRoom","equals":1},
+    {"player":1,"mv":[1,0],"ticks":20}, {"expect":"/state/promptRest","equals":0},
+    {"ticks":95}, {"expect":"/state/promptRest","min":1.39},
+    {"expect":"/state/atlasSeen","equals":false},
+    {"player":1,"press":["Y"]}, {"expect":"/state/mapRoom","equals":1},
+    {"expect":"/state/atlasSeen","equals":true},
     {"press":["Down"]}, {"ticks":1}, {"press":["Down"]},
     {"expect":"/state/mapRoom","equals":15},
     {"capture":"district-map.png"},

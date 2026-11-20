@@ -36,6 +36,7 @@ local function enter(n)
         state.falls=0
     end
     state.room,state.phase,state.delay=n,"play",0
+    state.promptRest=0.7
     state.key,state.owner,state.latch,state.past=false,0,false,true
     state.clockHeld,state.pad,state.open,state.timer=false,false,false,0
     state.crate=l.crate and l.crate[1] or nil
@@ -54,6 +55,7 @@ end
 local function init()
     state.crew={{id=0},{id=0}}
     state.mapRoom=nil
+    state.atlasSeen=false
     state.review=nil
     state.time,state.falls=0,0
     roster()
@@ -220,6 +222,7 @@ local function mapInput(inputs,dt)
         if p.pressed.north then
             state.mapRoom=if state.mapRoom then nil else state.room
             state.mapRepeat=0
+            state.atlasSeen=true
             return true
         end
     end
@@ -279,6 +282,17 @@ local function tick(dt,inputs)
         return
     end
     local l=rooms[state.room]
+    local still=true
+    for _,r in state.crew do
+        local p=inputs[r.id]
+        if not r.on or math.abs(p.move_x or 0)>0.15 or math.abs(p.move_y or 0)>0.15
+            or p.held.left or p.held.right or p.held.down or p.pressed.south then
+            still=false
+            break
+        end
+    end
+    local rest=state.promptRest or 0
+    state.promptRest=math.clamp(rest+(if still then dt else -dt*5),0,1.4)
     for k,age in state.glass do state.glass[k]=if age+dt<2.6 then age+dt else nil end
     if state.crabs then shells.step(l,state,dt) end
     if l.water then tidepool.step(l.water,state.water,state.crew,dt) end
