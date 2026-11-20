@@ -189,6 +189,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
 - [Warp Humans haircuts instead of lengths, 18 November](2026-11-18-warp-humans-haircuts.md)
 - [Warp Humans middle age and old age, 19 November](2026-11-19-warp-humans-ageing.md)
 - [Warp Humans shine through an afro, 20 November](2026-11-20-warp-humans-scalp-shine.md)
+- [Warp Humans hair shadow, 20 November](2026-11-20-warp-humans-hair-shadow.md)
 - [GPU particles first pass, 8 November](2026-11-08-gpu-particles.md)
 - [Baked smoke scalability baseline, 31 October](baked-smoke-scaling.md)
 - [Growing Guns crowd silhouettes, 29 October](growing-guns-crowd.md)

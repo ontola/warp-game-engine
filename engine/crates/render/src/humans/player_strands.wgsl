@@ -45,15 +45,37 @@ fn affine(r:Rows,p:vec4<f32>)->vec4<f32> {
     let world=affine(owner.r,affine(bones[g.info.y],g.fit*vec4<f32>(0.,.94,0.,1.)));
     let clip=cam.vp*world;
     var count=0u;
-    if owner.count>0u && (owner.flags & (256u<<cam.slot))==0u && clip.w>.08 && all(abs(clip.xy)<vec2<f32>(clip.w+.45)) {
+    // A sun map (slot 16 and up) takes every head in it, also one hidden
+    // from its own player's view.
+    let sun=cam.slot>=16u;
+    if owner.count>0u && (sun || (owner.flags & (256u<<cam.slot))==0u) && clip.w>.08 && all(abs(clip.xy)<vec2<f32>(clip.w+.45)) {
         let head_pixels=.24*cam.focal/clip.w;
         let close_bob=select(0.,10240.*smoothstep(130.,280.,head_pixels),g.info.z==1u);
         count=u32(6144.*smoothstep(24.,142.,head_pixels)+close_bob);
         // Grown hair has no groom mesh under it: every strand it has, from
         // as far as a head is a few pixels.
         if g.info.z==3u {count=u32(g.weights.x*smoothstep(4.,40.,head_pixels));}
+        // Only grown hair casts its strands (the others have a groom mesh
+        // that does): a share of them, drawn a texel wide.
+        if sun {count=select(0u,u32(g.weights.x*SUN_SHARE*smoothstep(4.,40.,head_pixels)),g.info.z==3u);}
     }
     arguments[i]=vec4<u32>(count*54u,1u,i*VERTICES_PER_HEAD,0u);
+}
+// The share of a head's strands that cast into a sun map.
+const SUN_SHARE:f32=.25;
+// Into a sun map (cam.vp its projection, cam.focal its texels per metre):
+// a ribbon across the sun's direction, at least a texel wide, so a strand
+// far thinner than a texel still lands in the map.
+@vertex fn strand_shadow(@builtin(vertex_index) id:u32)->@builtin(position) vec4<f32> {
+    let g=heads[id/VERTICES_PER_HEAD]; let r=owners[g.info.x].r; let b=bones[g.info.y];
+    let f=grown_fibre(id%VERTICES_PER_HEAD,g.info.w,g.weights.y);
+    let world=affine(r,affine(b,g.fit*vec4<f32>(f.p,1.)));
+    let tangent=affine(r,affine(b,g.fit*vec4<f32>(f.tangent,0.))).xyz;
+    let towards=vec3<f32>(cam.vp[0].z,cam.vp[1].z,cam.vp[2].z);
+    let projected=cross(towards,tangent);
+    let across=projected*inverseSqrt(max(dot(projected,projected),1.e-12));
+    let radius=max(f.radius*length(g.fit[1].xyz),.5/cam.focal)*step(1.e-6,dot(tangent,tangent));
+    return cam.vp*vec4<f32>(world.xyz+across*(f.side*radius),1.);
 }
 struct StrandOut { @builtin(position) clip:vec4<f32>, @location(0) world:vec3<f32>, @location(1) normal:vec3<f32>, @location(2) color:vec3<f32>, @location(3) tangent:vec3<f32>, @location(4) edge:vec2<f32> }
 @vertex fn player_strand(@builtin(vertex_index) id:u32)->StrandOut {

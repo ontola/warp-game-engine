@@ -5652,6 +5652,15 @@ impl Renderer {
                     if let Some((forest,_))=&self.gpu_forest {enc.copy_buffer_to_buffer(&forest.choices,forest.choice_table_bytes(),&targets.foliage_selection,0,forest.choice_table_bytes());}
                     let label = if k == 0 { "near shadow cull" } else { "sun clipmap cull" };
                     self.cull_and_raster_pass(&mut enc, gpu, targets, None, &texture_view, &mut ts, &mut names, label,RasterPass::Sun,None,false,level_damage.as_ref(),None);
+                    // Grown hair casts its strands into the levels fine
+                    // enough to hold them (texels up to 1.2 cm).
+                    if let Some(hair) = self.hair.as_ref().filter(|_| extent <= 12.0) {
+                        let timer = self.query.as_ref().filter(|_| gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS))
+                            .map(|(qs,_,_)| { names.push("hair sun shadow"); (qs,timestamp_pair(&mut ts)) });
+                        if let Some((qs,i))=timer { enc.write_timestamp(qs,i); }
+                        hair.lock().unwrap().cast(gpu,&mut enc,near_vp,NEAR_SHADOW_SIZE as f32 / (2.0 * extent),&texture_view);
+                        if let Some((qs,i))=timer { enc.write_timestamp(qs,i+1); }
+                    }
                     // Whole-plant proxies have no source to cast here.
                     if let Some(forest)=self.voxel_forest.as_ref().filter(|f|f.has_proxies()||voxel_casters) {
                         let times=(if k == 0 {["voxel near sun splats","voxel near sun splat raster"]} else {["voxel sun clipmap splats","voxel sun clipmap splat raster"]})

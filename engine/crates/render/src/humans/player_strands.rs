@@ -28,6 +28,8 @@ pub(crate) struct PlayerStrands {
     render: wgpu::RenderPipeline,
     cull_group: wgpu::BindGroup,
     draw_group: wgpu::BindGroup,
+    shadow: wgpu::RenderPipeline,
+    shadow_group: wgpu::BindGroup,
     atmosphere: BindGroups<8>,
     atmosphere_layout: wgpu::BindGroupLayout,
 }
@@ -154,6 +156,31 @@ impl PlayerStrands {
                 multiview_mask: None,
                 cache: gpu.pipeline_cache(),
             });
+        let shadow = gpu
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("hair fibres into a sun map"),
+                layout: None,
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("strand_shadow"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                primitive: Default::default(),
+                multisample: Default::default(),
+                // As the shadow raster (frame.rs raster_pipe).
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    depth_write_enabled: Some(true),
+                    stencil: Default::default(),
+                    bias: wgpu::DepthBiasState { constant: 2, slope_scale: 2.0, clamp: 0.0 },
+                }),
+                fragment: None,
+                multiview_mask: None,
+                cache: gpu.pipeline_cache(),
+            });
         let group = |layout: &wgpu::BindGroupLayout, last, storage: &wgpu::Buffer| {
             let entries = [
                 (0, &camera),
@@ -182,6 +209,15 @@ impl PlayerStrands {
                 entries: &entries,
             })
         };
+        let shadow_group = {
+            let entries = [(0, &camera), (1, &heads), (2, owners), (3, palette), (9, &grown)]
+                .map(|(binding, b)| wgpu::BindGroupEntry { binding, resource: b.as_entire_binding() });
+            gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("hair shadow sources"),
+                layout: &shadow.get_bind_group_layout(0),
+                entries: &entries,
+            })
+        };
         let atmosphere_layout = render.get_bind_group_layout(1);
         Self {
             camera,
@@ -189,11 +225,58 @@ impl PlayerStrands {
             count,
             select,
             render,
+            shadow,
             cull_group,
             draw_group,
+            shadow_group,
             atmosphere: Default::default(),
             atmosphere_layout,
         }
+    }
+
+    /// Casts grown hair into a sun map: `vp` its projection, `texels` per
+    /// metre. A quarter of the strands (the shader's SUN_SHARE), a texel wide.
+    pub(crate) fn cast(&self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vp: Mat4, texels: f32, depth: &wgpu::TextureView) {
+        self.choose(gpu, enc, vp, texels, 16, 0.);
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("hair sun shadow"),
+            color_attachments: &[],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth,
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.shadow);
+        pass.set_bind_group(0, &self.shadow_group, &[]);
+        for i in 0..self.count {
+            pass.draw_indirect(&self.commands, u64::from(i) * 16);
+        }
+    }
+
+    /// How many strands of each head this view draws.
+    fn choose(&self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vp: Mat4, focal: f32, slot: usize, time: f32) {
+        let mut words = [0u32; 20];
+        words[..16].copy_from_slice(bytemuck::cast_slice(&vp.to_cols_array()));
+        words[16..].copy_from_slice(&[focal.to_bits(), slot as u32, time.to_bits(), self.count]);
+        let cam = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("hair view"),
+                contents: bytemuck::cast_slice(&words),
+                usage: wgpu::BufferUsages::COPY_SRC,
+            });
+        enc.copy_buffer_to_buffer(&cam, 0, &self.camera, 0, 80);
+        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("strand density"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&self.select);
+        pass.set_bind_group(0, &self.cull_group, &[]);
+        pass.dispatch_workgroups(self.count.div_ceil(32), 1, 1);
     }
 
     pub(crate) fn draw(
@@ -208,26 +291,7 @@ impl PlayerStrands {
         color: &wgpu::TextureView,
         depth: &wgpu::TextureView,
     ) {
-        let mut words = [0u32; 20];
-        words[..16].copy_from_slice(bytemuck::cast_slice(&vp.to_cols_array()));
-        words[16..].copy_from_slice(&[focal.to_bits(), slot as u32, time.to_bits(), self.count]);
-        let cam = gpu
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("hair view"),
-                contents: bytemuck::cast_slice(&words),
-                usage: wgpu::BufferUsages::COPY_SRC,
-            });
-        enc.copy_buffer_to_buffer(&cam, 0, &self.camera, 0, 80);
-        {
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("strand density"),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&self.select);
-            pass.set_bind_group(0, &self.cull_group, &[]);
-            pass.dispatch_workgroups(self.count.div_ceil(32), 1, 1);
-        }
+        self.choose(gpu, enc, vp, focal, slot, time);
         let atmosphere =
             self.atmosphere
                 .get(gpu, &self.atmosphere_layout, "strand lighting", bindings);
