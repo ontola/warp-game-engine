@@ -46,6 +46,24 @@ jobs:
           ./build/hello-warp/warp.exe check build/hello-warp/game --ticks 600
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Compress-Archive -Path build/hello-warp/* -DestinationPath build/hello-warp-windows.zip
+      - name: Package Dead Miles and Relay Keepers
+        run: |
+          foreach ($game in 'dead-miles','relay-keepers') {
+            ./engine/crates/warp/tools/package-windows.ps1 -Game games/$game -Executable target/release/warp.exe -OutDirectory build/$game
+            ./build/$game/warp.exe check build/$game/game --ticks 600
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Compress-Archive -Path build/$game/* -DestinationPath build/$game-windows.zip
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dead-miles-windows
+          path: build/dead-miles-windows.zip
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: relay-keepers-windows
+          path: build/relay-keepers-windows.zip
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: hello-warp-windows

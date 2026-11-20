@@ -36,3 +36,51 @@ jobs:
       game: hello-warp
       file: hello-warp-windows.zip
       entrypoint: warp.exe
+  # Dead Miles and Relay Keepers (Luau games: warp.exe with the game folder)
+  # go straight to stable, so they are in the store: every green main build
+  # first refreshes the store page from games/GAME/gamenight.json and
+  # games/GAME/assets/gamenight, then uploads the package. Each needs its own
+  # publish key, in GAMENIGHT_API_TOKEN_DEAD_MILES and
+  # GAMENIGHT_API_TOKEN_RELAY_KEEPERS; a game without its key is skipped.
+  luau-store:
+    if: github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository && github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        game: [dead-miles, relay-keepers]
+    concurrency:
+      group: splitscreen-club-store-${{ matrix.game }}
+      cancel-in-progress: false
+    env:
+      GAMENIGHT_API_TOKEN: ${{ matrix.game == 'dead-miles' && secrets.GAMENIGHT_API_TOKEN_DEAD_MILES || secrets.GAMENIGHT_API_TOKEN_RELAY_KEEPERS }}
+    steps:
+      - name: Skip without a publish key
+        id: key
+        run: echo "present=$([ -n "$GAMENIGHT_API_TOKEN" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - if: steps.key.outputs.present == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          sparse-checkout: games/${{ matrix.game }}
+      - if: steps.key.outputs.present == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ontola/gamepad-party
+          ref: b7a7a797f0f5981b41127dd94a91f68c4ddfb53c
+          path: .publish
+          sparse-checkout: scripts/gamenight-publish.py
+          sparse-checkout-cone-mode: false
+      - if: steps.key.outputs.present == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.game }}-windows
+          path: package
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - if: steps.key.outputs.present == 'true'
+        name: Store page, then the build to stable
+        working-directory: games/${{ matrix.game }}
+        run: |
+          python3 "$GITHUB_WORKSPACE/.publish/scripts/gamenight-publish.py" store
+          python3 "$GITHUB_WORKSPACE/.publish/scripts/gamenight-publish.py" push --game ${{ matrix.game }} --file "$GITHUB_WORKSPACE/package/${{ matrix.game }}-windows.zip" --platform windows --entrypoint warp.exe --version "ci-${{ github.event.workflow_run.head_sha }}-${{ github.event.workflow_run.run_attempt }}" --channel stable
