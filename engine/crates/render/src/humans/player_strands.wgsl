@@ -12,9 +12,9 @@ struct HairView { vp:mat4x4<f32>, focal:f32, slot:u32, clock:f32, heads:u32 }
 @group(0) @binding(4) var<storage,read_write> arguments:array<vec4<u32>>;
 // Grown hair (assets warp_hair): ten points per strand, [x, y, z, shade] in
 // the groom's fit space. A groom of style 3 draws these; info.w is its first
-// strand, weights.x how many it has.
+// strand, weights.x how many it has, weights.y how wide they are drawn.
 @group(0) @binding(9) var<storage,read> grown:array<vec4<f32>>;
-fn grown_fibre(vid:u32,first:u32)->Fibre {
+fn grown_fibre(vid:u32,first:u32,width:f32)->Fibre {
     let corner=vid%6u;
     let upper=corner==1u || corner==4u || corner==5u;
     let side=select(-1.,1.,corner==2u || corner==3u || corner==5u);
@@ -28,7 +28,7 @@ fn grown_fibre(vid:u32,first:u32)->Fibre {
     // Lit as part of a rounded head of hair, not as a lone cylinder.
     let normal=normalize(at.xyz-vec3<f32>(0.,.925,-.008));
     let t=f32(k)/9.;
-    let radius=mix(.00013,.00024,strand_hash(base))*(1.-.85*t*t*t*t);
+    let radius=mix(.00013,.00024,strand_hash(base))*(1.-.85*t*t*t*t)*width;
     return Fibre(at.xyz,normal,cross(tangent,normal),tangent,at.w,side,radius);
 }
 @group(1) @binding(0) var<uniform> view:View;
@@ -59,7 +59,7 @@ struct StrandOut { @builtin(position) clip:vec4<f32>, @location(0) world:vec3<f3
 @vertex fn player_strand(@builtin(vertex_index) id:u32)->StrandOut {
     let g=heads[id/VERTICES_PER_HEAD]; let r=owners[g.info.x].r; let b=bones[g.info.y];
     var f:Fibre;
-    if g.info.z==3u {f=grown_fibre(id%VERTICES_PER_HEAD,g.info.w);}
+    if g.info.z==3u {f=grown_fibre(id%VERTICES_PER_HEAD,g.info.w,g.weights.y);}
     else {f=grow_strand(id%VERTICES_PER_HEAD,g.info.z,g.info.w,g.weights,cam.clock);}
     let world=affine(r,affine(b,g.fit*vec4<f32>(f.p,1.)));
     let normal=normalize(affine(r,affine(b,g.fit*vec4<f32>(f.normal,0.))).xyz);

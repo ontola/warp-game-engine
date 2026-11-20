@@ -22,6 +22,8 @@ pub(super) struct FaceRig {
     scale: Vec3,
     phase: f32,
     pub(super) groom: render::humans::Groom,
+    /// How wide the grown strands are drawn, in strand widths.
+    pub(super) width: f32,
 }
 
 const LID_RANGE: f32 = 0.016;
@@ -312,7 +314,7 @@ impl Character {
             };
             // Hair grown from the seed out of this person's own scalp.
             let strands = std::sync::Arc::new(warp_hair::strands(&body, &indices, eye_midpoint(&body), skull, cut));
-            FaceRig { strands, first, head, eyes, scale, phase: person.face_phase(), groom }
+            FaceRig { strands, first, head, eyes, scale, phase: person.face_phase(), groom, width: cut.width() }
         });
         let skin = |v: &BodyVertex| {
             let p = v.position;

@@ -864,6 +864,7 @@ impl Character {
                 groom.info[2] = 3;
                 groom.info[3] = (scene.hair_strands.len() / warp_hair::POINTS) as u32;
                 groom.weights[0] = (face.strands.len() / warp_hair::POINTS) as f32;
+                groom.weights[1] = face.width;
                 scene.hair_strands.extend_from_slice(&face.strands);
             }
             scene.hair_grooms.push((actor, face.head, groom));
