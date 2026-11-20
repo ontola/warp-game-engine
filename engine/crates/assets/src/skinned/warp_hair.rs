@@ -237,6 +237,13 @@ impl Cut {
         }
     }
 
+    /// How wide a strand is drawn, in widths of a strand of straight hair:
+    /// coiled hair stands apart, so the same strands have more room to fill
+    /// and each stands for more hairs.
+    pub fn width(&self) -> f32 {
+        1. + 0.8 * self.coil
+    }
+
     /// How thickly this person's hair grows at `p`, 0 to 1.
     pub fn grows(&self, p: Vec3) -> f32 {
         let crown = Vec3::new(0., 0.118, -0.125);
@@ -460,9 +467,11 @@ fn grow(root: Vec3, normal: Vec3, cut: Cut, skull: &Skull, id: u32) -> [Vec3; PO
     // The strand is laid in steps much shorter than its segments.
     let pace = (length / 18.).clamp(0.0008, 0.005 - 0.004 * cut.coil);
     // A coil: the strand winds round its own line.
+    // Grown long, the coils are larger and looser.
+    let loose = (length / 0.03).clamp(1., 1.6);
     let spiral = (
-        (0.0020 + 0.0012 * of_tuft(4)) * (0.75 + 0.25 * roll(13)),
-        std::f32::consts::TAU / (0.0065 + 0.004 * of_tuft(5)) * if tuft & 1 == 0 { 1. } else { -1. },
+        (0.0020 + 0.0012 * of_tuft(4)) * (0.75 + 0.25 * roll(13)) * loose,
+        std::f32::consts::TAU / ((0.0065 + 0.004 * of_tuft(5)) * loose) * if tuft & 1 == 0 { 1. } else { -1. },
         std::f32::consts::TAU * of_tuft(6) + 0.8 * (roll(17) - 0.5),
     );
     // Every coiled hair also kinks its own way as it grows, so a mass of
@@ -549,10 +558,11 @@ fn grow(root: Vec3, normal: Vec3, cut: Cut, skull: &Skull, id: u32) -> [Vec3; PO
     // hair longer than that each strand is drawn over one such stretch,
     // every strand at its own depth, more of them further out: together
     // they fill the mass with coils from the scalp to its surface.
-    if cut.coil > 0.5 && along > SHELL {
-        let start = (along - SHELL) * roll(19).powf(0.85);
+    let shell = SHELL * loose;
+    if cut.coil > 0.5 && along > shell {
+        let start = (along - shell) * roll(19).powf(0.85);
         let from = laid.iter().position(|&a| a >= start).unwrap_or(0);
-        let to = laid.iter().position(|&a| a > start + SHELL).unwrap_or(path.len());
+        let to = laid.iter().position(|&a| a > start + shell).unwrap_or(path.len());
         path.truncate(to.max(from + 2).min(path.len()));
         path.drain(..from.min(path.len() - 2));
     }
@@ -754,5 +764,37 @@ mod tests {
         // pushed out of the neck or an ear in one step did).
         let longest = hair.chunks_exact(POINTS).flat_map(|s| (1..POINTS).map(move |k| metres(s, eyes, k).distance(metres(s, eyes, k - 1)))).fold(0f32, f32::max);
         assert!(longest < 0.012, "a segment of {longest} m");
+    }
+    /// Coiled hair hides the head under it: seen from behind, the drawn
+    /// strands lie several deep (at two deep the scalp showed through).
+    #[test]
+    fn coiled_hair_covers_the_head() {
+        let (body, indices, eyes) = person(7);
+        for style in [Style::Afro, Style::Crop] {
+            let cut = Cut { coil: 1., ..Cut::new(9, 0.2, 30.) };
+            let cut = Cut { top: Cut::styled(9, style).top * if style == Style::Crop { 0.55 } else { 1. }, taper: Cut::styled(9, style).taper, band: Cut::styled(9, style).band, fade: Cut::styled(9, style).fade, ..cut };
+            let hair = strands(&body, &indices, eyes, 1., cut);
+            // Seen from behind: 0.2 mm cells, ribbons 0.37 mm wide.
+            const N: usize = 500;
+            let mut grid = vec![0f32; N * N];
+            for s in hair.chunks_exact(POINTS) {
+                for k in 1..POINTS {
+                    let (a, b) = (metres(s, eyes, k - 1), metres(s, eyes, k));
+                    if a.z > -0.09 { continue; }
+                    let n = (a.distance(b) / 0.0001).ceil().max(1.) as usize;
+                    let len = ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt();
+                    for i in 0..n {
+                        let p = a.lerp(b, (i as f32 + 0.5) / n as f32);
+                        let (x, y) = (((p.x + 0.05) / 0.0002) as isize, ((p.y + 0.02) / 0.0002) as isize);
+                        if x >= 0 && y >= 0 && (x as usize) < N && (y as usize) < N {
+                            grid[y as usize * N + x as usize] += len / n as f32 * 0.00037 * cut.width() / (0.0002 * 0.0002);
+                        }
+                    }
+                }
+            }
+            let depth: f32 = grid.iter().sum::<f32>() / (N * N) as f32;
+            let open: f32 = grid.iter().map(|d| (-d).exp()).sum::<f32>() / (N * N) as f32;
+            assert!(depth > 3. && open < 0.38, "{style:?}: {depth:.2} deep, {open:.2} open");
+        }
     }
 }
