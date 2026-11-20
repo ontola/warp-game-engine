@@ -23,7 +23,7 @@ One Rust workspace, with Cargo.toml and Cargo.lock at the repository root.
 | `engine/crates/assets` | Asset import for scenes. |
 | `engine/crates/architecture` | Buildings inside and out from glTF (AtomicBuildings, IFC via IfcConvert): room bake grid, room and outside shots. Guide `engine/docs/architecture.md`. |
 | `engine/crates/net` | Online play over iroh (QUIC). |
-| `engine/crates/gamenight` | Native Splitscreen Club client (party host, seats, wire contract). |
+| `engine/crates/splitscreen-club` | Native Splitscreen Club client (party host, seats, wire contract). |
 | `engine/crates/script` | Luau scripting host with hot reload. |
 | `engine/crates/live` | Live control of a running game over MCP. |
 | `engine/crates/warp` | The `warp` executable: runs games made only of Luau scripts, synth patches and assets. |

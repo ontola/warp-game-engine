@@ -3,14 +3,14 @@
 Register an already packaged Sideways build with an explicit developer preview profile.
 .DESCRIPTION
 Copies the reference playtest's graphics environment into this game's launch entry.
-It never builds, launches, stops, or contacts GameNight. Preview flags remain scoped
+It never builds, launches, stops, or contacts Splitscreen Club. Preview flags remain scoped
 to this registration; engine defaults and the calling process environment are unchanged.
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$PackageDirectory,
     [Parameter(Mandatory=$true)][string]$ReferencePlaytestManifest,
-    [string]$DataDirectory = (Join-Path $env:LOCALAPPDATA 'GameNight'),
+    [string]$DataDirectory = (Join-Path $env:LOCALAPPDATA 'Splitscreen Club'),
     [ValidateSet('dlss-performance', 'dlss-balanced', 'dlss-quality')][string]$Upscale = 'dlss-performance',
     [switch]$DebugUi,
     [switch]$ValidateOnly
@@ -153,5 +153,5 @@ if (-not $ValidateOnly -and $changed) {
     package_sha256 = $actualHash; reference_playtest = $referencePath
     reference_sha256 = (Get-FileHash -LiteralPath $referencePath -Algorithm SHA256).Hash.ToLowerInvariant()
     entry = [pscustomobject]$sidewaysEntry
-    scope = 'Registration only. No process launched or stopped; visible rendering requires a managed GameNight launch.'
+    scope = 'Registration only. No process launched or stopped; visible rendering requires a managed Splitscreen Club launch.'
 }

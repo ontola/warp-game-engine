@@ -2,7 +2,7 @@
 //! furniture lights that station's buttons where players see them, clicking
 //! a button does what that button does (anywhere else on the furniture is
 //! Y), the wheel browses the shelf or skips tracks, and Escape opens a Start
-//! menu of the room's own, from which GameNight can be quit.
+//! menu of the room's own, from which Splitscreen Club can be quit.
 
 use crate::host::Station;
 use crate::live::Lobby;

@@ -760,7 +760,7 @@ fn watch(gpu: &Gpu) -> Arc<std::sync::atomic::AtomicBool> {
     lost
 }
 
-/// Started by or pointed at a GameNight host (GAMENIGHT=1 or GAMENIGHT_ADDR).
+/// Started by or pointed at a Splitscreen Club host (GAMENIGHT=1 or GAMENIGHT_ADDR).
 fn under_host() -> bool {
     std::env::var("GAMENIGHT").as_deref() == Ok("1") || std::env::var("GAMENIGHT_ADDR").is_ok_and(|a| !a.is_empty())
 }
@@ -1048,7 +1048,7 @@ impl Shell<'_> {
             self.debug.refresh(self.game.debug(), self.cfg.max_render_height, self.fps, quality_label.as_deref());
             if let Some(a) = self.debug.tick(f64::from(dt), size) { self.game.debug_action(a); }
         }
-        // The hint is for a developer at a desk: never on a GameNight TV,
+        // The hint is for a developer at a desk: never on a Splitscreen Club TV,
         // nor once a controller is plugged in.
         if !self.debug.open() && !self.stats.open() && !self.devices.mouse_captured && self.cfg.keyboard && self.game.mouse_capture().is_none() && !under_host() && self.devices.pad_count() == 0 {
             let s = (size[1] as f32 / 1080.0).max(0.5);

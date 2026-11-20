@@ -42,7 +42,7 @@ impl Party {
         match Client::connect_from_env(game_id) {
             Ok(Some(client)) => Some(Party::new(client)),
             Ok(None) => None,
-            Err(e) => { eprintln!("gamenight: {e}"); None }
+            Err(e) => { eprintln!("splitscreen-club: {e}"); None }
         }
     }
 
@@ -88,7 +88,7 @@ impl Party {
     pub fn ready(&mut self) {
         let session = self.session.clone();
         let _ = self.client.notify_progress(&session, 100, "ready");
-        if let Err(e) = self.client.notify_ready(&session) { eprintln!("gamenight: {e}"); }
+        if let Err(e) = self.client.notify_ready(&session) { eprintln!("splitscreen-club: {e}"); }
     }
 
     /// The match is over (once per session).

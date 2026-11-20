@@ -311,7 +311,7 @@ and synthetic profiles. It checks two/four viewports, live profile changes,
 settings and Undo, overlay pause/resume, seat re-preparation and the SDK6 action:
 
 ```powershell
-python games/spaceracer/tools/test-gamenight.py --daemon PATH/TO/gamenight-daemon.exe --game build/spaceracer-native/spaceracer.exe --out build/NEW-test-directory
+python games/spaceracer/tools/test-splitscreen-club.py --daemon PATH/TO/gamenight-daemon.exe --game build/spaceracer-native/spaceracer.exe --out build/NEW-test-directory
 ```
 
 The daemon must advertise SDK6 for the action check. The output directory must

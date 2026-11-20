@@ -18,7 +18,7 @@
 
 //! A game keeps its knobs in its mods folder (one or more files); the
 //! folder functions below list and set them across every file, so the live
-//! tools, a pause menu and GameNight settings all go through one path. See
+//! tools, a pause menu and Splitscreen Club settings all go through one path. See
 //! engine/docs/luau-or-rust.md, "Live reload".
 
 use std::path::{Path, PathBuf};

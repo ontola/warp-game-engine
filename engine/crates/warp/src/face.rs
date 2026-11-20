@@ -1,8 +1,8 @@
-//! A player's GameNight face for the HUD: the profile's pixel art (the
+//! A player's Splitscreen Club face for the HUD: the profile's pixel art (the
 //! `avatar` payload) over a round head in their skin colour, rimmed in their
-//! lobby colour, as `hud.face` draws it. Without art (or outside GameNight)
+//! lobby colour, as `hud.face` draws it. Without art (or outside Splitscreen Club)
 //! a plain head with two eyes and a mouth.
-use gamenight::artwork::{avatar, hex_color};
+use splitscreen_club::artwork::{avatar, hex_color};
 
 /// Square, `side` pixels a row, RGBA (alpha 0: nothing drawn).
 #[derive(Clone, Debug, PartialEq)]

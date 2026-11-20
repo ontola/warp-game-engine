@@ -23,7 +23,7 @@ impl RestAnchor {
     }
 }
 
-/// Both local pads and GameNight pass raw [-1,1] axes through this one radial
+/// Both local pads and Splitscreen Club pass raw [-1,1] axes through this one radial
 /// gate. Hysteresis prevents threshold noise from alternating orbit/recenter.
 pub fn orbit(yaw: f32, look: [f32; 2], dt: f32, active: &mut bool) -> f32 {
     let look = look.map(|v| if v.is_finite() { v.clamp(-1.0, 1.0) } else { 0.0 });

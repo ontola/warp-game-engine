@@ -377,7 +377,7 @@ return { init = init, tick = tick, players_changed = players_changed, player_joi
         }
     });
     let mut g = game(&dir);
-    let client = gamenight::Client::connect(gamenight::Config { url: format!("ws://{address}"), game_id: "party-test".into(), token: String::new(), launched_by_daemon: true }).unwrap();
+    let client = splitscreen_club::Client::connect(splitscreen_club::Config { url: format!("ws://{address}"), game_id: "party-test".into(), token: String::new(), launched_by_daemon: true }).unwrap();
     g.party = Some(warp::party::Party::new(client));
     let mut seen = Vec::new();
     let mut wait = |g: &mut LuaGame, what: &str, seen: &mut Vec<String>| {
@@ -741,10 +741,10 @@ fn save_slots_survive_restart_migration_conflicts_and_aborted_writes() {
 }
 
 #[test]
-fn gamenight_schema_validates_the_local_save_and_preserves_old_versions() {
+fn splitscreen_club_schema_validates_the_local_save_and_preserves_old_versions() {
     use warp::storage::{Location, Storage};
-    let dir = folder("gamenight-schema");
-    let user = folder("gamenight-schema-user");
+    let dir = folder("splitscreen-club-schema");
+    let user = folder("splitscreen-club-schema-user");
     let open = || Storage::open(&dir, "score", Location::Directory(&user)).unwrap();
     let current = dir.join("save-schema.json");
     let v1 = json!({"$schema":"https://json-schema.org/draft/2020-12/schema",

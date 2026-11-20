@@ -1,12 +1,12 @@
-//! GameNight, as main.gd's bridge: the host prepares a session with its
+//! Splitscreen Club, as main.gd's bridge: the host prepares a session with its
 //! seats, the game seats a wizard for each (couch seats are players, AI seats
 //! bots), starts a run, reports ready and waits frozen until `start`. The
 //! party's controllers drive the wizards; pause freezes them, dispose waits
 //! again. Names follow the lobby live, the party's settings set friendly
 //! fire, difficulty and unlocks, and a phone's "New run" starts one.
 use app::{Buttons, Controls};
-use gamenight::party::hex;
-use gamenight::{button, Command, Pad, Seat};
+use splitscreen_club::party::hex;
+use splitscreen_club::{button, Command, Pad, Seat};
 use serde_json::json;
 use std::time::Instant;
 
@@ -35,7 +35,7 @@ pub struct Seated {
 }
 
 pub struct Party {
-    host: gamenight::party::Party,
+    host: splitscreen_club::party::Party,
     triggers: Vec<u32>,
 }
 
@@ -47,10 +47,10 @@ impl Party {
     /// When launched by a party host (GAMENIGHT=1) or pointed at one
     /// (GAMENIGHT_ADDR).
     pub fn connect() -> Option<Party> {
-        gamenight::party::Party::connect(GAME_ID).map(Party::new)
+        splitscreen_club::party::Party::connect(GAME_ID).map(Party::new)
     }
 
-    pub fn new(host: gamenight::party::Party) -> Party {
+    pub fn new(host: splitscreen_club::party::Party) -> Party {
         Party { host, triggers: vec![] }
     }
 
@@ -98,29 +98,29 @@ impl Party {
                 match c {
                     Command::Connected => self.declare(),
                     Command::Prepare { session, seats } => {
-                        println!("[gamenight] prepare {session} ({} seats)", seats.len());
+                        println!("[splitscreen-club] prepare {session} ({} seats)", seats.len());
                         self.host.setting_up(&session);
                         out.push(Ev::Prepare(seated(&seats)));
                         self.host.prepare(session);
                     }
                     Command::Start { session } => {
                         if self.host.start(&session) {
-                            println!("[gamenight] start {session}");
+                            println!("[splitscreen-club] start {session}");
                         }
                     }
                     Command::Resume { session } => {
                         if self.host.resume(&session) {
-                            println!("[gamenight] resume {session}");
+                            println!("[splitscreen-club] resume {session}");
                         }
                     }
                     Command::Pause { session } => {
                         if self.host.pause(&session) {
-                            println!("[gamenight] pause {session}");
+                            println!("[splitscreen-club] pause {session}");
                         }
                     }
                     Command::Dispose { session } => {
                         if self.host.dispose(&session) {
-                            println!("[gamenight] dispose {session}");
+                            println!("[splitscreen-club] dispose {session}");
                             out.push(Ev::Dispose);
                         }
                     }
@@ -134,10 +134,10 @@ impl Party {
                     }
                     Command::Action { key, .. } if key == "new_run" => out.push(Ev::NewRun),
                     Command::Disconnected(e) => {
-                        app::startup::note(&format!("gamenight disconnected: {e}"));
+                        app::startup::note(&format!("splitscreen-club disconnected: {e}"));
                         self.host.disconnected();
                     }
-                    Command::Error(e) => eprintln!("gamenight: {e}"),
+                    Command::Error(e) => eprintln!("splitscreen-club: {e}"),
                     _ => {}
                 }
             }
@@ -221,7 +221,7 @@ pub fn to_controls(pad: &Pad, prev_triggers: u32, _dt: f32) -> Controls {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gamenight::Client;
+    use splitscreen_club::Client;
     use serde_json::Value;
 
     /// A fake party host on loopback: settings, prepare one couch seat and
@@ -255,8 +255,8 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
         });
-        let client = Client::connect(gamenight::Config { url: format!("ws://{address}"), game_id: GAME_ID.into(), token: String::new(), launched_by_daemon: true }).unwrap();
-        let mut party = Party::new(gamenight::party::Party::new(client));
+        let client = Client::connect(splitscreen_club::Config { url: format!("ws://{address}"), game_id: GAME_ID.into(), token: String::new(), launched_by_daemon: true }).unwrap();
+        let mut party = Party::new(splitscreen_club::party::Party::new(client));
         let deadline = Instant::now() + std::time::Duration::from_secs(5);
         let (mut prepared, mut setting, mut aimed) = (None, None, false);
         assert_eq!(party.screen(), app::Screen::Hidden);

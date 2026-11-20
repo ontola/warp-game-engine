@@ -1,4 +1,4 @@
--- GameNight declarations and validation are game policy, not engine code.
+-- Splitscreen Club declarations and validation are game policy, not engine code.
 -- When an edit applies: at the next start of the game (the settings list is read
 -- once); each setting's label says when its value applies (live or next race).
 local specs={

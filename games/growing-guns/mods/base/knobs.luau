@@ -1,6 +1,6 @@
 -- Live knobs: the match's feel in a few numbers, for whoever is playing
 -- (the `knobs` and `set_knob` live tools, the session assistant and the
--- GameNight app's settings change them). Each one multiplies what the
+-- Splitscreen Club app's settings change them). Each one multiplies what the
 -- cards give, for every player; 1 is the game as designed. A change saves
 -- this file, which hot-reloads and applies at once, mid-round too.
 

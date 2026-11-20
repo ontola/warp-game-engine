@@ -96,7 +96,7 @@ pub struct Hud {
     /// Display names: humans P1..P4, bots Godot-style ("Blitz Byte 23").
     pub names: Vec<String>,
     bots: Vec<bool>,
-    /// Names given from outside (a GameNight party's seats), by world player.
+    /// Names given from outside (a Splitscreen Club party's seats), by world player.
     given: Vec<Option<String>>,
     /// The lava leak was running last tick (its "LAVA LEAK" banner).
     lava_was: bool,
@@ -178,7 +178,7 @@ impl Hud {
     }
 
     /// Party names for the seated players: `names[k]` belongs to world
-    /// player `slots[k]` (GameNight's `Gg::names`); empty restores P1..P4.
+    /// player `slots[k]` (Splitscreen Club's `Gg::names`); empty restores P1..P4.
     pub fn set_names(&mut self, world: &World, slots: &[usize], names: &[String]) {
         let mut given = vec![None; world.players.len()];
         for (&s, n) in slots.iter().zip(names) { if let Some(g) = given.get_mut(s) && !n.trim().is_empty() { *g = Some(n.trim().to_string()); } }

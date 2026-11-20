@@ -9,7 +9,7 @@
 //! once, as Godot's field does. COPY puts the match ID on the clipboard.
 //! Splitscreen (`splitscreen_manager.gd`): the pause menu's SPLITSCREEN, the
 //! "PRESS X TO JOIN" prompt, the hint and the per-player PLAYER MENU are
-//! drawn here; play.rs seats the pads. Under GameNight the pause
+//! drawn here; play.rs seats the pads. Under Splitscreen Club the pause
 //! menu is Godot's `_build_gamenight_pause_menu`: a slab down the left with
 //! the logo, what is being played, and RESUME, NEW MATCH, the other mode,
 //! AI PLAYERS, ADVANCED (the party's match settings) and SETTINGS.
@@ -44,12 +44,12 @@ enum Item { Text(&'static str, C), Note(&'static str), Field(Field), Button(&'st
     Graphics,
     /// Bots: - count +, with this label on the left (empty: none).
     Bots(&'static str),
-    /// A GameNight setting slider (index into `Ctx::party`).
+    /// A Splitscreen Club setting slider (index into `Ctx::party`).
     Party(usize) }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Field { Ticket, Join, /** Settings: Player name. */ Name }
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Slider { Music, Mouse, Stick, /** One per GameNight seat ("Aim: NAME"). */ Aim(usize) }
+enum Slider { Music, Mouse, Stick, /** One per Splitscreen Club seat ("Aim: NAME"). */ Aim(usize) }
 
 #[derive(Clone, Copy, Debug)]
 struct Hit { rect: [f32; 4], item: usize, entry: usize }
@@ -61,10 +61,10 @@ pub struct Ctx<'a> {
     /// Everyone in the match, bots too.
     pub players: usize,
     pub coop: bool,
-    /// Under GameNight: the party's settings (label, value, min, max) and
+    /// Under Splitscreen Club: the party's settings (label, value, min, max) and
     /// the status line under the logo.
     pub party: Option<(Vec<(&'static str, i64, i64, i64)>, String)>,
-    /// Names of the GameNight seats here (their own aim sliders).
+    /// Names of the Splitscreen Club seats here (their own aim sliders).
     pub seats: Vec<String>,
 }
 
@@ -102,7 +102,7 @@ pub struct Menus {
     pub graphics: &'static str,
     /// This session's automatic downgrade under "auto" (never saved).
     pub graphics_lowered: Option<&'static str>,
-    /// Stick sensitivity per GameNight player, by name.
+    /// Stick sensitivity per Splitscreen Club player, by name.
     pub aim: Vec<(String, f32)>,
     /// Seconds the screen has been open (fades and the start orbit).
     pub age: f32,
@@ -189,8 +189,8 @@ fn items(screen: Screen, ctx: &Ctx) -> Vec<Item> {
 }
 
 /// Godot `build_settings_panel`: Player name, music, mouse, one stick
-/// slider (or one "Aim" slider per GameNight seat), movement tilt, BACK.
-/// (The retro shader has no counterpart here; under GameNight the party
+/// slider (or one "Aim" slider per Splitscreen Club seat), movement tilt, BACK.
+/// (The retro shader has no counterpart here; under Splitscreen Club the party
 /// names the players, so there is no Player name.)
 fn settings_items(ctx: &Ctx) -> Vec<Item> {
     let mut v = if ctx.seats.is_empty() { vec![Item::Field(Field::Name)] } else { vec![] };
@@ -468,7 +468,7 @@ impl Menus {
     fn slider(&self, s: Slider, ctx: &Ctx) -> f32 {
         match s { Slider::Music => self.music_db, Slider::Mouse => self.mouse, Slider::Stick => self.stick, Slider::Aim(i) => ctx.seats.get(i).map_or(self.stick, |n| self.aim_for(n)) }
     }
-    /// A GameNight player's stick sensitivity (Godot `stick_sens_for`: the shared one until set).
+    /// A Splitscreen Club player's stick sensitivity (Godot `stick_sens_for`: the shared one until set).
     pub fn aim_for(&self, name: &str) -> f32 { self.aim.iter().find(|a| a.0 == name).map_or(self.stick, |a| a.1) }
     pub fn set_aim(&mut self, name: &str, v: f32) {
         match self.aim.iter_mut().find(|a| a.0 == name) { Some(a) => a.1 = v, None => self.aim.push((name.to_string(), v)) }
@@ -609,7 +609,7 @@ impl Menus {
     fn column(&self, d: &mut HudDrawList, list: &[Item], r: [f32; 4], ctx: &Ctx, gothic: bool, u: f32, clip: [f32; 4]) {
         let focus = self.focused(list, ctx);
         let mut y = r[1];
-        // The GameNight menu: big left-set buttons 46 tall, 4 apart.
+        // The Splitscreen Club menu: big left-set buttons 46 tall, 4 apart.
         let gn = ctx.party.is_some() && matches!(self.screen, Screen::Pause | Screen::Advanced);
         let sep = if gn { 4.0 } else { 8.0 } * u;
         let cream = [0.94, 0.84, 0.64, 1.0];
@@ -824,7 +824,7 @@ fn column_height(list: &[Item], u: f32) -> f32 {
     }).sum::<f32>() * u
 }
 
-/// The GameNight menu's buttons: Barlow ExtraBold 28, left-set 14 in,
+/// The Splitscreen Club menu's buttons: Barlow ExtraBold 28, left-set 14 in,
 /// a slanted red plate when focused.
 fn gn_button(d: &mut HudDrawList, r: [f32; 4], text: &str, focused: bool, enabled: bool, u: f32, clip: [f32; 4]) {
     if focused && enabled { plate(d, r, RED, None, clip); }

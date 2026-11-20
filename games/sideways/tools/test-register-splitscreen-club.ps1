@@ -10,12 +10,12 @@ function Assert-Rejected([scriptblock]$Action, [string]$Pattern) {
     try { & $Action | Out-Null } catch { $message = $_.Exception.Message }
     Assert-That ($message -match $Pattern) "Expected rejection matching '$Pattern', received '$message'."
 }
-$helper = Join-Path $PSScriptRoot 'register-gamenight-windows.ps1'
+$helper = Join-Path $PSScriptRoot 'register-splitscreen-club-windows.ps1'
 $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\', '/')
 $fixtureRoot = Join-Path $tempRoot ('sideways-register-' + [Guid]::NewGuid().ToString('N'))
 try {
     $packageRoot = Join-Path $fixtureRoot 'package with spaces'
-    $dataRoot = Join-Path $fixtureRoot 'isolated GameNight'
+    $dataRoot = Join-Path $fixtureRoot 'isolated Splitscreen Club'
     foreach ($relative in @('assets/meshes', 'assets/trees', 'assets/grass', 'assets/sky', 'data', 'engine/assets/sound/ir')) {
         New-Item -ItemType Directory -Path (Join-Path $packageRoot $relative) -Force | Out-Null
     }
@@ -115,7 +115,7 @@ try {
     Assert-That (@(Get-ChildItem -LiteralPath $dataRoot).Count -eq $fileCount) 'Failed validation must not create backup/temp files.'
 
     # New installations keep an array even when Sideways is the only entry.
-    $newDataRoot = Join-Path $fixtureRoot 'new GameNight'
+    $newDataRoot = Join-Path $fixtureRoot 'new Splitscreen Club'
     & $helper -PackageDirectory $packageRoot -ReferencePlaytestManifest $referencePath -DataDirectory $newDataRoot -ValidateOnly | Out-Null
     Assert-That (-not (Test-Path -LiteralPath $newDataRoot)) 'Validation must not create a missing data directory.'
     $fresh = & $helper -PackageDirectory $packageRoot -ReferencePlaytestManifest $referencePath -DataDirectory $newDataRoot

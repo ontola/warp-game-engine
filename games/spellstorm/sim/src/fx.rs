@@ -257,7 +257,7 @@ pub enum Ev {
         biome: usize,
         depth: usize,
     },
-    /// The run ended, won or lost (GameNight notify_finished).
+    /// The run ended, won or lost (Splitscreen Club notify_finished).
     RunOver {
         won: bool,
     },

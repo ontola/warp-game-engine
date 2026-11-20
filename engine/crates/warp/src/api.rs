@@ -41,7 +41,7 @@ pub enum HudItem {
     Box { rect: [f32; 4], color: [f32; 4] },
 }
 
-/// Colours for players without one (GameNight gives its own).
+/// Colours for players without one (Splitscreen Club gives its own).
 pub const PLAYER_COLORS: [[f32; 3]; 4] = [[0.91, 0.33, 0.25], [0.25, 0.56, 0.91], [0.95, 0.76, 0.19], [0.31, 0.75, 0.35]];
 
 /// One player of the game: a person on a controller or a bot the scripts
@@ -54,7 +54,7 @@ pub struct Player {
     /// sRGB 0..1.
     pub color: [f32; 3],
     pub bot: bool,
-    /// The GameNight seat, when a party host seated this player.
+    /// The Splitscreen Club seat, when a party host seated this player.
     pub seat: Option<usize>,
     /// Couch position from the lobby (0 is leftmost), when known.
     pub couch: Option<i64>,
@@ -64,7 +64,7 @@ pub struct Player {
     pub cam_prev: Cam,
     /// The split-screen view this player looks through (people only).
     pub view: Option<usize>,
-    /// The GameNight face (`hud.face`): its sources and the composed art.
+    /// The Splitscreen Club face (`hud.face`): its sources and the composed art.
     pub face_src: (String, String),
     pub face: Option<std::sync::Arc<crate::face::Face>>,
 }

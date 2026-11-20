@@ -1,5 +1,5 @@
 //! Live knobs (live::knobs): the `-- @knobs` blocks in the mods, so the
-//! person playing, Claude and the GameNight app can turn the match's feel
+//! person playing, Claude and the Splitscreen Club app can turn the match's feel
 //! while it runs (mods/base/knobs.luau). Setting one rewrites the file; the
 //! mods reload it on the next poll.
 use live::knobs::{self, Knob};
@@ -19,7 +19,7 @@ pub fn set(name: &str, value: &str) -> Result<String, String> {
     knobs::set_in_folder(&crate::scripts::find_dir().ok_or("no mods folder")?, name, value)
 }
 
-/// A number knob as a GameNight setting: percent of its value, its range
+/// A number knob as a Splitscreen Club setting: percent of its value, its range
 /// from the help's "A to B".
 pub struct Setting { pub key: String, pub label: String, pub value: i64, pub min: i64, pub max: i64 }
 
@@ -44,7 +44,7 @@ pub(crate) fn range(about: &str) -> Option<(f64, f64)> {
     (a < b).then_some((a, b))
 }
 
-/// Apply a GameNight setting `knob.NAME` (percent); false for other keys.
+/// Apply a Splitscreen Club setting `knob.NAME` (percent); false for other keys.
 pub fn from_setting(key: &str, value: &serde_json::Value) -> Option<Result<String, String>> {
     let name = key.strip_prefix(SETTING_PREFIX)?;
     let Some(pct) = value.as_f64().filter(|v| v.is_finite()) else { return Some(Err(format!("{key}: not a number"))) };

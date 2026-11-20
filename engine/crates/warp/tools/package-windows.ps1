@@ -1,6 +1,6 @@
 # Package a Luau game for Windows: warp.exe with the game folder next to it
 # in `game/`. Started without arguments, warp.exe runs that folder, which is
-# how a GameNight host launches it (the package's entrypoint is warp.exe).
+# how a Splitscreen Club host launches it (the package's entrypoint is warp.exe).
 #   ./engine/crates/warp/tools/package-windows.ps1 -Game games/hello-warp -Executable target/release/warp.exe -OutDirectory build/hello-warp
 param([Parameter(Mandatory=$true)][string]$Game,[Parameter(Mandatory=$true)][string]$Executable,[Parameter(Mandatory=$true)][string]$OutDirectory)
 $ErrorActionPreference='Stop'

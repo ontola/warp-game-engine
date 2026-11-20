@@ -1,4 +1,4 @@
-//! Window manners under a GameNight host (the Godot SDK's `screen.gd`): get
+//! Window manners under a Splitscreen Club host (the Godot SDK's `screen.gd`): get
 //! off the screen on pause, take it back on start and resume, and keep
 //! asking until the window server agrees. Window-mode changes are animated
 //! and a request mid-animation can be dropped, so one call is not enough:

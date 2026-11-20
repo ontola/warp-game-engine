@@ -1,5 +1,5 @@
 """Isolated installed-daemon smoke test. Synthetic profiles; never joins a live party.
-Usage: python test-gamenight.py --daemon PATH --game PATH --out NEW_DIRECTORY
+Usage: python test-splitscreen-club.py --daemon PATH --game PATH --out NEW_DIRECTORY
 Creates only owned headless processes, uses the daemon's real launch/token path.
 Physical controller sampling, rumble and desktop window focus remain manual tests.
 """

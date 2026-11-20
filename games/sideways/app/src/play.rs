@@ -18,7 +18,7 @@ use glam::{Quat, Vec3};
 use kern::Timings;
 use render::{Camera, Gpu, Lighting, Renderer};
 use sideways::race::{Control, Race, Settings};
-use crate::gamenight::{Client, Command, Seat};
+use crate::splitscreen_club::{Client, Command, Seat};
 use std::{fs::OpenOptions, io::Write, path::Path, sync::Arc, time::{Duration, Instant}};
 use winit::{application::ApplicationHandler, dpi::PhysicalSize, event::{ElementState, WindowEvent, MouseButton, MouseScrollDelta}, event_loop::{ActiveEventLoop, ControlFlow, EventLoop}, keyboard::{KeyCode, PhysicalKey}, window::{Fullscreen, Window, WindowId}};
 use render::debug_ui::DebugKey;
@@ -1038,12 +1038,12 @@ impl App {
             }
             match command {
                 Command::Connected=>{
-                    let mut settings=crate::gamenight::settings();
+                    let mut settings=crate::splitscreen_club::settings();
                     for (key,value) in [("sky_time",self.sky_controls.desired().time_key()),("sky_weather",self.sky_controls.desired().atmosphere.key())] {
                         if let Some(setting)=settings.as_array_mut().and_then(|s|s.iter_mut().find(|s|s["key"]==key)){setting["default"]=value.into();}
                     }
                     if let Some(setting)=settings.as_array_mut().and_then(|s|s.iter_mut().find(|s|s["key"]=="upscale")) {setting["default"]=serde_json::json!(self.args.upscale.as_str());}
-                    let host=self.host.as_ref().unwrap();host.declare_settings(settings)?;host.declare_actions(crate::gamenight::actions())?;
+                    let host=self.host.as_ref().unwrap();host.declare_settings(settings)?;host.declare_actions(crate::splitscreen_club::actions())?;
                 }
                 Command::Prepare{session,seats}=>{
                     self.managed_screen(false);
@@ -1341,7 +1341,7 @@ impl App {
         }
         // Keep the host socket, neutral input and trace alive while the host
         // owns the screen. A warm/paused managed game must not consume a full
-        // render frame or continue presenting behind the GameNight lobby.
+        // render frame or continue presenting behind the Splitscreen Club lobby.
         // One exception: a prepared session reports ready only after a frame
         // of its stage is drawn, so that one frame is drawn, offscreen (below).
         // Skipping it too left every warm Sideways on "Preparing" forever.
