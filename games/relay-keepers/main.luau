@@ -1,4 +1,5 @@
 local rooms = require("rooms")
+local carriage = require("carriage")
 local view = require("view")
 local HEIGHT, SPEED, GRAVITY, JUMP = 1.20, 4.2, 18, 7.9
 
@@ -19,6 +20,8 @@ end
 
 local function resetRunner(r,spawn)
     r.x,r.y,r.vy,r.on,r.face = spawn[1],spawn[2],0,true,1
+    r.deck,r.springImpulse=false,false
+    r.stride,r.speed,r.impact,r.spawnGlow=0,0,0,0
     r.buffer,r.coyote,r.extra,r.ride = 0,0,false,false
 end
 
@@ -28,7 +31,9 @@ local function enter(n)
     state.key,state.owner,state.latch,state.past=false,0,false,true
     state.clockHeld,state.pad,state.open,state.timer=false,false,false,0
     state.crate=l.crate and l.crate[1] or nil
+    state.ferry=carriage.start(l.ferry)
     state.glass={}
+    state.reboard=false
     state.link=0
     for i,r in state.crew do resetRunner(r,l.start[i]) end
 end
@@ -73,8 +78,13 @@ local function move(l,i,r,other,pad,dt)
             x=cx-side*0.74
         end
     end
+    r.speed=math.abs(x-r.x)/dt
+    if r.on then r.stride=(r.stride or 0)+math.abs(x-r.x)*4.3 end
+    r.impact=math.max(0,(r.impact or 0)-dt*5)
+    r.spawnGlow=math.max(0,(r.spawnGlow or 0)-dt*2)
     r.x=x
-    r.buffer=if pad.pressed.south then 0.13 else math.max(0,r.buffer-dt)
+    r.buffer=if pad.pressed.south and not r.springImpulse then 0.13 else math.max(0,r.buffer-dt)
+    r.springImpulse=false
     r.coyote=if r.on then 0.075 else math.max(0,r.coyote-dt)
     if r.buffer>0 and (r.coyote>0 or r.extra) then
         if r.coyote==0 then r.extra=false end
@@ -91,8 +101,20 @@ local function move(l,i,r,other,pad,dt)
     for j,b in l.land do
         if x>b[1]-0.16 and x<b[2]+0.16 and material(l,j) then support(b[3],j) end
     end
+    local f=state.ferry
+    local permanentBridge=type(source)=="number" and type(l.land[source][4])=="number"
+    local contactY=if f and not r.deck then f.prevY else (f and f.y)
+    if f and math.abs(x-f.x)<(l.ferry.width or 3)/2+0.10 and
+            prev>=contactY-0.001 and r.y<=f.y and (f.y>top or (f.y==top and not permanentBridge)) then
+        top,source=f.y,"deck"
+    end
     if state.crate and math.abs(x-state.crate)<0.58 then support(0.9,"crate") end
     if math.abs(x-other.x)<0.48 then support(other.y+HEIGHT,"head") end
+    if not r.on and source~="" and r.vy < -4 then
+        r.impact=math.min(1,-r.vy/12)
+        if r.vy < -8 then sound.play("dock",{db=-19,pitch=1.7}) end
+    end
+    r.deck=source=="deck"
     r.on=source~=""
     r.ride=source=="head"
     if r.on then
@@ -120,7 +142,14 @@ local function move(l,i,r,other,pad,dt)
         sound.play("pickup",{pitch=0.8})
     end
     if r.y < -2.2 then
-        resetRunner(r,l.start[i])
+        -- A stranded partner cannot dispatch a tandem deck alone.
+        -- Reboard together, keeping every acquired power and lit relay.
+        if l.ferry then
+            state.reboard=true
+        else
+            resetRunner(r,l.start[i])
+            r.spawnGlow=1
+        end
         state.falls+=1
         players.rumble(r.id,0.45,0.15)
     end
@@ -140,6 +169,11 @@ local function mapInput(inputs,dt)
     local dx,dy=0,0
     for _,runner in state.crew do
         local p=inputs[runner.id]
+        if p.pressed.right_shoulder or p.pressed.left_shoulder then
+            local offset=if p.pressed.right_shoulder then 56 else -56
+            state.mapRoom=math.clamp(state.mapRoom+offset,1,#rooms)
+            return true
+        end
         if p.pressed.south then
             local selection=state.mapRoom
             state.mapRoom=nil
@@ -180,11 +214,21 @@ local function tick(dt,inputs)
     end
     local l=rooms[state.room]
     for k,age in state.glass do state.glass[k]=if age+dt<2.6 then age+dt else nil end
+    if state.ferry then carriage.step(l.ferry,state.ferry,state.crew,inputs,dt) end
     -- Snapshot the supporting bodies so both see the same contact surface.
     local before={}
     for i,r in state.crew do before[i]={x=r.x,y=r.y} end
     for i,r in state.crew do
         move(l,i,r,before[3-i],inputs[r.id],dt)
+    end
+    if state.reboard then
+        state.reboard=false
+        state.ferry=carriage.start(l.ferry)
+        for i,r in state.crew do
+            resetRunner(r,l.start[i])
+            r.spawnGlow=1
+        end
+        return
     end
     -- Carry a rider by the actual displacement of their supporting player.
     for i,r in state.crew do

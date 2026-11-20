@@ -36,8 +36,31 @@ local function landmark(district,x,y,c)
             box(x+21*i,y+11*i,12,131-11*i,c)
             box(x+21*i-2,y+11*i,16,5,c)
         end
-    elseif district==6 then
+    elseif district==6 or district==10 then
         for i=0,10 do box(x-i*7,y+i*9,7+i*14,11,c) end
+    elseif district==7 then
+        box(x-3,y+22,4,108,c)
+        for j=0,6 do box(x+2,y+28+9*j,7*j+4,9,c) end
+        box(x-36,y+123,87,6,c)
+        box(x-29,y+129,72,6,c)
+    elseif district==9 then
+        for j=0,5 do
+            box(x-35+j%2*6,y+35+13*j,72,5,c)
+            box(x+(if j%2==0 then 31 else -29),y+39+13*j,6,10,c)
+        end
+    elseif district==11 then
+        box(x-4,y+18,8,122,c)
+        box(x-26,y+15,52,6,c)
+        box(x-19,y+20,10,39,c)
+        box(x+9,y+20,10,39,c)
+    elseif district>=7 then
+        local tall=(district-6)*14
+        box(x-37,y-tall,6,149+tall,c)
+        box(x+37,y-tall,6,149+tall,c)
+        box(x-41,y-3-tall,87,9,c)
+        box(x-12,y-tall,2,43,c)
+        box(x+16,y-tall,2,43,c)
+        box(x-18,y+37-tall,43,8,c)
     end
 end
 
@@ -50,6 +73,8 @@ local function landscape(l,s)
         {"#bfcdc4","#9aada2","#829895"}, {"#e0bd9c","#baa18c","#98867d"},
         {"#b7ccda","#96aec3","#798ba4"}, {"#b8bdcf","#969ab0","#7c829c"},
         {"#e2c8ae","#bea6a0","#978692"}, {"#b0c4bc","#94a89e","#6f8987"},
+        {"#b8d9d3","#85aba6","#708f90"}, {"#e9cba4","#bda28f","#927d78"},
+        {"#c2d4d2","#a3b4bb","#8194a1"}, {"#ccbcd3","#a39bab","#867d93"}, {"#e8c5ae","#c69f94","#9d8185"},
     }
     if l.district and not night then sky,far,ridge=unpack(districts[l.district]) end
     box(0,0,1200,640,sky)
@@ -92,7 +117,21 @@ end
 
 local function robot(x,y,i,r,s)
     local c=if i==1 then amber else mint
+    local stride=if r.on then math.sin(r.stride or 0)*math.min(1,(r.speed or 0)/4) else 0
+    local feet=y
+    y+=math.abs(stride)*1.6+(r.impact or 0)*5
     local height=63
+    if (r.spawnGlow or 0)>0 then
+        local radius=12+(1-r.spawnGlow)*22
+        for k=0,5 do
+            local a=k*math.pi/3
+            box(x+radius*math.cos(a)-2,y-29+radius*math.sin(a),4,4,cream)
+        end
+    end
+    if (r.impact or 0)>0.08 then
+        local spread=(1-r.impact)*17
+        for _,d in {-1,1} do box(x+d*(12+spread),feet-4-spread*0.22,6,3,cream) end
+    end
     if s.owner==i then
         for _,d in {-1,1} do
             box(x+d*20-5,y-43,10,20,cream)
@@ -115,8 +154,8 @@ local function robot(x,y,i,r,s)
     box(x+3*r.face+2,y-46,3,4,cream)
     box(x-12,y-26,24,17,ink)
     box(x-9,y-25,18,10,c)
-    box(x-13,y-10,9,10,ink)
-    box(x+4,y-10,9,10,ink)
+    box(x-13+4*stride,feet-10-math.max(0,stride)*4,9,10,ink)
+    box(x+4-4*stride,feet-10+math.min(0,stride)*4,9,10,ink)
 end
 
 local function gridIcon(x,y)
@@ -127,8 +166,17 @@ end
 
 local function roomMap(rooms,s)
     box(0,0,1200,640,ink)
-    for n,l in rooms do
-        local col,row=(n-1)%7,math.floor((n-1)/7)
+    local firstRow=math.clamp(math.floor((s.mapRoom-1)/7)-6,0,math.max(0,math.ceil(#rooms/7)-8))
+    -- The left rail locates the visible rows in the full campaign.
+    local rows=math.ceil(#rooms/7)
+    for i=0,rows-1 do
+        local current=i==math.floor((s.mapRoom-1)/7)
+        local visible=i>=firstRow and i<firstRow+8
+        box(16,200+i*13,if current then 14 else 6,5,if current then amber elseif visible then cream else "#516e70")
+    end
+    for n=firstRow*7+1,math.min(#rooms,(firstRow+8)*7) do
+        local l=rooms[n]
+        local col,row=(n-1)%7,math.floor((n-1)/7)-firstRow
         local x,y=44+col*160,27+row*74
         local selected=n==s.mapRoom
         box(x-3,y-3,153,65,if selected then cream else "#436266")
@@ -142,6 +190,10 @@ local function roomMap(rooms,s)
         for _,item in {{l.clock,"#b7bef7"},{l.key,amber},{l.spring,amber},{l.wings,cream}} do
             local p=item[1]
             if p then box(x+5+p[1]*6.8-1,y+40-p[2]*6.2,3,3,item[2]) end
+        end
+        if l.ferry then
+            local p=l.ferry.from
+            box(x+5+p[1]*6.8-5,y+46-p[2]*6.2,11,3,amber)
         end
         if n==s.room then box(x+3,y+3,7,5,amber) end
         if selected then
@@ -190,6 +242,60 @@ local function draw(rooms,s)
             end
         else
             for j=2,width-6,18 do box(x+j,y+3,8,3,color) end
+        end
+    end
+    if s.ferry then
+        local f,spec=s.ferry,l.ferry
+        local ax,ay=xy(unpack(spec.from))
+        local bx,by=xy(unpack(spec.to))
+        for i=0,24 do
+            local k=i/24
+            box(ax+(bx-ax)*k-2,ay+(by-ay)*k+12,4,4,"#738988")
+        end
+        for _,p in {spec.from,spec.to} do
+            local x,y=xy(unpack(p))
+            box(x-6,y+9,12,12,ink)
+            box(x-3,y+12,6,6,cream)
+        end
+        local x,y=xy(f.x,f.y)
+        local span=(spec.width or 3)*56
+        box(x-span/2,y,span,9,if f.flash>0 then cream else amber)
+        box(x-span/2+5,y+9,span-10,14,ink)
+        for i,r in s.crew do
+            local aboard=r.deck or (r.ride and s.crew[3-i].deck)
+            local lamp=if i==1 then amber else mint
+            box(x-17+18*(i-1),y+12,13,6,if aboard then lamp else "#5d7679")
+        end
+        if spec.coil then
+            for _,d in {-1,1} do
+                for j=0,2 do box(x+d*span*0.32-10+j*2,y+9+j*4,20-j*4,2,cream) end
+            end
+            if f.lit>0 or f.taps[1]>0 or f.taps[2]>0 then
+                -- Two south-button symbols breathe on one beat before takeoff.
+                local beat=math.max(0,math.cos(s.time*5))
+                for i=1,2 do
+                    local gx=x+(if i==1 then -33 else 33)
+                    local gy=y-104-beat*4
+                    local color=if i==1 then amber else mint
+                    box(gx-9,gy-8,19,18,ink)
+                    box(gx-2,gy-6,4,4,"#58716e")
+                    box(gx-6,gy-1,4,4,"#58716e")
+                    box(gx+3,gy-1,4,4,"#58716e")
+                    box(gx-2,gy+4,5,5,if f.taps[i]>0 or beat>0.8 then cream else color)
+                end
+            end
+            if f.flash>0 then
+                local t=1-f.flash/0.45
+                for j=-3,3 do box(x+j*(9+14*t),y-10-65*t+3*j*j,5,7,cream) end
+            end
+        end
+        if spec.control then
+            local cx,cy=xy(unpack(spec.control))
+            local lever=if f.remote then 7 else -7
+            box(cx-20,cy-5,40,5,ink)
+            box(cx+lever-4,cy-27,8,10,if f.remote then mint else amber)
+            box(cx-4,cy-23,8,19,ink)
+            box(cx-11,cy-26,22,8,if f.remote then mint else amber)
         end
     end
     local function at(p) return xy(p[1],p[2]) end

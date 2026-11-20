@@ -41,6 +41,7 @@ local rooms = {
 local districts={
     require("drydock"), require("switchyard"), require("aviary"),
     require("almanac"), require("foundry"), require("summit"),
+    require("narrows"), require("windinghouse"), require("springline"), require("skyport"), require("waystations"),
 }
 for district,chapter in districts do
     for _,room in chapter do
