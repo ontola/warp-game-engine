@@ -595,7 +595,13 @@ pub fn proxy_level(asset: &VoxelAsset, li: usize, palette: &[[f32; 3]], seed: u3
     let c = level.cell_size;
     let mut parts: Vec<(usize, Vec<Vertex>, Vec<u32>)> = (0..palette.len()).map(|i| (i, Vec::new(), Vec::new())).collect();
     let mut voxels = 0;
-    for v in &level.voxels {
+    // Morton order: consecutive voxels, hence each cluster of 32 blobs, are
+    // spatially compact (tight cull spheres, small screen footprints).
+    let morton = |c: [u32; 3]| (0..21).fold(0u64, |m, b| m
+        | (u64::from((c[0] >> b) & 1) << (3 * b)) | (u64::from((c[1] >> b) & 1) << (3 * b + 1)) | (u64::from((c[2] >> b) & 1) << (3 * b + 2)));
+    let mut order: Vec<&Voxel> = level.voxels.iter().collect();
+    order.sort_by_key(|v| morton(v.coord));
+    for v in order {
         let optical = (v.directional_area[0] + v.directional_area[1] + v.directional_area[2]) / 3.0;
         let coverage = 1.0 - (-optical / (c * c)).exp();
         if !(coverage > 1e-4) { continue; }

@@ -67,7 +67,9 @@ impl Gpu {
         })
         .map_err(|e| format!("no GPU adapter: {e}"))?;
         let info = adapter.get_info();
-        let optional = wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS | wgpu::Features::INDIRECT_FIRST_INSTANCE | wgpu::Features::PIPELINE_CACHE | wgpu::Features::PRIMITIVE_INDEX;
+        let optional = wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS | wgpu::Features::INDIRECT_FIRST_INSTANCE | wgpu::Features::PIPELINE_CACHE | wgpu::Features::PRIMITIVE_INDEX
+            // Software raster of pixel-sized clusters (software_raster.wgsl).
+            | wgpu::Features::SHADER_INT64 | wgpu::Features::SHADER_INT64_ATOMIC_MIN_MAX;
         let features = adapter.features() & optional;
         let mut limits = wgpu::Limits::default().using_resolution(adapter.limits());
         let al = adapter.limits();

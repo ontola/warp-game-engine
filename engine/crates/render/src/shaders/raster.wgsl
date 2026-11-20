@@ -64,7 +64,7 @@ struct Material {
 @group(1) @binding(0) var<uniform> view: View;
 @group(1) @binding(1) var<storage, read> visible: array<vec2<u32>>;
 @group(1) @binding(2) var<storage, read> draw_map: array<u32>;
-@group(1) @binding(3) var<storage, read> draw_args: array<u32, 20>;
+@group(1) @binding(3) var<storage, read> draw_args: array<u32, 25>;
 @group(1) @binding(4) var<uniform> foliage_selection: array<vec4<u32>,256>;
 
 struct VOut {
