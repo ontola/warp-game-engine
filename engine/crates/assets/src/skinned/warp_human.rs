@@ -452,13 +452,11 @@ impl Character {
                 CHEEKS[tile],
                 traits,
                 // The face's tint multiplies this back to the hair's dark;
-                // under grey hair it is grey. Dark hair lets little light
-                // through to what is under it, fair hair most of it.
-                {
-                    let shown = hair.lerp(Vec3::splat(0.6), cut.grey);
-                    let through = 1. - 0.6 * (1. - shown.max_element()).powi(2);
-                    (shown * 0.7 * through * CHEEKS[tile] / skin_color.max(Vec3::splat(0.05))).min(Vec3::ONE)
-                },
+                // under grey hair it is grey.
+                (hair.lerp(Vec3::splat(0.6), cut.grey) * 0.7 * CHEEKS[tile] / skin_color.max(Vec3::splat(0.05))).min(Vec3::ONE),
+                // Dark hair lets little light through to what is under
+                // it, fair hair most of it.
+                0.6 * (1. - hair.lerp(Vec3::splat(0.6), cut.grey).max_element()).powi(2),
                 &cut,
                 warp_skin::Brows {
                     color: (brows * 0.8 * CHEEKS[tile] / skin_color.max(Vec3::splat(0.05))).min(Vec3::ONE),

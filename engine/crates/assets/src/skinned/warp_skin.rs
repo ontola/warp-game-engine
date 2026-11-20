@@ -558,7 +558,7 @@ fn paint_eye(albedo: &mut RgbaImage, traits: Traits) {
 /// painted face (lips, lids, the fall of colour over the head) with the
 /// shading mask in its alpha, `cheek` that painting's cheek colour,
 /// `under_hair` what the texture holds where hair grows (the dark between
-/// strands).
+/// strands), `shade` how much darker that is well under the hair.
 pub(super) fn face(
     body: &[BodyVertex],
     indices: &[u32],
@@ -567,6 +567,7 @@ pub(super) fn face(
     cheek: Vec3,
     traits: Traits,
     under_hair: Vec3,
+    shade: f32,
     cut: &super::warp_hair::Cut,
     brows: Brows,
     size: usize,
@@ -602,9 +603,12 @@ pub(super) fn face(
                         // longer hair it does not, and what is seen there
                         // is lit as hair: no sheen of skin in the sun.
                         let hair = cut.grows(t.p);
-                        let cover = hair * hair * cut.full;
-                        color = color.lerp(under_hair * 255., cover * (0.7 + 0.3 * smooth(0.005, 0.03, cut.top)));
-                        painted[3] *= 1. - smooth(0., 0.5, hair * cut.full) * smooth(0.002, 0.012, cut.top);
+                        color = color.lerp(under_hair * 255., 0.7 * hair * cut.inside(t.p, 0., 0.016));
+                        // Deeper in, the hair stands over it: darker, the
+                        // more the less light the hair lets through.
+                        let deep = cut.under(t.p) * smooth(0.005, 0.03, cut.top);
+                        color = color.lerp(under_hair * 255. * (1. - shade), deep);
+                        painted[3] *= 1. - cut.under(t.p) * smooth(0.002, 0.012, cut.top);
                         color = color.lerp(brows.color * 255., brow(t.p, &brows, traits.seed));
                         // Lashes: a dark, broken line along the rim of the
                         // upper lid, which travels furthest in a blink.
@@ -640,8 +644,9 @@ pub(super) fn face(
             let [r, g, b] = n.to_array().map(|c| ((c * 0.5 + 0.5) * 255.).round() as u8);
             // Alpha: how much of the skin's sheen shows (the shader's
             // `gloss`). None where hair stands over it: that scalp is in
-            // the hair's shade and reflects neither sun nor sky.
-            let bare = texels[y * size + x].as_ref().map_or(1., |t| 1. - smooth(0., 0.5, cut.grows(t.p) * cut.full) * smooth(0.002, 0.012, cut.top));
+            // the hair's shade and reflects neither sun nor sky. At the
+            // hairline the skin is in plain view and still skin.
+            let bare = texels[y * size + x].as_ref().map_or(1., |t| 1. - cut.under(t.p) * smooth(0.002, 0.012, cut.top));
             normal.put_pixel(x as u32, y as u32, image::Rgba([r, g, b, (bare * 255.) as u8]));
         }
     }
@@ -691,10 +696,10 @@ mod tests {
         let (body, indices, eyes) = fixture(7);
         let base = super::super::warp_human::tile(0);
         let cheek = Vec3::new(0.855, 0.659, 0.541);
-        let a = face(&body, &indices, eyes, &base, cheek, Traits::new(1, 0.8), Vec3::splat(0.2), &super::super::warp_hair::Cut::styled(1, super::super::warp_hair::Style::SidePart), Brows { color: Vec3::splat(0.1), spans: [(Vec3::splat(1.), Vec3::splat(-1.)); 2] }, 256);
-        let b = face(&body, &indices, eyes, &base, cheek, Traits::new(2, 0.8), Vec3::splat(0.2), &super::super::warp_hair::Cut::styled(1, super::super::warp_hair::Style::SidePart), Brows { color: Vec3::splat(0.1), spans: [(Vec3::splat(1.), Vec3::splat(-1.)); 2] }, 256);
+        let a = face(&body, &indices, eyes, &base, cheek, Traits::new(1, 0.8), Vec3::splat(0.2), 0.3, &super::super::warp_hair::Cut::styled(1, super::super::warp_hair::Style::SidePart), Brows { color: Vec3::splat(0.1), spans: [(Vec3::splat(1.), Vec3::splat(-1.)); 2] }, 256);
+        let b = face(&body, &indices, eyes, &base, cheek, Traits::new(2, 0.8), Vec3::splat(0.2), 0.3, &super::super::warp_hair::Cut::styled(1, super::super::warp_hair::Style::SidePart), Brows { color: Vec3::splat(0.1), spans: [(Vec3::splat(1.), Vec3::splat(-1.)); 2] }, 256);
         assert_ne!(a.albedo.as_raw(), b.albedo.as_raw());
-        assert_eq!(a.albedo.as_raw(), face(&body, &indices, eyes, &base, cheek, Traits::new(1, 0.8), Vec3::splat(0.2), &super::super::warp_hair::Cut::styled(1, super::super::warp_hair::Style::SidePart), Brows { color: Vec3::splat(0.1), spans: [(Vec3::splat(1.), Vec3::splat(-1.)); 2] }, 256).albedo.as_raw());
+        assert_eq!(a.albedo.as_raw(), face(&body, &indices, eyes, &base, cheek, Traits::new(1, 0.8), Vec3::splat(0.2), 0.3, &super::super::warp_hair::Cut::styled(1, super::super::warp_hair::Style::SidePart), Brows { color: Vec3::splat(0.1), spans: [(Vec3::splat(1.), Vec3::splat(-1.)); 2] }, 256).albedo.as_raw());
         let bent = a.normal.pixels().filter(|p| p[0].abs_diff(128) > 2 || p[1].abs_diff(128) > 2).count();
         assert!(bent > 256 * 256 / 20, "relief bends the normals: {bent}");
         // The shading mask in the painted alpha survives on the face (128
@@ -726,7 +731,7 @@ mod tests {
         let base = super::super::warp_human::tile(person.face_tile());
         let traits = Traits { seed: 7, age: 0.6, freckles: 0.5, flush: 0.8, fair: 0.8 };
         let start = std::time::Instant::now();
-        let maps = face(&body, &indices, eyes, &base, Vec3::new(0.855, 0.659, 0.541), traits, Vec3::splat(0.2), &super::super::warp_hair::Cut::styled(1, super::super::warp_hair::Style::SidePart), Brows { color: Vec3::splat(0.1), spans: [(Vec3::splat(1.), Vec3::splat(-1.)); 2] }, 2048);
+        let maps = face(&body, &indices, eyes, &base, Vec3::new(0.855, 0.659, 0.541), traits, Vec3::splat(0.2), 0.3, &super::super::warp_hair::Cut::styled(1, super::super::warp_hair::Style::SidePart), Brows { color: Vec3::splat(0.1), spans: [(Vec3::splat(1.), Vec3::splat(-1.)); 2] }, 2048);
         eprintln!("{:?}", start.elapsed());
         let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../build/human-skin");
         std::fs::create_dir_all(&out).unwrap();
