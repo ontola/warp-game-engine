@@ -29,10 +29,12 @@ local function enter(n)
     state.clockHeld,state.pad,state.open,state.timer=false,false,false,0
     state.crate=l.crate and l.crate[1] or nil
     state.glass={}
+    state.link=0
     for i,r in state.crew do resetRunner(r,l.start[i]) end
 end
 local function init()
     state.crew={{id=0},{id=0}}
+    state.mapRoom=nil
     state.time,state.falls=0,0
     roster()
     enter(1)
@@ -43,6 +45,7 @@ local function near(r,point,radius)
 end
 local function material(l,i)
     local kind=l.land[i][4]
+    if type(kind)=="number" then return state.link>=kind end
     if kind=="p" then return state.past or state.latch end
     if kind=="f" then return not state.past or state.latch end
     if kind=="glass" then return (state.glass[tostring(i)] or 0)<0.42 end
@@ -123,8 +126,49 @@ local function move(l,i,r,other,pad,dt)
     end
 end
 
+-- Either player can browse. Releasing the stick resets the repeat delay.
+local function mapInput(inputs,dt)
+    for _,runner in state.crew do
+        local p=inputs[runner.id]
+        if p.pressed.north then
+            state.mapRoom=if state.mapRoom then nil else state.room
+            state.mapRepeat=0
+            return true
+        end
+    end
+    if not state.mapRoom then return false end
+    local dx,dy=0,0
+    for _,runner in state.crew do
+        local p=inputs[runner.id]
+        if p.pressed.south then
+            local selection=state.mapRoom
+            state.mapRoom=nil
+            enter(selection)
+            return true
+        end
+        if p.held.left or p.pressed.left or p.move_x < -0.55 then dx=-1
+        elseif p.held.right or p.pressed.right or p.move_x > 0.55 then dx=1
+        elseif p.held.up or p.pressed.up or (p.move_y or 0)>0.55 then dy=-1
+        elseif p.held.down or p.pressed.down or (p.move_y or 0)<-0.55 then dy=1 end
+    end
+    if dx==0 and dy==0 then
+        state.mapRepeat=0
+    elseif state.mapRepeat<=0 then
+        local col=(state.mapRoom-1)%7
+        local row=math.floor((state.mapRoom-1)/7)
+        col=math.clamp(col+dx,0,6)
+        row=math.clamp(row+dy,0,math.ceil(#rooms/7)-1)
+        state.mapRoom=math.min(#rooms,row*7+col+1)
+        state.mapRepeat=0.20
+    else
+        state.mapRepeat-=dt
+    end
+    return true
+end
+
 local function tick(dt,inputs)
     if state.crew[1].id==0 or state.crew[2].id==0 then return end
+    if mapInput(inputs,dt) then return end
     state.time+=dt
     if state.phase~="play" then
         state.delay+=dt
@@ -171,7 +215,17 @@ local function tick(dt,inputs)
     state.timer=if held then l.timer or 0 else math.max(0,state.timer-dt)
     state.open=if l.timer then state.latch or (not held and state.timer>0)
         elseif l.pad then held or state.latch else state.key
-    if home and (not l.secondGoal or paired) and (not l.key or state.key) and (not l.latch or state.latch) then
+    local nextLink=l.links and l.links[state.link+1]
+    if nextLink then
+        local a,b=state.crew[1],state.crew[2]
+        local paired=(near(a,nextLink[1],0.62) and near(b,nextLink[2],0.62))
+            or (near(b,nextLink[1],0.62) and near(a,nextLink[2],0.62))
+        if a.on and b.on and paired then
+            state.link+=1
+            sound.play("pickup",{pitch=0.7+state.link*0.16})
+        end
+    end
+    if home and (not l.links or state.link==#l.links) and (not l.secondGoal or paired) and (not l.key or state.key) and (not l.latch or state.latch) then
         state.phase=if state.room==#rooms then "complete" else "transfer"
         game.log(l.name)
         sound.play("pickup",{pitch=1.4})
@@ -179,5 +233,5 @@ local function tick(dt,inputs)
     end
 end
 return {init=init,tick=tick,players_changed=roster,draw=function()
-    view.draw(rooms[state.room],#rooms,state,HEIGHT)
+    view.draw(rooms,state)
 end}
