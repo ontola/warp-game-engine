@@ -589,7 +589,7 @@ pub(super) fn face(
                 for (i, (h, out)) in heights.iter_mut().zip(colors).enumerate() {
                     let (x, y) = (i % size, k * rows + i / size);
                     let (u, v) = ((x as f32 + 0.5) / size as f32, (y as f32 + 0.5) / size as f32);
-                    let painted = bilinear(base, u, v);
+                    let mut painted = bilinear(base, u, v);
                     let mut color = Vec3::new(painted[0], painted[1], painted[2]);
                     if let Some(t) = &texels[y * size + x] {
                         let lips = lip(painted.map(|c| c as u8), cheek);
@@ -598,8 +598,13 @@ pub(super) fn face(
                         color *= tint;
                         // Under the hair the scalp is seen through it, in
                         // its shade.
+                        // Through short hair the skin still shows; under
+                        // longer hair it does not, and what is seen there
+                        // is lit as hair: no sheen of skin in the sun.
                         let hair = cut.grows(t.p);
-                        color = color.lerp(under_hair * 255., 0.7 * hair * hair * cut.full);
+                        let cover = hair * hair * cut.full;
+                        color = color.lerp(under_hair * 255., cover * (0.7 + 0.3 * smooth(0.005, 0.03, cut.top)));
+                        painted[3] *= 1. - smooth(0., 0.5, hair * cut.full) * smooth(0.002, 0.012, cut.top);
                         color = color.lerp(brows.color * 255., brow(t.p, &brows, traits.seed));
                         // Lashes: a dark, broken line along the rim of the
                         // upper lid, which travels furthest in a blink.
@@ -633,7 +638,11 @@ pub(super) fn face(
             // t = dP/du, b = -dP/dv (shade.wgsl `perturb`).
             let n = Vec3::new(-du, dv, 1.).normalize();
             let [r, g, b] = n.to_array().map(|c| ((c * 0.5 + 0.5) * 255.).round() as u8);
-            normal.put_pixel(x as u32, y as u32, image::Rgba([r, g, b, 255]));
+            // Alpha: how much of the skin's sheen shows (the shader's
+            // `gloss`). None where hair stands over it: that scalp is in
+            // the hair's shade and reflects neither sun nor sky.
+            let bare = texels[y * size + x].as_ref().map_or(1., |t| 1. - smooth(0., 0.5, cut.grows(t.p) * cut.full) * smooth(0.002, 0.012, cut.top));
+            normal.put_pixel(x as u32, y as u32, image::Rgba([r, g, b, (bare * 255.) as u8]));
         }
     }
     let mut albedo = RgbaImage::from_fn(size as u32, size as u32, |x, y| {
@@ -688,8 +697,10 @@ mod tests {
         assert_eq!(a.albedo.as_raw(), face(&body, &indices, eyes, &base, cheek, Traits::new(1, 0.8), Vec3::splat(0.2), &super::super::warp_hair::Cut::styled(1, super::super::warp_hair::Style::SidePart), Brows { color: Vec3::splat(0.1), spans: [(Vec3::splat(1.), Vec3::splat(-1.)); 2] }, 256).albedo.as_raw());
         let bent = a.normal.pixels().filter(|p| p[0].abs_diff(128) > 2 || p[1].abs_diff(128) > 2).count();
         assert!(bent > 256 * 256 / 20, "relief bends the normals: {bent}");
-        // The shading mask in the painted alpha survives (128 is skin).
-        assert!(a.albedo.pixels().all(|p| p[3] >= 128));
+        // The shading mask in the painted alpha survives on the face (128
+        // is skin); under the hair it goes to hair (0).
+        let (skin, hair) = a.albedo.pixels().fold((0, 0), |(s, h), p| (s + usize::from(p[3] == 128), h + usize::from(p[3] < 16)));
+        assert!(skin > 256 * 256 / 20 && hair > 256 * 256 / 20, "{skin} skin texels, {hair} under hair");
     }
 
     /// `cargo test -p assets --lib skin_maps -- --ignored` writes the maps

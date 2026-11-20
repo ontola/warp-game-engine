@@ -61,6 +61,12 @@ actors:
   The mask becomes the albedo alpha (resized to the texture), and the
   material gets `SKIN | HAIR`. Not for alpha-tested surfaces.
 
+A `SKIN` surface's normal map carries in its alpha how much of the sheen
+shows there (255 all of it, the default of any normal map; 0 none): it
+scales the skin's and hair's sun highlights and the reflection of the
+surroundings, not the diffuse light. Warp Humans write 0 on the scalp under
+grown hair, which stands in the hair's shade.
+
 ## Growing Guns
 
 Warp Human players use the fitted skin and face materials. Use `growing-guns human-review --out build/human-review` to inspect generated people. See [Warp Humans](warp-humans.md) for the player and spectator rendering paths.
