@@ -134,16 +134,37 @@ def run_phase(warp, fixture, phase):
         client = live_client(client.token_file)
         session = PlaytestSession(client, fixture / "ledger")
         try:
+            notes = session.db.execute("SELECT * FROM notes ORDER BY id").fetchall()
+            visits = session.db.execute("SELECT * FROM visits ORDER BY id").fetchall()
             session.start()
             if phase == "first":
                 first_session(session, client)
             elif phase == "resumed":
                 resumed_session(session, client)
-            else:
+            elif phase == "finished":
                 expect(session.status(), room=2, total=2, held=True, finished=True, reviewed=2)
                 expect(session.last_note(), room=2, kind="good")
                 session.action("next")
                 expect(session.status(), room=2, finished=True, reviewed=2)
+                assert tuple(session.db.execute("SELECT room,finished FROM checkpoint").fetchone()) == (2,1)
+            else:
+                expect(session.status(), room=3, name="Twin Peaks", total=4,
+                       active=True, held=False, finished=False, reviewed=2)
+                assert tuple(session.db.execute("SELECT room,finished FROM checkpoint").fetchone()) == (3,0)
+                assert session.db.execute("SELECT * FROM notes ORDER BY id").fetchall() == notes
+                assert session.db.execute("SELECT * FROM visits ORDER BY id").fetchall() == visits
+                expect(session.action("next"), room=4, finished=False, reviewed=3)
+                expect(session.action("next"), room=4, finished=True, reviewed=4)
+                # Keep the same VM and desk open across another campaign extension.
+                client.call("edit_file", {
+                    "path": "game/rooms.module.luau",
+                    "old": "return {rooms[1], rooms[2], rooms[3], rooms[4]}",
+                    "new": "return {rooms[1], rooms[2], rooms[3], rooms[4], rooms[5]}",
+                })
+                wait_for(lambda: client.review("status"), lambda s: s["total"]==5, "appended room reload")
+                expect(session.status(), room=5, held=False, finished=False, reviewed=4)
+                assert tuple(session.db.execute("SELECT room,finished FROM checkpoint").fetchone()) == (5,0)
+                assert session.db.execute("SELECT * FROM notes ORDER BY id").fetchall() == notes
         finally:
             session.close()
 
@@ -151,7 +172,7 @@ def run_phase(warp, fixture, phase):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("warp", type=Path)
-    parser.add_argument("--phase", choices=("first", "resumed", "finished"), help=argparse.SUPPRESS)
+    parser.add_argument("--phase", choices=("first", "resumed", "finished", "expanded"), help=argparse.SUPPRESS)
     parser.add_argument("--fixture", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     warp = args.warp.resolve(strict=True)
@@ -167,7 +188,11 @@ def main():
         assert source.rstrip().endswith("return rooms")
         rooms.write_text(source.rstrip().removesuffix("return rooms") +
                          "return {rooms[1], rooms[2]}\n", encoding="utf-8")
-        for phase in ("first", "resumed", "finished"):
+        for phase in ("first", "resumed", "finished", "expanded"):
+            if phase=="expanded":
+                rooms.write_text(rooms.read_text(encoding="utf-8").replace(
+                    "return {rooms[1], rooms[2]}", "return {rooms[1], rooms[2], rooms[3], rooms[4]}"
+                ),encoding="utf-8")
             subprocess.run([sys.executable, str(SCRIPT), str(warp), "--phase", phase,
                             "--fixture", str(fixture)], check=True, timeout=85)
         args = SimpleNamespace(command="pending",log_dir=fixture/"ledger",seconds=0)
@@ -182,7 +207,7 @@ def main():
         assert sum(v["outcome"]=="cleared" for v in report["visits"])==2
         assert report["notes"][0]["response"]==args.summary
     print("Passed live clear hold, feedback, advance, cross-process resume, "
-          "pause, module reload, retry and final coverage.")
+          "pause, module reload, retry, final coverage and appended-room recovery.")
 
 
 if __name__ == "__main__":

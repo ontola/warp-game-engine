@@ -3,12 +3,19 @@
 Each waypoint is (seat, x, landing height, optional jump, optional second jump).
 No player positions, flags, physics or level transitions are set by the test.
 """
+import argparse
 import json
 from pathlib import Path
 import shutil
 import subprocess
-import sys
 import tempfile
+from aurora_routes import routes as aurora_routes
+from beacon_routes import routes as beacon_routes
+from crab_routes import routes as crab_routes
+from lantern_routes import routes as lantern_routes
+from saltmarsh_routes import routes as saltmarsh_routes
+from portal_routes import routes as portal_routes
+from water_routes import routes as water_routes
 
 ROOT = Path(__file__).resolve().parents[1]
 # Walk, jump and double-jump waypoints. A pause on arrival lets a partner move.
@@ -489,6 +496,9 @@ ROUTES = [
     ],
 ]
 
+for chapter in (saltmarsh_routes, aurora_routes, lantern_routes, beacon_routes, water_routes, crab_routes, portal_routes):
+    ROUTES.extend(chapter(w, j, d, boost, dock, launch))
+
 def literal(obj):
     if isinstance(obj, list):
         return "{" + ",".join(literal(item) for item in obj) + "}"
@@ -518,6 +528,11 @@ tick=function(dt)
         else
             p.move_x=math.clamp(delta/(4.2*dt),-1,1)
         end
+        if a[4]==9 then
+            arrived=r.on and math.abs(r.x-a[5])<0.03 and math.abs(r.y-a[6])<0.03
+            if arrived then p.move_x=0 end
+        end
+        p.held.down=a[4]==15
         p.pressed.south=(elapsed==0 and (a[4]==1 or a[4]==2 or a[4]==4)) or (elapsed==22 and a[4]==2)
         if a[4]==4 then
             local mate=state.crew[2]
@@ -540,13 +555,25 @@ tick=function(dt)
 end
 """
 with tempfile.TemporaryDirectory() as temp:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("warp", help="Warp executable")
+    parser.add_argument("--room", type=int, help="Play just this campaign room, numbered from 1")
+    args = parser.parse_args()
     game = Path(temp) / "game"
     shutil.copytree(ROOT,game,ignore=shutil.ignore_patterns("scripts"))
     src = (game / "main.luau").read_text()
+    if args.room is not None:
+        if not 1 <= args.room <= len(ROUTES):
+            parser.error(f"--room must be between 1 and {len(ROUTES)}")
+        include = 'local rooms = require("rooms")'
+        assert src.count(include) == 1
+        src = src.replace(include, f'{include}\nrooms={{assert(rooms[{args.room}])}}')
+        ROUTES = [ROUTES[args.room - 1]]
     marker = "return {init=init,"
     assert src.count(marker) == 1
     (game/"main.luau").write_text(src.replace(marker,"local routes="+literal(ROUTES)+"\n"+DRIVER+"\n"+marker))
-    run = subprocess.run([sys.argv[1],"check",str(game),"--ticks",str(1400*len(ROUTES))],capture_output=True,text=True)
+    ticks = 1400*len(ROUTES) if args.room is None else 362*len(ROUTES[0])+100
+    run = subprocess.run([args.warp,"check",str(game),"--ticks",str(ticks)],capture_output=True,text=True)
     log=run.stdout+run.stderr
     for line in log.splitlines():
         if "Testing " in line or "hook" in line or "target " in line or "route ended" in line:
@@ -557,4 +584,5 @@ with tempfile.TemporaryDirectory() as temp:
     assert len(seen)==len(ROUTES) and len(set(seen))==len(ROUTES), seen
     assert not snapshot["errors"] and run.returncode==0, snapshot["errors"]
     assert state["phase"]=="complete" and state["room"]==len(ROUTES) and state["falls"]==0, state
-    print(f"All {len(ROUTES)} rooms solved with two controllers, zero falls.")
+    label = f"Room {args.room}" if args.room else f"All {len(ROUTES)} rooms"
+    print(f"{label} solved with two controllers, zero falls.")

@@ -78,13 +78,12 @@ class PlaytestSession:
         self.db = connect_log(log_dir)
         self.displayed = None
 
-    def _finish_advance(self):
+    def _finish_advance(self, live):
         pending = self.db.execute("SELECT source,target,finish FROM advance").fetchone()
         if not pending:
             return None
         source, target, finish = pending
-        live = self.client.review("status")
-        if not live["active"]:
+        if not live["active"] or (live["finished"] and live["room"]==source and target!=source):
             live = self.client.review("begin", target)
         # Repeat delivery after an interrupted request without moving twice.
         if live["room"] == source and not live["finished"]:
@@ -96,16 +95,7 @@ class PlaytestSession:
         return self._display(live)
 
     def start(self):
-        recovered = self._finish_advance()
-        if recovered:
-            return recovered
-        live = self.client.review("status")
-        saved = self.db.execute("SELECT room,finished FROM checkpoint").fetchone()
-        if not live["active"]:
-            live = self.client.review("begin", min(saved["room"],live["total"]))
-            if saved["finished"]:
-                live = self.client.review("next")
-        return self._display(live)
+        return self.status()
 
     def _display(self, live):
         if not live["active"]:
@@ -122,12 +112,28 @@ class PlaytestSession:
         return live
 
     def status(self):
-        recovered = self._finish_advance()
+        live = self.client.review("status")
+        saved = self.db.execute("SELECT room,finished FROM checkpoint").fetchone()
+        if saved["finished"] and saved["room"] < live["total"]:
+            source = saved["room"]
+            target = source + 1
+            with self.db:
+                changed = self.db.execute(
+                    "UPDATE checkpoint SET room=?,finished=0 WHERE room=? AND finished=1", (target,source)
+                ).rowcount
+                if changed:
+                    # An undelivered finish for the former last room is now an advance.
+                    self.db.execute("INSERT OR REPLACE INTO advance VALUES(1,?,?,0)", (source,target))
+        recovered = self._finish_advance(live)
         if recovered:
             return recovered
-        data = self.client.review("status")
-        # A newly prepared GameNight match installs a fresh VM.
-        return self._display(data) if data["active"] else self.start()
+        if not live["active"]:
+            # A newly prepared GameNight match installs a fresh VM.
+            saved = self.db.execute("SELECT room,finished FROM checkpoint").fetchone()
+            live = self.client.review("begin", min(saved["room"],live["total"]))
+            if saved["finished"]:
+                live = self.client.review("next")
+        return self._display(live)
 
     def _advance(self, previous, good=False):
         n = previous["room"]
@@ -146,7 +152,7 @@ class PlaytestSession:
                                 (n,previous["name"],"cleared" if previous["cleared"] else "skipped",timestamp()))
                 self.db.execute("UPDATE checkpoint SET room=?,finished=? WHERE id=1",(target,finish))
                 self.db.execute("INSERT INTO advance VALUES(1,?,?,?)",(n,target,finish))
-        return self._finish_advance() or self.status()
+        return self.status()
 
     def approve(self):
         live=self.client.review("status")

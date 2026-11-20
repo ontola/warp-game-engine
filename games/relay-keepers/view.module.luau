@@ -1,3 +1,10 @@
+local coast=require("coast")
+local keepers=require("keepers")
+local decks=require("decks")
+local shells=require("shells")
+local tidepool=require("tidepool")
+local portals=require("portals")
+local atlasmap=require("atlasmap")
 local ink,cream="#18363e","#fff0c9"
 local amber,mint="#ffbc66","#75e3ce"
 local scale,left,top
@@ -5,201 +12,9 @@ local function box(x,y,w,h,c)
     hud.box(left+x*scale,top+y*scale,w*scale,h*scale,c)
 end
 local function xy(x,y) return 40+56*x,520-56*y end
-local function landmark(district,x,y,c)
-    if district==1 then
-        -- Dry dock gantry and hanging block.
-        box(x-57,y,114,9,c)
-        for _,d in {-1,1} do box(x+d*51,y,6,148,c) end
-        box(x-3,y+8,2,47,c)
-        box(x-10,y+52,16,9,c)
-    elseif district==2 then
-        box(x,y,6,137,c)
-        for i=0,1 do
-            box(x+3,y+i*27,36,5,c)
-            box(x+31,y-4+i*27,9,12,c)
-        end
-    elseif district==3 then
-        for i=0,5 do box(x-54+9*i,y+30-5*i,108-18*i,6,c) end
-        box(x-52,y+36,4,91,c)
-        box(x+48,y+36,4,91,c)
-        box(x-52,y+78,104,4,c)
-    elseif district==4 then
-        box(x-3,y+24,6,107,c)
-        for i=0,7 do
-            local a=i*math.pi/4
-            box(x+25*math.cos(a)-2,y+25*math.sin(a),5,6,c)
-        end
-        box(x-1,y-17,3,20,c)
-        box(x-14,y,16,3,c)
-    elseif district==5 then
-        for i=0,2 do
-            box(x+21*i,y+11*i,12,131-11*i,c)
-            box(x+21*i-2,y+11*i,16,5,c)
-        end
-    elseif district==6 or district==10 then
-        for i=0,10 do box(x-i*7,y+i*9,7+i*14,11,c) end
-    elseif district==7 then
-        box(x-3,y+22,4,108,c)
-        for j=0,6 do box(x+2,y+28+9*j,7*j+4,9,c) end
-        box(x-36,y+123,87,6,c)
-        box(x-29,y+129,72,6,c)
-    elseif district==9 then
-        for j=0,5 do
-            box(x-35+j%2*6,y+35+13*j,72,5,c)
-            box(x+(if j%2==0 then 31 else -29),y+39+13*j,6,10,c)
-        end
-    elseif district==11 then
-        box(x-4,y+18,8,122,c)
-        box(x-26,y+15,52,6,c)
-        box(x-19,y+20,10,39,c)
-        box(x+9,y+20,10,39,c)
-    elseif district>=7 then
-        local tall=(district-6)*14
-        box(x-37,y-tall,6,149+tall,c)
-        box(x+37,y-tall,6,149+tall,c)
-        box(x-41,y-3-tall,87,9,c)
-        box(x-12,y-tall,2,43,c)
-        box(x+16,y-tall,2,43,c)
-        box(x-18,y+37-tall,43,8,c)
-    end
-end
-
-local function landscape(l,s)
-    local night=l.clock and not s.past
-    local sky=if night then "#394a69" else "#9fc6bc"
-    local far=if night then "#505b78" else "#85afa6"
-    local ridge=if night then "#586981" else "#729995"
-    local districts={
-        {"#bfcdc4","#9aada2","#829895"}, {"#e0bd9c","#baa18c","#98867d"},
-        {"#b7ccda","#96aec3","#798ba4"}, {"#b8bdcf","#969ab0","#7c829c"},
-        {"#e2c8ae","#bea6a0","#978692"}, {"#b0c4bc","#94a89e","#6f8987"},
-        {"#b8d9d3","#85aba6","#708f90"}, {"#e9cba4","#bda28f","#927d78"},
-        {"#c2d4d2","#a3b4bb","#8194a1"}, {"#ccbcd3","#a39bab","#867d93"}, {"#e8c5ae","#c69f94","#9d8185"},
-    }
-    if l.district and not night then sky,far,ridge=unpack(districts[l.district]) end
-    box(0,0,1200,640,sky)
-    local sunX=if night then 150 else 956
-    local sunColor=if night then "#dde5d0" else "#f5da9a"
-    for j,w in {28,48,60,66,66,60,48,28} do box(sunX-w/2,85+j*8,w,8,sunColor) end
-    if night then
-        box(sunX+1,90,34,49,sky)
-        for _,p in {{270,120},{915,109},{1110,161},{650,72},{407,185},{784,141}} do box(p[1],p[2],4,4,cream) end
-    else
-        for _,p in {{52,160,134},{430,120,89},{735,166,103},{1010,135,64}} do
-            box(p[1],p[2],p[3],5,"#c5d9c3")
-            box(p[1]+16,p[2]-5,p[3]*0.54,6,"#c5d9c3")
-        end
-    end
-    for _,p in {{0,344,112},{107,322,76},{171,353,143},{383,300,72},{447,325,110},{673,315,84},{730,274,37},{808,348,170},{992,303,80},{1054,329,146}} do
-        box(p[1],p[2],p[3],530-p[2],far)
-        box(p[1]+6,p[2]-6,p[3]-12,7,far)
-        if night then
-            for j=1,3 do box(p[1]+8*j,p[2]+21,3,9,"#a4a492") end
-        end
-    end
-    for _,x in {75,405,817} do
-        if l.district then
-            landmark(l.district,x+44,232,ridge)
-            continue
-        end
-        box(x,224,7,277,ridge)
-        box(x-42,222,97,5,ridge)
-        box(x-39,215,42,3,ridge)
-        box(x+48,226,2,33,ridge)
-    end
-    box(0,475,1200,165,if night then "#435e70" else "#6c9893")
-    box(0,558,1200,82,if night then "#344b61" else "#507d7c")
-    for j=1,12 do
-        local x=(j*143+s.time*5)%1240-45
-        box(x,570+((j*13)%43),26+(j%4)*12,3,ridge)
-    end
-end
-
-local function robot(x,y,i,r,s)
-    local c=if i==1 then amber else mint
-    local stride=if r.on then math.sin(r.stride or 0)*math.min(1,(r.speed or 0)/4) else 0
-    local feet=y
-    y+=math.abs(stride)*1.6+(r.impact or 0)*5
-    local height=63
-    if (r.spawnGlow or 0)>0 then
-        local radius=12+(1-r.spawnGlow)*22
-        for k=0,5 do
-            local a=k*math.pi/3
-            box(x+radius*math.cos(a)-2,y-29+radius*math.sin(a),4,4,cream)
-        end
-    end
-    if (r.impact or 0)>0.08 then
-        local spread=(1-r.impact)*17
-        for _,d in {-1,1} do box(x+d*(12+spread),feet-4-spread*0.22,6,3,cream) end
-    end
-    if s.owner==i then
-        for _,d in {-1,1} do
-            box(x+d*20-5,y-43,10,20,cream)
-            box(x+d*26-4,y-49,8,13,cream)
-        end
-    end
-    box(x-15,y-height+8,30,32,ink)
-    box(x-12,y-height+10,24,27,c)
-    if i==1 then
-        box(x-12,y-height,24,8,c)
-        box(x-18,y-height+6,36,6,ink)
-    else
-        box(x-11,y-height-3,4,12,ink)
-        box(x+7,y-height-3,4,12,ink)
-        box(x-14,y-height-6,9,6,c)
-        box(x+5,y-height-6,9,6,c)
-    end
-    box(x-10,y-48,20,10,ink)
-    box(x+3*r.face-5,y-46,3,4,cream)
-    box(x+3*r.face+2,y-46,3,4,cream)
-    box(x-12,y-26,24,17,ink)
-    box(x-9,y-25,18,10,c)
-    box(x-13+4*stride,feet-10-math.max(0,stride)*4,9,10,ink)
-    box(x+4-4*stride,feet-10+math.min(0,stride)*4,9,10,ink)
-end
-
 local function gridIcon(x,y)
     for row=0,1 do
         for col=0,2 do box(x+col*7,y+row*7,5,5,cream) end
-    end
-end
-
-local function roomMap(rooms,s)
-    box(0,0,1200,640,ink)
-    local firstRow=math.clamp(math.floor((s.mapRoom-1)/7)-6,0,math.max(0,math.ceil(#rooms/7)-8))
-    -- The left rail locates the visible rows in the full campaign.
-    local rows=math.ceil(#rooms/7)
-    for i=0,rows-1 do
-        local current=i==math.floor((s.mapRoom-1)/7)
-        local visible=i>=firstRow and i<firstRow+8
-        box(16,200+i*13,if current then 14 else 6,5,if current then amber elseif visible then cream else "#516e70")
-    end
-    for n=firstRow*7+1,math.min(#rooms,(firstRow+8)*7) do
-        local l=rooms[n]
-        local col,row=(n-1)%7,math.floor((n-1)/7)-firstRow
-        local x,y=44+col*160,27+row*74
-        local selected=n==s.mapRoom
-        box(x-3,y-3,153,65,if selected then cream else "#436266")
-        box(x,y,147,59,if selected then "#638779" else "#36565b")
-        for _,span in l.land do
-            local yTop=y+46-span[3]*6.2
-            local color=if span[4]=="f" then "#b7bef7" elseif span[4]=="p" then amber else "#bad2be"
-            box(x+5+span[1]*6.8,yTop,(span[2]-span[1])*6.8,2.5,color)
-        end
-        box(x+5+l.goal[1]*6.8-2,y+39-l.goal[2]*6.2,4,6,mint)
-        for _,item in {{l.clock,"#b7bef7"},{l.key,amber},{l.spring,amber},{l.wings,cream}} do
-            local p=item[1]
-            if p then box(x+5+p[1]*6.8-1,y+40-p[2]*6.2,3,3,item[2]) end
-        end
-        if l.ferry then
-            local p=l.ferry.from
-            box(x+5+p[1]*6.8-5,y+46-p[2]*6.2,11,3,amber)
-        end
-        if n==s.room then box(x+3,y+3,7,5,amber) end
-        if selected then
-            box(x+131,y+3,12,12,ink)
-            box(x+135,y+9,4,4,mint)
-        end
     end
 end
 
@@ -209,8 +24,9 @@ local function draw(rooms,s)
     scale=math.min(w/1200,h/640)
     left,top=(w-1200*scale)/2,(h-640*scale)/2
     hud.box(0,0,w,h,ink)
-    if s.mapRoom then roomMap(rooms,s) return end
-    landscape(l,s)
+    if s.mapRoom then atlasmap.draw(box,rooms,s) return end
+    coast.draw(box,l,s)
+    tidepool.draw(box,xy,l,s)
     box(1128,20,48,26,ink)
     box(1135,24,4,4,if s.review then "#64817e" else amber)
     box(1130,29,4,4,if s.review then amber else "#64817e")
@@ -225,33 +41,7 @@ local function draw(rooms,s)
     else
         gridIcon(1151,27)
     end
-    for i,b in l.land do
-        local x,y=xy(b[1],b[3])
-        local width=(b[2]-b[1])*56
-        local kind=b[4]
-        local temporal=kind=="p" or kind=="f"
-        local active=not temporal or s.latch or (s.past==(kind=="p"))
-        if type(kind)=="number" then active=s.link>=kind end
-        local age=s.glass[tostring(i)]
-        if age and age>=0.42 then active=false end
-        local color=if kind=="p" then amber elseif kind=="f" then "#b7bef7" elseif kind=="glass" then "#a0e3e2" else "#e5cfaa"
-        if type(kind)=="number" then color=mint end
-        if active then
-            box(x,y,width,8,color)
-            box(x,y+8,width,14,ink)
-            box(x+4,y+13,width-8,3,"#527273")
-            if kind=="glass" then
-                for j=7,width-6,18 do box(x+j,y,3,7,ink) end
-            elseif not temporal then
-                for j=14,width-10,122 do
-                    box(x+j,y+22,8,if b[3]==0 then 56 else 22,"#456867")
-                    box(x+j-4,y+22,16,5,ink)
-                end
-            end
-        else
-            for j=2,width-6,18 do box(x+j,y+3,8,3,color) end
-        end
-    end
+    decks.draw(box,xy,l,s)
     if s.ferry then
         local f,spec=s.ferry,l.ferry
         local ax,ay=xy(unpack(spec.from))
@@ -267,8 +57,15 @@ local function draw(rooms,s)
         end
         local x,y=xy(f.x,f.y)
         local span=(spec.width or 3)*56
-        box(x-span/2,y,span,9,if f.flash>0 then cream else amber)
-        box(x-span/2+5,y+9,span-10,14,ink)
+        box(x-span/2,y,span,5,if f.flash>0 then cream else amber)
+        box(x-span/2+3,y+5,span-6,15,ink)
+        box(x-span/2+8,y+8,span-16,4,"#658586")
+        box(x-span/2+12,y+20,span-24,5,"#345863")
+        for _,side in {-1,1} do
+            local wx=x+side*(span*0.32)
+            box(wx-7,y+21,14,6,ink)
+            box(wx-3,y+22,6,4,amber)
+        end
         for i,r in s.crew do
             local aboard=r.deck or (r.ride and s.crew[3-i].deck)
             local lamp=if i==1 then amber else mint
@@ -309,13 +106,23 @@ local function draw(rooms,s)
     local function at(p) return xy(p[1],p[2]) end
     local function portal(p)
         local x,y=at(p)
-        box(x-40,y-82,80,8,ink)
+        box(x-29,y-85,58,7,ink)
+        box(x-36,y-79,72,7,ink)
+        box(x-32,y-77,64,3,"#7da4a0")
         for _,d in {-1,1} do
-            box(x+d*37-3,y-74,6,74,ink)
+            local upright=x+d*36
+            box(upright-4,y-73,8,73,ink)
+            box(upright-2,y-66,3,38,"#508280")
+            box(upright-8,y-8,16,8,ink)
             local r=s.crew[if d<0 then 1 else 2]
             local lit=r.on and math.abs(r.x-p[1])<0.85 and math.abs(r.y-p[2])<0.34
-            box(x+d*11-5,y-89,10,10,ink)
-            box(x+d*11-3,y-87,6,6,if lit then cream elseif d<0 then amber else mint)
+            local lamp=if d<0 then amber else mint
+            box(x+d*13-8,y-93,16,11,ink)
+            box(x+d*13-5,y-92,10,8,if lit then cream else lamp)
+            if lit then
+                box(x+d*13-3,y-98,6,3,cream)
+                box(upright-2,y-65,4,50,lamp)
+            end
         end
     end
     local link=l.links and l.links[s.link+1]
@@ -336,35 +143,31 @@ local function draw(rooms,s)
             box(x-5,y-23+pulse,10,3,mint)
         end
     end
+    shells.draw(box,xy,l,s)
+    portals.draw(box,xy,l,s)
     portal(l.goal)
     if l.secondGoal then portal(l.secondGoal) end
     local function door(bar,opened,height)
         if not bar then return end
         local x,y=xy(bar,0)
         local high=56*(height or 6.9)
-        box(x-13,y-high,26,11,ink)
+        box(x-13,y-high,26,7,ink)
+        box(x-10,y-high+7,20,11,ink)
+        box(x-7,y-high+3,14,4,if opened then mint else amber)
         if not opened then
-            box(x-7,y-high+11,14,high-11,ink)
-            for j=20,high-3,21 do box(x-5,y-j,10,7,amber) end
+            box(x-5,y-high+17,10,high-17,ink)
+            box(x-3,y-high+18,3,high-18,"#537576")
+            for j=16,high-20,28 do
+                box(x-8,y-j,16,9,ink)
+                box(x-6,y-j+2,12,4,"#e1a15f")
+            end
+            box(x-12,y-9,24,9,ink)
         else box(x-8,y-high+11,16,6,mint) end
     end
     door(l.gate,s.open,l.gateHeight)
     door(l.lock,s.key)
     if s.room==1 and not s.key then
-        -- A looping stencil painted on the first quay demonstrates two hops.
-        local t=(s.time%4)/4
-        local baseX,baseY=352,510
-        local ghost="#aec4af"
-        box(baseX-9,baseY-38,18,38,ghost)
-        local k=math.clamp(t*2,0,1)
-        local gx,gy=baseX-45+45*k,baseY-38*k-30*math.sin(math.pi*k)
-        if t>0.5 then
-            k=(t-0.5)*2
-            gx,gy=baseX+46*k,baseY-38-48*k-29*math.sin(math.pi*k)
-        end
-        box(gx-9,gy-36,18,29,ghost)
-        box(gx-9,gy-7,6,7,ghost)
-        box(gx+3,gy-7,6,7,ghost)
+        keepers.demonstrate(box,xy,l,s)
     end
     if l.pad then
         local x,y=at(l.pad)
@@ -396,11 +199,17 @@ local function draw(rooms,s)
     if l.key and not s.key then
         local x,y=at(l.key)
         y-=31+math.sin(s.time*4)*3
-        box(x-15,y-8,15,15,ink)
-        box(x-12,y-5,9,9,amber)
-        box(x-9,y-2,3,3,ink)
-        box(x,y-3,19,5,amber)
-        box(x+12,y+1,5,7,amber)
+        box(x-16,y-8,17,17,ink)
+        box(x-19,y-5,23,11,ink)
+        box(x-14,y-6,13,13,amber)
+        box(x-16,y-3,17,7,amber)
+        box(x-11,y-2,7,5,ink)
+        box(x-14,y-5,6,3,cream)
+        box(x+1,y-4,20,8,ink)
+        box(x+10,y+3,5,5,ink)
+        box(x+16,y+2,6,8,ink)
+        box(x,y-3,20,4,amber)
+        box(x+17,y,4,6,amber)
     end
     if l.wings and s.owner==0 then
         local x,y=at(l.wings)
@@ -414,11 +223,16 @@ local function draw(rooms,s)
     if s.crate then
         local x,y=xy(s.crate,0)
         box(x-26,y-50,52,50,ink)
-        box(x-22,y-46,44,42,"#bb8460")
-        for j=0,6 do box(x-20+j*6,y-12-j*5,8,4,amber) end
+        box(x-22,y-46,44,42,"#ad7653")
+        for j=1,3 do box(x-22+j*11,y-45,2,39,"#825940") end
+        for j=0,6 do box(x-20+j*6,y-12-j*5,8,5,amber) end
+        for _,height in {-45,-9} do
+            box(x-23,y+height,46,4,"#e2ac70")
+            for _,d in {-1,1} do box(x+18*d-1,y+height,3,3,ink) end
+        end
     end
     for i,r in s.crew do
-        if r.id~=0 then local x,y=xy(r.x,r.y) robot(x,y,i,r,s) end
+        if r.id~=0 then local x,y=xy(r.x,r.y) keepers.draw(box,x,y,i,r,s) end
     end
     -- The trail of lights is also the level-complete transition.
     local first=s.room<=14 and 1 or 15+7*math.floor((s.room-15)/7)

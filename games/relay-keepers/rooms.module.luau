@@ -42,6 +42,9 @@ local districts={
     require("drydock"), require("switchyard"), require("aviary"),
     require("almanac"), require("foundry"), require("summit"),
     require("narrows"), require("windinghouse"), require("springline"), require("skyport"), require("waystations"),
+    require("saltmarsh"), require("glasshouse"), require("starworks"), require("aurora"),
+    require("counterpoise"), require("lanternmile"), require("emberkilns"), require("beaconhead"),
+    require("tidepools"), require("crabwalk"), require("foldworks"),
 }
 for district,chapter in districts do
     for _,room in chapter do
