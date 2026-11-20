@@ -212,11 +212,19 @@ local function draw(rooms,s)
     if s.mapRoom then roomMap(rooms,s) return end
     landscape(l,s)
     box(1128,20,48,26,ink)
-    box(1135,24,4,4,amber)
-    box(1130,29,4,4,"#64817e")
+    box(1135,24,4,4,if s.review then "#64817e" else amber)
+    box(1130,29,4,4,if s.review then amber else "#64817e")
     box(1140,29,4,4,"#64817e")
     box(1135,34,4,4,"#64817e")
-    gridIcon(1151,27)
+    if s.review then
+        local c=if s.review.held then amber else cream
+        box(1150,26,20,11,c)
+        box(1153,36,5,4,c)
+        box(1154,30,3,3,ink)
+        box(1162,30,3,3,ink)
+    else
+        gridIcon(1151,27)
+    end
     for i,b in l.land do
         local x,y=xy(b[1],b[3])
         local width=(b[2]-b[1])*56
@@ -423,7 +431,21 @@ local function draw(rooms,s)
         end
     end
     progress(30)
-    if s.phase~="play" then
+    if s.review and s.review.held then
+        box(570,48,60,28,ink)
+        box(584,54,7,16,amber)
+        box(597,54,7,16,amber)
+        if s.review.cleared then
+            box(612,54,5,16,mint)
+            if not s.review.finished then
+                local c=if s.review.approve then mint else cream
+                box(634,48,39,28,ink)
+                box(640,59,13,10,"#526e71")
+                box(654,57,13,12,"#526e71")
+                box(655,53,11,4,c)
+            end
+        end
+    elseif s.phase~="play" then
         box(455,95,290,71,ink)
         progress(124)
         if s.phase=="complete" then

@@ -27,6 +27,10 @@ end
 
 local function enter(n)
     local l=rooms[n]
+    if state.review then
+        state.review={held=false,cleared=false,finished=false,approve=false}
+        state.falls=0
+    end
     state.room,state.phase,state.delay=n,"play",0
     state.key,state.owner,state.latch,state.past=false,0,false,true
     state.clockHeld,state.pad,state.open,state.timer=false,false,false,0
@@ -40,9 +44,47 @@ end
 local function init()
     state.crew={{id=0},{id=0}}
     state.mapRoom=nil
+    state.review=nil
     state.time,state.falls=0,0
     roster()
     enter(1)
+end
+
+-- The live console and the playtest desk share this small control surface.
+-- Keeping the review in state preserves a paused scene across script reloads.
+local function playtest(action,n)
+    local review=state.review
+    if action=="begin" then
+        assert(type(n)=="number" and n%1==0 and n>=1 and n<=#rooms,"invalid playtest room")
+        state.mapRoom=nil
+        state.review={}
+        enter(n)
+    elseif action~="status" then
+        assert(review,"begin a playtest first")
+        if action=="pause" then
+            review.held=true
+        elseif action=="resume" then
+            review.held=review.cleared or review.finished
+        elseif action=="retry" then
+            enter(state.room)
+        elseif action=="next" then
+            if state.room<#rooms then
+                enter(state.room+1)
+            elseif not review.finished then
+                review.held,review.finished=true,true
+                review.approve=false
+                state.phase="complete"
+                game.finish()
+            end
+        else
+            error("unknown playtest action")
+        end
+    end
+    review=state.review
+    return {room=state.room,name=rooms[state.room].name,total=#rooms,active=review~=nil,
+        held=review and review.held or false,cleared=review and review.cleared or false,
+        finished=review and review.finished or false,approve=review and review.approve or false,
+        falls=state.falls}
 end
 
 local function near(r,point,radius)
@@ -202,7 +244,15 @@ end
 
 local function tick(dt,inputs)
     if state.crew[1].id==0 or state.crew[2].id==0 then return end
-    if mapInput(inputs,dt) then return end
+    if state.review then
+        for _,r in state.crew do
+            if inputs[r.id].pressed.west then state.review.held=true end
+            if state.review.cleared and not state.review.finished and inputs[r.id].pressed.right_shoulder then
+                state.review.approve=true
+            end
+        end
+        if state.review.held then return end
+    elseif mapInput(inputs,dt) then return end
     state.time+=dt
     if state.phase~="play" then
         state.delay+=dt
@@ -273,9 +323,13 @@ local function tick(dt,inputs)
         state.phase=if state.room==#rooms then "complete" else "transfer"
         game.log(l.name)
         sound.play("pickup",{pitch=1.4})
-        if state.phase=="complete" then game.finish() end
+        if state.review then
+            state.review.held,state.review.cleared=true,true
+        elseif state.phase=="complete" then
+            game.finish()
+        end
     end
 end
-return {init=init,tick=tick,players_changed=roster,draw=function()
+return {init=init,tick=tick,players_changed=roster,debug={playtest=playtest},draw=function()
     view.draw(rooms,state)
 end}
