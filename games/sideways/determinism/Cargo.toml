@@ -2,6 +2,7 @@
 name = "gdcompat"
 edition.workspace = true
 version.workspace = true
+license.workspace = true
 description = "Sideways' stable deterministic RNG, math, hashing and terrain noise"
 
 [dependencies]

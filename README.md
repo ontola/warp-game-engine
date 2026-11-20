@@ -109,3 +109,9 @@ system, not split screen, so do not use them to decide whether Warp suits a game
 See [status](engine/docs/status.md#target).
 
 [Third-party asset credits](games/sideways/CREDITS.md).
+
+## License
+
+The engine and games are [MIT](LICENSE). Third-party assets keep their own
+licenses, listed beside them (for example `games/sideways/CREDITS.md` and
+the `LICENSE-*` files in asset folders).

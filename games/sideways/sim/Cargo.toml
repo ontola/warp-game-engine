@@ -2,6 +2,7 @@
 name = "sideways"
 edition.workspace = true
 version.workspace = true
+license.workspace = true
 description = "Sideways gameplay simulation: stage, cars, AI, race"
 
 [dependencies]
