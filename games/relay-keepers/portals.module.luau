@@ -32,39 +32,69 @@ function M.step(l,s)
     end
 end
 
+-- A suspended lens. The dark centre and the cuts at the rim keep its round
+-- silhouette legible against the sky. Combine consecutive equal pixels once.
+local lenses={}
+local cores={"#383358","#553d44","#244550"}
+for row=-7,7 do
+    local previous=nil
+    local first=-7
+    for col=-7,8 do
+        local radius=row*row+col*col
+        local tone=nil
+        if col<=7 and radius<=57 then
+            if radius>=47 then tone=1
+            elseif radius>=32 and (row==0 or col==0) then tone=1
+            elseif radius>=36 then tone=2
+            elseif radius>=32 then tone=3
+            else tone=4 end
+        end
+        if previous~=tone then
+            if previous then table.insert(lenses,{first*5-2.5,row*5-2.5,(col-first)*5,previous}) end
+            previous,first=tone,col
+        end
+    end
+end
+
+local function pairMark(box,x,y,n,color,core)
+    if n==1 then
+        box(x-4,y-13,8,26,color)
+        box(x-9,y-8,18,16,color)
+        box(x-14,y-3,28,6,color)
+        box(x-3,y-3,6,6,core)
+    elseif n==2 then
+        box(x-12,y-12,8,24,color)
+        box(x+4,y-12,8,24,color)
+    else
+        box(x-4,y-13,8,26,color)
+        box(x-13,y-4,26,8,color)
+    end
+end
+
 function M.draw(box,xy,l,s)
     if not l.portals then return end
     for n,pair in l.portals do
-        local c,shadow=colors[n],shadows[n]
-        local phase=s.time*2.7+n
+        local mark=(n-1)%#colors+1
+        local c,core=colors[mark],cores[mark]
+        local palette={ink,c,shadows[mark],core}
+        -- Both mouths of a pair turn on exactly the same beat.
+        local angle=s.time*1.65+n*1.9
         for _,p in pair do
-            local x,y=xy(p[1],p[2])
-            -- Broken concentric rings keep the approach visible through the mouth.
-            box(x-20,y-85,40,7,ink)
-            box(x-18,y-83,36,3,c)
-            for _,d in {-1,1} do
-                box(x+26*d-7,y-77,14,10,ink)
-                box(x+32*d-4,y-66,8,42,ink)
-                box(x+26*d-6,y-23,12,12,ink)
-                box(x+20*d-6,y-10,12,7,ink)
-                box(x+25*d-4,y-75,8,5,c)
-                box(x+32*d-2,y-62,4,34,shadow)
-                box(x+26*d-3,y-21,6,7,c)
-                local offset=(s.time*24+17*(d+1))%34
-                box(x+32*d-2,y-62+offset,4,5,c)
+            local x,floorY=xy(p[1],p[2])
+            local y=floorY-51+math.sin(angle)*2
+            box(x-16,floorY-4,32,4,"#20324565")
+            for _,r in lenses do box(x+r[1],y+r[2],r[3],5,palette[r[4]]) end
+            for i=0,2 do
+                local a=angle+i*math.pi*2/3
+                for trail=0,2 do
+                    local t=a-trail*0.23
+                    local radius=22-trail
+                    local size=6-trail
+                    box(x+math.cos(t)*radius-size/2,y+math.sin(t)*radius-size/2,size,size,
+                        if trail==0 then cream else shadows[mark])
+                end
             end
-            box(x-26,y-4,52,4,shadow)
-            -- Matching colours, glyph counts and pulse phases identify each pair.
-            for k=1,n do
-                local gx=x+(k-(n+1)/2)*10
-                local gy=y-92+math.sin(phase)*2
-                box(gx-3,gy-3,6,6,ink)
-                box(gx-2,gy-2,4,4,c)
-            end
-            for k=0,2 do
-                local a=phase+k*math.pi*2/3
-                box(x+math.cos(a)*13-2,y-45+math.sin(a)*19-2,4,4,if k==0 then cream else c)
-            end
+            pairMark(box,x,y,mark,c,core)
         end
     end
 end

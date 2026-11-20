@@ -98,6 +98,7 @@ end
 
 local function printLandmark(kind,rect,p)
     local mass,light=p[6],p[7]
+    local window=blend(light,p[3],0.40)
     if kind=="beacon" then
         polygon(rect,{712,431,774,403,812,401,842,372,886,365,921,324,992,320,1018,352,1058,363,1132,401,1200,415,1200,458,712,458},mass)
         polygon(rect,{875,384,923,328,987,324,957,350,940,352,917,380},light)
@@ -157,7 +158,7 @@ local function printLandmark(kind,rect,p)
             local x,y,h=unpack(v)
             polygon(rect,{x-33,y,x-27,y-34,x-12,y-52,x-8,y-h,x+8,y-h,x+12,y-52,x+28,y-34,x+35,y},mass)
             rect(x-10,y-h-3,21,5,light)
-            polygon(rect,{x-13,y,x-11,y-16,x-6,y-25,x+6,y-25,x+12,y-16,x+13,y},p[3])
+            polygon(rect,{x-13,y,x-11,y-16,x-6,y-25,x+6,y-25,x+12,y-16,x+13,y},window)
             rect(x-4,y-18,8,18,light)
         end
         polygon(rect,{577,439,685,423,772,391,832,393,886,373,1005,394,1100,422,1200,420,1200,453,577,453},mass)
@@ -166,9 +167,8 @@ local function printLandmark(kind,rect,p)
             local x,y,w,h=unpack(v)
             polygon(rect,{x,y,x+w*.12,y-h*.36,x+w*.21,y-h*.38,x+w*.27,y-h*.86,x+w*.40,y-h,x+w*.72,y-h,x+w*.83,y-h*.61,x+w*.91,y-h*.23,x+w,y},mass)
             polygon(rect,{x+w*.21,y-h*.38,x+w*.27,y-h*.84,x+w*.41,y-h,x+w*.68,y-h,x+w*.54,y-h*.80,x+w*.51,y-h*.68,x+w*.37,y-h*.63,x+w*.34,y-h*.42},light)
-            rect(x+w*.19,y-9,w*.65,4,p[9])
+            rect(x+w*.19,y-9,w*.65,3,light)
         end
-        for _,v in {{0,442,108},{298,432,55},{888,443,87},{1080,437,102}} do rect(v[1],v[2],v[3],3,p[9]) end
     elseif kind=="crab" then
         for _,v in {{93,424,92},{320,432,61},{870,421,125}} do
             local x,y,w=unpack(v)
@@ -181,7 +181,7 @@ local function printLandmark(kind,rect,p)
             rect(x+w*.25,y-74,w*.17,5,light)
         end
         for _,x in {550,585,616,1045,1082,1129} do
-            rect(x,408,3,22,mass) rect(x-3,414,9,8,p[3]) rect(x-5,423,12,4,mass)
+            rect(x,408,3,22,mass) rect(x-3,414,9,8,window) rect(x-5,423,12,4,mass)
         end
     elseif kind=="portal" then
         for _,v in {{90,420,66},{220,425,100},{810,423,116},{1057,424,77}} do
@@ -191,10 +191,6 @@ local function printLandmark(kind,rect,p)
             rect(x-16,y-h*.61,29,5,p[5])
             local fy=y-h-30
             polygon(rect,{x-11,fy,x-3,fy-16,x+8,fy-14,x+10,fy-1,x+1,fy+6},light)
-        end
-        for n=0,19 do
-            local a=n/19*math.pi
-            rect(655+math.cos(a)*116,213-math.sin(a)*64,11,4,p[7])
         end
     elseif kind=="trestle" then
         for _,x in {128,368,608,848,1088} do
@@ -207,8 +203,7 @@ local function printLandmark(kind,rect,p)
                 if j%2==1 then rect(x+j*20+9,301+dy,3,math.max(2,83-dy),mass) end
             end
         end
-        rect(0,386,1200,7,mass)
-        rect(0,386,1200,2,light)
+        rect(0,386,1200,5,blend(p[5],mass,0.60))
     elseif kind=="lantern" then
         polygon(rect,{0,438,54,422,132,425,228,412,336,422,476,406,598,421,688,434,748,447,0,447},mass)
         for _,v in {{30,428,52},{157,421,59},{246,424,37},{376,421,58},{510,420,48},{990,424,55},{1072,421,44}} do
@@ -216,7 +211,7 @@ local function printLandmark(kind,rect,p)
             rect(x,y-35,w,34,mass)
             polygon(rect,{x-10,y-32,x+6,y-42,x+w*0.45,y-54,x+w,y-41,x+w+12,y-32},mass)
             rect(x+7,y-22,w-14,4,light)
-            for n=12,w-8,14 do rect(x+n,y-21,3,9,p[3]) end
+            for n=12,w-8,14 do rect(x+n,y-21,3,9,window) end
         end
         for _,v in {{50,195,2},{324,226,3},{594,185,2},{864,221,3}} do
             local x,y,phase=unpack(v)
@@ -229,8 +224,8 @@ local function printLandmark(kind,rect,p)
                 if j%3==2 then
                     local h=if j%2==0 then 11 else 17
                     rect(x+j*19.4+8,ly+2,2,7,mass)
-                    rect(x+j*19.4+4,ly+9,10,h,p[3])
-                    rect(x+j*19.4+1,ly+12,16,h-6,"#f6bb8d")
+                    rect(x+j*19.4+4,ly+9,10,h,window)
+                    rect(x+j*19.4+1,ly+12,16,h-6,light)
                     rect(x+j*19.4+5,ly+h+8,8,3,mass)
                 end
             end
@@ -272,12 +267,14 @@ local function plate(p,kind,moon)
     if moon then oval(rect,sx+21,sy-12,49,48,blend(p[1],p[2],0.22),4) end
     for _,v in {{51,164,109},{350,93,59},{543,175,91},{910,189,120},{997,110,77}} do
         local x,y,w=unpack(v)
-        local c=blend(p[2],p[3],0.28)
+        local localSky=blend(p[1],p[2],math.clamp((y-40)/360,0,1))
+        local c=blend(localSky,p[3],0.25)
         rect(x,y,w,4,c) rect(x+w*0.30,y-4,w*0.57,4,c)
     end
     if kind=="ice" or kind=="observatory" or kind=="portal" or moon then
+        local starlight=blend(p[4],p[3],0.36)
         for _,v in {{74,118},{142,57},{205,91},{270,64},{375,139},{418,88},{686,112},{731,75},{796,131},{1130,77},{1174,131}} do
-            rect(v[1],v[2],3,3,p[3])
+            rect(v[1],v[2],3,3,starlight)
         end
     end
     if kind=="ice" then
@@ -305,19 +302,15 @@ local function plate(p,kind,moon)
         end
     end
     polygon(rect,{0,353,76,330,168,345,252,323,340,357,438,336,511,354,582,337,648,351,726,322,784,327,861,294,951,314,1020,300,1093,339,1200,314,1200,449,0,449},p[5])
-    rect(0,410,1200,230,p[8])
-    rect(0,414,1200,2,p[9])
-    for _,v in {{42,425,93},{370,430,115},{585,419,164},{981,430,128},{228,443,54},{693,446,105},{853,436,57}} do
-        rect(v[1],v[2],v[3],3,p[9])
-    end
+    -- The far bay shares the ridge's haze. Foam and short glints belong to
+    -- playable water in the foreground.
+    local sea=blend(blend(p[8],p[5],0.50),p[2],0.22)
+    rect(0,410,1200,230,sea)
+    rect(0,410,1200,18,blend(sea,p[5],0.40))
+    rect(0,428,1200,17,blend(sea,p[5],0.18))
     printLandmark(kind,rect,p)
-    -- Darkening at the bottom gives falling and grounded players a clear edge.
-    local deep=blend(p[8],p[6],0.47)
+    local deep=blend(sea,p[6],0.22)
     polygon(rect,{0,581,172,573,260,578,443,565,527,566,654,575,811,560,912,563,1086,551,1200,556,1200,640,0,640},deep,6)
-    local tide=blend(p[8],p[9],0.50)
-    for _,v in {{8,593,86},{82,587,33},{341,604,75},{400,599,22},{637,580,35},{1030,583,94},{1073,579,31},{915,624,59}} do
-        rect(v[1],v[2],v[3],2,tide)
-    end
     return shapes
 end
 
@@ -354,10 +347,6 @@ function M.draw(rect,l,s)
         for i=1,12 do
             rect(sx+sweep*i*10-3,sy-2-i*0.23,6+math.abs(sweep)*7,3+i*0.57,blend(p[2],p[3],i/16))
         end
-    end
-    for i=0,13 do
-        local x=(i*137+t*(4+i%3))%1300-55
-        rect(x,449+(i*23)%151,16+(i%4)*12,2,p[9])
     end
     if kind~="ice" and kind~="observatory" and kind~="portal" then
         for i=0,2 do

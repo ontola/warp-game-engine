@@ -4,7 +4,6 @@ local colors={
     {k="#193640",s="#985735",m="#e99945",l="#ffca70",h="#fff1bb",v="#315566",e="#d2ffff",r="#c35e42"},
     {k="#193640",s="#317c77",m="#62b9a9",l="#94e9c8",h="#ddffe2",v="#315566",e="#d2ffff",r="#de8653"},
 }
-local stencils={k="#34596579",s="#55797968",m="#e1edce7c",l="#fbf1d699",h="#fff3cd99",v="#42657577",e="#fff1cc99",r="#b3d8be7c"}
 local stamps={
     { -- The lamp and broad brim stay readable from the other side of the room.
         ".....kkkkk.....","...kkllmmskk...", "..klllhmmmsmk..",
@@ -39,8 +38,8 @@ for i,rows in stamps do
     prints[i]=runs
 end
 
-function K.draw(rect,x,feet,i,r,s,ghost)
-    local pal=if ghost then stencils else colors[i]
+function K.draw(rect,x,feet,i,r,s)
+    local pal=colors[i]
     local dir=r.face or 1
     local stride=if r.on then math.sin(r.stride or 0)*math.min(1,(r.speed or 0)/4) else 0
     local tuck=if r.on then 0 elseif (r.vy or 0)>0 then 4 else 2
@@ -59,7 +58,7 @@ function K.draw(rect,x,feet,i,r,s,ghost)
         local spread=(1-r.impact)*17
         for _,d in {-1,1} do rect(x+d*(12+spread),feet-4-spread*0.22,6,3,"#fff0c9") end
     end
-    if s.owner==i and not ghost then
+    if s.owner==i then
         local flap=if r.on then 2 else 3+3*math.sin(s.time*15)
         for _,d in {-1,1} do
             for n=0,2 do
@@ -82,30 +81,66 @@ function K.draw(rect,x,feet,i,r,s,ghost)
     end
 end
 
-function K.demonstrate(rect,xy,l,s)
-    local bx,by=xy(l.land[2][1]-0.62,l.land[1][3])
-    local ex,ey=xy(l.land[2][1]+0.88,l.land[2][3])
-    -- The painted pair steps aside as the players approach the demonstration.
-    for _,r in s.crew do
-        if r.x>l.land[2][1]-1.30 and r.x<l.land[2][2] then return end
+-- Simple printed figures on the instruction sign, with the two keepers' headgear.
+local function signKeeper(rect,x,fy,seat)
+    local ink,paint="#253f44",colors[seat].l
+    rect(x-8,fy-21,16,11,ink)
+    rect(x-6,fy-19,12,4,paint)
+    rect(x-2,fy-16,8,3,"#fff5d9")
+    if seat==1 then
+        rect(x-5,fy-25,10,4,ink)
+        rect(x-3,fy-24,6,3,paint)
+        rect(x-10,fy-21,20,3,ink)
+    else
+        rect(x-7,fy-25,4,5,ink)
+        rect(x+3,fy-25,4,5,ink)
     end
-    local t=s.time%5.1
-    local gx,gy=bx+53,by
-    local on=true
-    if t>=0.65 then
-        local k=math.clamp((t-0.65)/0.78,0,1)
-        gx,gy=bx+53*(1-k),by-67*k-59*4*k*(1-k)
-        on=k>=1
+    rect(x-6,fy-10,12,7,ink)
+    rect(x-4,fy-10,8,4,paint)
+    rect(x-6,fy-4,4,4,ink)
+    rect(x+2,fy-4,4,4,ink)
+end
+
+function K.demonstrate(rect,xy,l,s)
+    local ledge=l.land[2]
+    local rider=false
+    for _,r in s.crew do
+        if r.id==0 or r.y>=ledge[3]-0.08 then return end
+        rider=rider or r.ride
+    end
+    if s.time<4 then return end
+
+    -- An inset safety diagram leaves the actual floor and landing clear.
+    local x=xy(ledge[1],0)-202
+    local y=158
+    local ink,board="#395354","#ebddbc"
+    rect(x+3,y,158,112,ink)
+    rect(x,y+3,164,106,ink)
+    rect(x+6,y+5,152,101,board)
+    rect(x+10,y+9,4,4,"#9eaa96")
+    rect(x+150,y+9,4,4,"#9eaa96")
+    local baseX,baseY=x+65,y+98
+    local lipX,lipY=x+98,y+49
+    rect(x+12,baseY,87,5,ink)
+    rect(lipX,lipY,52,5,ink)
+    -- Key painted over the landing.
+    rect(x+132,lipY-18,10,10,ink)
+    rect(x+135,lipY-15,4,4,board)
+    rect(x+141,lipY-15,11,3,ink)
+    rect(x+148,lipY-13,3,5,ink)
+
+    local t=(s.time-4)%5
+    if rider then t=2.05+(s.time%2.75) end
+    local gx,gy=x+28,baseY
+    if t>=0.55 then
+        local k=math.clamp((t-0.55)/0.85,0,1)
+        gx,gy=gx+(baseX-gx)*k,baseY-25*k-17*4*k*(1-k)
     end
     if t>=2.2 then
-        local k=math.clamp((t-2.2)/0.8,0,1)
-        gx,gy=bx+(ex-bx)*k,by-67+(ey-by+67)*k-60*4*k*(1-k)
-        on=k>=1
+        local k=math.clamp((t-2.2)/0.85,0,1)
+        gx,gy=baseX+(lipX+14-baseX)*k,baseY-25+(lipY-baseY+25)*k-16*4*k*(1-k)
     end
-    -- Brief blank beat between loops, after letting the landing read.
-    if t<4.45 then
-        K.draw(rect,bx,by,1,{face=1,on=true},s,true)
-        K.draw(rect,gx,gy,2,{face=if t<1.45 then -1 else 1,on=on},s,true)
-    end
+    signKeeper(rect,baseX,baseY,1)
+    signKeeper(rect,gx,gy,2)
 end
 return K

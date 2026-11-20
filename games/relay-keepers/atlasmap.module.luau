@@ -1,3 +1,4 @@
+local prompts=require("hudprompts")
 local coast=require("coast")
 local M={}
 
@@ -105,9 +106,10 @@ local function card(l)
     local function exit(p,c)
         if p then
             local x,y=wx(p[1]),wy(p[2])
-            rect(x-2,y-7,2,7,c)
-            rect(x,y-8,4,2,c)
-            rect(x+3,y-6,2,6,c)
+            rect(x-2,y-9,2,9,c)
+            rect(x,y-9,5,4,ivory)
+            rect(x+2,y-9,2,2,ink)
+            rect(x,y-7,2,2,ink)
         end
     end
     exit(l.goal,if l.secondGoal then amber else mint)
@@ -180,6 +182,8 @@ function M.draw(box,rooms,s)
         box(x-3,607,7,8,c)
         if row==focus then box(x-5,617,11,2,ivory) end
     end
+    prompts.draw(box,22,584,"play")
+    prompts.draw(box,1053,584,"close")
     shoulders(box,left-46,603,true,s.mapRoom>1)
     shoulders(box,left+width+46,603,false,s.mapRoom<count)
 end
