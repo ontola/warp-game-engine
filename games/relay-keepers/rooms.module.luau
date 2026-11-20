@@ -1,7 +1,7 @@
 -- Distances and foot heights in tiles. Platforms are {left,right,top,material}.
 -- p and f are past/future spans, glass is a resetting breakaway span.
 -- Goals can have two separate endpoints to require both players at height.
-return {
+local rooms = {
  {name="Shoulders",start={{2,0},{3.5,0}},goal={18,0},
   land={{0,20,0},{5,9,2.65}},key={7.3,2.65},gate=13},
  {name="Stepwell",start={{1,0},{2.5,0}},goal={18,0},
@@ -37,3 +37,15 @@ return {
         {16,20,0},{15,17,2.5},{17,20,4.7}},clock={0.35,0},wings={4.5,2.65},
   latch={16.6,0},key={18,4.7},gate=17.4,gateHeight=2.6},
 }
+
+local districts={
+    require("drydock"), require("switchyard"), require("aviary"),
+    require("almanac"), require("foundry"), require("summit"),
+}
+for district,chapter in districts do
+    for _,room in chapter do
+        room.district=district
+        table.insert(rooms,room)
+    end
+end
+return rooms

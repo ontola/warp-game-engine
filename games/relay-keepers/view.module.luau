@@ -5,11 +5,53 @@ local function box(x,y,w,h,c)
     hud.box(left+x*scale,top+y*scale,w*scale,h*scale,c)
 end
 local function xy(x,y) return 40+56*x,520-56*y end
+local function landmark(district,x,y,c)
+    if district==1 then
+        -- Dry dock gantry and hanging block.
+        box(x-57,y,114,9,c)
+        for _,d in {-1,1} do box(x+d*51,y,6,148,c) end
+        box(x-3,y+8,2,47,c)
+        box(x-10,y+52,16,9,c)
+    elseif district==2 then
+        box(x,y,6,137,c)
+        for i=0,1 do
+            box(x+3,y+i*27,36,5,c)
+            box(x+31,y-4+i*27,9,12,c)
+        end
+    elseif district==3 then
+        for i=0,5 do box(x-54+9*i,y+30-5*i,108-18*i,6,c) end
+        box(x-52,y+36,4,91,c)
+        box(x+48,y+36,4,91,c)
+        box(x-52,y+78,104,4,c)
+    elseif district==4 then
+        box(x-3,y+24,6,107,c)
+        for i=0,7 do
+            local a=i*math.pi/4
+            box(x+25*math.cos(a)-2,y+25*math.sin(a),5,6,c)
+        end
+        box(x-1,y-17,3,20,c)
+        box(x-14,y,16,3,c)
+    elseif district==5 then
+        for i=0,2 do
+            box(x+21*i,y+11*i,12,131-11*i,c)
+            box(x+21*i-2,y+11*i,16,5,c)
+        end
+    elseif district==6 then
+        for i=0,10 do box(x-i*7,y+i*9,7+i*14,11,c) end
+    end
+end
+
 local function landscape(l,s)
     local night=l.clock and not s.past
     local sky=if night then "#394a69" else "#9fc6bc"
     local far=if night then "#505b78" else "#85afa6"
     local ridge=if night then "#586981" else "#729995"
+    local districts={
+        {"#bfcdc4","#9aada2","#829895"}, {"#e0bd9c","#baa18c","#98867d"},
+        {"#b7ccda","#96aec3","#798ba4"}, {"#b8bdcf","#969ab0","#7c829c"},
+        {"#e2c8ae","#bea6a0","#978692"}, {"#b0c4bc","#94a89e","#6f8987"},
+    }
+    if l.district and not night then sky,far,ridge=unpack(districts[l.district]) end
     box(0,0,1200,640,sky)
     local sunX=if night then 150 else 956
     local sunColor=if night then "#dde5d0" else "#f5da9a"
@@ -31,6 +73,10 @@ local function landscape(l,s)
         end
     end
     for _,x in {75,405,817} do
+        if l.district then
+            landmark(l.district,x+44,232,ridge)
+            continue
+        end
         box(x,224,7,277,ridge)
         box(x-42,222,97,5,ridge)
         box(x-39,215,42,3,ridge)
@@ -73,21 +119,63 @@ local function robot(x,y,i,r,s)
     box(x+4,y-10,9,10,ink)
 end
 
-local function draw(l,total,s)
+local function gridIcon(x,y)
+    for row=0,1 do
+        for col=0,2 do box(x+col*7,y+row*7,5,5,cream) end
+    end
+end
+
+local function roomMap(rooms,s)
+    box(0,0,1200,640,ink)
+    for n,l in rooms do
+        local col,row=(n-1)%7,math.floor((n-1)/7)
+        local x,y=44+col*160,27+row*74
+        local selected=n==s.mapRoom
+        box(x-3,y-3,153,65,if selected then cream else "#436266")
+        box(x,y,147,59,if selected then "#638779" else "#36565b")
+        for _,span in l.land do
+            local yTop=y+46-span[3]*6.2
+            local color=if span[4]=="f" then "#b7bef7" elseif span[4]=="p" then amber else "#bad2be"
+            box(x+5+span[1]*6.8,yTop,(span[2]-span[1])*6.8,2.5,color)
+        end
+        box(x+5+l.goal[1]*6.8-2,y+39-l.goal[2]*6.2,4,6,mint)
+        for _,item in {{l.clock,"#b7bef7"},{l.key,amber},{l.spring,amber},{l.wings,cream}} do
+            local p=item[1]
+            if p then box(x+5+p[1]*6.8-1,y+40-p[2]*6.2,3,3,item[2]) end
+        end
+        if n==s.room then box(x+3,y+3,7,5,amber) end
+        if selected then
+            box(x+131,y+3,12,12,ink)
+            box(x+135,y+9,4,4,mint)
+        end
+    end
+end
+
+local function draw(rooms,s)
+    local l,total=rooms[s.room],#rooms
     local w,h=hud.size()
     scale=math.min(w/1200,h/640)
     left,top=(w-1200*scale)/2,(h-640*scale)/2
     hud.box(0,0,w,h,ink)
+    if s.mapRoom then roomMap(rooms,s) return end
     landscape(l,s)
+    box(1128,20,48,26,ink)
+    box(1135,24,4,4,amber)
+    box(1130,29,4,4,"#64817e")
+    box(1140,29,4,4,"#64817e")
+    box(1135,34,4,4,"#64817e")
+    gridIcon(1151,27)
     for i,b in l.land do
         local x,y=xy(b[1],b[3])
         local width=(b[2]-b[1])*56
         local kind=b[4]
         local temporal=kind=="p" or kind=="f"
         local active=not temporal or s.latch or (s.past==(kind=="p"))
+        if type(kind)=="number" then active=s.link>=kind end
         local age=s.glass[tostring(i)]
         if age and age>=0.42 then active=false end
         local color=if kind=="p" then amber elseif kind=="f" then "#b7bef7" elseif kind=="glass" then "#a0e3e2" else "#e5cfaa"
+        if type(kind)=="number" then color=mint end
         if active then
             box(x,y,width,8,color)
             box(x,y+8,width,14,ink)
@@ -114,6 +202,24 @@ local function draw(l,total,s)
             local lit=r.on and math.abs(r.x-p[1])<0.85 and math.abs(r.y-p[2])<0.34
             box(x+d*11-5,y-89,10,10,ink)
             box(x+d*11-3,y-87,6,6,if lit then cream elseif d<0 then amber else mint)
+        end
+    end
+    local link=l.links and l.links[s.link+1]
+    if link then
+        for _,p in link do
+            local x,y=at(p)
+            local lit=false
+            for _,r in s.crew do
+                if r.on and math.abs(r.x-p[1])<0.62 and math.abs(r.y-p[2])<0.34 then lit=true end
+            end
+            box(x-23,y-6,46,6,ink)
+            box(x-17,y-8,34,4,if lit then cream else mint)
+            local pulse=math.sin(s.time*3)*2
+            for _,side in {-1,1} do
+                box(x+side*9-5,y-26+pulse,10,9,ink)
+                box(x+side*9-3,y-24+pulse,6,5,if lit then cream else mint)
+            end
+            box(x-5,y-23+pulse,10,3,mint)
         end
     end
     portal(l.goal)
@@ -201,13 +307,19 @@ local function draw(l,total,s)
         if r.id~=0 then local x,y=xy(r.x,r.y) robot(x,y,i,r,s) end
     end
     -- The trail of lights is also the level-complete transition.
-    for i=1,total do
-        local x=600+(i-(total+1)/2)*19
-        box(x-5,30,10,5,if i<s.room then mint elseif i==s.room then cream else "#668982")
+    local first=s.room<=14 and 1 or 15+7*math.floor((s.room-15)/7)
+    local count=math.min(if first==1 then 14 else 7,total-first+1)
+    local function progress(y)
+        for n=1,count do
+            local i=first+n-1
+            local x=600+(n-(count+1)/2)*19
+            box(x-5,y,10,5,if i<s.room then mint elseif i==s.room then cream else "#668982")
+        end
     end
+    progress(30)
     if s.phase~="play" then
-        box(475,95,250,71,ink)
-        for i=1,total do box(486+i*15,124,10,10,if i<=s.room then mint else "#507170") end
+        box(455,95,290,71,ink)
+        progress(124)
         if s.phase=="complete" then
             box(585,176,30,30,ink)
             box(590,181,20,20,mint)

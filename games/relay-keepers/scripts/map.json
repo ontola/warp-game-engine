@@ -1,0 +1,15 @@
+{
+  "size": [960,540],
+  "steps": [
+    {"press":["Y"]}, {"expect":"/state/mapRoom","equals":1},
+    {"press":["Down"]}, {"ticks":1}, {"press":["Down"]},
+    {"expect":"/state/mapRoom","equals":15},
+    {"capture":"district-map.png"},
+    {"press":["A"]}, {"expect":"/state/room","equals":15},
+    {"capture":"drydock.png"},
+    {"press":["Y"]}, {"press":["Right"]}, {"press":["Y"]},
+    {"expect":"/state/room","equals":15},
+    {"expect":"/state/mapRoom","equals":null},
+    {"expect":"/errors","equals":[]}
+  ]
+}
