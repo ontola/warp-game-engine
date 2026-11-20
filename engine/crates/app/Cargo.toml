@@ -28,7 +28,7 @@ arboard = { version = "3.6", default-features = false, features = ["image-data"]
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["console", "Document", "Element", "HtmlCanvasElement", "Location", "Navigator", "Response", "Window"] }
+web-sys = { version = "0.3", features = ["console", "Document", "Element", "Gamepad", "GamepadButton", "GamepadMappingType", "HtmlCanvasElement", "Location", "Navigator", "Response", "Window"] }
 
 [target.'cfg(windows)'.dependencies]
 gilrs = { version = "0.11", default-features = false, features = ["xinput"] }

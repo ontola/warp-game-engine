@@ -38,6 +38,8 @@ pub mod profile;
 pub mod frame_rate;
 #[cfg(target_arch = "wasm32")]
 pub mod web;
+#[cfg(target_arch = "wasm32")]
+mod web_pads;
 pub use frame_rate::FrameRate;
 
 pub use input::{Buttons, Controls, Device, Devices, Pointer, Tuning};

@@ -339,6 +339,7 @@ dependencies = [
  "mlua",
  "serde",
  "toml",
+ "vfs",
 ]
 
 [[package]]
@@ -3200,8 +3201,6 @@ dependencies = [
 [[package]]
 name = "mlua"
 version = "0.12.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a7ae6b65bf54b7fdd4cf5b6f44f60862350ebf3fe3779b3a9cc005e7fa14f81"
 dependencies = [
  "bstr",
  "either",
@@ -5315,6 +5314,8 @@ version = "0.1.0"
 dependencies = [
  "mlua",
  "serde",
+ "vfs",
+ "web-time",
 ]
 
 [[package]]
@@ -6591,6 +6592,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "vfs"
+version = "0.1.0"
+
+[[package]]
 name = "vsimd"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6641,6 +6646,11 @@ dependencies = [
  "splitscreen-club",
  "toml",
  "tungstenite",
+ "vfs",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "web-time",
 ]
 
 [[package]]

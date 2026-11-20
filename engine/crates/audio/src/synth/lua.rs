@@ -294,7 +294,7 @@ pub fn load(name: &str, src: &str) -> Result<Vec<Patch>, String> {
 
 /// Load a `.luau` file; its main sound is named after the file.
 pub fn load_file(path: &std::path::Path) -> Result<Vec<Patch>, String> {
-    let src = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let src = vfs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("sound");
     load(name, &src)
 }

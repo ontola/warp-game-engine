@@ -125,7 +125,7 @@ fn preview(species: &Species, look: Look, age: u32, seed: u64) -> Result<Preview
 }
 
 fn cook(species: Species, look: Look, age: u32, seed: u64, full: bool) -> Done {
-    let started = std::time::Instant::now();
+    let started = web_time::Instant::now();
     if !full {
         let p = preview(&species, look, age, seed)?;
         let what = format!("{} parts, {} placed, {} triangles", p.meshes.len(), p.instances.len(), p.triangles);
@@ -337,7 +337,7 @@ mod tests {
         plants.grow(pine(6, 0.0));
         plants.grow(pine(6, 4.0));
         plants.grow(pine(80, 12.0));
-        let started = std::time::Instant::now();
+        let started = web_time::Instant::now();
         while plants.status().1 < 3 {
             plants.poll();
             assert!(plants.error().is_none(), "{:?}", plants.error());
@@ -362,7 +362,7 @@ mod limits {
     #[test]
     fn a_crowded_preview_has_no_placement_budget() {
         let species = Species { crowding: 60, needle_years: 7, ..Species::jeffrey_pine() };
-        let started = std::time::Instant::now();
+        let started = web_time::Instant::now();
         let p = preview(&species, Look::jeffrey_pine(), 31, 4).unwrap();
         println!("crowded 31 y: {} placed, {} triangles, {} ms", p.instances.len(), p.triangles, started.elapsed().as_millis());
     }

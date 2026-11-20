@@ -379,7 +379,7 @@ impl World {
             return Err(format!("{path}: model paths are relative to the game folder, without '..'"));
         }
         let file = self.dir.join(rel);
-        if !file.exists() { return Err(format!("{path}: no such file in the game folder")); }
+        if !vfs::exists(&file) { return Err(format!("{path}: no such file in the game folder")); }
         Ok(file)
     }
 

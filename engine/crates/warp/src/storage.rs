@@ -3,6 +3,7 @@
 use directories::ProjectDirs;
 use jsonschema::{Validator, draft202012};
 use mlua::{Lua, LuaSerdeExt, Table, Value};
+#[cfg(not(target_arch = "wasm32"))]
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use serde_json::Value as Json;
@@ -13,6 +14,11 @@ pub enum Location<'a> {
     User,
     Directory(&'a Path),
 }
+
+/// A browser build keeps documents in memory only (no SQLite there yet):
+/// (kind, slot) to (version, revision, JSON text).
+#[cfg(target_arch = "wasm32")]
+type Connection = BTreeMap<(String, String), (u32, i64, String)>;
 
 pub struct Storage {
     db: Connection,
@@ -148,12 +154,16 @@ impl Storage {
                     .to_owned(),
             ),
         };
+        #[cfg(target_arch = "wasm32")]
+        let db = { let _ = directory; Connection::new() };
+        #[cfg(not(target_arch = "wasm32"))]
         let db = if let Some(root) = directory {
             fs::create_dir_all(&root)?;
             Connection::open(root.join("storage.sqlite3"))?
         } else {
             Connection::open_in_memory()?
         };
+        #[cfg(not(target_arch = "wasm32"))]
         db.execute_batch(
             "PRAGMA synchronous=FULL;
             CREATE TABLE IF NOT EXISTS documents (
@@ -181,6 +191,9 @@ impl Storage {
 
     pub fn read(&self, kind: &str, slot: &str) -> Result<Option<Document>> {
         let versions = self.versions(kind, slot)?;
+        #[cfg(target_arch = "wasm32")]
+        let row = self.db.get(&(kind.to_owned(), slot.to_owned())).cloned();
+        #[cfg(not(target_arch = "wasm32"))]
         let row = self
             .db
             .query_row(
@@ -217,9 +230,25 @@ impl Storage {
         if text.len() > 1 << 20 {
             return Err("document exceeds 1 MiB".into());
         }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let key = (kind.to_owned(), slot.to_owned());
+            let (revision, old_version) = self.db.get(&key).map_or((0, 0), |d| (d.1, d.0));
+            if revision != expected {
+                return Err("storage revision conflict: read the slot again".into());
+            }
+            if old_version > version {
+                return Err("cannot overwrite a newer schema version".into());
+            }
+            let next = revision.checked_add(1).ok_or("revision exhausted")?;
+            self.db.insert(key, (version, next, text));
+            return Ok(next);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         let tx = self
             .db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        #[cfg(not(target_arch = "wasm32"))]
         let current: Option<(i64, u32)> = tx
             .query_row(
                 "SELECT revision, version FROM documents WHERE game=? AND kind=? AND slot=?",
@@ -227,19 +256,22 @@ impl Storage {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
-        let (revision, old_version) = current.unwrap_or((0, 0));
-        if revision != expected {
-            return Err("storage revision conflict: read the slot again".into());
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (revision, old_version) = current.unwrap_or((0, 0));
+            if revision != expected {
+                return Err("storage revision conflict: read the slot again".into());
+            }
+            if old_version > version {
+                return Err("cannot overwrite a newer schema version".into());
+            }
+            let next = revision.checked_add(1).ok_or("revision exhausted")?;
+            tx.execute("INSERT INTO documents(game,kind,slot,revision,version,data) VALUES(?,?,?,?,?,?)
+                ON CONFLICT(game,kind,slot) DO UPDATE SET revision=excluded.revision, version=excluded.version, data=excluded.data",
+                params![self.game,kind,slot,next,version,text])?;
+            tx.commit()?;
+            Ok(next)
         }
-        if old_version > version {
-            return Err("cannot overwrite a newer schema version".into());
-        }
-        let next = revision.checked_add(1).ok_or("revision exhausted")?;
-        tx.execute("INSERT INTO documents(game,kind,slot,revision,version,data) VALUES(?,?,?,?,?,?)
-            ON CONFLICT(game,kind,slot) DO UPDATE SET revision=excluded.revision, version=excluded.version, data=excluded.data",
-            params![self.game,kind,slot,next,version,text])?;
-        tx.commit()?;
-        Ok(next)
     }
 }
 

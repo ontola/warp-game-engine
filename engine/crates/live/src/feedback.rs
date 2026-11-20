@@ -52,7 +52,7 @@ pub fn reply(args: &Value) -> Reply {
 }
 
 /// The `feedback` tool's MCP `tools/call` result (for warp-mcp).
-pub fn mcp_result(args: &Value) -> Value { crate::server::to_mcp(reply(args)) }
+pub fn mcp_result(args: &Value) -> Value { crate::to_mcp(reply(args)) }
 
 fn shrink(bytes: &[u8], max: u32, point: Option<[u32;2]>) -> Result<Vec<u8>, String> {
     use image::ImageEncoder;

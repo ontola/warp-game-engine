@@ -89,7 +89,7 @@ pub fn in_folder(dir: &Path) -> Vec<(String, Knob)> {
     files.sort();
     let mut out = Vec::new();
     for path in files {
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Ok(text) = vfs::read_to_string(&path) else { continue };
         if !text.contains("-- @knobs") { continue; }
         let rel = path.strip_prefix(dir).unwrap_or(&path).to_string_lossy().replace('\\', "/");
         out.extend(parse(&text).into_iter().map(|k| (rel.clone(), k)));
@@ -98,10 +98,9 @@ pub fn in_folder(dir: &Path) -> Vec<(String, Knob)> {
 }
 
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
-    for e in rd.flatten() {
-        let p = e.path();
-        if p.is_dir() { collect(&p, out); } else if p.extension().is_some_and(|x| x == "luau") { out.push(p); }
+    let Ok(rd) = vfs::list(dir) else { return };
+    for p in rd {
+        if vfs::is_dir(&p) { collect(&p, out); } else if p.extension().is_some_and(|x| x == "luau") { out.push(p); }
     }
 }
 
@@ -112,8 +111,8 @@ pub fn set_in_folder(dir: &Path, name: &str, value: &str) -> Result<String, Stri
     let (rel, _) = all.iter().find(|(_, k)| k.name == name)
         .ok_or_else(|| format!("no knob {name:?}; knobs: {}", all.iter().map(|(_, k)| k.name.as_str()).collect::<Vec<_>>().join(", ")))?;
     let path = dir.join(rel);
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    std::fs::write(&path, set(&text, name, value)?).map_err(|e| format!("{}: {e}", path.display()))?;
+    let text = vfs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    vfs::write(&path, set(&text, name, value)?).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(rel.clone())
 }
 

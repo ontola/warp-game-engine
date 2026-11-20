@@ -29,10 +29,10 @@ impl GameSurface {
 
     /// Notice an edited (or new, or removed) surface.wgsl.
     pub fn scan(&mut self) -> Option<String> {
-        let stamp = std::fs::metadata(&self.path).and_then(|m| m.modified()).ok();
+        let stamp = vfs::stamp(&self.path).map(|s| s.0);
         if stamp == self.stamp { return None; }
         self.stamp = stamp;
-        let text = match stamp { Some(_) => std::fs::read_to_string(&self.path).ok()?, None => BUILT_IN.to_owned() };
+        let text = match stamp { Some(_) => vfs::read_to_string(&self.path).ok()?, None => BUILT_IN.to_owned() };
         if text == self.good && self.error.is_none() { return None; }
         self.pending = Some(text);
         Some(format!("{FILE}: compiles on the next frame"))
@@ -66,7 +66,7 @@ impl GameSurface {
 pub fn load_style(dir: &std::path::Path) -> Result<render::scene::GameStyle, String> {
     let read = |name| {
         let path = dir.join(name);
-        match std::fs::read_to_string(&path) {
+        match vfs::read_to_string(&path) {
             Ok(source) => Ok(Some(source)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(format!("{}: {error}", path.display())),

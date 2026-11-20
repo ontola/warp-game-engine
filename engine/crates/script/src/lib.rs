@@ -23,6 +23,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+/// What Luau needs in a browser (wasm32): call [`web::init`] first.
+#[cfg(target_arch = "wasm32")]
+pub mod web;
 mod imports;
 pub mod knobs;
 pub mod data;
@@ -198,7 +201,7 @@ impl Host {
         self.modules.retain(|m| m.path.is_none() || found.iter().any(|(n, _)| *n == m.name));
         if self.modules.len() != before { self.generation += 1; changed.push("(removed)".into()); }
         for (name, path) in found {
-            let stamp = std::fs::metadata(&path).ok().map(|m| (m.modified().unwrap_or(SystemTime::UNIX_EPOCH), m.len()));
+            let stamp = vfs::stamp(&path);
             let i = match self.modules.iter().position(|m| m.name == name) {
                 Some(i) if self.modules[i].stamp == stamp && self.modules[i].dependencies.is_disjoint(&edited) => continue,
                 Some(i) => i,
@@ -209,7 +212,7 @@ impl Host {
                 }
             };
             self.modules[i].stamp = stamp;
-            match std::fs::read_to_string(&path) {
+            match vfs::read_to_string(&path) {
                 Ok(src) => self.load(i, &src),
                 Err(e) => self.modules[i].error = Some(format!("{name}: {e}")),
             }
@@ -373,10 +376,9 @@ fn env(lua: &Lua, base: &Table, state: &Table) -> mlua::Result<Table> {
 }
 
 fn scan(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
-    for entry in rd.flatten() {
-        let p = entry.path();
-        if p.is_dir() { scan(root, &p, out); continue; }
+    let Ok(rd) = vfs::list(dir) else { return };
+    for p in rd {
+        if vfs::is_dir(&p) { scan(root, &p, out); continue; }
         // `*.d.luau` are type definitions, not modules.
         if p.extension().is_some_and(|e| e == "luau") && !p.to_string_lossy().ends_with(".d.luau") {
             let name = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().replace('\\', "/");

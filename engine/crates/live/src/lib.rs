@@ -25,6 +25,7 @@ mod console;
 pub mod knobs;
 pub mod feedback;
 mod files;
+#[cfg(not(target_arch = "wasm32"))]
 mod server;
 
 use serde_json::Value;
@@ -32,6 +33,8 @@ use std::collections::VecDeque;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use serde_json::json;
+use base64::Engine as _;
 use tokio::sync::{mpsc, oneshot};
 
 pub use files::Root;
@@ -272,8 +275,16 @@ pub struct Live {
 /// At most this many requests per [`Live::serve`] (the rest wait a tick).
 const JOBS_PER_TICK: usize = 16;
 
+/// A browser has no sockets to serve on: live control is not there.
+#[cfg(target_arch = "wasm32")]
+pub fn start(cfg: Config, manifest: Manifest) -> Result<Live, String> {
+    let _ = (cfg, manifest);
+    Err("live: no MCP server in a browser".into())
+}
+
 /// Start serving. Prints the URL and token (unless `cfg.announce` is off)
 /// and writes them to the token file.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn start(cfg: Config, manifest: Manifest) -> Result<Live, String> {
     let logs = Logs::default();
     let console = if cfg.capture_console { console::capture(logs.clone()) } else { None };
@@ -433,5 +444,23 @@ mod tests {
         assert_eq!(t, ["line 1197", "line 1198", "line 1199"]);
         assert_eq!(l.tail(2, Some("line 11")), ["line 1198", "line 1199"]);
         assert_eq!(random_token().unwrap().len(), 48);
+    }
+}
+
+/// A [`Reply`] as an MCP tool result.
+pub(crate) fn to_mcp(r: Reply) -> Value {
+    match r {
+        Err(e) => json!({ "content": [{ "type": "text", "text": e }], "isError": true }),
+        Ok(parts) => {
+            let structured = match parts.as_slice() { [Content::Json(v)] if v.is_object() => Some(v.clone()), _ => None };
+            let content: Vec<Value> = parts.into_iter().map(|c| match c {
+                Content::Text(t) => json!({ "type": "text", "text": t }),
+                Content::Json(v) => json!({ "type": "text", "text": v.to_string() }),
+                Content::Png(png) => json!({ "type": "image", "mimeType": "image/png", "data": base64::engine::general_purpose::STANDARD.encode(png) }),
+            }).collect();
+            let mut out = json!({ "content": content, "isError": false });
+            if let Some(s) = structured { out["structuredContent"] = s; }
+            out
+        }
     }
 }

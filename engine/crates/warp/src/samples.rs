@@ -90,7 +90,7 @@ pub struct Sample {
 
 pub fn read(game: &Path) -> Result<Option<Lock>, String> {
     let path = game.join(LOCK);
-    let Ok(text) = std::fs::read_to_string(&path) else { return Ok(None) };
+    let Ok(text) = vfs::read_to_string(&path) else { return Ok(None) };
     let lock: Lock = toml::from_str(&text).map_err(|e| format!("{LOCK}: {e}"))?;
     for s in &lock.sample {
         if !lock.file.contains_key(&s.file) { return Err(format!("{LOCK}: sample {:?} names file {:?}, which is not listed", s.name, s.file)); }

@@ -10,6 +10,7 @@ lewton = "0.10"
 claxon = "0.4"
 serde.workspace = true
 toml.workspace = true
+vfs = { path = "../vfs" }
 mlua = { version = "0.12", features = ["luau", "send", "serialize"], optional = true }
 
 [features]

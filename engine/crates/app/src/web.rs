@@ -1,8 +1,8 @@
 //! The shell in a browser (wasm32 with WebGPU): a canvas instead of a
 //! window, the browser's frame callbacks instead of a render loop, and an
 //! adapter and device that arrive asynchronously. A smaller [`crate::run`]:
-//! fixed ticks, keyboard and mouse, the game's frame and HUD. No gamepads,
-//! debug menu, screenshots, HDR or adaptive quality yet.
+//! fixed ticks, keyboard, mouse and gamepads (Gamepad API), the game's
+//! frame and HUD. No debug menu, screenshots, HDR or adaptive quality yet.
 
 use crate::{Draw, Frame, Game, Output, Screen, input::Devices, seat_controls};
 use render::{Gpu, Renderer};
@@ -17,6 +17,8 @@ use winit::platform::web::{EventLoopExtWebSys, WindowAttributesExtWebSys};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
 thread_local! {
+    /// A game waiting to replace the running one ([`switch`]).
+    static NEXT: RefCell<Option<(crate::Config, Box<dyn Game>)>> = const { RefCell::new(None) };
     /// Lines the log box always shows above the rolling tail: the start-up
     /// lines (GPU, limits) and the first GPU error, which later errors would
     /// otherwise push out of the box.
@@ -129,6 +131,15 @@ struct Shell {
     /// The scene upload was announced (see [`Shell::frame`]).
     announced: bool,
     hidden_editor: Option<bool>,
+    /// When the last [`switch`] happened, until its first frame is drawn.
+    switched: Option<Instant>,
+}
+
+/// Replace the running game with `game` at the next frame, keeping the
+/// canvas, the GPU device, the input devices and everything the engine has
+/// compiled: a switch costs only the new game's scene upload.
+pub fn switch(cfg: crate::Config, game: Box<dyn Game>) {
+    NEXT.with(|n| *n.borrow_mut() = Some((cfg, game)));
 }
 
 /// Run `game` in the page's canvas `#warp` (or a new one) until the page
@@ -137,7 +148,7 @@ pub fn run(cfg: crate::Config, game: Box<dyn Game>) {
     install_panic_hook();
     let mut devices = Devices::new(cfg.keyboard);
     devices.pointer_enabled = cfg.pointer;
-    let shell = Shell { cfg, game, devices, window: None, live: Rc::new(RefCell::new(None)), acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), failed: false, announced: false, hidden_editor:None };
+    let shell = Shell { cfg, game, devices, window: None, live: Rc::new(RefCell::new(None)), acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), failed: false, announced: false, hidden_editor:None, switched: None };
     match EventLoop::new() {
         Ok(events) => events.spawn_app(shell),
         Err(e) => log(&format!("event loop: {e}")),
@@ -192,6 +203,16 @@ impl Shell {
         let mut steps = 0;
         let mut live = self.live.borrow_mut();
         let Some(live) = live.as_mut() else { return Ok(()) };
+        if let Some((cfg, game)) = NEXT.with(|n| n.borrow_mut().take()) {
+            // The old game's scene goes with its renderer; the next draw
+            // builds the new one on the same device.
+            self.game = game;
+            self.cfg = cfg;
+            live.renderer = None;
+            self.acc = 0.0;
+            self.switched = Some(Instant::now());
+            if let Some(w) = &self.window { w.set_title(&self.cfg.title); }
+        }
         // The canvas takes its size from the page's layout, which can settle
         // after the device is made: follow it every frame.
         if let Some(w) = &self.window {
@@ -204,6 +225,7 @@ impl Shell {
             }
         }
         let size = [live.config.width, live.config.height];
+        self.devices.poll();
         while self.acc >= step && steps < 6 {
             self.acc -= step;
             steps += 1;
@@ -242,6 +264,7 @@ impl Shell {
         live.gpu.queue.present(texture);
         self.frames += 1;
         if self.frames == 1 { progress(None, "Ready"); }
+        if let Some(at) = self.switched.take() { progress(None, "Ready"); log(&format!("{}: first frame {:.0} ms after the switch", self.cfg.title, at.elapsed().as_secs_f32() * 1000.0)); }
         if self.frames <= 4 || self.frames.is_power_of_two() && self.frames >= 64 {
             log(&format!("frame {} after {:.1} s, wasm memory {} MB", self.frames, self.started.elapsed().as_secs_f32(), memory_mb()));
         }

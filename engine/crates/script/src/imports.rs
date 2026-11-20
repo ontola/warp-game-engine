@@ -20,10 +20,13 @@ impl Libraries {
                 return true;
             };
             present.insert(name.to_owned());
-            let stamp = std::fs::metadata(file)
-                .ok()
-                .and_then(|m| Some((m.modified().ok()?, m.len())));
+            let stamp = vfs::stamp(file);
             if stamp.is_none() || !self.0.get(name).is_some_and(|lib| lib.stamp == stamp) {
+                // A browser has no real paths to resolve: its files are only
+                // the game's own.
+                #[cfg(target_arch = "wasm32")]
+                let source = vfs::read_to_string(file).map_err(|err| format!("{path}: {err}"));
+                #[cfg(not(target_arch = "wasm32"))]
                 let source = file
                     .canonicalize()
                     .and_then(|resolved| {

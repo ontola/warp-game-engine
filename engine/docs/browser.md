@@ -30,6 +30,60 @@ the first upload. The log sits in the corner.
 wasm and its JavaScript) and `assets/` (the ground textures). Any static
 host serves it.
 
+## Luau games: the warp runtime in a browser
+
+`examples/warp_web.rs` (crate `warp`) is the `warp` runtime for the
+browser: the engine downloads once, then each Luau game is only its folder
+of scripts (Neon Siege 120 KB, Stack Together 46 KB). Build and serve it:
+
+```sh
+sudo apt install wasi-libc libc++-dev-wasm32 libclang-rt-dev-wasm32   # Luau's C and C++ library
+python3 engine/tools/build-web.py --warp --serve
+```
+
+Open http://localhost:8790/?game=neon-siege (`&players=2` for two local
+players). The buttons at the top switch games in the running engine, with
+no reload: `switch_game` in the example loads the new game's scripts and
+`app::web::switch` swaps it in at the next frame on the same GPU device.
+`--games a,b` picks which `games/` folders are served (default: the six
+Luau games). Measured 20 November 2026 in headless Chromium on SwiftShader
+(no GPU, so frame times there mean nothing): wasm 25.5 MB (11 MB gzipped),
+Neon Siege's files fetched in 0.1 s, scripts loaded and `init` run in
+0.2 s; switching Stack Together to Neon Siege took 0.27 s to load plus
+0.17 s to its first frame, switching back 0.04 s plus 0.04 s.
+
+How the build differs from native:
+
+- Luau is C++: `build-web.py --warp` compiles it against wasi-libc and
+  libc++ for wasm32 (`LUAU_CXXFLAGS`, read by luau0-src) and links one
+  `target/web-cxx/libstdc++.a` made of libc++, libc++abi and libc.
+  `WASI_SYSROOT` points at a wasi-sdk `share/wasi-sysroot` instead of the
+  Debian/Ubuntu packages.
+- No C++ exceptions: Luau is compiled with `-fignore-exceptions` and
+  `script/src/web.rs` defines `__cxa_throw`, which stops the game with the
+  error's message. A Lua error (`error()`, the step limit, a syntax error)
+  therefore ends a game in a browser instead of being caught; a game that
+  runs cleanly never throws. Real exceptions need a libc++abi built with
+  `-fwasm-exceptions` (wasi-sdk does not ship one).
+- `script::web::init` runs the C++ static constructors once at start; it
+  must come first in `main` (otherwise the linker runs them on every call
+  into the module and the page hangs). The same file defines the five WASI
+  calls wasi-libc makes (`fd_write` and friends), so the module imports
+  nothing from `wasi_snapshot_preview1`.
+- `engine/vendor/mlua` is mlua 0.12.2 without its heap dump on wasm32 (it
+  used stdio); see its `WARP.md`.
+- Game files come through the `vfs` crate (`engine/crates/vfs`):
+  `std::fs` natively, in a browser the files the page fetched
+  (`vfs::insert`). Writes stay in memory. Game saves (`storage`) are
+  in-memory there too (no SQLite).
+- `live` (MCP) has no server in a browser; `start` returns an error.
+- Gamepads come from the Gamepad API (`app/src/web_pads.rs`): pads in the
+  standard layout, in the order they first press a button, with
+  `vibrationActuator` rumble. A browser shows a pad to the page only after
+  one of its buttons is pressed.
+- No sound yet: the synth needs a WebAudio output (an AudioWorklet pulling
+  from `audio::synth::mixer`).
+
 ## What the browser needs
 
 - Engine rule (Joep, 6 November 2026): every pass fits 8 storage buffers

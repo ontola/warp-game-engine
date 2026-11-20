@@ -87,9 +87,9 @@ impl Default for GameToml {
 /// file at the top (type files `*.d.luau` aside), such as
 /// `my-game/my-game.luau`. A packaged copy keeps working.
 pub fn one_file_in(dir: &Path) -> Option<std::path::PathBuf> {
-    if dir.join("main.luau").exists() { return None; }
-    let mut files = std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path())
-        .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == "luau") && !p.to_string_lossy().ends_with(".d.luau"));
+    if vfs::exists(dir.join("main.luau")) { return None; }
+    let mut files = vfs::list(dir).ok()?.into_iter()
+        .filter(|p| vfs::is_file(p) && p.extension().is_some_and(|e| e == "luau") && !p.to_string_lossy().ends_with(".d.luau"));
     let one = files.next()?;
     files.next().is_none().then_some(one)
 }
@@ -97,7 +97,7 @@ pub fn one_file_in(dir: &Path) -> Option<std::path::PathBuf> {
 /// A game: a folder with `main.luau`, a folder holding one `.luau` game, or
 /// a `.luau` file.
 pub fn is_game(p: &Path) -> bool {
-    p.join("main.luau").is_file() || (p.is_file() && p.extension().is_some_and(|e| e == "luau")) || (p.is_dir() && one_file_in(p).is_some())
+    vfs::is_file(p.join("main.luau")) || (vfs::is_file(p) && p.extension().is_some_and(|e| e == "luau")) || (vfs::is_dir(p) && one_file_in(p).is_some())
 }
 
 impl GameToml {
@@ -123,15 +123,15 @@ impl GameToml {
 
     /// A one-file game (`warp run game.luau`): its `--!` header.
     pub fn load_file(file: &Path) -> Result<Self, String> {
-        let source = std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
+        let source = vfs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
         let stem = file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Warp game".into());
         Self::parse_header(&source, &stem)
     }
 
     /// `DIR/game.toml`, or the defaults (titled after the folder) without one.
     pub fn load(dir: &Path) -> Result<Self, String> {
-        if !dir.join("main.luau").exists() { return Err(format!("{}: not a game folder (no main.luau); `warp new {}` makes one", dir.display(), dir.display())); }
-        match std::fs::read_to_string(dir.join("game.toml")) {
+        if !vfs::exists(dir.join("main.luau")) { return Err(format!("{}: not a game folder (no main.luau); `warp new {}` makes one", dir.display(), dir.display())); }
+        match vfs::read_to_string(dir.join("game.toml")) {
             Ok(text) => Self::parse(&text),
             Err(_) => {
                 let title = dir.canonicalize().ok().and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_else(|| "Warp game".into());

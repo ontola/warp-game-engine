@@ -56,7 +56,7 @@ pub fn from_json(lua: &script::mlua::Lua, j: &Json) -> script::mlua::Result<Valu
     Ok(match j {
         Json::Null => Value::Nil,
         Json::Bool(b) => Value::Boolean(*b),
-        Json::Number(n) => match n.as_i64() { Some(i) => Value::Integer(i), None => Value::Number(n.as_f64().unwrap_or(0.0)) },
+        Json::Number(n) => match n.as_i64().and_then(|i| script::mlua::Integer::try_from(i).ok()) { Some(i) => Value::Integer(i), None => Value::Number(n.as_f64().unwrap_or(0.0)) },
         Json::String(s) => Value::String(lua.create_string(s)?),
         Json::Array(a) => { let t = lua.create_table()?; for (i, v) in a.iter().enumerate() { t.raw_set(i + 1, from_json(lua, v)?)?; } Value::Table(t) }
         Json::Object(m) => { let t = lua.create_table()?; for (k, v) in m { t.raw_set(k.as_str(), from_json(lua, v)?)?; } Value::Table(t) }

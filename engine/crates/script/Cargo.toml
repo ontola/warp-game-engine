@@ -7,6 +7,8 @@ description = "Luau scripting for Warp games: sandboxed modules from a folder, h
 
 [dependencies]
 mlua = { version = "0.12", features = ["luau", "send", "serialize"] }
+vfs = { path = "../vfs" }
+web-time = "1.1"
 serde = { workspace = true }
 
 [dev-dependencies]

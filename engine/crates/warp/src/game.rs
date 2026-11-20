@@ -42,10 +42,15 @@ pub(crate) fn sky_cache() -> &'static Mutex<AtmosphereCache> {
 /// Bake a sky preset into the shared cache on a background thread.
 pub(crate) fn warm_sky(choice: SkyChoice) {
     let SkyChoice::Preset(settings) = choice else { return };
-    std::thread::spawn(move || {
+    let bake = move || {
         let mut cache = sky_cache().lock().unwrap_or_else(|p| p.into_inner());
         let _ = bake_live(0, settings, &mut cache, BakeQuality::default());
-    });
+    };
+    // A browser has no threads: bake now.
+    #[cfg(target_arch = "wasm32")]
+    bake();
+    #[cfg(not(target_arch = "wasm32"))]
+    std::thread::spawn(bake);
 }
 
 /// Options from the command line that override `game.toml`.
@@ -61,7 +66,7 @@ pub struct Overrides {
 
 /// A seed nobody chose: the clock, mixed with the last one.
 fn fresh_seed(last: u64) -> u64 {
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
+    let now = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
     let mut x = now ^ last.rotate_left(17) ^ 0x9e37_79b9_7f4a_7c15;
     x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
@@ -137,9 +142,9 @@ impl LuaGame {
 
     pub fn load_with_storage(path: &Path, over: &Overrides, sound: Option<SoundSender>, location: crate::storage::Location<'_>) -> Result<Self, String> {
         // A folder whose only script is its game (`my-game/my-game.luau`).
-        let found = if path.is_dir() { crate::config::one_file_in(path) } else { None };
+        let found = if vfs::is_dir(path) { crate::config::one_file_in(path) } else { None };
         let path = found.as_deref().unwrap_or(path);
-        let single = path.is_file().then(|| path.file_name().map(|n| n.to_string_lossy().into_owned())).flatten();
+        let single = vfs::is_file(path).then(|| path.file_name().map(|n| n.to_string_lossy().into_owned())).flatten();
         let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
         let dir = if single.is_some() { parent } else { path };
         let mut cfg = if single.is_some() { GameToml::load_file(path)? } else { GameToml::load(dir)? };
@@ -156,7 +161,7 @@ impl LuaGame {
         if fresh { cfg.seed = fresh_seed(0); }
         let default_sky = SkyChoice::parse(over.sky.as_deref().unwrap_or(&cfg.sky))?;
         let sounds_dir = dir.join("sounds");
-        let mut bank = Bank::new(sounds_dir.is_dir().then_some(sounds_dir)).with_samples(dir);
+        let mut bank = Bank::new(vfs::is_dir(&sounds_dir).then_some(sounds_dir)).with_samples(dir);
         let lines = bank.scan();
         let mut world = World::new(dir, cfg.max_entities);
         world.scene.style = crate::surface::load_style(dir)?;
@@ -413,7 +418,7 @@ impl LuaGame {
                     // Honest progress past the shell's 75 %: the match's own
                     // set-up (init), then its people and scene (draw).
                     if self.windowed { self.loading(80, "setting up the match"); }
-                    let t = std::time::Instant::now();
+                    let t = web_time::Instant::now();
                     self.restart();
                     if self.windowed { self.say(format!("{} loading: match set up in {} ms", app::manners::stamp(), t.elapsed().as_millis())); }
                     // In a window, ready once a frame of the new match is
@@ -605,7 +610,7 @@ impl LuaGame {
 
     /// main.luau as it runs: with temporary changes, else the file.
     fn main_source(&self) -> Result<String, String> {
-        match &self.trial { Some(t) => Ok(t.clone()), None => std::fs::read_to_string(self.main_file()).map_err(|e| e.to_string()) }
+        match &self.trial { Some(t) => Ok(t.clone()), None => vfs::read_to_string(self.main_file()).map_err(|e| e.to_string()) }
     }
 
     pub fn knobs(&self) -> Result<String, String> {
@@ -645,13 +650,13 @@ impl LuaGame {
             return Ok(format!("{name} = {} (temporary: the game runs it, {main} is unchanged; `keep` saves, `revert` undoes){}", value.trim(), if broken.is_empty() { String::new() } else { format!("; {}", broken.join("; ")) }));
         }
         let file = self.main_file();
-        let on_disk = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
-        std::fs::write(&file, &after).map_err(|e| e.to_string())?;
+        let on_disk = vfs::read_to_string(&file).map_err(|e| e.to_string())?;
+        vfs::write(&file, &after).map_err(|e| e.to_string())?;
         // 0.55 -> 0.28 keeps the size, and the time may not have moved yet.
         self.host.forget(&main);
         let lines = self.reload();
         if let Some(err) = self.host.modules().iter().find(|m| m.name == main).and_then(|m| m.error.clone()) {
-            std::fs::write(&file, &on_disk).map_err(|e| e.to_string())?;
+            vfs::write(&file, &on_disk).map_err(|e| e.to_string())?;
             self.host.forget(&main);
             self.reload();
             return Err(format!("{name} = {value} does not load, kept the old value: {err}"));
@@ -663,7 +668,7 @@ impl LuaGame {
     /// Save temporary changes into the file.
     pub fn keep(&mut self) -> Result<String, String> {
         let Some(t) = self.trial.take() else { return Ok("nothing temporary to keep".into()) };
-        std::fs::write(self.main_file(), &t).map_err(|e| e.to_string())?;
+        vfs::write(self.main_file(), &t).map_err(|e| e.to_string())?;
         let main = self.main_name();
         self.host.forget(&main);
         self.reload();
@@ -731,7 +736,7 @@ impl LuaGame {
             if (c.plants.dirty && !cooking) || (c.world.rebuild && has_plants && c.world.scene.gpu_forest.is_some()) {
                 c.plants.dirty = false;
                 let c = &mut *c;
-                let started = std::time::Instant::now();
+                let started = web_time::Instant::now();
                 let shown = c.world.fresh_scene().and_then(|_| { c.humans.detach(); c.plants.attach(&mut c.world.scene) });
                 match shown {
                     Ok(n) => lines.push(format!("plants: {n} attached in {:.0} ms", started.elapsed().as_secs_f64() * 1000.0)),
@@ -1061,7 +1066,7 @@ impl Game for LuaGame {
         // Warp Humans join the scene before its first renderer.
         if !c.humans.is_empty() && !c.humans.attached() && c.humans.error().is_none() {
             if loading && let Some(p) = self.party.as_mut() { p.loading(88, "dressing the people"); }
-            let t = std::time::Instant::now();
+            let t = web_time::Instant::now();
             let c = &mut *c;
             match c.humans.attach(&mut c.world.scene, u64::from(frame.gpu.limits.max_storage_buffer_binding_size)) {
                 Ok(note) => if let Some(note) = note { late = Some(note); },
@@ -1073,7 +1078,7 @@ impl Game for LuaGame {
         }
         if std::mem::take(&mut c.world.rebuild) || frame.renderer().is_none() {
             if loading && let Some(p) = self.party.as_mut() { p.loading(93, "building the scene"); }
-            let t = std::time::Instant::now();
+            let t = web_time::Instant::now();
             // A look first seen after the start stalls the game while the
             // renderer is rebuilt: name it so it can be warmed in init.
             if frame.renderer().is_some() && !added.is_empty() {

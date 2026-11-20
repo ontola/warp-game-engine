@@ -1,0 +1,8 @@
+[package]
+name = "vfs"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Game files: the filesystem natively, files the page fetched in a browser (wasm32)"
+
+[dependencies]

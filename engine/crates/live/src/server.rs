@@ -2,8 +2,8 @@
 //! no server-initiated stream), with the bearer token, Host and Origin
 //! checks. Runs on its own thread; game work goes through `Shared::jobs`.
 use crate::{files, Answer, Content, Job, Logs, Manifest, Reload, Reply, Request};
-use base64::Engine;
 use http_body_util::{BodyExt, Full, Limited};
+use crate::to_mcp;
 use hyper::body::{Bytes, Incoming};
 use hyper::{Method, Response, StatusCode};
 use serde_json::{json, Value};
@@ -184,22 +184,7 @@ async fn message(shared: &Shared, m: Value) -> Option<Value> {
 async fn result(r: Reply) -> Value { to_mcp(r) }
 
 /// A tool reply as an MCP `tools/call` result.
-pub(crate) fn to_mcp(r: Reply) -> Value {
-    match r {
-        Err(e) => json!({ "content": [{ "type": "text", "text": e }], "isError": true }),
-        Ok(parts) => {
-            let structured = match parts.as_slice() { [Content::Json(v)] if v.is_object() => Some(v.clone()), _ => None };
-            let content: Vec<Value> = parts.into_iter().map(|c| match c {
-                Content::Text(t) => json!({ "type": "text", "text": t }),
-                Content::Json(v) => json!({ "type": "text", "text": v.to_string() }),
-                Content::Png(png) => json!({ "type": "image", "mimeType": "image/png", "data": base64::engine::general_purpose::STANDARD.encode(png) }),
-            }).collect();
-            let mut out = json!({ "content": content, "isError": false });
-            if let Some(s) = structured { out["structuredContent"] = s; }
-            out
-        }
-    }
-}
+
 
 async fn ask(shared: &Shared, job: Job, wait: Duration) -> Result<Answer, String> {
     let (tx, rx) = oneshot::channel();

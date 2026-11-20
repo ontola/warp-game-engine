@@ -38,7 +38,7 @@ impl Bank {
     fn scan_samples(&mut self, out: &mut Vec<String>) {
         let Some(game) = self.game.clone() else { return };
         let path = game.join(crate::samples::LOCK);
-        let stamp = std::fs::metadata(&path).ok().map(|m| (m.modified().unwrap_or(SystemTime::UNIX_EPOCH), m.len()));
+        let stamp = vfs::stamp(&path);
         let arrived = self.waiting.iter().any(|sha| crate::samples::find(&game, sha).is_some());
         if stamp == self.lock_stamp && !arrived { return; }
         self.lock_stamp = stamp;
@@ -88,12 +88,11 @@ impl Bank {
         let mut out = Vec::new();
         self.scan_samples(&mut out);
         let Some(dir) = &self.dir else { return out };
-        let Ok(rd) = std::fs::read_dir(dir) else { return out };
-        let mut files: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "luau") && !p.to_string_lossy().ends_with(".d.luau")).collect();
+        let Ok(rd) = vfs::list(dir) else { return out };
+        let mut files: Vec<PathBuf> = rd.into_iter().filter(|p| p.extension().is_some_and(|x| x == "luau") && !p.to_string_lossy().ends_with(".d.luau")).collect();
         files.sort();
         for path in files {
-            let Ok(meta) = std::fs::metadata(&path) else { continue };
-            let stamp = (meta.modified().unwrap_or(SystemTime::UNIX_EPOCH), meta.len());
+            let Some(stamp) = vfs::stamp(&path) else { continue };
             if self.files.get(&path) == Some(&stamp) { continue; }
             let again = self.files.insert(path.clone(), stamp).is_some();
             let file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();

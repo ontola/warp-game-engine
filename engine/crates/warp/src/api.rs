@@ -585,11 +585,11 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
         ("save", f!(core, move |_, (name, value): (String, Value)| {
             let file = data_file(&lock(&core), &name)?;
             let text = serde_json::to_string_pretty(&crate::luajson::to_json(&value)).map_err(rt)?;
-            std::fs::write(&file, text + "\n").map_err(|e| rt(format!("{}: {e}", file.display())))
+            vfs::write(&file, text + "\n").map_err(|e| rt(format!("{}: {e}", file.display())))
         })),
         ("load", f!(core, move |lua, name: String| {
             let file = data_file(&lock(&core), &name)?;
-            let Ok(text) = std::fs::read_to_string(&file) else { return Ok(Value::Nil) };
+            let Ok(text) = vfs::read_to_string(&file) else { return Ok(Value::Nil) };
             let j: serde_json::Value = serde_json::from_str(&text).map_err(|e| rt(format!("{}: {e}", file.display())))?;
             crate::luajson::from_json(lua, &j)
         })),
