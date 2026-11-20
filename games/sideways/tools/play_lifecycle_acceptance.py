@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drive the compiled native play loop through an isolated GameNight host.
+"""Drive the compiled native play loop through an isolated Splitscreen Club host.
 
 This never talks to the household daemon. --smoke-render creates a hidden
 window, and the application must retain normal, wall-clock host input and

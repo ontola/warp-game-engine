@@ -32,7 +32,7 @@ mod render_baseline;
 mod procedural_rocks;
 mod procedural_sky;
 mod roadside_crowds;
-mod gamenight;
+mod splitscreen_club;
 mod shot;
 mod visuals;
 mod tree_assets;

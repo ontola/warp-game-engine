@@ -91,7 +91,7 @@ pub struct Profile {
     pub couch: Option<i64>,
     pub color: String,
     pub skin: String,
-    /// The drawn face, as GameNight sends it (face.rs).
+    /// The drawn face, as Splitscreen Club sends it (face.rs).
     pub avatar: String,
 }
 
@@ -106,7 +106,7 @@ pub struct Lobby {
     pub world: World,
     /// What the host's snapshot says, and what follows from it.
     pub host: Host,
-    pub(crate) client: Option<gamenight::lobby::Lobby>,
+    pub(crate) client: Option<splitscreen_club::lobby::Lobby>,
     /// Party players, in the host's order.
     pub profiles: Vec<Profile>,
     actors: HashMap<String, Actor>,
@@ -200,17 +200,17 @@ impl Lobby {
         Ok(lobby)
     }
 
-    /// The lobby of a GameNight host (GAMENIGHT_ADDR, GAMENIGHT_GAME_ID,
+    /// The lobby of a Splitscreen Club host (GAMENIGHT_ADDR, GAMENIGHT_GAME_ID,
     /// GAMENIGHT_TOKEN, GAMENIGHT_LINKS_URL).
     pub fn connect(options: Options) -> Result<Self, String> {
-        Self::connect_with(options, gamenight::lobby::Config::from_env("game-room"))
+        Self::connect_with(options, splitscreen_club::lobby::Config::from_env("game-room"))
     }
 
-    pub fn connect_with(options: Options, config: gamenight::lobby::Config) -> Result<Self, String> {
-        Self::build(options, Some(gamenight::lobby::Lobby::connect(config)))
+    pub fn connect_with(options: Options, config: splitscreen_club::lobby::Config) -> Result<Self, String> {
+        Self::build(options, Some(splitscreen_club::lobby::Lobby::connect(config)))
     }
 
-    fn build(options: Options, client: Option<gamenight::lobby::Lobby>) -> Result<Self, String> {
+    fn build(options: Options, client: Option<splitscreen_club::lobby::Lobby>) -> Result<Self, String> {
         let mut build = room::build();
         let kit = crate::kit::add(&mut build);
         let animated = build.animated();
@@ -427,7 +427,7 @@ impl Lobby {
     fn poll(&mut self, delta: f32) {
         let events = self.client.as_mut().map(|c| c.poll()).unwrap_or_default();
         for event in events {
-            use gamenight::lobby::Event;
+            use splitscreen_club::lobby::Event;
             match event {
                 Event::Connected => { self.screens_dirty = true; }
                 Event::Party => { let party = self.client.as_ref().unwrap().party.clone(); self.set_party(party); }
@@ -462,7 +462,7 @@ impl Lobby {
             self.links_due = 1.0;
             let tx = self.web_tx.clone();
             std::thread::spawn(move || {
-                let links = gamenight::lobby::http(&base, "GET", "/api/player-links", &[]).ok()
+                let links = splitscreen_club::lobby::http(&base, "GET", "/api/player-links", &[]).ok()
                     .and_then(|body| serde_json::from_slice(&body).ok()).unwrap_or_else(|| serde_json::json!({}));
                 let _ = tx.send(Web::Links(links));
             });

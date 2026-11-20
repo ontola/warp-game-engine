@@ -361,7 +361,7 @@ impl Lobby {
                     let mut headers = vec!["X-GameNight-Local-Pickup: 1"];
                     if swap { headers.push("X-GameNight-Swap: 1"); }
                     let path = format!("/api/room-pickup/{}/{}", path_part(&pending), path_part(&player));
-                    if let Err(e) = gamenight::lobby::http(&base, "POST", &path, &headers) {
+                    if let Err(e) = splitscreen_club::lobby::http(&base, "POST", &path, &headers) {
                         eprintln!("game-room: pickup refused: {e}");
                         let _ = tx.send(Web::PickupRefused(e));
                     }
@@ -518,7 +518,7 @@ impl Lobby {
                 let base = self.client.as_ref().map(|c| c.config.links_base.clone()).unwrap_or_default();
                 if !base.is_empty() {
                     let path = format!("/api/player-links/{}/unlink", path_part(id));
-                    std::thread::spawn(move || { let _ = gamenight::lobby::http(&base, "POST", &path, &["X-GameNight-Local-Pickup: 1"]); });
+                    std::thread::spawn(move || { let _ = splitscreen_club::lobby::http(&base, "POST", &path, &["X-GameNight-Local-Pickup: 1"]); });
                 }
             }
             "quit" => if confirm {

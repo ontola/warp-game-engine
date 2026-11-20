@@ -17,7 +17,7 @@ app = { path = "../../../engine/crates/app" }
 physics = { path = "../../../engine/crates/physics" }
 assets = { path = "../../../engine/crates/assets" }
 body = { path = "../../../engine/crates/body" }
-gamenight = { path = "../../../engine/crates/gamenight" }
+splitscreen-club = { path = "../../../engine/crates/splitscreen-club" }
 live = { path = "../../../engine/crates/live" }
 glam = "0.31"
 image = { version = "0.25", default-features = false, features = ["png"] }

@@ -13,14 +13,14 @@
 --   tick(dt, input)      every tick, at game.toml's tick_rate; dt = 1 / tick_rate
 --   draw()               every displayed frame: HUD and camera only
 --   reload()             after a saved edit reloads the module
---   player_joined(p)     GameNight seated someone new mid-game (p: Player)
+--   player_joined(p)     Splitscreen Club seated someone new mid-game (p: Player)
 --   player_left(p)       a player left mid-game
 --   players_changed()    names, colours or seats changed (after joins and leaves too)
 -- Modules run their hooks in path order. `state` is a table per module that
 -- survives reloads; main.luau's `state` is the game's JSON state (`/state`).
 --
 -- Players: people on controllers and bots, `players.list()`. Under
--- GameNight the party's seats decide them (a seat change never restarts
+-- Splitscreen Club the party's seats decide them (a seat change never restarts
 -- the game); without it game.toml's players and bots (or --players and
 -- --bots), filled with bots up to min_players. `input[p.id]` is a
 -- person's controls; a bot's input is neutral and the scripts drive it.
@@ -76,10 +76,10 @@ export type EntityOptions = {
 export type Player = {
 	id: number, -- 1, 2, ...: stable for the session, never reused
 	name: string,
-	color: Vec, -- sRGB 0..1, the lobby's colour under GameNight
+	color: Vec, -- sRGB 0..1, the lobby's colour under Splitscreen Club
 	bot: boolean,
 	human: boolean,
-	seat: number?, -- the GameNight seat
+	seat: number?, -- the Splitscreen Club seat
 	couch: number?, -- couch position from the lobby, 0 leftmost
 }
 
@@ -148,7 +148,7 @@ declare players: {
 	get: (id: number) -> Player?,
 	count: () -> number,
 	-- Rumble a person's controller: strength 0..1 for `seconds` (default 0.2).
-	-- Only under GameNight while the game runs; otherwise nothing happens.
+	-- Only under Splitscreen Club while the game runs; otherwise nothing happens.
 	rumble: (id: number, strength: number, seconds: number?) -> (),
 }
 
@@ -256,9 +256,9 @@ declare game: {
 	dt: () -> number,
 	players: () -> number, -- players.count()
 	title: () -> string,
-	-- The match is over: under GameNight the party moves on to the next game.
+	-- The match is over: under Splitscreen Club the party moves on to the next game.
 	finish: () -> (),
-	-- A line for the room log in the GameNight app ("Joep won"), at most 120 characters.
+	-- A line for the room log in the Splitscreen Club app ("Joep won"), at most 120 characters.
 	log: (text: any) -> (),
 }
 

@@ -147,7 +147,7 @@ local function draw()
 	end
 end
 
--- GameNight seated someone new mid-game, or someone left.
+-- Splitscreen Club seated someone new mid-game, or someone left.
 local function player_joined(p)
 	add_runner(p)
 end

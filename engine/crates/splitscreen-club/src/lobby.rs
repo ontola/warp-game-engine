@@ -82,7 +82,7 @@ impl Lobby {
         let url = self.config.url.clone();
         let mut hello = json!({"type":"hello", "role":"lobby", "game":self.config.lobby_id});
         if !self.config.token.is_empty() { hello["token"] = json!(self.config.token); }
-        let spawned = std::thread::Builder::new().name("gamenight-lobby".into()).spawn(move || {
+        let spawned = std::thread::Builder::new().name("splitscreen-club-lobby".into()).spawn(move || {
             if !url.starts_with("ws://") { let _ = recv_tx.send(Incoming::Disconnected("Splitscreen Club requires a ws:// host address".into())); return; }
             match transport_with(&url, hello, send_rx, &recv_tx) {
                 Err(error) => { let _ = recv_tx.send(Incoming::Disconnected(error)); }

@@ -1,7 +1,7 @@
 //! Next-stage construction off the window thread. The displayed world and
 //! simulation stay unchanged until a complete replacement is ready.
 use super::{cameras, lighting, poses};
-use crate::{car_look::Looks, gamenight::Seat, procedural_sky::PreparedSky, visuals::{self, Built}};
+use crate::{car_look::Looks, splitscreen_club::Seat, procedural_sky::PreparedSky, visuals::{self, Built}};
 use gdcompat::Pcg;
 use kern::Timings;
 use render::{Gpu, Lighting, Renderer};

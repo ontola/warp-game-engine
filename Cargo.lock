@@ -1673,13 +1673,13 @@ version = "0.1.0"
 dependencies = [
  "app",
  "game-room-sim",
- "gamenight",
  "gdcompat",
  "glam 0.31.1",
  "image",
  "render",
  "serde",
  "serde_json",
+ "splitscreen-club",
  "tungstenite",
 ]
 
@@ -1690,14 +1690,6 @@ dependencies = [
  "gdcompat",
  "kern",
  "serde_json",
-]
-
-[[package]]
-name = "gamenight"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "tungstenite",
 ]
 
 [[package]]
@@ -2003,7 +1995,6 @@ dependencies = [
  "body",
  "fastnoise-lite",
  "flate2",
- "gamenight",
  "glam 0.31.1",
  "growing-guns",
  "image",
@@ -2017,6 +2008,7 @@ dependencies = [
  "script",
  "serde",
  "serde_json",
+ "splitscreen-club",
  "tokio",
  "tungstenite",
  "warp-xr",
@@ -5731,7 +5723,6 @@ dependencies = [
  "assets",
  "fastnoise-lite",
  "flate2",
- "gamenight",
  "gdcompat",
  "glam 0.31.1",
  "image",
@@ -5741,6 +5732,7 @@ dependencies = [
  "serde",
  "serde_json",
  "spaceracer",
+ "splitscreen-club",
  "tungstenite",
  "warp-xr",
  "wgpu",
@@ -5781,7 +5773,6 @@ dependencies = [
  "assets",
  "body",
  "flate2",
- "gamenight",
  "glam 0.31.1",
  "hecs",
  "image",
@@ -5793,6 +5784,7 @@ dependencies = [
  "serde",
  "serde_json",
  "spellstorm",
+ "splitscreen-club",
  "tungstenite",
 ]
 
@@ -5839,6 +5831,14 @@ checksum = "7ef958a98b9d5da290cfc78946e9f3e61e1e62a18db0d92cac0b83cc161491a9"
 dependencies = [
  "base64ct",
  "der",
+]
+
+[[package]]
+name = "splitscreen-club"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tungstenite",
 ]
 
 [[package]]
@@ -6625,7 +6625,6 @@ dependencies = [
  "body",
  "bytemuck",
  "directories",
- "gamenight",
  "glam 0.31.1",
  "image",
  "jsonschema",
@@ -6639,6 +6638,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "splitscreen-club",
  "toml",
  "tungstenite",
 ]

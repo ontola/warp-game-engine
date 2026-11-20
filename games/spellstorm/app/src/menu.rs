@@ -103,7 +103,7 @@ fn step<'a>(list: &[&'a str], now: &str, dx: i32) -> &'a str {
 }
 
 impl Menu {
-    /// `standalone`: not in a GameNight session, so it offers Quit.
+    /// `standalone`: not in a Splitscreen Club session, so it offers Quit.
     pub fn new(standalone: bool) -> Menu {
         let logo = render::picture::decode(LOGO_PNG, 1.0).ok().map(Arc::new);
         Menu { open: false, title_mode: false, rows: vec![], sel: 0, biome: -1, nav_t: 0.0, logo, standalone }
@@ -113,7 +113,7 @@ impl Menu {
     pub fn show(&mut self, title: bool, w: &World) {
         self.title_mode = title;
         self.biome = if title { -1 } else { w.run.biome_index as i32 };
-        // A new run sits right under Resume, as every GameNight game has it.
+        // A new run sits right under Resume, as every Splitscreen Club game has it.
         self.rows = if title { vec![Row::Start] } else { vec![Row::Resume, Row::Restart] };
         self.rows.extend([Row::Level, Row::FriendlyFire, Row::Difficulty, Row::Unlocks]);
         if self.standalone {

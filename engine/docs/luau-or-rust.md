@@ -163,7 +163,7 @@ Where each game stands:
 | Spellstorm | `mods/base/knobs.luau` | next frame |
 | Spellstorm | `mods/base/spells.luau`, `tomes.luau`, hooks | at once |
 | Spellstorm | `mods/base/monsters.luau`, `biomes.luau` | numbers at once, a changed list at the next start |
-| Sideways | `data/cars.luau` | next stage (and GameNight Prepare) |
+| Sideways | `data/cars.luau` | next stage (and Splitscreen Club Prepare) |
 | Sideways | `data/car_materials.luau` | at once (a part's `match` or `kind` at the next start) |
 | Sideways | `data/sounds.luau` | next stage |
 | SpaceRacer | `rules/game.luau` | `balance` and `combat` at once, `track` and `environment` next race |

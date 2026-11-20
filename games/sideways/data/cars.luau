@@ -3,7 +3,7 @@
 -- wheel-centre height at rest, z = 0 midway between the axles.
 --
 -- When an edit applies: the game reads this file again for every new stage
--- (N, or the end of a stage) and at GameNight Prepare, never in the middle
+-- (N, or the end of a stage) and at Splitscreen Club Prepare, never in the middle
 -- of one, so a stage, its replay and the bench always run on one set of
 -- numbers. `sideways bench` reads it at every run. A file with an error
 -- keeps the cars from before and says why on screen.

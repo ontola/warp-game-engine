@@ -1,7 +1,7 @@
 # Savegames, profiles and settings
 
 Enable storage with `storage = true` and a stable `id = "my-game"` in
-`game.toml`. For a one-file game use the equivalent header lines. Use **one authored save schema**, `save-schema.json`, beside the game. GameNight's publisher reads the same file beside `gamenight.json` and uses atomic-lib to derive Atomic properties. Its generated `save-schema.lock.json` records their identities. Warp validates the save payload with JSON Schema Draft 2020-12. The SQLite storage backend does not affect the schema format.
+`game.toml`. For a one-file game use the equivalent header lines. Use **one authored save schema**, `save-schema.json`, beside the game. Splitscreen Club's publisher reads the same file beside `gamenight.json` and uses atomic-lib to derive Atomic properties. Its generated `save-schema.lock.json` records their identities. Warp validates the save payload with JSON Schema Draft 2020-12. The SQLite storage backend does not affect the schema format.
 
 For example, the current `save-schema.json` for a score can be:
 
@@ -19,17 +19,17 @@ For example, the current `save-schema.json` for a score can be:
 }
 ```
 
-GameNight publishes the properties of its single object definition. Warp validates the payload against that definition. Keep the published
-document in GameNight's form: the atomic-lib 0.41.0-beta.8 importer accepts
+Splitscreen Club publishes the properties of its single object definition. Warp validates the payload against that definition. Keep the published
+document in Splitscreen Club's form: the atomic-lib 0.41.0-beta.8 importer accepts
 `$ref` on properties but does not accept it at the document root. A generic
 JSON Schema validator needs to select the definition explicitly; validating
-only the container would miss its rules. GameNight handles its
+only the container would miss its rules. Splitscreen Club handles its
 `x-gamenight-lenses` and `x-gamenight-dropped` publishing annotations. Local
-save migrations are game code. [GameNight's schema contract](https://github.com/ontola/gamenight/blob/170936a/docs/player-store.md)
+save migrations are game code. [Splitscreen Club's schema contract](https://github.com/ontola/gamenight/blob/170936a/docs/player-store.md)
 
 If your game stores separate settings or profile documents, describe those
 payloads in `settings-schema.json` or `profile-schema.json` using the same JSON
-Schema format. Only the save schema is published by GameNight's save-schema command.
+Schema format. Only the save schema is published by Splitscreen Club's save-schema command.
 
 For a brand-new game the current schema is version 1. Before changing the shape of a released save, archive its schema under `schema-history/save/1.json` and edit `save-schema.json` for version 2. Keep historical files numbered consecutively. The same convention applies to the other two kinds. Warp compiles current and historical schemas at startup.
 
@@ -92,4 +92,4 @@ Rust hosts select the equivalent `storage::Location` through
 
 SQLite provides local durable transactions and revision checks across game
 processes. JSON Schema describes the payload independently of the backend.
-GameNight already uses atomic-lib to import JSON Schema and synchronize player data. Warp's local storage does not itself synchronize these slots.
+Splitscreen Club already uses atomic-lib to import JSON Schema and synchronize player data. Warp's local storage does not itself synchronize these slots.

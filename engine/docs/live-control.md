@@ -134,7 +134,7 @@ When an allow-listed player then asks the assistant in the Splitscreen Club app
 token file, lists these same tools, and carries out the request with them,
 one model step at a time from the Splitscreen Club cloud. The token stays on the
 host, the cloud only sees tool results, and the player hears back what was
-changed. Nothing here is GameNight-specific: it is the same MCP server and
+changed. Nothing here is specific to Splitscreen Club: it is the same MCP server and
 the same tools that Claude Code uses.
 
 ## Connecting ChatGPT

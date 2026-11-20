@@ -972,7 +972,7 @@ fn foreground(r: &mut RoomBuild) {
     for (i, c) in [PINK, GREEN, CYAN].into_iter().enumerate() {
         r.cylinder(0.06, 0.2, Vec3::new(-0.75 + i as f32 * 0.25, 0.65, table_z + 0.1 * (i as f32 - 1.0)), &mm(c, 0.25, 0.7));
     }
-    // The two controllers from the GameNight logo, put down mid-evening.
+    // The two controllers from the Splitscreen Club logo, put down mid-evening.
     logo_pad(r, AMBER, Vec3::new(0.3, 0.6, table_z - 0.1), 0.24);
     logo_pad(r, VIOLET, Vec3::new(0.75, 0.62, table_z + 0.2), -0.23);
     // A controller nobody has joined with yet makes these jump, with A Join

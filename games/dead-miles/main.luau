@@ -4581,7 +4581,7 @@ local function profile_card(u, cx, cy, a, k)
 	local cw, ch = CARD_W * k, CARD_H * k
 	hud.box(cx, cy, cw, ch, { 0.05, 0.05, 0.06, 0.85 * a })
 	hud.box(cx, cy, 4 * k, ch, { c[1], c[2], c[3], a })
-	-- Who plays them: their GameNight face, the character's name beside it.
+	-- Who plays them: their Splitscreen Club face, the character's name beside it.
 	local tx = cx + 16 * k
 	if not u.bot and u.id and hud.face(u.id, cx + 14 * k, cy + 10 * k, 54 * k) then tx = cx + 80 * k end
 	hud.text(u.person.name, tx, cy + 8 * k, { size = 22 * k, width = cw - (tx - cx) - 8 * k, color = { 0.96, 0.94, 0.9, a } })

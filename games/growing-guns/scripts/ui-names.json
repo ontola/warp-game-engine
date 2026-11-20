@@ -1,6 +1,6 @@
 { "size": [960, 540],
   "steps": [
-    { "note": "Party names (GameNight's Gg::names) and name tags: run with --players 2. Tags hang over bots (never over the seats at this machine); the names show in the scoreboard, banners and round strip." },
+    { "note": "Party names (Splitscreen Club's Gg::names) and name tags: run with --players 2. Tags hang over bots (never over the seats at this machine); the names show in the scoreboard, banners and round strip." },
     { "cmd": ["names Joep, Anna", "bots pause", "teleport 0 0 3 0", "teleport 1 2 3 0", "teleport 2 0 3 -7", "teleport 3 3 3 -9", "aim 0 0 3.6 -7", "aim 1 3 3.6 -9"] },
     { "ticks": 20 },
     { "capture": "tags.png" },
@@ -13,7 +13,7 @@
     { "expect": "/players/0/alive", "equals": true },
     { "cmd": ["menu pause"] }, { "ticks": 2 },
     { "capture": "names-pause.png" },
-    { "cmd": ["menu gamenight"] }, { "ticks": 2 },
+    { "cmd": ["menu club"] }, { "ticks": 2 },
     { "capture": "gn-pause.png" },
     { "press": ["DOWN"] }, { "press": ["DOWN"] }, { "press": ["DOWN"] }, { "press": ["RIGHT"] }, { "press": ["SOUTH"] }, { "ticks": 2 },
     { "capture": "gn-bot-added.png" },

@@ -204,7 +204,7 @@ impl Devices {
     /// Vibrate local pad `pad` (in `controls` order, after the keyboard):
     /// `weak` is the light buzzy motor, `strong` the heavy one, both 0..1, for
     /// `seconds` (at most 5). Each call replaces the last; zeros stop it.
-    /// Under GameNight a game rumbles through `gamenight::Client::rumble`.
+    /// Under Splitscreen Club a game rumbles through `splitscreen_club::Client::rumble`.
     /// Returns false when the pad cannot vibrate.
     #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
     pub fn rumble(&mut self, pad: usize, weak: f32, strong: f32, seconds: f32) -> bool {

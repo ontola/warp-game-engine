@@ -2,7 +2,7 @@
 -- one per player, with split screen for the people and bots that chase the
 -- nearest orb. First to 10 wins. Run it with `warp run .` (`--players 2
 -- --bots 2` for more) and edit this file while it plays: saving reloads
--- it, and the world and `state` stay. Under GameNight the party decides
+-- it, and the world and `state` stay. Under Splitscreen Club the party decides
 -- who plays. The API is in types.d.luau (and engine/docs/warp-cli.md).
 
 local SPEED = 6 -- metres per second
@@ -143,7 +143,7 @@ local function draw()
 	end
 end
 
--- GameNight seated someone new mid-game, or someone left.
+-- Splitscreen Club seated someone new mid-game, or someone left.
 local function player_joined(p)
 	add_runner(p)
 end

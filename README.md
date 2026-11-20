@@ -34,7 +34,7 @@ what is the default, what is opt-in and what is still open.
 - **The rest of a game:** Rapier physics with enhanced determinism, bodies
   that move from motion-captured clips and gaits, Warp Humans (people and
   crowds), synthesised audio, GPU particles, online play over iroh, and a
-  native [Splitscreen Club](https://gamenight.ontola.io) client.
+  native [Splitscreen Club](https://splitscreen.club) client.
 - **Tools in every game:** F3 stats overlay, F4 feedback capture (state,
   camera and GPU timings beside the PNG, replayable with `warp inspect`,
   `warp relight` and `warp compare`), F10 render debug menu and a

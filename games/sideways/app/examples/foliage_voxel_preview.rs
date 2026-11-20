@@ -1,6 +1,6 @@
 //! CPU-only comparison of retained pine cards and sparse surface-density LODs.
 //! Build explicitly with `cargo build -p cli --release --example foliage_voxel_preview`.
-//! No GPU, window, controller, GameNight or game-process API is used. One thread.
+//! No GPU, window, controller, Splitscreen Club or game-process API is used. One thread.
 
 use glam::{Vec2, Vec3};
 use image::{Rgba, RgbaImage};

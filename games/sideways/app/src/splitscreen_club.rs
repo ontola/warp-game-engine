@@ -1,20 +1,16 @@
-//! A native GameNight client for Warp games, matching the Godot SDK 6 wire
-//! contract (extracted from Sideways).
+//! Native Splitscreen Club client, matching the vendored Godot SDK 6 wire contract.
 //! Transport runs on its own thread; no socket wait blocks the renderer. Merely
 //! launching a standalone playtest does not connect it to the household party.
 //! Back belongs to the host. Controller identities come from seat tokens, never
 //! native device indices. Launch tokens are never included in logs or errors.
 
 use serde_json::{json, Value};
+use sideways::race::Control;
 use std::collections::BTreeMap;
 use std::net::TcpStream;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 use tungstenite::{Message, stream::MaybeTlsStream};
-
-pub mod lobby;
-pub mod artwork;
-pub mod party;
 
 const STALE: Duration = Duration::from_millis(250);
 const BUTTON_MASK: u16 = 0x3fff;
@@ -28,15 +24,13 @@ pub struct Config {
 }
 
 impl Config {
-    /// From GAMENIGHT, GAMENIGHT_ADDR, GAMENIGHT_GAME_ID (else `game_id`) and
-    /// GAMENIGHT_TOKEN. None when neither the daemon nor an address is set.
-    pub fn from_env(game_id: &str) -> Result<Option<Self>, String> {
+    pub fn from_env() -> Result<Option<Self>, String> {
         let launched_by_daemon = std::env::var("GAMENIGHT").as_deref() == Ok("1");
         let addr = std::env::var("GAMENIGHT_ADDR").unwrap_or_default();
         if !launched_by_daemon && addr.is_empty() { return Ok(None); }
         let addr = if addr.is_empty() { "127.0.0.1:7912" } else { &addr };
         let url = if addr.contains("://") { addr.into() } else { format!("ws://{addr}") };
-        Ok(Some(Self { url, game_id: std::env::var("GAMENIGHT_GAME_ID").unwrap_or_else(|_| game_id.into()),
+        Ok(Some(Self { url, game_id: std::env::var("GAMENIGHT_GAME_ID").unwrap_or_else(|_| "sideways".into()),
             token: std::env::var("GAMENIGHT_TOKEN").unwrap_or_default(), launched_by_daemon }))
     }
 }
@@ -47,9 +41,6 @@ pub struct Seat {
     pub player_id: String,
     pub name: String,
     pub color: String,
-    pub skin_color: String,
-    /// The profile's pixel art (`artwork::avatar` decodes it).
-    pub avatar: String,
     pub controller: String,
     pub ai: bool,
     pub couch: Option<i64>,
@@ -72,41 +63,16 @@ pub enum Command {
     Error(String),
 }
 
-/// Button bits of a controller frame (Back belongs to GameNight).
-pub mod button {
-    pub const A: u16 = 1 << 0;
-    pub const B: u16 = 1 << 1;
-    pub const X: u16 = 1 << 2;
-    pub const Y: u16 = 1 << 3;
-    pub const LB: u16 = 1 << 4;
-    pub const RB: u16 = 1 << 5;
-    pub const BACK: u16 = 1 << 6;
-    pub const START: u16 = 1 << 7;
-    pub const LS: u16 = 1 << 8;
-    pub const RS: u16 = 1 << 9;
-    pub const UP: u16 = 1 << 10;
-    pub const DOWN: u16 = 1 << 11;
-    pub const LEFT: u16 = 1 << 12;
-    pub const RIGHT: u16 = 1 << 13;
-}
-
-/// One seat's controller this tick: buttons held (minus any still held from
-/// the lobby), pressed since last tick, and axes in -1..1 (left x, left y,
-/// right x, right y, left trigger, right trigger; up is negative y).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Pad {
+pub struct RemoteInput {
+    pub control: Control,
+    /// Right stick in native play's convention (+Y up); presentation applies
+    /// the radial camera deadzone. The host wire itself uses -Y up.
+    pub look: [f64; 2],
+    pub camera_pressed: bool,
+    pub start_pressed: bool,
     pub buttons: u16,
     pub pressed: u16,
-    pub axes: [f64; 6],
-}
-
-impl Pad {
-    /// A stick with a radial deadzone (0.15), rescaled from 0. `side` 0 is left.
-    pub fn stick(&self, side: usize) -> [f64; 2] { radial([self.axes[side * 2], self.axes[side * 2 + 1]], 0.15) }
-    /// A trigger 0..1 with a 0.06 deadzone. `side` 0 is left.
-    pub fn trigger(&self, side: usize) -> f64 { let x = self.axes[4 + side].max(0.0); if x <= 0.06 { 0.0 } else { (x - 0.06) / 0.94 } }
-    pub fn held(&self, b: u16) -> bool { self.buttons & b != 0 }
-    pub fn just(&self, b: u16) -> bool { self.pressed & b != 0 }
 }
 
 #[derive(Default)]
@@ -147,11 +113,6 @@ impl State {
             "seats":self.seats().iter().map(|s| json!({"index":s.index,"player_id":s.player_id,"name":s.name,"color":s.color,"controller":s.controller,"ai":s.ai,"couch":s.couch})).collect::<Vec<_>>()})
     }
 
-    /// Profile by stable player ID; artwork must never be logged as diagnostics.
-    pub fn player(&self, id: &str) -> Option<&Value> {
-        self.party["players"].as_array()?.iter().find(|p| p["id"].as_str() == Some(id))
-    }
-
     pub fn seats(&self) -> Vec<Seat> {
         let mut seats: Vec<_> = self.party["seats"].as_array().into_iter().flatten().filter_map(|seat| {
             let kind = seat["occupant"]["kind"].as_str()?;
@@ -160,8 +121,7 @@ impl State {
             let id = text(&seat["occupant"], "player_id");
             let profile = self.party["players"].as_array().into_iter().flatten().find(|p| text(p, "id") == id && !id.is_empty());
             Some(Seat { index, player_id: id, name: profile.map(|p| text(p, "name")).filter(|s| !s.is_empty()).unwrap_or_else(|| format!("Player {}", index + 1)),
-                color: profile.map(|p| text(p, "color")).unwrap_or_default(),
-                skin_color: profile.map(|p| text(p, "skin_color")).unwrap_or_default(), avatar: profile.map(|p| text(p, "avatar")).unwrap_or_default(), controller: text(seat, "controller"), ai: kind == "ai", couch: profile.and_then(|p| p["couch"].as_i64()) })
+                color: profile.map(|p| text(p, "color")).unwrap_or_default(), controller: text(seat, "controller"), ai: kind == "ai", couch: profile.and_then(|p| p["couch"].as_i64()) })
         }).collect();
         seats.sort_by_key(|s| (s.couch.unwrap_or(1000), s.index));
         seats.truncate(4);
@@ -197,9 +157,9 @@ impl State {
     }
 
     /// Called once per human seat per simulation tick (or menu input tick).
-    /// Stale, disconnected or missing-controller input is neutral. `any_phase`
+    /// Stale/disconnected/missing-controller input is neutral. `any_phase`
     /// permits the game's menu while paused, but never an inactive session.
-    pub fn pad_for_seat(&mut self, index: usize, now: Instant, any_phase: bool) -> Pad {
+    pub fn controls_for_seat(&mut self, index: usize, now: Instant, any_phase: bool) -> RemoteInput {
         let available = self.connected && !self.session.is_empty()
             && (self.phase == "running" || (any_phase && self.phase == "paused"))
             && self.frame_at.is_some_and(|at| now.saturating_duration_since(at) < STALE);
@@ -207,15 +167,22 @@ impl State {
         let frame = if available { controller.and_then(|c| self.frames.get(&c)) } else { None };
         let Some(frame) = frame else {
             self.edges.insert(index, ButtonEdges { previous: 0, blocked: BUTTON_MASK });
-            return Pad::default();
+            return RemoteInput::default();
         };
-        let held = (frame["buttons"].as_u64().unwrap_or(0) as u16) & BUTTON_MASK & !button::BACK;
+        let held = (frame["buttons"].as_u64().unwrap_or(0) as u16) & BUTTON_MASK;
         let edge = self.edges.entry(index).or_default();
         edge.blocked &= held;
         let buttons = held & !edge.blocked;
         let pressed = buttons & !edge.previous;
         edge.previous = buttons;
-        Pad { buttons, pressed, axes: std::array::from_fn(|i| axis(frame, i)) }
+        let left = radial([axis(frame, 0), axis(frame, 1)], 0.15);
+        let trigger = |i| { let x = axis(frame, i).max(0.0); if x <= 0.06 { 0.0 } else { (x - 0.06) / 0.94 } };
+        RemoteInput { control: Control { throttle: trigger(5), brake: trigger(4), steer: left[0],
+                handbrake: if buttons & 1 != 0 { 1.0 } else { 0.0 },
+                shift: ((pressed >> 5) & 1) as i8 - ((pressed >> 4) & 1) as i8,
+                recover: pressed & (1 << 2) != 0 },
+            look: [axis(frame, 2), -axis(frame, 3)], camera_pressed: pressed & (1 << 3) != 0,
+            start_pressed: pressed & (1 << 7) != 0, buttons: buttons & !(1 << 6), pressed: pressed & !(1 << 6) }
     }
 
     fn ready(&mut self, session: &str) -> bool {
@@ -301,18 +268,12 @@ enum Incoming { Json(Value, Instant), Disconnected(String) }
 pub struct Client {
     pub state: State,
     pub launched_by_daemon: bool,
-    /// Per seat: whether the last rumble sent was a stop.
-    rumble_quiet: BTreeMap<usize, bool>,
     outgoing: Sender<Value>,
     incoming: Receiver<Incoming>,
-    /// Read ahead by [`Client::loading`], still to be handled by `poll`.
-    held: std::collections::VecDeque<Incoming>,
-    /// A `prepare` seen ahead by [`Client::loading`]: whose progress to report.
-    loading_session: Option<String>,
 }
 
 impl Client {
-    pub fn connect_from_env(game_id: &str) -> Result<Option<Self>, String> { Config::from_env(game_id)?.map(Self::connect).transpose() }
+    pub fn connect_from_env() -> Result<Option<Self>, String> { Config::from_env()?.map(Self::connect).transpose() }
 
     pub fn connect(config: Config) -> Result<Self, String> {
         if !config.url.starts_with("ws://") { return Err("Splitscreen Club requires a ws:// host address".into()); }
@@ -320,15 +281,15 @@ impl Client {
         let (recv_tx, incoming) = mpsc::channel();
         let state = State::new(config.game_id.clone());
         let launched_by_daemon = config.launched_by_daemon;
-        std::thread::Builder::new().name("gamenight".into()).spawn(move || {
+        std::thread::Builder::new().name("splitscreen-club".into()).spawn(move || {
             if let Err(error) = transport(config, send_rx, &recv_tx) { let _ = recv_tx.send(Incoming::Disconnected(error)); }
         }).map_err(|e| format!("Cannot start Splitscreen Club connection thread: {e}"))?;
-        Ok(Self { state, launched_by_daemon, rumble_quiet: BTreeMap::new(), outgoing, incoming, held: Default::default(), loading_session: None })
+        Ok(Self { state, launched_by_daemon, outgoing, incoming })
     }
 
     pub fn poll(&mut self) -> Vec<Command> {
         let mut commands = vec![];
-        while let Some(item) = self.held.pop_front().or_else(|| self.incoming.try_recv().ok()) {
+        while let Ok(item) = self.incoming.try_recv() {
             match item {
                 Incoming::Json(value, received_at) => commands.extend(self.state.receive(value, received_at)),
                 Incoming::Disconnected(error) => {
@@ -348,22 +309,6 @@ impl Client {
         commands
     }
 
-    /// Startup progress for the host's loading screen, before the game
-    /// handles its `prepare` (the window, the GPU, the scene). Reads ahead
-    /// for that `prepare` without handling it; `poll` still does.
-    pub fn loading(&mut self, percent: u32, text: &str) {
-        while let Ok(item) = self.incoming.try_recv() {
-            if let Incoming::Json(msg, _) = &item
-                && msg["type"] == "prepare" && msg["game"] == self.state.game_id.as_str()
-                && let Some(session) = msg["session"].as_str().filter(|s| !s.is_empty()) {
-                self.loading_session = Some(session.to_string());
-            }
-            self.held.push_back(item);
-        }
-        let session = if self.state.phase == "preparing" { Some(self.state.session.clone()) } else { self.loading_session.clone() };
-        if let Some(session) = session { let _ = self.notify_progress(&session, percent, text); }
-    }
-
     pub fn send_json(&self, value: Value) -> Result<(), String> { self.outgoing.send(value).map_err(|_| "Splitscreen Club is disconnected".into()) }
     pub fn declare_settings(&self, settings: Value) -> Result<(), String> { self.send_json(json!({"type":"declare_settings", "settings":settings})) }
     pub fn declare_actions(&self, actions: Value) -> Result<(), String> {
@@ -373,22 +318,10 @@ impl Client {
         }
         self.send_json(json!({"type":"declare_actions", "actions":actions}))
     }
-    /// Plain-text requests from players and the session assistant. With
-    /// `mcp` (a live-control token file) the host's assistant changes the
-    /// game through its MCP tools instead of sending text.
-    pub fn declare_commands(&self, description: &str, examples: &[&str], mcp: Option<&std::path::Path>) -> Result<(), String> {
-        let mut msg = json!({"type":"declare_commands", "description":description, "examples":examples});
-        if let Some(path) = mcp { msg["mcp"] = json!(path.to_string_lossy()); }
-        self.send_json(msg)
-    }
     pub fn notify_participation(&self, session: &str, instant_join: bool) -> Result<(), String> { self.send_json(json!({"type":"participation", "session":session, "instant_join":instant_join})) }
     pub fn notify_ready(&mut self, session: &str) -> Result<(), String> {
         if !self.state.ready(session) { return Err("Ready does not match a preparing Splitscreen Club session".into()); }
         self.send_json(json!({"type":"ready", "session":session}))
-    }
-    /// Loading progress shown in the lobby while a session prepares.
-    pub fn notify_progress(&self, session: &str, percent: u32, text: &str) -> Result<(), String> {
-        self.send_json(json!({"type":"progress", "session":session, "percent":percent.min(100), "text":text}))
     }
     pub fn notify_finished(&self, session: &str) -> Result<(), String> { self.send_json(json!({"type":"finished", "session":session})) }
     pub fn request_overlay(&self) -> Result<(), String> { self.send_json(json!({"type":"request_overlay"})) }
@@ -400,20 +333,6 @@ impl Client {
         }
         Ok(())
     }
-    /// Vibrate the controller on seat `seat`: `weak` is the light buzzy motor,
-    /// `strong` the heavy one, both 0..1, for `seconds` (at most 5). Each call
-    /// replaces the last for that seat; call it a few times a second while the
-    /// effect lasts and with zeros to stop. Only while the session runs in
-    /// front (the host ignores it otherwise); repeated stops are sent once.
-    pub fn rumble(&mut self, seat: usize, weak: f64, strong: f64, seconds: f64) -> Result<(), String> {
-        if !self.state.is_running() || seat > 255 { return Ok(()); }
-        let (weak, strong) = (weak.clamp(0.0, 1.0), strong.clamp(0.0, 1.0));
-        let quiet = weak == 0.0 && strong == 0.0;
-        if quiet && *self.rumble_quiet.get(&seat).unwrap_or(&true) { return Ok(()); }
-        self.rumble_quiet.insert(seat, quiet);
-        self.send_json(json!({"type":"rumble", "session":self.state.session, "seat":seat,
-            "weak":(weak * 65535.0) as u32, "strong":(strong * 65535.0) as u32, "ms":((seconds * 1000.0) as i64).clamp(0, 5000)}))
-    }
     pub fn room_log(&self, text: &str) -> Result<(), String> {
         if !self.state.is_running() || !self.state.has_sdk6_options() { return Ok(()); }
         self.send_json(json!({"type":"room_log", "session":self.state.session, "text":text.chars().take(120).collect::<String>()}))
@@ -421,23 +340,17 @@ impl Client {
 }
 
 fn transport(config: Config, outgoing: Receiver<Value>, incoming: &Sender<Incoming>) -> Result<(), String> {
-    let mut hello = json!({"type":"hello", "role":"game", "game":config.game_id});
-    if !config.token.is_empty() { hello["token"] = json!(config.token); }
-    transport_with(&config.url, hello, outgoing, incoming)
-}
-
-/// One websocket session: send `hello`, then pump both directions until the
-/// caller drops its sender (Ok) or the connection fails (Err, redacted).
-fn transport_with(url: &str, hello: Value, outgoing: Receiver<Value>, incoming: &Sender<Incoming>) -> Result<(), String> {
     let mut diagnostics = TransportDiagnostics::new();
     let mut ws_config = tungstenite::protocol::WebSocketConfig::default();
     ws_config.max_message_size = Some(16 * 1024 * 1024); // SDK6: four avatar/profile payloads may exceed 1 MiB.
-    let (mut socket, _) = tungstenite::client::connect_with_config(url, Some(ws_config), 3)
+    let (mut socket, _) = tungstenite::client::connect_with_config(config.url.as_str(), Some(ws_config), 3)
         .map_err(|error| diagnostics.failure("connect", websocket_error(&error)))?;
     match socket.get_mut() {
         MaybeTlsStream::Plain(stream) => configure_stream(stream)?,
         _ => return Err("Unexpected Splitscreen Club transport".into()),
     }
+    let mut hello = json!({"type":"hello", "role":"game", "game":config.game_id});
+    if !config.token.is_empty() { hello["token"] = json!(config.token); }
     match socket.send(Message::Text(hello.to_string().into())) {
         Err(error) if !would_block(&error) => return Err(diagnostics.failure("hello", websocket_error(&error))),
         _ => {}
@@ -482,7 +395,7 @@ fn transport_with(url: &str, hello: Value, outgoing: Receiver<Value>, incoming: 
                 let _ = socket.flush();
             }
             // Nothing to read: wait a moment rather than spin.
-            Err(error) if would_block(&error) => if !busy { std::thread::sleep(IDLE_WAIT); },
+            Err(error) if would_block(&error) => if !busy { std::thread::sleep(Duration::from_millis(2)); },
             Err(error) => return Err(diagnostics.failure("read", websocket_error(&error))),
         }
     }
@@ -510,19 +423,12 @@ impl TransportDiagnostics {
     }
 }
 
-/// How long the transport sleeps when nothing came in or went out.
-const IDLE_WAIT: Duration = Duration::from_millis(2);
-
-/// Nothing to do yet on the non-blocking socket. Windows error 997
-/// (ERROR_IO_PENDING) is the same thing: it ended a 40-minute Spellstorm run
-/// when the socket still used a read timeout, so it is never fatal.
+/// Nothing to do yet on the non-blocking socket; Windows error 997
+/// (ERROR_IO_PENDING) is never fatal (engine/crates/splitscreen-club does the same).
 fn would_block(error: &tungstenite::Error) -> bool {
-    matches!(error, tungstenite::Error::Io(error) if io_would_block(error))
-}
-
-fn io_would_block(error: &std::io::Error) -> bool {
-    matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut | std::io::ErrorKind::Interrupted)
-        || (cfg!(windows) && error.raw_os_error() == Some(997))
+    matches!(error, tungstenite::Error::Io(error)
+        if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut | std::io::ErrorKind::Interrupted)
+            || (cfg!(windows) && error.raw_os_error() == Some(997)))
 }
 
 fn io_error(error: &std::io::Error) -> String {
@@ -555,6 +461,21 @@ fn configure_stream(stream: &TcpStream) -> Result<(), String> {
     stream.set_nodelay(true).map_err(|e| format!("Splitscreen Club set_nodelay failed: {}", io_error(&e)))
 }
 
+pub fn settings() -> Value {
+    json!([
+        {"key":"gearbox","label":"Gearbox","kind":"choice","default":"automatic","options":["automatic","manual"]},
+        {"key":"stage_km","label":"Stage length km (next stage)","kind":"number","default":3,"min":2,"max":8},
+        {"key":"rivals","label":"AI rivals (next stage)","kind":"number","default":1,"min":0,"max":3},
+        {"key":"contact","label":"Car contact (next stage)","kind":"toggle","default":true},
+        {"key":"weather","label":"Road weather (next stage)","kind":"choice","default":"random","options":["random","clear","overcast","mist","wet"]},
+        {"key":"sky_time","label":"Time of day (live)","kind":"choice","default":"noon","options":["current","sunrise","morning","noon","afternoon","sunset","night"]},
+        {"key":"sky_weather","label":"Atmosphere (live)","kind":"choice","default":"clear","options":["clear","haze","mist"]},
+        {"key":"upscale","label":"Upscaling (temporal works on every GPU; DLSS needs an NVIDIA GPU and runtime)","kind":"choice","default":"native","options":["native","temporal-quality","temporal-balanced","temporal-performance","dlss-quality","dlss-balanced","dlss-performance"]}
+    ])
+}
+
+pub fn actions() -> Value { json!([{"key":"new_stage","label":"New stage"}]) }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,52 +504,8 @@ mod tests {
         for kind in [std::io::ErrorKind::WouldBlock, std::io::ErrorKind::TimedOut] {
             assert!(would_block(&Error::Io(std::io::Error::from(kind))));
         }
-        // Windows ERROR_IO_PENDING ended a Spellstorm run: never fatal there.
-        assert_eq!(would_block(&Error::Io(std::io::Error::from_raw_os_error(997))), cfg!(windows));
         assert!(!would_block(&Error::Io(std::io::Error::from(std::io::ErrorKind::ConnectionReset))));
         assert!(!would_block(&Error::ConnectionClosed));
-    }
-
-    /// The non-blocking socket loses nothing under a burst both ways, a large
-    /// frame included, and ends cleanly when the game drops its sender.
-    #[test]
-    fn non_blocking_transport_keeps_every_frame_of_a_burst() {
-        use std::net::TcpListener;
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-            let mut config = tungstenite::protocol::WebSocketConfig::default();
-            config.max_message_size = Some(16 * 1024 * 1024);
-            let mut socket = tungstenite::accept_with_config(stream, Some(config)).unwrap();
-            let _hello = socket.read().unwrap();
-            for i in 0..3000 { socket.send(Message::Text(json!({"type":"n","i":i}).to_string().into())).unwrap(); }
-            socket.send(Message::Text(json!({"type":"big","pad":"x".repeat(1 << 20)}).to_string().into())).unwrap();
-            let mut got = 0;
-            while got < 3000 { if let Message::Text(_) = socket.read().unwrap() { got += 1; } }
-            // Then the client's close.
-            while let Ok(m) = socket.read() { if m.is_close() { break; } }
-            got
-        });
-        let (out_tx, out_rx) = mpsc::channel();
-        let (in_tx, in_rx) = mpsc::channel();
-        let url = format!("ws://{address}");
-        let client = std::thread::spawn(move || transport_with(&url, json!({"type":"hello"}), out_rx, &in_tx));
-        for i in 0..3000 { out_tx.send(json!({"type":"input","i":i})).unwrap(); }
-        let mut seen = 0;
-        let mut big = false;
-        while !big {
-            match in_rx.recv_timeout(Duration::from_secs(10)).expect("frames keep coming") {
-                Incoming::Json(v, _) if v["type"] == "n" => { assert_eq!(v["i"], seen); seen += 1; }
-                Incoming::Json(v, _) if v["type"] == "big" => big = true,
-                other => panic!("unexpected {:?}", matches!(other, Incoming::Disconnected(_))),
-            }
-        }
-        assert_eq!(seen, 3000);
-        drop(out_tx);
-        assert!(client.join().unwrap().is_ok(), "dropping the sender ends the transport cleanly");
-        assert_eq!(server.join().unwrap(), 3000);
     }
 
     #[test]
@@ -657,6 +534,29 @@ mod tests {
         assert!(report.contains("receive close") && report.contains("code=1008"), "{report}");
         assert!(report.contains("sent_messages=1"), "{report}");
         assert!(!report.contains(secret), "{report}");
+    }
+
+    #[test]
+    fn live_sky_menu_choices_match_runtime_and_keep_road_weather_separate() {
+        let choices=settings();let choices=choices.as_array().unwrap();
+        for item in choices {
+            if let Some(key @ ("sky_time"|"sky_weather"))=item["key"].as_str() {
+                for value in item["options"].as_array().unwrap() {
+                    assert!(crate::procedural_sky::LiveSettings::default().changed(key,value).is_ok());
+                }
+                assert!(item["label"].as_str().unwrap().contains("live"));
+            }
+        }
+        assert!(choices.iter().any(|item|item["key"]=="weather"&&item["label"].as_str().unwrap().contains("next stage")));
+    }
+
+    #[test]
+    fn upscaling_menu_declares_only_explicit_renderer_modes() {
+        let settings=settings();
+        let item=settings.as_array().unwrap().iter().find(|s|s["key"]=="upscale").unwrap();
+        assert_eq!(item["kind"],"choice");assert_eq!(item["default"],"native");
+        assert_eq!(item["options"].as_array().unwrap().len(),render::upscale::UpscaleMode::ALL.len());
+        for option in item["options"].as_array().unwrap() {assert!(option.as_str().unwrap().parse::<render::upscale::UpscaleMode>().is_ok());}
     }
 
     fn prepare() -> Value { json!({"type":"prepare", "game":"sideways", "session":"s1",
@@ -713,35 +613,32 @@ mod tests {
         state.receive(json!({"type":"controller_frame","controllers":[
             {"controller":"pad-b","buttons":0,"axes":[-32768,0,0,0,0,0]},
             {"controller":"pad-a","buttons":128,"axes":[32767,0,0,0,0,32767]}]}), now);
-        let first = state.pad_for_seat(0, now, false);
-        assert_eq!(first.trigger(1), 1.0); assert_eq!(first.stick(0)[0], 1.0);
-        assert!(!first.just(button::START), "held lobby button must be released first");
-        assert_eq!(state.pad_for_seat(3, now, false).stick(0)[0], -1.0);
-        assert_eq!(state.pad_for_seat(2, now, false), Pad::default());
-        assert_eq!(state.pad_for_seat(0, now + STALE, false), Pad::default());
+        let first = state.controls_for_seat(0, now, false);
+        assert_eq!(first.control.throttle, 1.0); assert_eq!(first.control.steer, 1.0);
+        assert!(!first.start_pressed, "held lobby button must be released first");
+        assert_eq!(state.controls_for_seat(3, now, false).control.steer, -1.0);
+        assert_eq!(state.controls_for_seat(2, now, false), RemoteInput::default());
+        assert_eq!(state.controls_for_seat(0, now + STALE, false), RemoteInput::default());
         state.receive(json!({"type":"controller_frame","controllers":[{"controller":"pad-a","buttons":0,"axes":[]}]}), now);
-        state.pad_for_seat(0, now, false);
+        state.controls_for_seat(0, now, false);
         state.receive(json!({"type":"controller_frame","controllers":[{"controller":"pad-a","buttons":196,"axes":[]}]}), now);
-        let press = state.pad_for_seat(0, now, false);
-        assert!(press.just(button::START) && press.just(button::X));
-        assert_eq!(press.pressed & button::BACK, 0, "Back must never reach gameplay");
-        assert!(!state.pad_for_seat(0, now, false).just(button::START));
+        let press = state.controls_for_seat(0, now, false);
+        assert!(press.start_pressed && press.control.recover);
+        assert_eq!(press.pressed & (1<<6), 0, "Back must never reach gameplay");
+        assert!(!state.controls_for_seat(0, now, false).start_pressed);
         state.receive(json!({"type":"controller_frame","controllers":[]}), now);
-        assert_eq!(state.pad_for_seat(0, now, false), Pad::default());
+        assert_eq!(state.controls_for_seat(0, now, false), RemoteInput::default());
     }
 
     #[test]
     fn profiles_do_not_restart_and_rosters_clear_old_input() {
         let mut state = running(); let now = Instant::now();
-        let commands = state.receive(json!({"type":"players_updated","session":"s1","players":[{"id":"p1","name":"New name","couch":2,"avatar":"test-art","skin_color":"#aabbcc"}]}), now);
+        let commands = state.receive(json!({"type":"players_updated","session":"s1","players":[{"id":"p1","name":"New name","couch":2}]}), now);
         assert!(matches!(commands[0], Command::PlayersUpdated { .. }));
         assert_eq!(state.phase, "running"); assert_eq!(state.seats()[1].name, "New name");
-        assert_eq!(state.player("p1").unwrap()["avatar"], "test-art");
-        assert_eq!(state.player("p1").unwrap()["skin_color"], "#aabbcc");
-        assert!(state.player("absent").is_none());
         state.receive(json!({"type":"party_updated","session":"s1","seats":[],"players":[]}), now);
         assert!(state.seats().is_empty());
-        assert_eq!(state.pad_for_seat(0, now, false), Pad::default());
+        assert_eq!(state.controls_for_seat(0, now, false), RemoteInput::default());
     }
 
     #[test]
@@ -764,56 +661,10 @@ mod tests {
     }
 
     #[test]
-    fn rumble_runs_only_in_a_running_session_and_sends_one_stop() {
-        let (outgoing, sent) = mpsc::channel();
-        let (_receive, incoming) = mpsc::channel();
-        let mut client = Client { state: State::new("sideways".into()), launched_by_daemon:true, rumble_quiet: BTreeMap::new(), outgoing, incoming, held: Default::default(), loading_session: None };
-        client.rumble(0, 1.0, 0.5, 0.2).unwrap();
-        assert!(sent.try_recv().is_err(), "not running: nothing sent");
-        client.state = running();
-        client.rumble(1, 1.0, 0.5, 9.0).unwrap();
-        assert_eq!(sent.try_recv().unwrap(), json!({"type":"rumble","session":"s1","seat":1,"weak":65535,"strong":32767,"ms":5000}));
-        client.rumble(1, 0.0, 0.0, 0.0).unwrap();
-        client.rumble(1, 0.0, 0.0, 0.0).unwrap();
-        assert_eq!(sent.try_recv().unwrap()["weak"], 0);
-        assert!(sent.try_recv().is_err(), "one stop only");
-        client.rumble(2, 0.0, 0.0, 0.0).unwrap();
-        assert!(sent.try_recv().is_err(), "a seat that never rumbled needs no stop");
-    }
-
-    #[test]
-    fn startup_progress_reports_against_a_prepare_read_ahead() {
-        let (outgoing, sent) = mpsc::channel();
-        let (receive, incoming) = mpsc::channel();
-        let mut client = Client { state: State::new("sideways".into()), launched_by_daemon:true, rumble_quiet: BTreeMap::new(), outgoing, incoming, held: Default::default(), loading_session: None };
-        client.loading(20, "opening the window");
-        assert!(sent.try_recv().is_err(), "no session yet: nothing to report against");
-        receive.send(Incoming::Json(json!({"type":"welcome","protocol_version":1}), Instant::now())).unwrap();
-        receive.send(Incoming::Json(prepare(), Instant::now())).unwrap();
-        client.loading(35, "starting the graphics card");
-        assert_eq!(sent.try_recv().unwrap(), json!({"type":"progress","session":"s1","percent":35,"text":"starting the graphics card"}));
-        assert_eq!(client.state.phase, "idle", "read ahead, not handled");
-        let mut prepared = false;
-        for _ in 0..4 { prepared |= client.poll().iter().any(|c| matches!(c, Command::Prepare { .. })); }
-        assert!(prepared, "poll still handles the prepare");
-    }
-
-    #[test]
-    fn live_control_is_offered_with_its_token_file() {
-        let (outgoing, sent) = mpsc::channel();
-        let (_receive, incoming) = mpsc::channel();
-        let client = Client { state: State::new("neon-siege".into()), launched_by_daemon:true, rumble_quiet: BTreeMap::new(), outgoing, incoming, held: Default::default(), loading_session: None };
-        client.declare_commands("Change it live", &[], Some(std::path::Path::new("/tmp/warp-live/neon-siege.json"))).unwrap();
-        assert_eq!(sent.try_recv().unwrap(), json!({"type":"declare_commands","description":"Change it live","examples":[],"mcp":"/tmp/warp-live/neon-siege.json"}));
-        client.declare_commands("Items", &["give me 1 bread"], None).unwrap();
-        assert!(sent.try_recv().unwrap().get("mcp").is_none());
-    }
-
-    #[test]
     fn queued_prepares_and_dispose_do_not_overtake_ready_handling() {
         let (outgoing, sent) = mpsc::channel();
         let (receive, incoming) = mpsc::channel();
-        let mut client = Client { state: State::new("sideways".into()), launched_by_daemon:true, rumble_quiet: BTreeMap::new(), outgoing, incoming, held: Default::default(), loading_session: None };
+        let mut client = Client { state: State::new("sideways".into()), launched_by_daemon:true, outgoing, incoming };
         let now=Instant::now();
         let mut second=prepare(); second["session"]=json!("s2");
         for msg in [json!({"type":"welcome","protocol_version":1,"party":{}}),prepare(),second,json!({"type":"dispose","session":"s2"})] {
@@ -855,7 +706,7 @@ mod tests {
         let mut throttle = false;
         while Instant::now() < deadline {
             for event in client.poll() { if let Command::Prepare { session, .. } = event { client.notify_ready(&session).unwrap(); } }
-            if client.state.is_running() && client.state.pad_for_seat(0, Instant::now(), false).trigger(1) == 1.0 { throttle = true; break; }
+            if client.state.is_running() && client.state.controls_for_seat(0, Instant::now(), false).control.throttle == 1.0 { throttle = true; break; }
             std::thread::sleep(Duration::from_millis(2));
         }
         assert!(throttle, "host controller frame did not reach canonical seat");

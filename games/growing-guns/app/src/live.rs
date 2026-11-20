@@ -27,7 +27,7 @@ pub struct GgLive {
 }
 
 /// `--live [PORT]` and friends (see live::Config::from_args). Under
-/// GameNight (`party`) it is on without them, on a free local port, so the
+/// Splitscreen Club (`party`) it is on without them, on a free local port, so the
 /// session assistant in the app can change the game (`WARP_LIVE=0`: off).
 pub fn start(args: &Args, party: bool) -> Result<Option<GgLive>, String> {
     let cfg = match live::Config::from_args("growing-guns", &args.list)? {
@@ -99,7 +99,7 @@ fn tools() -> Vec<ToolSpec> {
 }
 
 impl GgLive {
-    /// Where the bridge (and the GameNight host) find the port and token.
+    /// Where the bridge (and the Splitscreen Club host) find the port and token.
     pub fn token_file(&self) -> Option<PathBuf> { self.live.token_file().map(PathBuf::from) }
 }
 

@@ -17,7 +17,7 @@ and Growing Guns sections.
   through the presets, for continuous cycles.
 - `LiveSettings`: a time and weather (`LiveSettings::preset`), optionally with a
   custom sun and exposure (`with_sun`) or just an exposure (`with_exposure`).
-  `changed("sky_time" | "sky_weather", value)` is the menu/GameNight vocabulary;
+  `changed("sky_time" | "sky_weather", value)` is the menu and Splitscreen Club vocabulary;
   `solar()`, `exposure()`, `metadata()` and `apply_presentation(light)` (fog,
   exposure, shadow strength).
 - `bake_live(revision, settings, cache, quality) -> PreparedSky`: one
@@ -172,7 +172,7 @@ exposure, fog start/end/density, LUT dimensions, bake CPU time and cache reuse.
   invalid update preservation and F12 state. Check the HUD-off resume path too.
 
 Main files: `crates/cli/src/procedural_sky.rs`, `play.rs`, `input.rs`, `hud.rs`,
-`gamenight.rs`. The parent task supplies the renderer's shared sky update API.
+`splitscreen_club.rs`. The parent task supplies the renderer's shared sky update API.
 
 
 ## Visible sun and lens flare
