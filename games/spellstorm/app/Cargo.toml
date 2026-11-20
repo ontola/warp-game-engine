@@ -2,6 +2,7 @@
 name = "spellstorm-app"
 edition.workspace = true
 version.workspace = true
+license.workspace = true
 description = "Spellstorm on Warp: the Godot game's look over the hecs sim"
 
 [[bin]]

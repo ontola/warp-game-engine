@@ -2,6 +2,7 @@
 name = "render"
 edition.workspace = true
 version.workspace = true
+license.workspace = true
 description = "Kern's renderer: GPU-driven clusters with LOD, visibility buffer, HDR, sun and sky light"
 
 [features]

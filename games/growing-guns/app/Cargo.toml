@@ -2,6 +2,7 @@
 name = "growing-guns-app"
 edition.workspace = true
 version.workspace = true
+license.workspace = true
 description = "Growing Guns on Warp: split-screen renderer, input and headless captures"
 
 [[bin]]
