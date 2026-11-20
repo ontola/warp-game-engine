@@ -1,0 +1,12 @@
+{
+  "id": "relay-keepers",
+  "title": "Relay Keepers",
+  "tagline": "Leap from a partner, pass the signal and cross between two eras.",
+  "developer": "Joep Meindertsma",
+  "players": {"min": 2, "max": 2, "best": 2},
+  "match_minutes": 8,
+  "price": "free",
+  "tags": ["co-op", "platformer", "puzzle", "warp"],
+  "integration": {"level":"integrated","protocol":1},
+  "links": {}
+}
