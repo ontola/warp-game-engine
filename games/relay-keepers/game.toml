@@ -1,0 +1,7 @@
+title = "Relay Keepers"
+id = "relay-keepers"
+tick_rate = 60
+players = 2
+bots = 0
+split = false
+sky = "gradient"
