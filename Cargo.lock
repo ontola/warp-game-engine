@@ -1682,10 +1682,15 @@ dependencies = [
  "glam 0.31.1",
  "image",
  "render",
+ "script",
  "serde",
  "serde_json",
  "splitscreen-club",
  "tungstenite",
+ "warp",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-time",
 ]
 
 [[package]]
@@ -5842,6 +5847,7 @@ dependencies = [
 name = "splitscreen-club"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.3.4",
  "serde_json",
  "tungstenite",
 ]

@@ -18,7 +18,9 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 
 thread_local! {
     /// A game waiting to replace the running one ([`switch`]).
-    static NEXT: RefCell<Option<(crate::Config, Box<dyn Game>)>> = const { RefCell::new(None) };
+    static NEXT: RefCell<Option<(crate::Config, Box<dyn Game>, Option<Keep>)>> = const { RefCell::new(None) };
+    /// What the page does when the game quits or someone presses Back ([`on_exit`]).
+    static EXIT: RefCell<Option<Box<dyn FnMut(Exit) -> bool>>> = const { RefCell::new(None) };
     /// Lines the log box always shows above the rolling tail: the start-up
     /// lines (GPU, limits) and the first GPU error, which later errors would
     /// otherwise push out of the box.
@@ -133,13 +135,46 @@ struct Shell {
     hidden_editor: Option<bool>,
     /// When the last [`switch`] happened, until its first frame is drawn.
     switched: Option<Instant>,
+    /// The running game has left once ([`on_exit`]): wait for the switch.
+    exited: bool,
 }
 
 /// Replace the running game with `game` at the next frame, keeping the
 /// canvas, the GPU device, the input devices and everything the engine has
 /// compiled: a switch costs only the new game's scene upload.
 pub fn switch(cfg: crate::Config, game: Box<dyn Game>) {
-    NEXT.with(|n| *n.borrow_mut() = Some((cfg, game)));
+    NEXT.with(|n| *n.borrow_mut() = Some((cfg, game, None)));
+}
+
+/// What [`switch_keeping`] hands the replaced game to.
+pub type Keep = Box<dyn FnOnce(crate::Config, Box<dyn Game>)>;
+
+/// [`switch`], handing the replaced game to `keep` as it was (it gets no
+/// ticks or frames there) instead of dropping it. A browser host keeps its
+/// lobby that way while a game runs, and a paused game while the lobby is
+/// on screen, so either comes back in a moment.
+pub fn switch_keeping(cfg: crate::Config, game: Box<dyn Game>, keep: impl FnOnce(crate::Config, Box<dyn Game>) + 'static) {
+    NEXT.with(|n| *n.borrow_mut() = Some((cfg, game, Some(Box::new(keep)))));
+}
+
+/// Why the running game wants to leave ([`on_exit`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Exit {
+    /// Its own menu's Quit ([`Game::quit`]).
+    Quit,
+    /// Someone pressed Back (Select, Tab on the keyboard): the game stays
+    /// paused, as the host's Back does.
+    Back,
+}
+
+/// Call `f` when the running game quits or someone presses Back; a browser
+/// host goes back to its lobby there (a [`switch`]) and returns true. When
+/// it returns false (or without it) Back is the game's like any button and
+/// a quit game keeps running.
+pub fn on_exit(f: impl FnMut(Exit) -> bool + 'static) { EXIT.with(|e| *e.borrow_mut() = Some(Box::new(f))); }
+
+fn exit(why: Exit) -> bool {
+    EXIT.with(|e| match e.borrow_mut().as_mut() { Some(f) => f(why), None => false })
 }
 
 /// Run `game` in the page's canvas `#warp` (or a new one) until the page
@@ -148,7 +183,7 @@ pub fn run(cfg: crate::Config, game: Box<dyn Game>) {
     install_panic_hook();
     let mut devices = Devices::new(cfg.keyboard);
     devices.pointer_enabled = cfg.pointer;
-    let shell = Shell { cfg, game, devices, window: None, live: Rc::new(RefCell::new(None)), acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), failed: false, announced: false, hidden_editor:None, switched: None };
+    let shell = Shell { cfg, game, devices, window: None, live: Rc::new(RefCell::new(None)), acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), failed: false, announced: false, hidden_editor:None, switched: None, exited: false };
     match EventLoop::new() {
         Ok(events) => events.spawn_app(shell),
         Err(e) => log(&format!("event loop: {e}")),
@@ -184,6 +219,8 @@ impl Shell {
                     } else if storage < 16 { format!("{storage} storage buffers, {textures} sampled textures per shader stage: full renderer, no trees (they need 16 storage buffers)") }
                     else { format!("{storage} storage buffers, {textures} sampled textures per shader stage: full renderer") };
                     log_pinned(&line);
+                    let glass = render::portable::glass_sampled_textures();
+                    if !render::portable::needed(&limits) && textures < glass { log_pinned(&format!("no glass: transparent surfaces need {glass} sampled textures per stage")); }
                     *live.borrow_mut() = Some(l);
                     window.request_redraw();
                 }
@@ -203,11 +240,14 @@ impl Shell {
         let mut steps = 0;
         let mut live = self.live.borrow_mut();
         let Some(live) = live.as_mut() else { return Ok(()) };
-        if let Some((cfg, game)) = NEXT.with(|n| n.borrow_mut().take()) {
+        if let Some((cfg, game, keep)) = NEXT.with(|n| n.borrow_mut().take()) {
             // The old game's scene goes with its renderer; the next draw
             // builds the new one on the same device.
-            self.game = game;
-            self.cfg = cfg;
+            let (cfg, game) = (std::mem::replace(&mut self.cfg, cfg), std::mem::replace(&mut self.game, game));
+            if let Some(keep) = keep { keep(cfg, game); }
+            self.devices.keyboard_enabled = self.cfg.keyboard;
+            self.devices.pointer_enabled = self.cfg.pointer;
+            self.exited = false;
             live.renderer = None;
             self.acc = 0.0;
             self.switched = Some(Instant::now());
@@ -230,9 +270,15 @@ impl Shell {
             self.acc -= step;
             steps += 1;
             self.game.pointer(self.devices.pointer(), size);
-            let devices = self.devices.device_controls(step);
+            let mut devices = self.devices.device_controls(step);
+            if !self.exited && devices.iter().any(|(_, c)| c.pressed.has(crate::Buttons::SELECT)) && exit(Exit::Back) {
+                // Back is the host's: the game never sees it.
+                self.exited = true;
+                for (_, c) in &mut devices { c.pressed.0 &= !crate::Buttons::SELECT; c.held.0 &= !crate::Buttons::SELECT; }
+            }
             let controls = seat_controls(self.game.as_mut(), &devices);
             self.game.tick(&controls);
+            if !self.exited && self.game.quit() { self.exited = exit(Exit::Quit); }
         }
         if steps == 6 { self.acc = 0.0; }
         let alpha = (self.acc / step).clamp(0.0, 1.0);

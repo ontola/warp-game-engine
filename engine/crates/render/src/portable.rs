@@ -40,6 +40,10 @@ pub const FULL_STORAGE_BUFFERS: u32 = 8;
 /// (`frame::shade_sampled_textures`), counted from the layouts themselves.
 pub fn full_sampled_textures() -> u32 { crate::frame::shade_sampled_textures() }
 
+/// Sampled textures per stage glass (transparent surfaces) needs; with
+/// fewer the full renderer leaves it out.
+pub fn glass_sampled_textures() -> u32 { crate::frame::glass_sampled_textures() }
+
 /// Whether a device with these limits needs the portable renderer.
 pub fn needed(limits: &wgpu::Limits) -> bool {
     limits.max_storage_buffers_per_shader_stage < FULL_STORAGE_BUFFERS

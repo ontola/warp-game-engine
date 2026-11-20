@@ -19,9 +19,20 @@ glam = "0.31"
 image = { version = "0.25", default-features = false, features = ["png"] }
 serde = { workspace = true }
 serde_json.workspace = true
+# Instant and SystemTime that also work in a browser (std::time is the same natively).
+web-time = "1.1"
 gdcompat.workspace = true
 game-room-sim = { path = "sim" }
 splitscreen-club = { path = "../../engine/crates/splitscreen-club" }
+
+# The browser build (examples/browser.rs): the room first, Luau games from
+# its shelf. Only for wasm32, so native builds and tests never compile warp.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+warp = { path = "../../engine/crates/warp" }
+script = { path = "../../engine/crates/script" }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-time = "1.1"
 
 [dev-dependencies]
 tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }

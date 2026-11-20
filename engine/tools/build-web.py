@@ -12,8 +12,10 @@ HTTPS). See engine/docs/browser.md.
 builds the house viewer with those GLBs in assets/ (open ?house=fzk-haus).
 
     build-web.py --warp [--games neon-siege,stack-together] --serve
-builds the warp runtime (Luau games) for the browser with those game
-folders next to it (open ?game=neon-siege). Luau is C++ that needs a C and
+builds Splitscreen Club for the browser: the Game Room lobby
+(lobbies/game-room/examples/browser.rs) with those Luau game folders on
+its shelf (?game=neon-siege starts in that game). --bare leaves the room
+out (engine/crates/warp/examples/warp_web.rs: the games and a picker). Luau is C++ that needs a C and
 C++ standard library: wasi-libc and libc++ for wasm32 (Debian/Ubuntu:
 apt install wasi-libc libc++-dev-wasm32 libclang-rt-dev-wasm32, or
 WASI_SYSROOT=a wasi-sdk share/wasi-sysroot).
@@ -47,23 +49,27 @@ AUDIO_UNLOCK = '''<script>
 </script>
 '''
 
-# The --warp page's game buttons: each switches games in the running
-# engine (switch_game in examples/warp_web.rs), without a reload.
+# The --warp page's buttons: each game switches in the running engine
+# (switch_game), without a reload; with the room, "room" goes back to it
+# (back_to_room, as Back on a pad).
 WARP_PICKER = '''<div id="warp-games" style="position:fixed;top:8px;right:8px;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;max-width:70vw"></div>
 <script type="module">
 const bar = document.getElementById('warp-games');
 const games = await (await fetch('games/index.json')).json();
-const current = () => new URLSearchParams(location.search).get('game') || games[0];
+const room = ROOM;
+const current = () => new URLSearchParams(location.search).get('game') || (room ? 'room' : games[0]);
 const paint = () => { for (const b of bar.children) b.style.background = b.dataset.game === current() ? '#8fd19e' : '#222'; };
-for (const g of games) {
+for (const g of (room ? ['room'] : []).concat(games)) {
   const b = document.createElement('button');
   b.textContent = g; b.dataset.game = g;
   b.style.cssText = 'font:12px monospace;color:#ddd;border:1px solid #555;border-radius:4px;padding:4px 8px;cursor:pointer';
   b.onclick = () => {
     if (!window.warp) return;
-    const q = new URLSearchParams(location.search); q.set('game', g);
+    const q = new URLSearchParams(location.search);
+    if (g === 'room') q.delete('game'); else q.set('game', g);
     history.replaceState(null, '', '?' + q);
-    paint(); b.blur(); window.warp.switch_game(g);
+    paint(); b.blur();
+    if (g === 'room') window.warp.back_to_room(); else window.warp.switch_game(g);
   };
   bar.appendChild(b);
 }
@@ -83,11 +89,12 @@ parser.add_argument('--port', type=int, default=8790)
 parser.add_argument('--package', default='app', help='crate of the example (default app)')
 parser.add_argument('--example', default='terrain_fly', help='example to build (default terrain_fly)')
 parser.add_argument('--glb', action='append', default=[], help='a GLB to copy into assets/, with its NAME.light.bin when present (house_view)')
-parser.add_argument('--warp', action='store_true', help='build the warp runtime (examples/warp_web.rs) with Luau games')
+parser.add_argument('--warp', action='store_true', help='build the Game Room with Luau games (lobbies/game-room/examples/browser.rs)')
+parser.add_argument('--bare', action='store_true', help='with --warp: the games without the room (examples/warp_web.rs)')
 parser.add_argument('--games', default=','.join(WARP_GAMES), help='games/ folders to serve with --warp (comma separated)')
 args = parser.parse_args()
 if args.warp:
-    args.package, args.example = 'warp', 'warp_web'
+    args.package, args.example = ('warp', 'warp_web') if args.bare else ('game-room', 'browser')
 
 
 def wasi_sysroot():
@@ -118,10 +125,12 @@ def luau_env(env):
 
 
 def copy_games(names):
-    """games/NAME for each Luau game, with files.json (its files) and
-    games/index.json (the names): the page fetches these."""
+    """games/NAME for each Luau game, with files.json (its files),
+    games/index.json (the names) and games/library.json (the room's shelf:
+    id, title and player counts from gamenight.json): the page fetches these."""
     out = OUT / 'games'
     shutil.rmtree(out, ignore_errors=True)
+    library = []
     for name in names:
         src = ROOT / 'games' / name
         if not (src / 'main.luau').exists():
@@ -134,7 +143,13 @@ def copy_games(names):
         (out / name / 'files.json').write_text(json.dumps(files))
         kb = sum((src / f).stat().st_size for f in files) / 1024
         print(f'build/web/games/{name}: {len(files)} files, {kb:.0f} KB')
+        meta = json.loads((src / 'gamenight.json').read_text()) if (src / 'gamenight.json').exists() else {}
+        players = meta.get('players', {})
+        lo, hi = players.get('min', 1), players.get('max', 4)
+        library.append({'id': name, 'title': meta.get('title', name), 'tagline': meta.get('tagline', ''),
+                         'players': f'{lo}-{hi}' if lo != hi else str(lo), 'min_players': lo, 'max_players': hi})
     (out / 'index.json').write_text(json.dumps(names))
+    (out / 'library.json').write_text(json.dumps(library))
 
 if not args.no_build:
     lock = (ROOT / 'Cargo.lock').read_text()
@@ -153,8 +168,10 @@ if not args.no_build:
     page = (ROOT / 'engine/crates/app/web/index.html').read_text().replace('terrain_fly', args.example)
     if args.warp:
         page = page.replace('<title>Terrain fly</title>', '<title>Warp</title>')
-        page = page.replace("import init from './pkg/warp_web.js';", "import init, * as warp from './pkg/warp_web.js';\nwindow.warp = warp;")
-        page = page.replace('</body>', WARP_PICKER + '</body>').replace('</head>', AUDIO_UNLOCK + '</head>')
+        page = page.replace(f"import init from './pkg/{args.example}.js';", f"import init, * as warp from './pkg/{args.example}.js';\nwindow.warp = warp;")
+        if not args.bare:
+            page = page.replace('<title>Warp</title>', '<title>Splitscreen Club</title>')
+        page = page.replace('</body>', WARP_PICKER.replace('ROOM', 'false' if args.bare else 'true') + '</body>').replace('</head>', AUDIO_UNLOCK + '</head>')
     (OUT / 'index.html').write_text(page)
     (OUT / 'assets').mkdir(exist_ok=True)
     if args.example == 'terrain_fly':
@@ -163,6 +180,11 @@ if not args.no_build:
                 shutil.copy(ROOT / f'games/sideways/assets/textures/{name}_{kind}.jpg', OUT / 'assets')
     if args.warp:
         copy_games([g for g in args.games.split(',') if g])
+    if args.warp and not args.bare:
+        # The room's light, baked here on every core: the page would take
+        # most of a minute on its one thread.
+        subprocess.run(['cargo', 'run', '--release', '-p', 'game-room', '--', 'bake-light', '--out', str(OUT / 'room-light.bin')], cwd=ROOT, check=True)
+        print(f"build/web/room-light.bin: {(OUT / 'room-light.bin').stat().st_size / 1e6:.1f} MB")
     for glb in args.glb:
         shutil.copy(glb, OUT / 'assets')
         # Its light baked ahead (house_view --bake-out NAME.light.bin), so

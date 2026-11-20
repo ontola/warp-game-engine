@@ -1559,6 +1559,18 @@ pub(crate) fn shade_sampled_textures() -> u32 {
         .max().unwrap_or(0)
 }
 
+/// Sampled textures the glass pass's fragment stage sees (transparency.rs):
+/// the scene group's, its view group's and, when glass refracts, the
+/// refraction group's three.
+pub(crate) fn transparency_sampled_textures(refraction: bool) -> u32 {
+    let is_texture = |ty: &wgpu::BindingType| matches!(ty, wgpu::BindingType::Texture { .. });
+    let scene = layout_entries(&scene_layout_bindings()).iter().filter(|e| e.visibility.contains(wgpu::ShaderStages::FRAGMENT) && is_texture(&e.ty)).count();
+    let view = crate::transparency::view_bindings().iter().filter(|(_, ty)| is_texture(ty)).count();
+    (scene + view) as u32 + if refraction { 3 } else { 0 }
+}
+
+pub(crate) fn glass_sampled_textures() -> u32 { transparency_sampled_textures(false) }
+
 fn storage_3d_out(binding: u32) -> (u32, wgpu::BindingType) {
     (binding, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D3 })
 }

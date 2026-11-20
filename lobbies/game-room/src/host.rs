@@ -391,7 +391,7 @@ impl Host {
     /// Profiles waiting at the doors, in arrival order; with more waiting
     /// than doors, the newest arrivals take the doors.
     pub fn pending_profiles(&self) -> Vec<Value> {
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+        let now = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
         let waiting: Vec<Value> = arr(&self.links["room"]["pending"]).iter().filter(|p| {
             let id = get(p, "id", "");
             if self.claimed_doors.get(&id).is_some_and(|until| self.time <= *until) { return false; }

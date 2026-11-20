@@ -295,6 +295,78 @@ fn visible_in_view(instance: &GpuInstance, view_index: usize, excluded_categorie
         && instance.category().exclusion_bit() & excluded_categories == 0
 }
 
+/// The transparent view group (group 1 of transparency.wgsl): the view
+/// uniforms, shadows, sky and fog the glass is lit with.
+pub(crate) fn view_bindings() -> Vec<(u32, wgpu::BindingType)> {
+    let uniform = wgpu::BindingType::Buffer {
+        ty: wgpu::BufferBindingType::Uniform,
+        has_dynamic_offset: false,
+        min_binding_size: None,
+    };
+    let texture = |sample_type, view_dimension| wgpu::BindingType::Texture {
+        sample_type,
+        view_dimension,
+        multisampled: false,
+    };
+    vec![
+        (0, uniform),
+        (2, uniform),
+        (
+            5,
+            texture(
+                wgpu::TextureSampleType::Depth,
+                wgpu::TextureViewDimension::D2,
+            ),
+        ),
+        (
+            6,
+            wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+        ),
+        (
+            7,
+            texture(
+                wgpu::TextureSampleType::Float { filterable: false },
+                wgpu::TextureViewDimension::D2,
+            ),
+        ),
+        (
+            10,
+            texture(
+                wgpu::TextureSampleType::Float { filterable: false },
+                wgpu::TextureViewDimension::D2,
+            ),
+        ),
+        (11, uniform),
+        (
+            13,
+            texture(
+                wgpu::TextureSampleType::Float { filterable: true },
+                wgpu::TextureViewDimension::D3,
+            ),
+        ),
+        (
+            14,
+            wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+        ),
+        (
+            15,
+            // The near sun clipmap levels (shade.wgsl near_shadow_tex).
+            texture(
+                wgpu::TextureSampleType::Depth,
+                wgpu::TextureViewDimension::D2Array,
+            ),
+        ),
+        (
+            30,
+            // The integrated froxel fog (froxel_fog.wgsl fog_volume).
+            texture(
+                wgpu::TextureSampleType::Float { filterable: true },
+                wgpu::TextureViewDimension::D3,
+            ),
+        ),
+    ]
+}
+
 impl Transparency {
     pub(crate) fn triangle_count(&self) -> u32 {
         self.sort_triangles.len() as u32
@@ -309,13 +381,14 @@ impl Transparency {
         if triangles.is_empty() {
             return None;
         }
+        // A browser's WebGPU may offer fewer sampled textures per stage than
+        // glass reads (16 against 17): the scene draws without it there.
+        let refracts = refraction_requested(scene) && sort_triangles.iter().any(|t| t.refracts);
+        if crate::frame::transparency_sampled_textures(refracts) > gpu.limits.max_sampled_textures_per_shader_stage {
+            return None;
+        }
         let read_buffer = wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Storage { read_only: true },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        };
-        let uniform = wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: false,
             min_binding_size: None,
         };
@@ -325,63 +398,7 @@ impl Transparency {
             multisampled: false,
         };
         let all = wgpu::ShaderStages::VERTEX_FRAGMENT;
-        let entries = [
-            (0, uniform),
-            (2, uniform),
-            (
-                5,
-                texture(
-                    wgpu::TextureSampleType::Depth,
-                    wgpu::TextureViewDimension::D2,
-                ),
-            ),
-            (
-                6,
-                wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
-            ),
-            (
-                7,
-                texture(
-                    wgpu::TextureSampleType::Float { filterable: false },
-                    wgpu::TextureViewDimension::D2,
-                ),
-            ),
-            (
-                10,
-                texture(
-                    wgpu::TextureSampleType::Float { filterable: false },
-                    wgpu::TextureViewDimension::D2,
-                ),
-            ),
-            (11, uniform),
-            (
-                13,
-                texture(
-                    wgpu::TextureSampleType::Float { filterable: true },
-                    wgpu::TextureViewDimension::D3,
-                ),
-            ),
-            (
-                14,
-                wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-            ),
-            (
-                15,
-                // The near sun clipmap levels (shade.wgsl near_shadow_tex).
-                texture(
-                    wgpu::TextureSampleType::Depth,
-                    wgpu::TextureViewDimension::D2Array,
-                ),
-            ),
-            (
-                30,
-                // The integrated froxel fog (froxel_fog.wgsl fog_volume).
-                texture(
-                    wgpu::TextureSampleType::Float { filterable: true },
-                    wgpu::TextureViewDimension::D3,
-                ),
-            ),
-        ];
+        let entries = view_bindings();
         let view_layout = gpu
             .device
             .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -390,7 +407,10 @@ impl Transparency {
                     .iter()
                     .map(|&(binding, ty)| wgpu::BindGroupLayoutEntry {
                         binding,
-                        visibility: all,
+                        // Only the uniforms reach the vertex stage: a browser
+                        // allows 16 sampled textures per stage, and the scene
+                        // group already shows the vertex stage most of them.
+                        visibility: if matches!(ty, wgpu::BindingType::Buffer { .. }) { all } else { wgpu::ShaderStages::FRAGMENT },
                         ty,
                         count: None,
                     })
@@ -407,7 +427,7 @@ impl Transparency {
                         count: None,
                     }),
                 });
-        let refraction = (refraction_requested(scene) && sort_triangles.iter().any(|t| t.refracts)).then(|| {
+        let refraction = refracts.then(|| {
             let layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("transparent refraction"),
                 entries: &[

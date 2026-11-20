@@ -42,8 +42,8 @@ pub struct Toast { pub text: String, pub color: Color, pub until: f32 }
 pub enum Web { Links(Value), PickupRefused(String) }
 
 fn monotonic() -> f64 {
-    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    START.get_or_init(std::time::Instant::now).elapsed().as_secs_f64()
+    static START: std::sync::OnceLock<web_time::Instant> = std::sync::OnceLock::new();
+    START.get_or_init(web_time::Instant::now).elapsed().as_secs_f64()
 }
 
 impl Profile {
@@ -68,7 +68,7 @@ impl Lobby {
 
     /// Send a host command; a refusal while reconnecting shows as a toast.
     pub fn command(&mut self, message: Value) {
-        let Some(client) = &self.client else { return };
+        let Some(client) = &self.client else { if let Some(out) = &mut self.outbox { out.push(message); } return };
         if let Err(e) = client.command(message) { self.toast(e, PINK); }
     }
 

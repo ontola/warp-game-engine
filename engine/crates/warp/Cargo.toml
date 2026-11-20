@@ -40,8 +40,8 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 
-# The browser build (examples/warp_web.rs, engine/docs/browser.md).
-[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+# The browser build: warp::web, examples/warp_web.rs, engine/docs/browser.md.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["Location", "Window"] }

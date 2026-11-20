@@ -8,3 +8,7 @@ description = "Splitscreen Club client for Warp games and lobbies: party session
 [dependencies]
 serde_json.workspace = true
 tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
+
+# tungstenite draws random bytes; in a browser they come from crypto.getRandomValues.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.3", features = ["wasm_js"] }

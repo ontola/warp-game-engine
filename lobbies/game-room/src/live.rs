@@ -159,7 +159,7 @@ pub struct Lobby {
     pub(crate) bumpers_visible: bool,
     display_active: Option<bool>,
     /// When the host last handed the screen over or took it back.
-    display_at: std::time::Instant,
+    display_at: web_time::Instant,
     pub(crate) quit: bool,
     pub(crate) web_tx: Sender<Web>,
     web_rx: Receiver<Web>,
@@ -170,6 +170,9 @@ pub struct Lobby {
     bumpers: Vec<usize>,
     hud_size: [u32; 2],
     pub(crate) mouse: crate::mouse::Mouse,
+    /// Without a host: the commands the lobby would have sent it, for a host
+    /// in the same program to take (the browser build, examples/browser.rs).
+    pub outbox: Option<Vec<serde_json::Value>>,
 }
 
 /// Width of every prompt screen in the live lobby.
@@ -199,6 +202,9 @@ impl Lobby {
         }
         Ok(lobby)
     }
+
+    /// The room's light bake, for [`crate::stage::Options::light_cache`].
+    pub fn light_cache(&self) -> Vec<u8> { self.stage.light_cache() }
 
     /// The lobby of a Splitscreen Club host (GAMENIGHT_ADDR, GAMENIGHT_GAME_ID,
     /// GAMENIGHT_TOKEN, GAMENIGHT_LINKS_URL).
@@ -241,7 +247,7 @@ impl Lobby {
             props: props.expect("props"), board: board.expect("board"), events: vec![], controllers: HashMap::new(), held: HashMap::new(), input_blocked: HashSet::new(), menus: HashMap::new(),
             bench: vec![], phones: vec![], lost_since: HashMap::new(), toasts: vec![], unjoined: HashMap::new(), holds: HashMap::new(), station_cooldown: HashMap::new(),
             pickup_cooldown: 0.0, item_presses: HashMap::new(), pressed_flash: HashMap::new(), claims: HashMap::new(), pop_box: None, featured_visible: false,
-            bumpers_visible: false, display_active: None, display_at: std::time::Instant::now(), quit: false, web_tx, web_rx, links_due: 0.0, last_queue: vec![], featured, bumpers, hud_size: [1920, 1080], mouse: Default::default(),
+            bumpers_visible: false, display_active: None, display_at: web_time::Instant::now(), quit: false, web_tx, web_rx, links_due: 0.0, last_queue: vec![], featured, bumpers, hud_size: [1920, 1080], mouse: Default::default(), outbox: None,
         };
         lobby.prompts = lobby.build.prompts.iter().map(|p| (p.name.clone(), Prompt {
             items: p.items.iter().map(|(k, t)| (k.clone(), t.clone(), true)).collect(), enabled: true, ..Default::default() })).collect();
@@ -473,7 +479,7 @@ impl Lobby {
     fn focus_changed(&mut self, active: bool) {
         if self.display_active == Some(active) { return; }
         self.display_active = Some(active);
-        self.display_at = std::time::Instant::now();
+        self.display_at = web_time::Instant::now();
         self.suspend_input();
     }
 
@@ -674,7 +680,10 @@ impl Game for Lobby {
         if self.display_active == Some(false) && !frame.focused { std::thread::sleep(std::time::Duration::from_millis(100)); }
         let delta = frame.dt;
         self.time += delta;
-        if !self.uploaded {
+        // A fresh renderer (the browser host switched to a game and back)
+        // has none of the room: upload it again.
+        if !self.uploaded || frame.renderer().is_none() {
+            self.sheets_dirty = true;
             frame.set_scene(&self.stage.scene, &self.stage.light);
             let mut screen = Screen::new(frame.gpu)?;
             self.stage.upload(frame.gpu, frame.renderer().unwrap(), &mut screen)?;

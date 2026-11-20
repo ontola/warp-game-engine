@@ -30,27 +30,43 @@ the first upload. The log sits in the corner.
 wasm and its JavaScript) and `assets/` (the ground textures). Any static
 host serves it.
 
-## Luau games: the warp runtime in a browser
+## Luau games: Splitscreen Club in a browser
 
-`examples/warp_web.rs` (crate `warp`) is the `warp` runtime for the
-browser: the engine downloads once, then each Luau game is only its folder
-of scripts (Neon Siege 120 KB, Stack Together 46 KB). Build and serve it:
+`build-web.py --warp` builds Splitscreen Club for the browser: the Game
+Room lobby first (`lobbies/game-room/examples/browser.rs`), then the Luau
+games on its shelf, all on one engine download. Each Luau game is only its
+folder of scripts (Neon Siege 120 KB, Stack Together 46 KB). Build and
+serve it:
 
 ```sh
 sudo apt install wasi-libc libc++-dev-wasm32 libclang-rt-dev-wasm32   # Luau's C and C++ library
 python3 engine/tools/build-web.py --warp --serve
 ```
 
-Open http://localhost:8790/?game=neon-siege (`&players=2` for two local
-players). The buttons at the top switch games in the running engine, with
-no reload: `switch_game` in the example loads the new game's scripts and
-`app::web::switch` swaps it in at the next frame on the same GPU device.
+Open http://localhost:8790/ (`?players=3` for three local players, default
+2: the keyboard, then pads in the order they wake up; `?game=neon-siege`
+starts in that game). A small host lives in the page instead of a
+Splitscreen Club host: the room's commands (Play at the TV or the shelf,
+queue, skip, Resume) reach it through `Lobby::outbox`, it loads the game
+with `warp::web::load` and swaps it in with `app::web::switch_keeping`,
+which keeps the room as it was. Back (Select, Tab on the keyboard) or the
+game's own Quit brings the room back (`app::web::on_exit`); Back keeps the
+game paused, so the TV offers Resume as at home. The queue starts with
+every game and never runs dry (a started or skipped game goes to the end).
+The room's light is baked ahead by `game-room bake-light` into
+`room-light.bin` next to the page (`Options::light_cache`): baked on the
+page's one thread it took 44 s, with the file the room is built in 2 s.
+The buttons at the top switch games directly (`switch_game`) and go back
+to the room (`back_to_room`). `--bare` builds `examples/warp_web.rs`
+(crate `warp`) instead: the games and those buttons, no room.
+
 `--games a,b` picks which `games/` folders are served (default: the six
-Luau games). Measured 20 November 2026 in headless Chromium on SwiftShader
-(no GPU, so frame times there mean nothing): wasm 25.5 MB (11 MB gzipped),
-Neon Siege's files fetched in 0.1 s, scripts loaded and `init` run in
-0.2 s; switching Stack Together to Neon Siege took 0.27 s to load plus
-0.17 s to its first frame, switching back 0.04 s plus 0.04 s.
+Luau games); `games/library.json` is the shelf (titles and player counts
+from each `gamenight.json`). Measured 20 November 2026 in Chromium on
+SwiftShader (no GPU, so frame times there mean nothing): wasm 27.3 MB,
+Neon Siege's files fetched in 0.1 to 0.3 s, scripts loaded and `init` run
+in 0.2 to 0.4 s; Play to Neon Siege's first frame 1.5 s; switching Stack
+Together to Neon Siege took 0.27 s to load plus 0.17 s to its first frame.
 
 How the build differs from native:
 
@@ -77,6 +93,9 @@ How the build differs from native:
   (`vfs::insert`). Writes stay in memory. Game saves (`storage`) are
   in-memory there too (no SQLite).
 - `live` (MCP) has no server in a browser; `start` returns an error.
+- Glass (transparent surfaces) needs 17 sampled textures per shader stage;
+  a browser that offers WebGPU's guaranteed 16 (SwiftShader, many
+  GPUs) draws the scene without it and the page logs `no glass`.
 - Gamepads come from the Gamepad API (`app/src/web_pads.rs`): pads in the
   standard layout, in the order they first press a button, with
   `vibrationActuator` rumble. A browser shows a pad to the page only after

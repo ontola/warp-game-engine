@@ -3,6 +3,7 @@
 //!
 //!   game-room shot [--dump DIR] --out room.png [--size 1280x720]
 //!   game-room play [--players 1] [--bots 3] [--fullscreen]
+//!   game-room bake-light --out room-light.bin
 //!   game-room live-shot --out room.png [--ticks 180] [--bots 3] [--items] [--fx] [--mouse X,Y] [--mouse-menu] [--pending NAME] [--queue TITLE]
 //!
 //! For now the room comes from the Godot lobby's export (tools/
@@ -102,6 +103,13 @@ fn run() -> Result<(), String> {
             rgba = headless.frame(&mut lobby)?;
         }
         return image::save_buffer(&out, &rgba, w, h, image::ColorType::Rgba8).map_err(|e| e.to_string());
+    }
+    if args.get(1).map(String::as_str) == Some("bake-light") {
+        // The live room's light bake as a file, for builds that should not
+        // bake at start (the browser build: engine/tools/build-web.py --warp).
+        let options = game_room::stage::Options::from_args(numf, flag, |k| arg(k).is_some());
+        let lobby = game_room::live::Lobby::new(options, 0, 0)?;
+        return std::fs::write(arg("--out").ok_or("--out FILE required")?, lobby.light_cache()).map_err(|e| e.to_string());
     }
     if args.get(1).map(String::as_str) == Some("tone") { return tone(&arg("--out").ok_or("--out FILE")?, numf("--ev", godot_ev(1.05))); }
     if args.get(1).map(String::as_str) != Some("shot") { return Err("usage: game-room shot [--dump DIR] --out room.png [--size WxH]".into()); }

@@ -35,12 +35,16 @@ pub struct Options {
     pub fog_intensity: f32,
     /// Degrees the fog beams' cones widen (Godot's coarse froxels).
     pub fog_blur: f32,
+    /// A light bake saved earlier ([`Stage::light_cache`]): used instead of
+    /// baking when it was made from the same room, grid, rays and gi. The
+    /// browser build ships one, since a page bakes on one thread.
+    pub light_cache: Option<Vec<u8>>,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self { tuning: Tuning { light: PI, ambient: PI }, gi: 1.6, probes: true, rays: 64, ev: None, taa: 0.0, sharpen: 0.5,
-            bloom_add: false, bloom: None, bloom_rounds: 6, bloom_threshold: None, fog: true, fog_gi: 0.4, fog_density: 1.0, fog_intensity: 0.6, fog_blur: 12.0 }
+            bloom_add: false, bloom: None, bloom_rounds: 6, bloom_threshold: None, fog: true, fog_gi: 0.4, fog_density: 1.0, fog_intensity: 0.6, fog_blur: 12.0, light_cache: None }
     }
 }
 
@@ -55,7 +59,7 @@ impl Options {
             ev: opt("--ev"), taa: numf("--taa", d.taa), sharpen: numf("--sharpen", d.sharpen),
             bloom_add: flag("--bloom-add"), bloom: opt("--bloom"), bloom_rounds: numf("--bloom-rounds", d.bloom_rounds as f32) as u32,
             bloom_threshold: opt("--bloom-threshold"), fog: !flag("--no-fog"), fog_gi: numf("--fog-gi", d.fog_gi),
-            fog_density: numf("--fog-density", d.fog_density), fog_intensity: numf("--fog", d.fog_intensity), fog_blur: numf("--fog-blur", d.fog_blur),
+            fog_density: numf("--fog-density", d.fog_density), fog_intensity: numf("--fog", d.fog_intensity), fog_blur: numf("--fog-blur", d.fog_blur), light_cache: None,
         }
     }
 }
@@ -68,6 +72,8 @@ pub struct Stage {
     pub options: Options,
     pub bake_seconds: f32,
     labels: (i32, HudDrawList),
+    /// What the light bake was made from ([`Stage::light_cache`]).
+    light_key: u64,
 }
 
 impl Stage {
@@ -97,14 +103,20 @@ impl Stage {
         extend(&mut scene, &room);
 
         // Indirect light: the room's own bounce, scaled like Godot's sdfgi_energy.
-        let bake_start = std::time::Instant::now();
-        let probes = if options.probes {
-            // Like SDFGI: rays that leave the room see Godot's ambient colour.
-            let bake = BoxRoom { blocks: room.blocks.clone(), lights: room.all_lights(), sky: room.ambient / PI };
+        let bake_start = web_time::Instant::now();
+        // Like SDFGI: rays that leave the room see Godot's ambient colour.
+        let bake = BoxRoom { blocks: room.blocks.clone(), lights: room.all_lights(), sky: room.ambient / PI };
+        // Counts and sizes only: a browser's trig differs from native in the
+        // last bits, so the exact numbers would never match. The cache comes
+        // from the same source tree (build-web.py bakes it with each build).
+        let light_key = fnv(format!("{} {} {:?} {} {}", bake.blocks.len(), bake.lights.len(), grid.dims, options.rays, options.gi).as_bytes());
+        let probes = if !options.probes { vec![] }
+        else if let Some(probes) = options.light_cache.as_deref().and_then(|bytes| cached_probes(bytes, light_key)) { probes }
+        else {
             let mut probes = bake.bake(&grid, options.rays, 2)?;
             for p in &mut probes { for a in &mut p.axes { *a *= options.gi; } }
             probes
-        } else { vec![] };
+        };
         let bake_seconds = bake_start.elapsed().as_secs_f32();
 
         // Godot's volumetric fog: lamp beams, ambient light in the haze, and
@@ -125,7 +137,16 @@ impl Stage {
                 length: num(&env, "volumetric_fog_length", 64.0),
             });
         }
-        Ok(Self { room, scene, light, probes, options, bake_seconds, labels })
+        Ok(Self { room, scene, light, probes, options, bake_seconds, labels, light_key })
+    }
+
+    /// The light bake as bytes for [`Options::light_cache`]: a tag, what
+    /// it was made from (a hash) and the probes.
+    pub fn light_cache(&self) -> Vec<u8> {
+        let mut out = LIGHT_TAG.to_vec();
+        out.extend_from_slice(&self.light_key.to_le_bytes());
+        for p in &self.probes { for a in &p.axes { for c in a.to_array() { out.extend_from_slice(&c.to_le_bytes()); } } }
+        out
     }
 
     /// Set up a renderer made from `scene`: lights, glow, probes, fog beams
@@ -267,3 +288,21 @@ fn dump_alpha(c: &serde_json::Value) -> f32 { c[3].as_f64().unwrap_or(1.0) as f3
 /// Warp's ev100 that matches Godot's AgX at `exposure` (measured with
 /// `game-room tone` against Godot 4.5: equal mid greys at +0.43 stop).
 pub fn godot_ev(exposure: f32) -> f32 { (1.0 / (1.2 * exposure)).log2() + 0.43 }
+
+const LIGHT_TAG: &[u8; 8] = b"WARPGI01";
+
+/// FNV-1a: the same on every platform and Rust version (std's hashers are not promised to be).
+fn fnv(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3))
+}
+
+/// The probes in a light cache made with `key`; None for another room or a broken file.
+fn cached_probes(bytes: &[u8], key: u64) -> Option<Vec<Probe>> {
+    let rest = bytes.strip_prefix(LIGHT_TAG)?;
+    let (k, floats) = rest.split_at_checked(8)?;
+    if u64::from_le_bytes(k.try_into().ok()?) != key || floats.len() % 72 != 0 { return None; }
+    Some(floats.chunks_exact(72).map(|p| {
+        let f = |i: usize| f32::from_le_bytes(p[i * 4..i * 4 + 4].try_into().unwrap());
+        Probe { axes: std::array::from_fn(|a| Vec3::new(f(a * 3), f(a * 3 + 1), f(a * 3 + 2))) }
+    }).collect())
+}
