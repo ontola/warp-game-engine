@@ -5,7 +5,7 @@
 struct Source {rows:array<vec4<f32>,3>,sphere:vec4<f32>,tail:vec4<u32>};
 struct Volume {inverse:array<vec4<f32>,3>,low:vec4<f32>,high:vec4<f32>,identity:vec4<u32>};
 // control: force, size, shift x, shift y (i32); live.x: tracked this frame,
-// live.y: start a fresh mask after consumption or a projection invalidation.
+// live.y: keep (0), reset (1), or move deferred damage by whole tiles (2).
 struct Map {vp:mat4x4<f32>,control:vec4<u32>,live:vec4<u32>};
 const MAX_MAPS:u32=33u;
 // control.x: map count, control.y: any map forced.
@@ -19,18 +19,43 @@ struct Snapshot {words:array<vec4<u32>,8>};
 // 128 words (one 512-byte mask) per map slot.
 @group(0) @binding(5) var<storage,read_write> damage:array<atomic<u32>>;
 
-@compute @workgroup_size(64) fn reset(@builtin(global_invocation_id) id:vec3<u32>) {
- let m=id.x/128u;let word=id.x%128u;
- if m>=state.control.x || state.maps[m].live.y==0u {return;}
+// One workgroup owns a map. Snapshot all rows before overwriting any source
+// word when the pending mask moves across a row or across its two words.
+var<workgroup> old_mask:array<u32,128>;
+@compute @workgroup_size(64)
+fn reset(@builtin(workgroup_id) group:vec3<u32>, @builtin(local_invocation_index) row:u32) {
+ let m=group.x;
  let map=state.maps[m];
- var bits=0u;
- let shift=bitcast<vec2<i32>>(map.control.zw);let tile_size=i32(map.control.y/64u);
- for(var k=0u;k<32u;k++) {
-  let tile=word*32u+k;let low=vec2<i32>(i32(tile%64u),i32(tile/64u))*tile_size-shift;
-  let high=low+vec2<i32>(tile_size-1);
-  if map.control.x!=0u || any(low<vec2<i32>(0)) || any(high>=vec2<i32>(i32(map.control.y))) {bits|=1u<<k;}
+ if map.live.y==0u {return;}
+ let base=m*128u;
+ if map.live.y==2u {
+  old_mask[2u*row]=atomicLoad(&damage[base+2u*row]);
+  old_mask[2u*row+1u]=atomicLoad(&damage[base+2u*row+1u]);
+  workgroupBarrier();
+  storageBarrier();
  }
- atomicStore(&damage[id.x],bits);
+ let shift=bitcast<vec2<i32>>(map.control.zw);
+ let tile_size=i32(map.control.y/64u);
+ for(var half=0u;half<2u;half++) {
+  let word=2u*row+half;
+  var bits=0u;
+  if map.control.x!=0u {bits=0xffffffffu;}
+  else if any(shift!=vec2<i32>(0)) {
+   for(var k=0u;k<32u;k++) {
+    let tile=vec2<i32>(i32(half*32u+k),i32(row));
+    let low=tile*tile_size-shift;
+    let high=low+vec2<i32>(tile_size-1);
+    if any(low<vec2<i32>(0)) || any(high>=vec2<i32>(i32(map.control.y))) {
+     bits|=1u<<k;
+    } else if map.live.y==2u {
+     let old=vec2<u32>(low/tile_size);
+     let source_word=old_mask[old.y*2u+old.x/32u];
+     bits|=((source_word>>(old.x%32u))&1u)<<k;
+    }
+   }
+  }
+  atomicStore(&damage[base+word],bits);
+ }
 }
 fn all_dirty(m:u32) {for(var i=0u;i<128u;i++){atomicStore(&damage[m*128u+i],0xffffffffu);}}
 fn mark(m:u32,low:vec3<f32>,high:vec3<f32>) {
@@ -77,6 +102,7 @@ fn mark_snapshot(s:Snapshot,voxel:bool) {
 // November). Their history still follows, so a later real change compares
 // against the current patch. KERN_SUN_TERRAIN_LOD_DAMAGE=1: old behaviour.
 override TERRAIN_LOD_DAMAGE:bool=false;
+override REPORT_CHANGED_CASTERS:bool=false;
 fn terrain_patch(s:Snapshot)->bool {let flags=s.words[4].w;return (flags&128u)!=0u && ((flags>>24u)&7u)==1u;}
 @compute @workgroup_size(64) fn track(@builtin(global_invocation_id) id:vec3<u32>) {
  let i=id.x;if i>=state.counts.x+state.counts.y {return;}
@@ -92,13 +118,13 @@ fn terrain_patch(s:Snapshot)->bool {let flags=s.words[4].w;return (flags&128u)!=
   if i>=state.counts.w && i-state.counts.w<state.counts.z {now.words[6].x=choices[i-state.counts.w+state.counts.z];}
  }
  let old=history[i];var changed=false;var first=8u;
- for(var k=0u;k<8u;k++){let differs=any(old.words[k]!=now.words[k]);if differs && first==8u {first=k;}changed=changed || differs;}
+ for(var k=0u;k<8u;k++){let differs=any(old.words[k]!=now.words[k]);if REPORT_CHANGED_CASTERS && differs && first==8u {first=k;}changed=changed || differs;}
  let retessellated=!TERRAIN_LOD_DAMAGE && !voxel && terrain_patch(now) && terrain_patch(old);
  if changed && !retessellated {
   mark_snapshot(old,voxel);mark_snapshot(now,voxel);
   // Diagnostics (KERN_SUN_DAMAGE_REPORT): changed casters by kind and by
   // the first differing snapshot row, after the masks.
-  atomicAdd(&damage[MAX_MAPS*128u+select(0u,8u,voxel)+first],1u);
+  if REPORT_CHANGED_CASTERS {atomicAdd(&damage[MAX_MAPS*128u+select(0u,8u,voxel)+first],1u);}
  }
  // A forced map is wholly dirty; it still resynchronizes the history.
  if changed || state.control.y!=0u {history[i]=now;}

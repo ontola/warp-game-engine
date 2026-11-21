@@ -7,9 +7,6 @@ use crate::{Gpu,foliage_select::Selector};
 pub(crate) const STATE_OFFSET:u64=256;
 pub(crate) struct Refiner {
     capacity:u32,
-    /// Bound through `budget_bind`; tests write it directly.
-    #[cfg_attr(not(test),allow(dead_code))] proposals:wgpu::Buffer,
-    parked:wgpu::Buffer,
     /// Both work queues in one binding (two halves of `capacity` tasks) and,
     /// after them, the prefix blocks; `halves[front]` tells the shader which half
     /// is this round's (x), the next round's (y) and where the blocks start (w).
@@ -17,7 +14,7 @@ pub(crate) struct Refiner {
     pub state:wgpu::Buffer,args:wgpu::Buffer,layout:wgpu::BindGroupLayout,
     /// Group 1, proposals and parked: only the budgeted admission reads them, so
     /// the error cut's pipelines stay within 8 storage buffers.
-    budget_layout:wgpu::BindGroupLayout,budget_bind:wgpu::BindGroup,
+    budget_layout:wgpu::BindGroupLayout,budget_scratch:std::sync::OnceLock<BudgetScratch>,
     /// Budget pipelines are None on devices below BUDGET_STORAGE_BUFFERS,
     /// which then always use the error cut.
     pipelines:Vec<Option<wgpu::ComputePipeline>>,budget:Vec<bool>,
@@ -73,7 +70,12 @@ impl Rounds {
     fn count(&self,bound:u32)->u32 {if self.full {return bound;}self.hint.map_or(bound,|h|(h+(h&1)).clamp(2,bound))}
 }
 /// Group 0 (shared) and group 1 (budgeted admission only).
-struct Binds {shared:wgpu::BindGroup,budget:wgpu::BindGroup}
+struct Binds {shared:wgpu::BindGroup,budget:Option<wgpu::BindGroup>}
+struct BudgetScratch {
+    #[cfg(test)] proposals:wgpu::Buffer,
+    parked:wgpu::Buffer,
+    bind:wgpu::BindGroup,
+}
 impl Refiner {
     /// `selected`: word offsets of the record consumers and direct roots in
     /// the selector's shared record buffer (foliage_select.rs Region::selected),
@@ -94,11 +96,9 @@ impl Refiner {
         let budget:Vec<bool>=Self::ENTRIES.iter().map(|entry|Self::BUDGET.contains(entry)).collect();
         let pipelines=Self::ENTRIES.iter().zip(&budget).map(|(&entry,&budget)|(if budget {budget_pl.as_ref()} else {Some(&fast_pl)}).map(|pl|
             gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some(entry),layout:Some(pl),module:&module,entry_point:Some(entry),compilation_options:Default::default(),cache:gpu.pipeline_cache()}))).collect();
-        let (proposals,parked)=(storage("foliage active proposals",capacity as u64*96),storage("foliage dormant proposals",capacity as u64*112));
-        let budget_bind=Self::budget_bind(gpu,&budget_layout,&proposals,&parked);
         // Two task halves, then 32 totals and 32 buckets per 256-task block (vec4s).
         let blocks=2*capacity;
-        Self {capacity,proposals,parked,budget_layout,budget_bind,budget,
+        Self {capacity,budget_layout,budget_scratch:Default::default(),budget,
             queue:storage("foliage complete cut queues and prefixes",(blocks as u64+(capacity.div_ceil(256)as u64+1)*32)*16),
             halves:[[0u32,capacity,capacity,blocks,selected[0],selected[1],selected[2],selected[3]],[capacity,0,capacity,blocks,selected[0],selected[1],selected[2],selected[3]]].map(|h|{use wgpu::util::DeviceExt;gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some("foliage queue halves"),contents:bytemuck::cast_slice(&h),usage:wgpu::BufferUsages::UNIFORM})}),
             state:storage("foliage selection counters and refinement allocation",STATE_OFFSET+384),
@@ -174,16 +174,29 @@ impl Refiner {
         gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("foliage budgeted admission"),layout,
             entries:&[wgpu::BindGroupEntry {binding:4,resource:proposals.as_entire_binding()},wgpu::BindGroupEntry {binding:14,resource:parked.as_entire_binding()}]})
     }
+    fn budget_scratch(&self,gpu:&Gpu)->&BudgetScratch {
+        self.budget_scratch.get_or_init(|| {
+            let storage=|label,stride|gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                label:Some(label),size:u64::from(self.capacity)*stride,
+                usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation:false,
+            });
+            let proposals=storage("foliage active proposals",96);
+            let parked=storage("foliage dormant proposals",112);
+            let bind=Self::budget_bind(gpu,&self.budget_layout,&proposals,&parked);
+            BudgetScratch {#[cfg(test)] proposals,parked,bind}
+        })
+    }
     /// Bindings 10 (fallback) and 12 (demand) are the selector's per-tree ranges.
     fn entries<'a>(buffers:[&'a wgpu::Buffer;10],s:&'a Selector)->Vec<wgpu::BindGroupEntry<'a>> {
         Self::BINDINGS.iter().zip(buffers).map(|(&binding,b)|wgpu::BindGroupEntry {binding,resource:match binding {10=>s.fallback.binding(),12=>s.demand.binding(),_=>b.as_entire_binding()}}).collect()
     }
     fn bind(&self,gpu:&Gpu,s:&Selector,front:usize)->Binds {
         let entries=Self::entries([&s.uniform,&s._nodes.buffer,&s.asset_pages,&self.queue,&self.halves[front],&s.records.buffer,&s.counters,&s.fallback.buffer,&s.demand.buffer,&s.seed_visibility],s);
-        Binds {shared:self.binds.lock().unwrap().entries(gpu,&self.layout,"foliage refinement buffers",&entries),budget:self.budget_bind.clone()}
+        Binds {shared:self.binds.lock().unwrap().entries(gpu,&self.layout,"foliage refinement buffers",&entries),budget:(!self.error_cut()).then(||self.budget_scratch(gpu).bind.clone())}
     }
     fn set(&self,pass:&mut wgpu::ComputePass,bind:&Binds,pipeline:usize) {
-        pass.set_bind_group(0,&bind.shared,&[]);if self.budget[pipeline] {pass.set_bind_group(1,&bind.budget,&[]);}
+        pass.set_bind_group(0,&bind.shared,&[]);if self.budget[pipeline] {pass.set_bind_group(1,bind.budget.as_ref().expect("budgeted refinement buffers"),&[]);}
         pass.set_pipeline(self.pipelines[pipeline].as_ref().expect("budgeted admission needs 10 storage buffers per stage"));
     }
     fn dispatch(&self,enc:&mut wgpu::CommandEncoder,bind:&Binds,pipeline:usize,groups:Option<u32>,offset:u64) {
@@ -208,14 +221,21 @@ impl Refiner {
     pub(crate) fn trace_proposals(&self,gpu:&Gpu,s:&Selector,tasks:&[[u32;4]])->Result<Vec<[[u32;4];6]>,String> {
         if tasks.is_empty(){return Ok(Vec::new());}
         if tasks.len()>self.capacity as usize{return Err("too many offline foliage proposals".into());}
+        if !self.budgeted {return Err("offline proposals require 10 storage buffers per shader stage".into());}
         let scratch=|label,size|gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some(label),size,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
         let state=scratch("offline proposal counters and state",self.state.size());let proposals=scratch("offline proposals",tasks.len()as u64*96);
         let queue=scratch("offline proposal tasks",tasks.len()as u64*16);gpu.queue.write_buffer(&queue,0,bytemuck::cast_slice(tasks));
         let pages=scratch("offline proposal pages",s.asset_pages.size());
         let count=scratch("offline proposal count",4);gpu.queue.write_buffer(&count,0,bytemuck::bytes_of(&(tasks.len()as u32)));
+        // Fresh trace tasks never read a parked proposal. Bind one valid record
+        // so tracing the error cut does not allocate the other selector's full queues.
+        let parked=if let Some(budget)=self.budget_scratch.get() {budget.parked.clone()} else {
+            if tasks.iter().any(|t|t[3]>=2) {return Err("no parked foliage proposals to replay".into());}
+            scratch("offline empty parked proposal",112)
+        };
         let entries=Self::entries([&s.uniform,&s._nodes.buffer,&pages,&queue,&self.halves[0],&s.records.buffer,&state,&s.fallback.buffer,&s.demand.buffer,&s.seed_visibility],s);
         let bind=Binds {shared:gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("offline proposal replay"),layout:&self.layout,entries:&entries}),
-            budget:Self::budget_bind(gpu,&self.budget_layout,&proposals,&self.parked)};
+            budget:Some(Self::budget_bind(gpu,&self.budget_layout,&proposals,&parked))};
         let out=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("offline proposal readback"),size:proposals.size(),usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
         let mut enc=gpu.device.create_command_encoder(&Default::default());
         enc.copy_buffer_to_buffer(&self.state,STATE_OFFSET,&state,STATE_OFFSET,self.state.size()-STATE_OFFSET);enc.copy_buffer_to_buffer(&self.state,STATE_OFFSET,&state,STATE_OFFSET+16,12);enc.copy_buffer_to_buffer(&self.state,STATE_OFFSET+69*4,&state,STATE_OFFSET+70*4,4);
@@ -251,10 +271,13 @@ impl Refiner {
             self.dispatch(enc,&binds[0],17,Some(1),0);
             for round in 0..rounds {
                 let bind=&binds[round as usize%2];
-                enc.copy_buffer_to_buffer(&self.state,STATE_OFFSET+32,&self.args,0,12);
+                enc.copy_buffer_to_buffer(&self.state,STATE_OFFSET+32,&self.args,0,24);
                 let mut pass=enc.begin_compute_pass(&Default::default());
-                // Retained shadow budget first, then the rest (fast_round_late).
-                for pipeline in [18,22] {self.set(&mut pass,bind,pipeline);pass.dispatch_workgroups_indirect(&self.args,0);}
+                // Camera and retained shadows reserve before the other shadow tasks.
+                for (pipeline,offset) in [(18,0),(22,12)] {
+                    self.set(&mut pass,bind,pipeline);
+                    pass.dispatch_workgroups_indirect(&self.args,offset);
+                }
                 self.set(&mut pass,bind,19);pass.dispatch_workgroups(1,1,1);
             }
             // The drain covers the live frontier (fast_advance/fast_begin size
@@ -310,7 +333,7 @@ impl Refiner {
         let selector=crate::foliage_select::Selector::new(&gpu,&[node],&[tree,tree],2,2).unwrap();
         let r=&selector.refiner;let bind=r.bind(&gpu,&selector,0);
         let mut parked=[0u32;56];parked[..4].copy_from_slice(&[0,0,256,1]);parked[28..32].copy_from_slice(&[1,0,512,1]);
-        gpu.queue.write_buffer(&r.parked,0,bytemuck::cast_slice(&parked));
+        gpu.queue.write_buffer(&r.budget_scratch(&gpu).parked,0,bytemuck::cast_slice(&parked));
         gpu.queue.write_buffer(&r.state,STATE_OFFSET+29*4,bytemuck::cast_slice(&[2u32]));
         fn read(gpu:&crate::Gpu,b:&wgpu::Buffer)->Vec<u32> {
             let out=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:None,size:b.size(),usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
@@ -338,7 +361,7 @@ impl Refiner {
         let root=Instance {rows:[[1.,0.,0.,0.],[0.,1.,0.,0.],[0.,0.,1.,0.]],scale:[1.,0.,0.,0.],info:[0,1,0,0]};
         let selector=crate::foliage_select::Selector::with_work_capacity(&gpu,&[node],&[root],2,2,2).unwrap();let r=&selector.refiner;
         gpu.queue.write_buffer(&r.queue,0,bytemuck::cast_slice(&[0u32,0,256,0]));
-        let mut proposal=[0u32;20];proposal[15]=2;gpu.queue.write_buffer(&r.proposals,0,bytemuck::cast_slice(&proposal));
+        let mut proposal=[0u32;20];proposal[15]=2;gpu.queue.write_buffer(&r.budget_scratch(&gpu).proposals,0,bytemuck::cast_slice(&proposal));
         gpu.queue.write_buffer(&r.state,STATE_OFFSET+3*4,bytemuck::cast_slice(&[1u32]));gpu.queue.write_buffer(&r.state,STATE_OFFSET+31*4,bytemuck::cast_slice(&[2u32]));
         let mut enc=gpu.device.create_command_encoder(&Default::default());r.dispatch(&mut enc,&r.bind(&gpu,&selector,0),9,Some(1),0);
         let out=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:None,size:4,usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
@@ -378,9 +401,9 @@ impl Refiner {
         gpu.queue.write_buffer(&r.queue,0,bytemuck::cast_slice(&[0u32,NONE,512,0]));gpu.queue.write_buffer(&r.state,STATE_OFFSET+3*4,bytemuck::cast_slice(&[1u32]));gpu.queue.write_buffer(&r.state,STATE_OFFSET+18*4,bytemuck::cast_slice(&[1u32]));
         gpu.queue.write_buffer(&selector.uniform,32*80,bytemuck::cast_slice(&[0u32,2,0,2]));
         for (cost,expected) in [([0u32,0,0],1u32),([1,0,0],2),([0,0,1],1)] {
-            let mut proposal=[0u32;20];proposal[4..7].copy_from_slice(&cost);proposal[13]=1;gpu.queue.write_buffer(&r.proposals,0,bytemuck::cast_slice(&proposal));
+            let mut proposal=[0u32;20];proposal[4..7].copy_from_slice(&cost);proposal[13]=1;gpu.queue.write_buffer(&r.budget_scratch(&gpu).proposals,0,bytemuck::cast_slice(&proposal));
             let out=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:None,size:4,usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
-            let mut enc=gpu.device.create_command_encoder(&Default::default());r.dispatch(&mut enc,&r.bind(&gpu,&selector,0),6,Some(1),0);enc.copy_buffer_to_buffer(&r.proposals,60,&out,0,4);gpu.queue.submit([enc.finish()]);out.slice(..).map_async(wgpu::MapMode::Read,|_|{});gpu.wait();
+            let mut enc=gpu.device.create_command_encoder(&Default::default());r.dispatch(&mut enc,&r.bind(&gpu,&selector,0),6,Some(1),0);enc.copy_buffer_to_buffer(&r.budget_scratch(&gpu).proposals,60,&out,0,4);gpu.queue.submit([enc.finish()]);out.slice(..).map_async(wgpu::MapMode::Read,|_|{});gpu.wait();
             assert_eq!(bytemuck::pod_read_unaligned::<u32>(&out.slice(..).get_mapped_range().unwrap()),expected);
         }
     }

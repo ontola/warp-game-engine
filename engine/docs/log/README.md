@@ -19,6 +19,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
   the guide or [status](../status.md) instead.
 - When a change alters how something works, update the guide for that part
   in the same commit. The log is not a substitute for that.
+- [Terrain Fly patch selection, forest streaming and sun shadows](2026-11-21-terrain-fly-performance.md)
 - [Voxel rasterization and brick culling](2026-11-21-voxel-render-cull.md)
 - [Swiss forest shadow replay and depth-culling measurements, 18 November](2026-11-18-forest-shadow-replay.md)
 - [Vegetation cost, tiers and rejected candidates, 18 November](2026-11-18-vegetation-cost-and-tiers.md)

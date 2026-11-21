@@ -18,6 +18,12 @@ against the depth pyramid and keeps the brick as soon as a depth sample leaves
 it visible. Camera and sun splats use four-vertex strips.
 [Raster and culling measurements](log/2026-11-21-voxel-render-cull.md)
 
+The default forest selector preserves the order of the initial root queue.
+Later rounds store camera and retained-shadow tasks at one end of the queue
+and remaining shadow tasks at the other. Each phase dispatches over its
+own count. The separate budgeted selector allocates its proposal storage
+when first used. [Terrain Fly measurements](log/2026-11-21-terrain-fly-performance.md)
+
 ## 6 November (evening): near-pixel splats, urgent streaming
 
 Measured on the RTX 5070 Ti (Vulkan) after each round; numbers are GPU ms.

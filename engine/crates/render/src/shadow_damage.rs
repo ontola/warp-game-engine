@@ -35,7 +35,7 @@ pub(crate) struct MapRequest<'a> {
     pub vp:Mat4,
     pub size:u32,
     pub depth:Option<(&'a wgpu::Texture,u32)>,
-    /// false: keep the retained depth and only collect this frame's damage
+    /// true: keep the retained depth and only collect this frame's damage
     /// (a level redrawn on a stagger). Granted only while the projection is
     /// unchanged and the slot holds valid depth; encode_maps says which
     /// requests it turned into draws.
@@ -55,6 +55,8 @@ pub(crate) struct Damage {
     pub mask:wgpu::Buffer,
     uniform:wgpu::Buffer,
     scroll_uniform:wgpu::Buffer,
+    // The optional texel-anchored voxel dither changes its holes when scrolled.
+    scroll_pending_tiles:bool,
     bind:wgpu::BindGroup,
     reset:wgpu::ComputePipeline,
     track:wgpu::ComputePipeline,
@@ -67,6 +69,7 @@ pub(crate) struct Damage {
     counts:[u32;4],
     /// KERN_SUN_DAMAGE_REPORT=1: last frame's masks, printed as dirty tile
     /// counts per slot on the next frame (blocking; diagnostics only).
+    report_enabled:bool,
     report:Option<(wgpu::Buffer,Vec<usize>)>,
     /// Last encode_maps: per request, whether it redrew in full and its scroll (diagnostic).
     pub last_force:Vec<(bool,[i32;2])>,
@@ -75,6 +78,9 @@ impl Damage {
     /// Counts: source instances, voxel instances, forest branch slots, first
     /// source branch owner. Scene bindings stay stable across asset relocation.
     pub fn new(gpu:&Gpu,sources:&wgpu::Buffer,volumes:&wgpu::Buffer,choices:&wgpu::Buffer,counts:[u32;4])->Result<Self,String> {
+        Self::with_reporting(gpu,sources,volumes,choices,counts,crate::switches::SUN_DAMAGE_REPORT.on())
+    }
+    fn with_reporting(gpu:&Gpu,sources:&wgpu::Buffer,volumes:&wgpu::Buffer,choices:&wgpu::Buffer,counts:[u32;4],report_enabled:bool)->Result<Self,String> {
         let total=u64::from(counts[0])+u64::from(counts[1]);
         if total==0 || total.div_ceil(64)>u64::from(gpu.limits.max_compute_workgroups_per_dimension)
             || total*128>u64::from(gpu.limits.max_storage_buffer_binding_size)
@@ -96,8 +102,11 @@ impl Damage {
             let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("shadow damage"),layout:&layout,entries:&[&uniform,sources,volumes,choices,&history,&mask].iter().enumerate().map(|(i,b)|wgpu::BindGroupEntry {binding:i as u32,resource:b.as_entire_binding()}).collect::<Vec<_>>()});
             let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("shadow damage"),bind_group_layouts:&[Some(&layout)],immediate_size:0});
             let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("shadow damage"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/shadow_damage.wgsl").into())});
-            let terrain_lod=[("TERRAIN_LOD_DAMAGE",if crate::switches::SUN_TERRAIN_LOD_DAMAGE.on() {1.0} else {0.0})];
-            let pipeline=|entry|gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some(entry),layout:Some(&pl),module:&module,entry_point:Some(entry),compilation_options:wgpu::PipelineCompilationOptions {constants:&terrain_lod,..Default::default()},cache:gpu.pipeline_cache()});
+            let constants=[
+                ("TERRAIN_LOD_DAMAGE",if crate::switches::SUN_TERRAIN_LOD_DAMAGE.on() {1.0} else {0.0}),
+                ("REPORT_CHANGED_CASTERS",if report_enabled {1.0} else {0.0}),
+            ];
+            let pipeline=|entry|gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some(entry),layout:Some(&pl),module:&module,entry_point:Some(entry),compilation_options:wgpu::PipelineCompilationOptions {constants:&constants,..Default::default()},cache:gpu.pipeline_cache()});
             let clear_layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("shadow damage clear"),entries:&[wgpu::BindGroupLayoutEntry {binding:0,visibility:wgpu::ShaderStages::VERTEX,count:None,ty:wgpu::BindingType::Buffer {ty:wgpu::BufferBindingType::Uniform,has_dynamic_offset:false,min_binding_size:None}}]});
             let clear_pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("shadow damage clear"),bind_group_layouts:&[Some(&clear_layout)],immediate_size:0});
             let clear_module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("shadow damage clear"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/shadow_damage_clear.wgsl").into())});
@@ -123,7 +132,8 @@ impl Damage {
                 depth_stencil:Some(wgpu::DepthStencilState {format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:Some(true),depth_compare:Some(wgpu::CompareFunction::Always),stencil:Default::default(),bias:Default::default()}),
                 multisample:Default::default(),fragment:Some(wgpu::FragmentState {module:&scroll_module,entry_point:Some("fs"),compilation_options:Default::default(),targets:&[]}),multiview_mask:None,cache:gpu.pipeline_cache(),
             });
-            Self {scroll,scroll_layout,scroll_scratch:Vec::new(),scroll_uniform,clear,mask,uniform,bind,reset:pipeline("reset"),track:pipeline("track"),slots,counts,report:None,last_force:Vec::new()}
+            let scroll_pending_tiles=!crate::switches::SUN_DITHER_TEXEL.on();
+            Self {scroll,scroll_pending_tiles,scroll_layout,scroll_scratch:Vec::new(),scroll_uniform,clear,mask,uniform,bind,reset:pipeline("reset"),track:pipeline("track"),slots,counts,report_enabled,report:None,last_force:Vec::new()}
         })
     }
     /// Run after source/voxel materialization. `epoch` covers asset/material,
@@ -144,8 +154,6 @@ impl Damage {
     /// keeps collecting damage; returns, per request, whether it draws now
     /// (its masked tiles must be cleared and redrawn this frame).
     pub fn encode_maps(&mut self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,epoch:u64,maps:&[MapRequest<'_>])->Result<Vec<bool>,String> {
-        static REPORT:std::sync::OnceLock<bool>=std::sync::OnceLock::new();
-        let report=*REPORT.get_or_init(||crate::switches::SUN_DAMAGE_REPORT.on());
         if let Some((staging,slots))=self.report.take() {
             let (tx,rx)=std::sync::mpsc::channel();
             staging.slice(..).map_async(wgpu::MapMode::Read,move|r|{let _=tx.send(r);});
@@ -170,18 +178,21 @@ impl Damage {
             let offset=self.slots[map.slot].key.and_then(|old|if old.1==epoch && old.2==size {scroll_offset(old.0,key.0,size)}else{None});
             let offset=offset.filter(|s|*s==[0,0] || map.depth.is_some());
             let draw=!map.defer || offset!=Some([0,0]);
-            // Collected damage is in the old grid: a scroll would misplace it.
-            let offset=offset.filter(|s|*s==[0,0] || !self.slots[map.slot].pending);
+            // A pending mask can move with the depth when each old tile maps
+            // exactly onto a new tile. Otherwise keep the full redraw fallback.
+            let pending=self.slots[map.slot].pending;
+            let offset=offset.filter(|shift| !pending || *shift==[0,0] ||
+                (self.scroll_pending_tiles && shift.iter().all(|v| v.unsigned_abs() % (size/64) == 0)));
             let force=offset.is_none();let shift=offset.unwrap_or([0,0]);
             any_force|=force;
             drawn.push(draw);self.last_force.push((force,shift));
             // The raster passes consume this frame's mask after tracking.
-            // Keep deferred changes through the first draw on the same grid.
-            let restart_mask = force || !self.slots[map.slot].pending;
+            // 0 keeps the mask, 1 resets it, 2 scrolls the pending tiles.
+            let mask_update=if force || !pending {1} else if shift!=[0,0] {2} else {0};
             self.slots[map.slot].pending=!draw;
             let control=[u32::from(force),size,shift[0]as u32,shift[1]as u32];
             let at=32+map.slot*96;
-            write(at,&vp.to_cols_array().map(f32::to_bits));write(at+64,&control);write(at+80,&[1,u32::from(restart_mask),0,0]);
+            write(at,&vp.to_cols_array().map(f32::to_bits));write(at+64,&control);write(at+80,&[1,mask_update,0,0]);
             gpu.queue.write_buffer(&self.scroll_uniform,map.slot as u64*SCROLL_STRIDE,bytemuck::cast_slice(&control));
             if shift!=[0,0] {scrolls.push((map.slot,map.depth.unwrap(),size));}
             self.slots[map.slot].key=Some(key);
@@ -190,12 +201,12 @@ impl Damage {
         let count=maps.iter().map(|m|m.slot+1).max().unwrap_or(0);
         write(0,&self.counts);write(16,&[count as u32,u32::from(any_force),0,0]);
         gpu.queue.write_buffer(&self.uniform,0,&state);
-        if report {enc.clear_buffer(&self.mask,MASK_BYTES*MAX_MAPS as u64,Some(COUNTER_BYTES));}
+        if self.report_enabled {enc.clear_buffer(&self.mask,MASK_BYTES*MAX_MAPS as u64,Some(COUNTER_BYTES));}
         let mut pass=enc.begin_compute_pass(&wgpu::ComputePassDescriptor {label:Some("shadow damage"),..Default::default()});
-        pass.set_bind_group(0,&self.bind,&[]);pass.set_pipeline(&self.reset);pass.dispatch_workgroups((count as u32*128).div_ceil(64).max(1),1,1);
+        pass.set_bind_group(0,&self.bind,&[]);pass.set_pipeline(&self.reset);pass.dispatch_workgroups(count as u32,1,1);
         pass.set_pipeline(&self.track);pass.dispatch_workgroups((self.counts[0]+self.counts[1]).div_ceil(64),1,1);
         drop(pass);
-        if report {
+        if self.report_enabled {
             let staging=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("shadow damage report"),size:self.mask.size(),usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
             enc.copy_buffer_to_buffer(&self.mask,0,&staging,0,self.mask.size());
             self.report=Some((staging,maps.iter().map(|m|m.slot).collect()));
@@ -302,6 +313,42 @@ impl Damage {
         source.sphere[3]=-1.;gpu.queue.write_buffer(&sources,0,bytemuck::bytes_of(&source));assert!(dirty(&run(Mat4::IDENTITY,1),32,32));
         assert!(run(Mat4::IDENTITY,2).iter().all(|&w|w==u32::MAX));
         assert!(run(Mat4::from_translation(glam::Vec3::X*0.1),2).iter().all(|&w|w==u32::MAX));
+    }
+    #[test]
+    #[ignore="shadow damage diagnostic counters; software DX12 supported"]
+    fn changed_caster_counters_are_optional_and_per_frame() {
+        use wgpu::util::DeviceExt;
+        let gpu=Gpu::new().unwrap();
+        let upload=|bytes:&[u8]|gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label:Some("caster counter fixture"),contents:bytes,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST,
+        });
+        let choices=upload(&[0;8]);
+        let read=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("caster counter readback"),size:COUNTER_BYTES,
+            usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
+        for report in [false,true] {
+            let mut source=crate::scene::GpuInstance::zeroed();
+            let mut volume=crate::foliage_volume_data::GpuTree::zeroed();
+            let sources=upload(bytemuck::bytes_of(&source));let volumes=upload(bytemuck::bytes_of(&volume));
+            let mut damage=Damage::with_reporting(&gpu,&sources,&volumes,&choices,[1,1,0,0],report).unwrap();
+            for frame in 0..3 {
+                if frame==1 {
+                    source.sphere[0]=0.5;source.cluster_count=1;
+                    volume.meta[2]=2;
+                    gpu.queue.write_buffer(&sources,0,bytemuck::bytes_of(&source));
+                    gpu.queue.write_buffer(&volumes,0,bytemuck::bytes_of(&volume));
+                }
+                let mut enc=gpu.device.create_command_encoder(&Default::default());
+                damage.encode(&gpu,&mut enc,Mat4::IDENTITY,1,64).unwrap();
+                enc.copy_buffer_to_buffer(&damage.mask,MAX_MAPS as u64*MASK_BYTES,&read,0,COUNTER_BYTES);
+                gpu.queue.submit([enc.finish()]);
+                let (tx,rx)=std::sync::mpsc::channel();
+                read.slice(..).map_async(wgpu::MapMode::Read,move|r|{tx.send(r).unwrap();});gpu.wait();rx.recv().unwrap().unwrap();
+                let mut expected=[0u32;16];
+                if report && frame==1 {expected[3]=1;expected[8+5]=1;}
+                assert_eq!(bytemuck::cast_slice::<u8,u32>(&read.slice(..).get_mapped_range().unwrap()),expected);
+                read.unmap();
+            }
+        }
     }
     #[test]
     #[ignore="small GPU dirty-bound oracle; software DX12 supported"]
@@ -413,9 +460,16 @@ impl Damage {
         let sources=upload(bytemuck::bytes_of(&source));let volumes=upload(&[0;96]);let choices=upload(&[0;8]);
         let mut damage=Damage::new(&gpu,&sources,&volumes,&choices,[1,1,0,0]).unwrap();
         let read=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("damage read"),size:MASK_BYTES*2,usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
+        // Each damage tile covers two texels, so both tile-aligned and partial
+        // texel scrolls can be exercised on the same retained layer.
+        let depth=gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label:Some("deferred scroll oracle"),size:wgpu::Extent3d {width:128,height:128,depth_or_array_layers:1},
+            mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Depth32Float,
+            usage:wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::COPY_SRC,view_formats:&[],
+        });
         let mut run=|vp:Mat4,defer:bool|->(bool,Vec<u32>) {
             let mut enc=gpu.device.create_command_encoder(&Default::default());
-            let drawn=damage.encode_maps(&gpu,&mut enc,1,&[MapRequest {slot:1,vp,size:64,depth:None,defer}]).unwrap();
+            let drawn=damage.encode_maps(&gpu,&mut enc,1,&[MapRequest {slot:1,vp,size:128,depth:Some((&depth,0)),defer}]).unwrap();
             enc.copy_buffer_to_buffer(&damage.mask,0,&read,0,MASK_BYTES*2);gpu.queue.submit([enc.finish()]);
             let(tx,rx)=std::sync::mpsc::channel();read.slice(..).map_async(wgpu::MapMode::Read,move|r|{tx.send(r).unwrap();});gpu.wait();rx.recv().unwrap().unwrap();
             let words=bytemuck::cast_slice::<u8,u32>(&read.slice(..).get_mapped_range().unwrap())[128..].to_vec();read.unmap();
@@ -430,13 +484,35 @@ impl Damage {
         let (drawn,mask)=run(Mat4::IDENTITY,true);assert!(!drawn);
         assert!(dirty(&mask,16,32)&&dirty(&mask,32,32)&&dirty(&mask,48,32),"deferred frames accumulate");
         let deferred = mask;
-        assert_eq!(run(Mat4::IDENTITY,false),(true,deferred),"the draw consumes the accumulated tiles even with no new changes");
+        assert_eq!(run(Mat4::IDENTITY,false),(true,deferred.clone()),"the draw consumes the accumulated tiles even with no new changes");
         assert_eq!(run(Mat4::IDENTITY,false),(true,vec![0;128]),"the next draw has no work");
-        source.sphere[0]=0.;gpu.queue.write_buffer(&sources,0,bytemuck::bytes_of(&source));
-        assert!(!run(Mat4::IDENTITY,true).0);
-        let moved=Mat4::from_translation(glam::Vec3::new(2./64.,0.,0.));
-        let (drawn,mask)=run(moved,true);
-        assert!(drawn&&mask.iter().all(|&w|w==u32::MAX),"a moved map draws; damage collected in the old grid forces a full redraw");
+        for (dx,dy) in [(1,0),(-1,0),(0,1),(0,-1),(5,-3),(-31,7),(32,1),(33,-1),(-63,63)] {
+            source.sphere[0]=-0.5;gpu.queue.write_buffer(&sources,0,bytemuck::bytes_of(&source));
+            run(Mat4::IDENTITY,false);
+            source.sphere[0]=0.;gpu.queue.write_buffer(&sources,0,bytemuck::bytes_of(&source));
+            assert!(!run(Mat4::IDENTITY,true).0);
+            assert!(!run(Mat4::IDENTITY,true).0);
+            // A second caster change arrives on the scroll frame. On a fixed
+            // grid the same two changes produced 'deferred' above.
+            source.sphere[0]=0.5;gpu.queue.write_buffer(&sources,0,bytemuck::bytes_of(&source));
+            let moved=Mat4::from_translation(glam::Vec3::new(dx as f32/32.,-dy as f32/32.,0.));
+            let (drawn,mask)=run(moved,true);
+            assert!(drawn);
+            for y in 0..64 {for x in 0..64 {
+                let (old_x,old_y)=(x-dx,y-dy);
+                let exposed=!(0..64).contains(&old_x) || !(0..64).contains(&old_y);
+                let expected=exposed || dirty(&deferred,old_x as u32,old_y as u32);
+                assert_eq!(dirty(&mask,x as u32,y as u32),expected,"shift {dx},{dy} tile {x},{y}");
+            }}
+            assert_eq!(run(moved,false),(true,vec![0;128]),"the scroll consumed the mask");
+        }
+        run(Mat4::IDENTITY,false);
+        for offset in [glam::Vec3::new(1./64.,0.,0.),glam::Vec3::new(0.,0.,0.01)] {
+            assert!(!run(Mat4::IDENTITY,true).0);
+            let (drawn,mask)=run(Mat4::from_translation(offset),true);
+            assert!(drawn && mask.iter().all(|&word|word==u32::MAX),"unaligned or changed depth projection redraws every tile");
+            run(Mat4::IDENTITY,false);
+        }
     }
     #[test]
     fn scroll_requires_exact_xy_and_unchanged_depth() {
@@ -481,12 +557,25 @@ impl Damage {
 "#;
         let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("distinct depth samples"),source:wgpu::ShaderSource::Wgsl(src.into())});
         let pipeline=gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {label:Some("distinct depth samples"),layout:None,vertex:wgpu::VertexState {module:&module,entry_point:Some("vs"),compilation_options:Default::default(),buffers:&[]},primitive:Default::default(),depth_stencil:Some(wgpu::DepthStencilState {format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:Some(true),depth_compare:Some(wgpu::CompareFunction::Always),stencil:Default::default(),bias:Default::default()}),multisample:Default::default(),fragment:Some(wgpu::FragmentState {module:&module,entry_point:Some("fs"),compilation_options:Default::default(),targets:&[]}),multiview_mask:None,cache:gpu.pipeline_cache()});
+        // Simulated casters disappear from an asymmetric set of old tiles.
+        // The full redraw oracle knows their new depth is 1, including where
+        // their tiles wrap across words or scroll off the map.
+        let removed=|x:i32,y:i32| (11*x+7*y)%19==0;
+        let mut pending_words=[0u32;128];
+        for y in 0..64 {for x in 0..64 {if removed(x,y) {pending_words[(2*y+x/32)as usize]|=1u32<<(x%32);}}}
+        for pending in [false,true] {
         for [dx,dy] in [[0,0],[1,0],[-1,0],[0,1],[0,-1],[3,-5],[-7,13],[32,32],[-63,-63]] {
             damage.invalidate();
             let mut enc=gpu.device.create_command_encoder(&Default::default());
             damage.encode_scrolled(&gpu,&mut enc,Mat4::IDENTITY,1,64,&depth).unwrap();
             {let mut pass=enc.begin_render_pass(&wgpu::RenderPassDescriptor {label:Some("seed depth pattern"),color_attachments:&[],depth_stencil_attachment:Some(wgpu::RenderPassDepthStencilAttachment {view:&target,depth_ops:Some(wgpu::Operations {load:wgpu::LoadOp::Clear(1.),store:wgpu::StoreOp::Store}),stencil_ops:None}),timestamp_writes:None,occlusion_query_set:None,multiview_mask:None});pass.set_pipeline(&pipeline);pass.draw(0..3,0..1);}
             gpu.queue.submit([enc.finish()]);gpu.wait();
+            if pending {
+                let mut enc=gpu.device.create_command_encoder(&Default::default());
+                let drawn=damage.encode_maps(&gpu,&mut enc,1,&[MapRequest {slot:0,vp:Mat4::IDENTITY,size:64,depth:Some((&depth,0)),defer:true}]).unwrap();
+                assert!(!drawn[0]);gpu.queue.submit([enc.finish()]);
+                gpu.queue.write_buffer(&damage.mask,0,bytemuck::cast_slice(&pending_words));
+            }
             let mut enc=gpu.device.create_command_encoder(&Default::default());
             let vp=Mat4::from_translation(glam::Vec3::new(dx as f32/32.,-dy as f32/32.,0.));
             damage.encode_scrolled(&gpu,&mut enc,vp,1,64,&depth).unwrap();damage.clear_tiles(&mut enc,&target);
@@ -494,10 +583,12 @@ impl Damage {
             gpu.queue.submit([enc.finish()]);let(tx,rx)=std::sync::mpsc::channel();read.slice(..).map_async(wgpu::MapMode::Read,move|r|{tx.send(r).unwrap();});gpu.wait();rx.recv().unwrap().unwrap();
             {let data=read.slice(..).get_mapped_range().unwrap();let values:&[f32]=bytemuck::cast_slice(&data);
             for y in 0..64i32 {for x in 0..64i32 {
-                let (ox,oy)=(x-dx,y-dy);let expected=if (0..64).contains(&ox)&&(0..64).contains(&oy){(oy*64+ox+1)as f32/8192.}else{1.};
-                assert_eq!(values[(y*64+x)as usize],expected,"shift {dx},{dy}, pixel {x},{y}");
+                let (ox,oy)=(x-dx,y-dy);
+                let kept=(0..64).contains(&ox)&&(0..64).contains(&oy)&&!(pending && removed(ox,oy));
+                let expected=if kept {(oy*64+ox+1)as f32/8192.}else{1.};
+                assert_eq!(values[(y*64+x)as usize],expected,"pending {pending}, shift {dx},{dy}, pixel {x},{y}");
             }}}read.unmap();
-        }
+        }}
     }
     use bytemuck::Zeroable;
 }

@@ -471,6 +471,60 @@ mod tests {
   // Back under the cap the target relaxes toward exact again.
   for _ in 0..4 {let (_,_,s)=cut(8);assert!(s<=last);last=s;}
  }
+ #[test]
+ #[ignore="exclusive GPU camera and retained-shadow refinement queue"]
+ fn gpu_error_cut_partitions_shadow_priority_and_drains_complete_families() {
+  use crate::part_wind::AnimationView;
+  let gpu=Gpu::new().unwrap();
+  let roots=65usize;
+  let (_,trees)=fixture(roots);
+  let node=|child,end,flags|Node {sphere:[0.,0.,0.5,0.1],error:[16.,0.,0.,0.],links:[child,end,0,flags]};
+  let nodes=[node(1,7,2),node(2,4,0),node(NONE,3,0),node(NONE,4,0),
+             node(5,7,0),node(NONE,6,0),node(NONE,7,0)];
+  let view=AnimationView {view_projection:Mat4::IDENTITY,viewport:[128;2]};
+  let empty=depth(&gpu,0.);
+  for work_capacity in [roots as u32*4,roots as u32*2] {
+   let selector=Selector::with_work_capacity(&gpu,&nodes,&trees,2048,2048,work_capacity).unwrap();
+   selector.refiner.set_error_cut(true);
+   selector.refiner.test_hint(2); // Drain the two children, before their leaves.
+   let retained=|i:usize|[0u32,2,3][i%3];
+   let history=(0..roots).map(|i|[0u32,0,0,retained(i)]).collect::<Vec<_>>();
+   selector.demand.write(&gpu,roots as u64*16,bytemuck::cast_slice(&history));
+   let state_offset=crate::foliage_refine::STATE_OFFSET;
+   gpu.queue.write_buffer(&selector.refiner.state,state_offset+88*4,bytemuck::bytes_of(&512u32));
+   let mut enc=gpu.device.create_command_encoder(&Default::default());
+   selector.union_consumers_budget(&gpu,&mut enc,&[ConsumerView::camera(view),ConsumerView::shadow(view)],1.,2048,[1024;2],&empty).unwrap();
+   gpu.queue.submit([enc.finish()]);
+   let state=read(&gpu,&selector.refiner.state);
+   let count=state[0]as usize;
+   let state=&state[(state_offset/4) as usize..];
+   let full=work_capacity==roots as u32*4;
+   assert_eq!(state[15],if full {0} else {8},"only the short queue overflows");
+   assert_eq!(state[92]+state[93],work_capacity);
+   assert_eq!(count,work_capacity as usize);
+   let records=selector.records.read(&gpu);
+   let roles=selector.record_consumers.read(&gpu);
+   let demand=selector.demand.read(&gpu);
+   let mut cuts=vec![Vec::new();2*roots];
+   for (rec,&role) in records.chunks_exact(4).take(count).zip(&roles) {
+    assert!(role==256 || role==512);
+    cuts[rec[0] as usize+if role==512 {roots} else {0}].push(rec[1]);
+   }
+   let mut late_count=0;
+   for (i,children) in cuts.iter_mut().enumerate() {
+    children.sort();
+    if demand[4*i+2]!=0 {
+     assert!(!full && children.is_empty(),"overflow retained a complete parent");
+    } else {
+     assert_eq!(children.as_slice(),[1,4],"drain must publish every admitted sibling");
+     if i>=roots && retained(i-roots)<=2 {late_count+=2;}
+     if !full && i>=roots {assert_ne!(retained(i-roots),0,"new shadow overtook priority work");}
+    }
+   }
+   assert_eq!(state[93],late_count,"children use the next round's retained depth");
+   assert_eq!(selector.fallback.read(&gpu),vec![0;roots]);
+  }
+ }
  #[test] fn validates_shared_subtrees_and_conservative_bounds() {
   let (nodes,trees)=fixture(2049);assert!(validate(&nodes,&trees,1).is_ok());
   let mut bad=nodes.clone();bad[0].links[0]=0;assert!(validate(&bad,&trees,1).is_err());

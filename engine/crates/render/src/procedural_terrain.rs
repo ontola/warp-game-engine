@@ -410,10 +410,14 @@ impl TerrainView {
 
     /// Whether a sphere can be inside the view cone.
     #[cfg(test)]
-    fn sees(&self, centre: Vec3, radius: f32) -> bool { self.sees_within(centre, radius, 0.0) }
+    fn sees(&self, centre: Vec3, radius: f32) -> bool { self.sees_within(centre, radius, self.cone(0.0)) }
+
+    fn cone(&self, margin: f32) -> (f32, f32) {
+        (self.cos_half_cone.clamp(-1.0, 1.0).acos() + margin).min(std::f32::consts::PI).sin_cos()
+    }
 
     /// [`Self::sees`] with the cone widened by `margin` radians.
-    fn sees_within(&self, centre: Vec3, radius: f32, margin: f32) -> bool {
+    fn sees_within(&self, centre: Vec3, radius: f32, (sin_c, cos_c): (f32, f32)) -> bool {
         let to = centre - self.pos;
         let d = to.length();
         if d <= radius { return true; }
@@ -421,8 +425,6 @@ impl TerrainView {
         let cos_a = to.dot(self.forward) / d;
         let sin_r = (radius / d).min(1.0);
         let cos_r = (1.0 - sin_r * sin_r).sqrt();
-        let cone = (self.cos_half_cone.clamp(-1.0, 1.0).acos() + margin).min(std::f32::consts::PI);
-        let (sin_c, cos_c) = cone.sin_cos();
         // cos(cone + r) <= cos_a
         cos_a >= cos_c * cos_r - sin_c * sin_r
     }
@@ -515,8 +517,8 @@ pub struct ProceduralTerrain {
     samples: std::cell::RefCell<[HashMap<Node, (f32, f32)>; 2]>,
     /// Patches built but not shown yet: slot and the instance that shows it.
     hidden: HashMap<(Node, u32), (u32, GpuInstance)>,
-    /// The last selection, its views, patch count and finest level.
-    selection: Option<(Vec<TerrainView>, Arc<HashSet<(Node, u32)>>, usize, u32)>,
+    /// Last balanced leaves and the stitch mask of each patch.
+    selection: Option<TerrainSelection>,
     /// The selection whose patches are all built and shown: while it stands,
     /// a frame has nothing to plan.
     settled: Option<Arc<HashSet<(Node, u32)>>>,
@@ -525,6 +527,14 @@ pub struct ProceduralTerrain {
     /// Shown patches still sliding into their own shape, by slot.
     morphs: HashMap<u32, Morph>,
     clock: web_time::Instant,
+}
+
+struct TerrainSelection {
+    views: Vec<TerrainView>,
+    root_level: u32,
+    leaves: HashSet<Node>,
+    keys: Arc<HashSet<(Node, u32)>>,
+    finest: u32,
 }
 
 /// One frame of terrain changes: instance writes and patch builds.
@@ -575,7 +585,7 @@ impl ProceduralTerrain {
         s
     }
 
-    fn wants_split(&self, n: Node, views: &[TerrainView]) -> bool {
+    fn wants_split(&self, n: Node, views: &[(TerrainView, (f32, f32))]) -> bool {
         if n.level == 0 { return false; }
         let size = self.size(n.level);
         let cell = self.cell(n.level);
@@ -584,13 +594,13 @@ impl ProceduralTerrain {
         let reach = size * 0.75 + 8.0;
         let centre = Vec3::new(x0 + size * 0.5, centre_y, z0 + size * 0.5);
         let radius = (size * size * 0.5 + reach * reach).sqrt();
-        views.iter().any(|v| {
+        views.iter().any(|(v, cone)| {
             let dx = (v.pos.x - centre.x).abs() - size * 0.5;
             let dz = (v.pos.z - centre.z).abs() - size * 0.5;
             let dy = (v.pos.y - centre_y).abs() - reach;
             let d = (dx.max(0.0).powi(2) + dz.max(0.0).powi(2) + dy.max(0.0).powi(2)).sqrt().max(0.05);
             // Out of view, patches only cast shadows: much coarser is fine.
-            let scale = self.lod * if v.sees_within(centre, radius, self.settings.cone_margin_deg.to_radians()) { 1.0 } else { self.settings.offscreen_factor };
+            let scale = self.lod * if v.sees_within(centre, radius, *cone) { 1.0 } else { self.settings.offscreen_factor };
             let px = v.pixels_per_radian / d;
             cell * px > self.settings.cell_pixels * scale || error * px > self.settings.error_pixels * scale
                 || v.shadow_needs_detail(self.sun, centre, radius, cell, error, &self.settings, self.lod)
@@ -615,13 +625,17 @@ impl ProceduralTerrain {
                 }
             }
         }
-        let mut leaves = HashSet::default();
-        let mut stack: Vec<Node> = roots.into_iter().collect();
+        let margin = self.settings.cone_margin_deg.to_radians();
+        let cones: Vec<_> = views.iter().map(|v| (*v, v.cone(margin))).collect();
+        let mut splits = vec![HashSet::default(); root as usize + 1];
+        let mut stack: Vec<_> = roots.iter().copied().collect();
         while let Some(n) = stack.pop() {
-            if self.wants_split(n, views) { stack.extend(n.children()); } else { leaves.insert(n); }
+            if self.wants_split(n, &cones) {
+                splits[n.level as usize].insert(n);
+                stack.extend(n.children());
+            }
         }
-        balance(&mut leaves, root);
-        leaves
+        balanced_leaves(roots, splits, root)
     }
 
     /// [`Self::select`], coarsened until it fits the pool. Patches fall
@@ -644,17 +658,21 @@ impl ProceduralTerrain {
     /// last selection while the views stay within the reselect thresholds.
     fn wanted(&mut self, views: &[TerrainView]) -> (Arc<HashSet<(Node, u32)>>, usize, u32) {
         let cos_turn = self.settings.reselect_deg.to_radians().cos();
-        if let Some((last, keys, patches, finest)) = &self.selection {
-            let same = last.len() == views.len() && last.iter().zip(views).all(|(a, b)| a.pos.distance(b.pos) <= self.settings.reselect_m
+        if let Some(last) = &self.selection {
+            let same = last.views.len() == views.len() && last.views.iter().zip(views).all(|(a, b)| a.pos.distance(b.pos) <= self.settings.reselect_m
                 && a.forward.dot(b.forward) >= cos_turn && a.pixels_per_radian == b.pixels_per_radian && a.cos_half_cone == b.cos_half_cone);
-            if same { return (keys.clone(), *patches, *finest); }
+            if same { return (last.keys.clone(), last.leaves.len(), last.finest); }
         }
         let leaves = self.select_within_budget(views);
-        let topology = TerrainTopology::new(&leaves, self.settings.root_level);
-        let keys: Arc<HashSet<(Node, u32)>> = Arc::new(leaves.iter().map(|&n| (n, mask(&topology, n, self.settings.root_level))).collect());
+        let root_level = self.settings.root_level;
+        let keys = self.selection.as_ref()
+            .filter(|last| last.root_level == root_level)
+            .and_then(|last| last.updated_stitches(&leaves))
+            .unwrap_or_else(|| Arc::new(leaves.iter().map(|&n| (n, mask(&leaves, n, root_level))).collect()));
         let finest = leaves.iter().map(|n| n.level).min().unwrap_or(u32::MAX);
-        self.selection = Some((views.to_vec(), keys.clone(), leaves.len(), finest));
-        (keys, leaves.len(), finest)
+        let count = leaves.len();
+        self.selection = Some(TerrainSelection { views: views.to_vec(), root_level, leaves, keys: keys.clone(), finest });
+        (keys, count, finest)
     }
 
     /// The instance that shows a built patch.
@@ -711,12 +729,15 @@ impl ProceduralTerrain {
         }
         // Swap: everything wanted is built by the end of this frame (or the
         // pool has no room to build ahead, which is the old behaviour).
-        let old: HashSet<Node> = self.slots.keys().map(|k| k.0).collect();
+        // A fresh patch cannot overlap a retained patch in the new quadtree.
+        // Only geometry retired by this swap can be the source of its morph.
+        let mut retired = HashSet::default();
         let root = self.settings.root_level;
         let mut fresh: Vec<((Node, u32), u32)> = Vec::new();
         let morphs = &mut self.morphs;
         self.slots.retain(|key, slot| {
             if wanted.contains(key) { return true; }
+            retired.insert(key.0);
             morphs.remove(slot);
             self.free.push(*slot);
             changed.push((*slot, hidden_instance(&self.spec, *slot)));
@@ -736,7 +757,7 @@ impl ProceduralTerrain {
             fresh.push((key, slot));
             stats.built += 1;
         }
-        if self.settings.morph_s > 0.0 && !old.is_empty() { self.start_morphs(&old, &fresh, root); }
+        if self.settings.morph_s > 0.0 && !retired.is_empty() { self.start_morphs(&retired, &fresh, root); }
         changed.sort_by_key(|c| c.0);
         if stats.overflow == 0 { self.settled = Some(wanted); }
         let morph_jobs = self.morph_jobs();
@@ -851,82 +872,98 @@ fn covering(leaves: &HashSet<Node>, mut n: Node, root: u32) -> Option<Node> {
     }
 }
 
-/// Explicit quadtree occupancy: branches terminate unsuccessful neighbour
-/// queries immediately. Splits update the index rather than rebuilding it.
-struct TerrainTopology {
-    nodes: HashMap<Node, bool>, // true: leaf; false: branch
-    indexed: bool,
-}
-impl TerrainTopology {
-    fn new(leaves: &HashSet<Node>, root: u32) -> Self {
-        Self::with_index(leaves, root, std::env::var("WARP_TERRAIN_TOPOLOGY_INDEX").is_ok_and(|v| v == "1"))
-    }
-    fn with_index(leaves: &HashSet<Node>, root: u32, indexed: bool) -> Self {
-        let mut nodes = HashMap::with_capacity_and_hasher(leaves.len() * 2, Default::default());
-        for &leaf in leaves {
-            nodes.insert(leaf, true);
-            let mut n = leaf;
-            while indexed && n.level < root {
-                n = n.parent();
-                if nodes.insert(n, false).is_some() { break; }
+/// Balance the initial LOD splits, from finest to coarsest. Each of the four
+/// children of a split must face neighbours no coarser than the split itself.
+/// Across its edges and corners these neighbours belong to just four parents
+/// at the next level. Request those parent splits, stopping at the selected
+/// world boundary. Requests can only propagate towards coarser levels.
+fn balanced_leaves(roots: HashSet<Node>, mut splits: Vec<HashSet<Node>>, root: u32) -> HashSet<Node> {
+    for level in 1..root {
+        let (finer, coarser) = splits.split_at_mut(level as usize + 1);
+        let parents = &mut coarser[0];
+        for &n in &finer[level as usize] {
+            let parent = n.parent();
+            let dx = if n.ix & 1 == 0 { -1 } else { 1 };
+            let dz = if n.iz & 1 == 0 { -1 } else { 1 };
+            let to_root = root - parent.level;
+            parents.insert(parent);
+            for (x, z) in [(dx, 0), (0, dz), (dx, dz)] {
+                let adjacent = Node { ix: parent.ix + x, iz: parent.iz + z, ..parent };
+                let owner = Node { level: root, ix: adjacent.ix >> to_root, iz: adjacent.iz >> to_root };
+                if roots.contains(&owner) { parents.insert(adjacent); }
             }
         }
-        Self { nodes, indexed }
     }
-    fn covering(&self, mut n: Node, root: u32) -> Option<Node> {
-        loop {
-            if let Some(&leaf) = self.nodes.get(&n) {
-                if leaf { return Some(n); }
-                if self.indexed { return None; }
-            }
-            if n.level >= root { return None; }
-            n = n.parent();
+    let mut leaves = roots;
+    for level in (1..=root).rev() {
+        for &split in &splits[level as usize] {
+            leaves.remove(&split);
+            leaves.extend(split.children());
         }
     }
-    fn split(&mut self, n: Node) {
-        if self.indexed { self.nodes.insert(n, false); } else { self.nodes.remove(&n); }
-        for child in n.children() { self.nodes.insert(child, true); }
-    }
+    leaves
 }
 
-fn balance(leaves: &mut HashSet<Node>, root: u32) {
-    let mut topology = TerrainTopology::new(leaves, root);
-    let mut queue: Vec<Node> = leaves.iter().copied().collect();
-    queue.sort_by_key(|n| (n.level, n.ix, n.iz));
-    while let Some(n) = queue.pop() {
-        if !leaves.contains(&n) { continue; }
-        for dz in -1..=1 {
-            for dx in -1..=1 {
-                if dx == 0 && dz == 0 { continue; }
-                let m = Node { level: n.level, ix: n.ix + dx, iz: n.iz + dz };
-                if let Some(c) = topology.covering(m, root) {
-                    if c.level > n.level + 1 {
-                        leaves.remove(&c);
-                        topology.split(c);
-                        for k in c.children() { leaves.insert(k); queue.push(k); }
-                        queue.push(n);
-                    }
+/// The balanced terrain has at most one level between neighbours. A coarser
+/// neighbour must therefore be a leaf in the parent's level. A patch occupies
+/// one quadrant of its parent and can touch just three other such parents.
+fn mask(leaves: &HashSet<Node>, n: Node, root: u32) -> u32 {
+    if n.level == root { return 0; }
+    let p = n.parent();
+    let east = n.ix & 1 != 0;
+    let south = n.iz & 1 != 0;
+    let dx = if east { 1 } else { -1 };
+    let dz = if south { 1 } else { -1 };
+    let x = leaves.contains(&Node { ix: p.ix + dx, ..p });
+    let z = leaves.contains(&Node { iz: p.iz + dz, ..p });
+    let corner = (east as u32) + 2 * (south as u32);
+    let mut m = 0;
+    if x { m |= if east { 2 | 32 | 128 } else { 1 | 16 | 64 }; }
+    if z { m |= if south { 8 | 64 | 128 } else { 4 | 16 | 32 }; }
+    if !x && !z && leaves.contains(&Node { ix: p.ix + dx, iz: p.iz + dz, ..p }) {
+        m |= 16 << corner;
+    }
+    m
+}
+
+impl TerrainSelection {
+    /// Reuse stitch keys when a moving view changes a small part of the tree.
+    /// A coarser leaf can change the stitch of a retained finer leaf only if
+    /// it touches the perimeter of the coarser leaf's 2x2 footprint.
+    fn updated_stitches(&self, leaves: &HashSet<Node>) -> Option<Arc<HashSet<(Node, u32)>>> {
+        let limit = leaves.len() / 10;
+        let changed: Vec<_> = leaves.symmetric_difference(&self.leaves).take(limit + 1).copied().collect();
+        if changed.len() > limit { return None; }
+        if changed.is_empty() { return Some(self.keys.clone()); }
+
+        let root = self.root_level;
+        let mut keys = (*self.keys).clone();
+        let mut neighbours = HashSet::default();
+        for n in changed {
+            if self.leaves.contains(&n) {
+                keys.remove(&(n, mask(&self.leaves, n, root)));
+            } else {
+                keys.insert((n, mask(leaves, n, root)));
+            }
+            if n.level == 0 { continue; }
+            for dz in -1..=2 {
+                for dx in -1..=2 {
+                    if (0..=1).contains(&dx) && (0..=1).contains(&dz) { continue; }
+                    let q = Node { level: n.level - 1, ix: n.ix * 2 + dx, iz: n.iz * 2 + dz };
+                    if leaves.contains(&q) && self.leaves.contains(&q) { neighbours.insert(q); }
                 }
             }
         }
+        for n in neighbours {
+            let before = mask(&self.leaves, n, root);
+            let after = mask(leaves, n, root);
+            if before != after {
+                keys.remove(&(n, before));
+                keys.insert((n, after));
+            }
+        }
+        Some(Arc::new(keys))
     }
-}
-
-/// Edge (bits 0..3: -x, +x, -z, +z) and corner (bits 4..7) flags for
-/// neighbours one level coarser.
-fn mask(topology: &TerrainTopology, n: Node, root: u32) -> u32 {
-    let coarser = |dx: i32, dz: i32| {
-        topology.covering(Node { level: n.level, ix: n.ix + dx, iz: n.iz + dz }, root).is_some_and(|c| c.level > n.level)
-    };
-    let mut m = 0;
-    if coarser(-1, 0) { m |= 1; }
-    if coarser(1, 0) { m |= 2; }
-    if coarser(0, -1) { m |= 4; }
-    if coarser(0, 1) { m |= 8; }
-    for (bit, (cx, cz)) in [(-1, -1), (1, -1), (-1, 1), (1, 1)].into_iter().enumerate() {
-        if coarser(cx, 0) || coarser(0, cz) || coarser(cx, cz) { m |= 16 << bit; }
-    }
-    m
 }
 
 /// The GPU half, owned by the renderer.
@@ -1045,28 +1082,78 @@ mod tests {
         ProceduralTerrain::new(TerrainSpec { first_instance: 0, first_cluster: 0, first_vertex: 0, capacity: 1 << 16, seed: 1, style: terrain_field::Style::default(), constraints: None }, Settings::default())
     }
 
+    // Independent oracle: repeatedly split an offending coarse neighbour
+    // until the entire forest meets the 2:1 rule.
+    fn reference_balance(mut leaves: HashSet<Node>, root: u32) -> HashSet<Node> {
+        loop {
+            let mut required = HashSet::default();
+            for &n in &leaves {
+                for dz in -1..=1 { for dx in -1..=1 {
+                    let q = Node { ix: n.ix + dx, iz: n.iz + dz, ..n };
+                    if let Some(c) = covering(&leaves, q, root) {
+                        if c.level > n.level + 1 { required.insert(c); }
+                    }
+                }}
+            }
+            if required.is_empty() { return leaves; }
+            for n in required {
+                leaves.remove(&n);
+                leaves.extend(n.children());
+            }
+        }
+    }
+
+    fn reference_mask(leaves: &HashSet<Node>, n: Node, root: u32) -> u32 {
+        let coarser = |dx: i32, dz: i32| {
+            covering(leaves, Node { ix: n.ix + dx, iz: n.iz + dz, ..n }, root)
+                .is_some_and(|c| c.level > n.level)
+        };
+        let mut m = 0;
+        for (bit, (dx, dz)) in [(-1, 0), (1, 0), (0, -1), (0, 1)].into_iter().enumerate() {
+            if coarser(dx, dz) { m |= 1 << bit; }
+        }
+        for (bit, (dx, dz)) in [(-1, -1), (1, -1), (-1, 1), (1, 1)].into_iter().enumerate() {
+            if coarser(dx, 0) || coarser(0, dz) || coarser(dx, dz) { m |= 16 << bit; }
+        }
+        m
+    }
+
     #[test]
-    fn topology_queries_match_reference_after_splits() {
+    fn balanced_leaves_and_stitches_match_neighbour_search() {
         let root = 7;
-        let mut leaves: HashSet<Node> = (-1..=1).flat_map(|ix| (-1..=1).map(move |iz| Node { level: root, ix, iz })).collect();
-        let mut topology = TerrainTopology::with_index(&leaves, root, true);
+        // A hole, a disconnected island and negative coordinates exercise
+        // the root boundary and all four parent quadrants.
+        let roots: HashSet<_> = [(-1, -1), (0, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (3, -2)]
+            .into_iter().map(|(ix, iz)| Node { level: root, ix, iz }).collect();
+        let mut leaves = roots.clone();
+        let mut splits = vec![HashSet::default(); root as usize + 1];
         let mut seed = 13u32;
-        for _ in 0..250 {
+        let mut previous: Option<TerrainSelection> = None;
+        let mut reused = 0;
+        for step in 0..250 {
             let mut ordered: Vec<_> = leaves.iter().copied().filter(|n| n.level > 0).collect();
             ordered.sort_by_key(|n| (n.level, n.ix, n.iz));
             seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
             let n = ordered[seed as usize % ordered.len()];
             leaves.remove(&n);
             leaves.extend(n.children());
-            topology.split(n);
-            for &leaf in &leaves {
-                for dz in -1..=1 { for dx in -1..=1 {
-                    let q = Node { level: leaf.level, ix: leaf.ix + dx, iz: leaf.iz + dz };
-                    assert_eq!(topology.covering(q, root), covering(&leaves, q, root));
-                }}
+            splits[n.level as usize].insert(n);
+            if step % 7 == 0 || step == 249 {
+                let expected = reference_balance(leaves.clone(), root);
+                let actual = balanced_leaves(roots.clone(), splits.clone(), root);
+                assert_eq!(actual, expected, "split {step}");
+                let keys: HashSet<_> = expected.iter().map(|&n| (n, reference_mask(&expected, n, root))).collect();
+                for &(n, m) in &keys { assert_eq!(mask(&actual, n, root), m, "{n:?}"); }
+                if let Some(cached) = previous.as_ref().and_then(|p| p.updated_stitches(&actual)) {
+                    assert_eq!(*cached, keys, "incremental stitches after split {step}");
+                    reused += 1;
+                }
+                let next = TerrainSelection { views: Vec::new(), root_level: root, leaves: actual, keys: Arc::new(keys), finest: 0 };
+                assert!(Arc::ptr_eq(&next.keys, &next.updated_stitches(&next.leaves).unwrap()));
+                previous = Some(next);
             }
         }
-        assert_eq!(topology.nodes, TerrainTopology::with_index(&leaves, root, true).nodes);
+        assert!(reused > 0, "never exercised a small topology change");
     }
 
     #[test]
@@ -1109,7 +1196,8 @@ mod tests {
         let mut stack: Vec<Node> = Vec::new();
         let rs = t.size(t.settings.root_level);
         for ix in -3..=3 { for iz in -3..=3 { stack.push(Node { level: t.settings.root_level, ix, iz }); } }
-        while let Some(n) = stack.pop() { if t.wants_split(n, &views) { stack.extend(n.children()); } else { raw.insert(n); } }
+        let cones: Vec<_> = views.iter().map(|v| (*v, v.cone(t.settings.cone_margin_deg.to_radians()))).collect();
+        while let Some(n) = stack.pop() { if t.wants_split(n, &cones) { stack.extend(n.children()); } else { raw.insert(n); } }
         let mut seen = 0; let mut far = Vec::new();
         for n in leaves.iter().filter(|n| n.level == 6) {
             let size = t.size(6);
@@ -1145,7 +1233,7 @@ mod tests {
                 let plan = t.plan(&[view]);
                 assert!(plan.jobs.len() <= budget, "{} builds in one frame", plan.jobs.len());
                 let now: HashSet<(Node, u32)> = t.slots.keys().copied().collect();
-                let wanted = (*t.selection.as_ref().unwrap().1).clone();
+                let wanted = (*t.selection.as_ref().unwrap().keys).clone();
                 // The shown set is the previous selection or the new one,
                 // never a mix with holes or overlaps.
                 assert!(now == shown || now == wanted, "partial swap at step {step}");
@@ -1153,7 +1241,7 @@ mod tests {
                 if plan.stats.pending == 0 && shown == wanted { break; }
                 deferred += 1;
             }
-            assert_eq!(shown, *t.selection.as_ref().unwrap().1, "step {step} never completed");
+            assert_eq!(shown, *t.selection.as_ref().unwrap().keys, "step {step} never completed");
         }
         assert!(deferred > 0, "no turn needed more than one frame's budget");
     }
@@ -1168,7 +1256,7 @@ mod tests {
             for step in 0..=24 {
                 let view = turn_view(&t, step as f32 * 30.0);
                 t.wanted(&[view]);
-                let keys = (*t.selection.as_ref().unwrap().1).clone();
+                let keys = (*t.selection.as_ref().unwrap().keys).clone();
                 if step > 12 { worst = worst.max(keys.difference(&prev).count()); }
                 prev = keys;
             }

@@ -74,10 +74,8 @@ fn environment(style: usize) -> render::biome::Environment {
 fn sun_degrees(env: &render::biome::Environment) -> (f32, f32) {
     if std::env::args().any(|a| a == "--hour") { env.sun_degrees() } else { (28.0, 135.0) }
 }
-/// Grass is a field of roots around one point; it is rebuilt around the
-/// camera once the camera is this far (metres, horizontally) from it. At 60 m
-/// a whole strip of cells appeared at once every 60 m of travel (pop-in, Joep);
-/// the rebuild runs on a background thread, so small steps cost no frame time.
+/// Move the grass field in small horizontal steps so its outer edge fades
+/// smoothly into the ground proxy. The worker reuses overlapping world cells.
 const GRASS_RECENTRE: f32 = 15.0;
 /// Loaded forest cells recenter independently of ground and shadow streaming.
 const TREES_RECENTRE: f32 = 150.0;
@@ -94,11 +92,22 @@ const GRASS_RADIUS: f32 = 240.0;
 /// lines from the air. Jittered patches (cook_meadow_cells) cover the seams.
 const GRASS_CELL_OVERLAP: f32 = 1.0;
 
-type Built = Result<(Scene, Lighting, procedural_terrain::TerrainSpec, Option<Vec3>), String>;
+/// A scene owns its cell cache. The streaming worker takes it while generating
+/// the next population and returns it alongside the matching centre.
+#[derive(Default)]
+struct GrassCells {
+    placements: std::collections::HashMap<(i32, i32), Option<WorldRoot>>,
+}
+struct ForestArea {
+    centre: Vec3,
+    grass: GrassCells,
+}
+
+type Built = Result<(Scene, Lighting, procedural_terrain::TerrainSpec, ForestArea), String>;
 /// A scene from the builder thread, with its renderer when the thread had
 /// the GPU (every rebuild after the first): the swap then costs nothing on
 /// the frame instead of ~300 ms of uploads.
-type Ready = Result<(Option<(render::Renderer, ProceduralTerrain)>, Scene, Lighting, procedural_terrain::TerrainSpec, Option<Vec3>), String>;
+type Ready = Result<(Option<(render::Renderer, ProceduralTerrain)>, Scene, Lighting, procedural_terrain::TerrainSpec, ForestArea), String>;
 
 /// What goes into a scene besides the terrain; changing it rebuilds.
 #[derive(Clone, Copy, PartialEq)]
@@ -160,7 +169,8 @@ struct Fly {
     /// Centre of the grass and trees in the current scene.
     world_at: Option<Vec3>,
     forest_at:Option<Vec3>,
-    forest_building:Option<Receiver<(Vec3,Result<render::foliage_runtime::PreparedPopulation,String>)>>,
+    grass_cells:GrassCells,
+    forest_building:Option<Receiver<(ForestArea,Result<render::foliage_runtime::PreparedPopulation,String>)>>,
     forest_material:Option<(usize,Material)>,
     sun_building:Option<Receiver<(Vec3,render::scene::Heightfield,Vec<f32>)>>,
     /// Terrain LOD from the debug menu, kept across rebuilds.
@@ -191,7 +201,7 @@ struct Fly {
 impl Fly {
     fn new(seed: u32, style: usize, world: World) -> Result<Self, String> {
         let mut fly = Fly { seed, style, pos: Vec3::ZERO, prev: Vec3::ZERO, yaw: 0.6, pitch: -0.15, turn: (0.0, 0.0), speed: 40.0, last_action: "Ready".into(), hug: None, wheel: 0.0,
-            building: None, building_for: (seed, style), building_started: web_time::Instant::now(), shown: (seed, style), lift_on_swap: false, gpu: None, stale: false, world, built_world: world, world_at: None, sun_building:None, forest_at:None, forest_building:None, forest_material:None, terrain_settings: Settings::default(), terrain: None, light: Lighting::default(), stats: Stats::default(), last_updates: [0.0;2], jumps: 0, fps: 0.0, worst_ms: 0.0, ticks: 0,
+            building: None, building_for: (seed, style), building_started: web_time::Instant::now(), shown: (seed, style), lift_on_swap: false, gpu: None, stale: false, world, built_world: world, world_at: None, sun_building:None, forest_at:None, grass_cells:GrassCells::default(), forest_building:None, forest_material:None, terrain_settings: Settings::default(), terrain: None, light: Lighting::default(), stats: Stats::default(), last_updates: [0.0;2], jumps: 0, fps: 0.0, worst_ms: 0.0, ticks: 0,
             track: std::env::args().any(|a| a == "--track"), regions: None, town: std::env::args().any(|a| a == "--town"), constraints: None,
             upscale: Default::default() };
         if let Some(name) = std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == "--regions").map(|w| w[1].clone()) {
@@ -444,7 +454,9 @@ impl Game for Fly {
         };
         if let Some(built) = ready {
             self.building = None;
-            let (prebuilt, scene, light, pool, world_at) = built??;
+            let (prebuilt, scene, light, pool, area) = built??;
+            let world_at = Some(area.centre);
+            self.grass_cells = area.grass;
             self.forest_at=world_at;self.forest_building=None;self.sun_building=None;
             self.forest_material=scene.materials.iter().find(|m|m.flags&TERRAIN!=0 && m.scale<0.)
                 .map(|m|{let i=(-m.scale-1.).round()as usize+2;(i,scene.materials[i])});
@@ -465,10 +477,12 @@ impl Game for Fly {
         }
         if self.building.is_none() && self.world_stale() { self.rebuild()?; }
         if self.building.is_none() && (self.built_world.trees || self.built_world.grass) {
-            if let Some((centre,roots))=self.forest_building.as_ref().and_then(|rx|rx.try_recv().ok()) {
+            if let Some((area,roots))=self.forest_building.as_ref().and_then(|rx|rx.try_recv().ok()) {
                 if let Some(renderer)=frame.renderer() {
                     let started=web_time::Instant::now();
                     let stats=renderer.commit_gpu_forest_roots(frame.gpu,roots?)?;
+                    let centre = area.centre;
+                    self.grass_cells = area.grass;
                     if let Some((index,mut material))=self.forest_material {material.tint[2]=centre.x;material.roughness=centre.z;renderer.update_materials(frame.gpu,index,&[material])?;self.forest_material=Some((index,material));}
                     eprintln!("forest stream: {} enqueue_cpu_ms={:.2}",serde_json::to_string(&stats).unwrap(),started.elapsed().as_secs_f64()*1000.);
                     self.forest_at=Some(centre);self.forest_building=None;
@@ -479,7 +493,11 @@ impl Game for Fly {
                 let preparation=renderer.gpu_forest_population_seed()?;
                 let (tx,rx)=channel();let (seed,style,centre)=(self.seed,self.style(),self.pos);
                 let biome=environment(self.style).biome;let world=World {tree_density:self.world.tree_density/0.6*biome.tree_density,..self.world};let track=self.current_track().cloned();let lands=self.lands();
-                background(move||{let roots=forest(seed,&style,&lands,centre,world,track.as_deref());let _=tx.send((centre,preparation.prepare(&roots)));});
+                let mut grass = std::mem::take(&mut self.grass_cells);
+                background(move || {
+                    let roots = forest(seed, &style, &lands, centre, world, track.as_deref(), &mut grass);
+                    let _ = tx.send((ForestArea { centre, grass }, preparation.prepare(&roots)));
+                });
                 self.forest_building=Some(rx);
             }
         }
@@ -706,6 +724,7 @@ fn buildings(scene: &mut Scene, world: &Constraints, seed: u32, style: &Style) {
 }
 
 fn build_scene(seed: u32, style: Style, lands: &render::biome::Lands, env: &render::biome::Environment, palette: &VegetationStyle, sun: (f32, f32), centre: Vec3, world: World, track: Option<Arc<Constraints>>) -> Built {
+    let mut grass = GrassCells::default();
     // A forest of grown pines paints its far part with their measured crowns
     // (cover, height, colour) instead of the biome's generic canopy.
     let measured;
@@ -730,7 +749,7 @@ fn build_scene(seed: u32, style: Style, lands: &render::biome::Lands, env: &rend
     scene.add_texture(&root.join("mossy_rock_albedo.jpg"))?;
     let material = scene.add_material(Material { tint: [1.0; 3], layer: t0, roughness: 0.9, flags: TERRAIN | SURFACE, scale: 4.0, metal: 0.0 });
     if world.trees || world.grass {
-        let roots = forest(seed, &style, lands, centre, world, track.as_deref());
+        let roots = forest(seed, &style, lands, centre, world, track.as_deref(), &mut grass);
         recipe_spruces(&mut scene, lands, palette.meadow_dry_season, world, &roots, world.branch_slots)?;
     }
     let mut pool = procedural_terrain::reserve(&mut scene, POOL, material, seed, style);
@@ -799,7 +818,7 @@ fn build_scene(seed: u32, style: Style, lands: &render::biome::Lands, env: &rend
     for kv in std::env::args().collect::<Vec<_>>().windows(2).filter(|w| w[0] == "--light").flat_map(|w| w[1].split(',').map(String::from).collect::<Vec<_>>()) {
         if let Err(e) = light.set(&kv) { eprintln!("--light {kv}: {e}"); }
     }
-    Ok((scene, light, pool, Some(centre)))
+    Ok((scene, light, pool, ForestArea { centre, grass }))
 }
 
 /// The renderer for `scene`, built on the scene thread: the swap then
@@ -953,7 +972,7 @@ fn recipe_spruces(scene:&mut Scene,lands:&render::biome::Lands,season:f32,world:
 /// Trees within `world.tree_radius` of `centre`, from the engine's forest
 /// field (the distant terrain draws the same forest). Position, yaw, scale
 /// and variant.
-fn forest(seed: u32, style: &Style, lands: &render::biome::Lands, centre: Vec3, world: World, track: Option<&Constraints>) -> Vec<WorldRoot> {
+fn forest(seed: u32, style: &Style, lands: &render::biome::Lands, centre: Vec3, world: World, track: Option<&Constraints>, grass: &mut GrassCells) -> Vec<WorldRoot> {
     use render::placement::{self, TerrainWorld};
     let (start, end) = handover_band(world);
     let c = Vec2::new(centre.x, centre.z);
@@ -1026,7 +1045,7 @@ fn forest(seed: u32, style: &Style, lands: &render::biome::Lands, centre: Vec3, 
     let offset=if world.trees {flora_count(lands)} else {0};
     let mut roots=woody;
     let started=web_time::Instant::now();
-    let cells=grass_cells(seed,&land,|x,z|land.style_at(x,z).grass,c,offset,GRASS_RADIUS);
+    let cells=grass.roots(seed,&land,|x,z|land.style_at(x,z).grass,c,offset,GRASS_RADIUS);
     eprintln!("grass world cells: count={} generation_cpu_ms={:.2} radius_m={GRASS_RADIUS}",cells.len(),started.elapsed().as_secs_f64()*1000.);
     roots.extend(cells);roots
 }
@@ -1052,60 +1071,57 @@ fn handover_band(world: World) -> (f32, f32) {
 /// Seeds of the cooked meadow cell variants (recipe_forest::cook_meadow_cells).
 const GRASS_VARIANT_SEEDS: [u64; 4] = [47, 83, 131, 197];
 
-fn grass_cells(seed:u32,land:&impl render::placement::World,grass:impl Fn(f32,f32)->f32,centre:Vec2,variant_offset:usize,radius:f32)->Vec<WorldRoot> {
-    use render::placement::Cell;
-    let cell=recipe_forest::MEADOW_CELL_SIZE;
-    let lo=((centre-Vec2::splat(radius))/cell).floor().as_ivec2();
-    let hi=((centre+Vec2::splat(radius))/cell).ceil().as_ivec2();
-    let mut roots=Vec::new();
-    for j in lo.y..=hi.y {
-    // Each row slides along x by its own fraction of a cell: cells still tile
-    // the row, but the seams and the 0.5 m patch lattice of one row no longer
-    // line up with the next, so the field shows no square grid from above.
-    let shift=Cell::new(0,j,seed).hash(79)*cell;
-    for i in lo.x-1..=hi.x {
-        let x=(i as f32+0.5)*cell+shift;let z=(j as f32+0.5)*cell;
-        let d=Vec2::new(x,z).distance(centre);
-        if d>radius {continue;}
-        // The outer 30 % thins out cell by cell while the ground proxy
-        // (terrain_surface.wgsl grass_proxy) fades in over the same band:
-        // no line where the blades end.
-        if Cell::new(i,j,seed).hash(81)<((d-0.7*radius)/(0.3*radius)).clamp(0.,1.) {continue;}
-        let s=land.ground(x,z);
-        let sparse=0.5+0.8*terrain_field::noised(Vec2::new(x,z)/40.,seed.wrapping_add(31)).x>grass(x,z);
-        if sparse || s.scree>0.8 || s.water>0.02 || land.clearance(x,z)<cell {continue;}
-        let dx=land.ground(x+0.5,z).pos.y-land.ground(x-0.5,z).pos.y;
-        let dz=land.ground(x,z+0.5).pos.y-land.ground(x,z-0.5).pos.y;
-        // The cell tilts with the ground, so along the fall line it covers
-        // only cos(slope) of the grid step: a bare strip per row on a slope
-        // (Mancave, 28 degrees: 0.18 m). Scaled by 1/up.y it meets the next row.
-        let up=Vec3::new(-dx,1.,-dz).normalize();
-        // Rock and snow thin the grass out by a per-cell hash, not at one value.
-        // (Letting grass onto mossy, up-facing rock put it over outcrops.)
-        let smooth=|v:f32,a:f32,b:f32|((v-a)/(b-a)).clamp(0.,1.);
-        let cut=Cell::new(i,j,seed).hash(78);
-        if cut<smooth(s.rock,0.2,0.6) || cut<smooth(s.snow,0.15,0.45) {continue;}
-        let hash=Cell::new(i,j,seed).hash(77);
-        // A cell is a 3x3 block of patches that tiles the 1.5 m square: turn
-        // it by quarter turns only. Any yaw left its corners bare, a dark hole
-        // at every grid corner (Joep's regular black circles).
-        let quarter=(hash*8.).floor() as u32%4;
-        // Cells tile exactly: no growth, shift or free turn. Any overlap
-        // doubled the blades along every seam, which read as lines from the
-        // air (Joep, playtest 4); the cell's own patches are jittered at cook
-        // time (recipe_forest::cook_meadow_cells), so seams look like the
-        // inside of a cell.
-        let turn=0.0;
-        let shift=Vec2::ZERO;
-        if land.clearance(x+shift.x,z+shift.y)<cell {continue;}
-        // Four cooked variants, picked independently of the turn: two
-        // repeated every few cells and read as a grid from above.
-        let variant=((Cell::new(i,j,seed).hash(80)*GRASS_VARIANT_SEEDS.len() as f32) as usize).min(GRASS_VARIANT_SEEDS.len()-1);
-        roots.push(WorldRoot {id:render::placement::instance_id(1000,i,j),placement:RootPlacement {
-            pos:Vec3::new(x+shift.x,land.ground(x+shift.x,z+shift.y).pos.y-0.015,z+shift.y),up,yaw:quarter as f32*std::f32::consts::FRAC_PI_2+turn,
-            scale:GRASS_CELL_OVERLAP/up.y.max(0.7),variant:variant_offset+variant}});
-    }}
-    roots
+impl GrassCells {
+    fn roots(&mut self, seed: u32, land: &impl render::placement::World, grass: impl Fn(f32, f32) -> f32,
+        centre: Vec2, variant_offset: usize, radius: f32) -> Vec<WorldRoot> {
+        use render::placement::Cell;
+        let cell = recipe_forest::MEADOW_CELL_SIZE;
+        let lo = ((centre - Vec2::splat(radius)) / cell).floor().as_ivec2();
+        let hi = ((centre + Vec2::splat(radius)) / cell).ceil().as_ivec2();
+        self.placements.retain(|&(i, j), _| i >= lo.x - 1 && i <= hi.x && j >= lo.y && j <= hi.y);
+        let mut roots = Vec::new();
+        for j in lo.y..=hi.y {
+            // Each row slides by its own fraction of a cell to break up the grid.
+            let shift = Cell::new(0, j, seed).hash(79) * cell;
+            let z = (j as f32 + 0.5) * cell;
+            for i in lo.x - 1..=hi.x {
+                let x = (i as f32 + 0.5) * cell + shift;
+                let d = Vec2::new(x, z).distance(centre);
+                if d > radius { continue; }
+                // The ground proxy takes over across the outer 30%. This test
+                // depends on the new centre even when the placement is cached.
+                let key = Cell::new(i, j, seed);
+                if key.hash(81) < ((d - 0.7 * radius) / (0.3 * radius)).clamp(0., 1.) { continue; }
+                let root = self.placements.entry((i, j)).or_insert_with(|| {
+                    let ground = land.ground(x, z);
+                    let sparse = 0.5 + 0.8 * terrain_field::noised(Vec2::new(x, z) / 40., seed.wrapping_add(31)).x > grass(x, z);
+                    if sparse || ground.scree > 0.8 || ground.water > 0.02 || land.clearance(x, z) < cell { return None; }
+                    let smooth = |v: f32, a: f32, b: f32| ((v - a) / (b - a)).clamp(0., 1.);
+                    let cut = key.hash(78);
+                    if cut < smooth(ground.rock, 0.2, 0.6) || cut < smooth(ground.snow, 0.15, 0.45) { return None; }
+
+                    let dx = land.ground(x + 0.5, z).pos.y - land.ground(x - 0.5, z).pos.y;
+                    let dz = land.ground(x, z + 0.5).pos.y - land.ground(x, z - 0.5).pos.y;
+                    let up = Vec3::new(-dx, 1., -dz).normalize();
+                    let quarter = (key.hash(77) * 8.).floor() as u32 % 4;
+                    let variant = ((key.hash(80) * GRASS_VARIANT_SEEDS.len() as f32) as usize).min(GRASS_VARIANT_SEEDS.len() - 1);
+                    Some(WorldRoot {
+                        id: render::placement::instance_id(1000, i, j),
+                        placement: RootPlacement {
+                            pos: Vec3::new(x, ground.pos.y - 0.015, z),
+                            up,
+                            yaw: quarter as f32 * std::f32::consts::FRAC_PI_2,
+                            // Tilted cells must still meet along the fall line.
+                            scale: GRASS_CELL_OVERLAP / up.y.max(0.7),
+                            variant: variant_offset + variant,
+                        },
+                    })
+                });
+                if let Some(root) = *root { roots.push(root); }
+            }
+        }
+        roots
+    }
 }
 
 /// --diff-images A B HEAT: how far two captures differ, as JSON on stdout,
@@ -1490,10 +1506,34 @@ mod vegetation_tests {
         fn clearance(&self,x:f32,_z:f32)->f32 {if (2.0..4.0).contains(&x) {0.} else {100.}}
     }
     #[test]
+    fn grass_cache_reuses_samples_and_matches_fresh_streams() {
+        let mut cache = GrassCells::default();
+        let density_calls = std::cell::Cell::new(0);
+        let density = |_: f32, _: f32| { density_calls.set(density_calls.get() + 1); 0.8 };
+        let centres = [Vec2::ZERO, Vec2::ZERO, Vec2::new(-4., 3.), Vec2::new(500., -500.), Vec2::ZERO];
+        for (step, centre) in centres.into_iter().enumerate() {
+            density_calls.set(0);
+            let roots = cache.roots(1, &Slope, density, centre, 7, 12.);
+            let generated = density_calls.get();
+            let fresh = GrassCells::default().roots(1, &Slope, density, centre, 7, 12.);
+            assert_eq!(roots, fresh);
+            if step == 1 {
+                assert_eq!(generated, 0);
+            }
+            if centre == Vec2::new(-4., 3.) {
+                assert!(generated < (density_calls.get() - generated) / 2);
+            }
+            // Leaving a field drops even its bare cells.
+            assert!(cache.placements.len() <= 19 * 19);
+        }
+    }
+
+    #[test]
     fn streamed_grass_cells_keep_ids_terrain_orientation_and_catalog_offset() {
         let style=Style {grass:1.,..Style::default()};
-        let a=grass_cells(1,&Slope,|_,_|style.grass,Vec2::ZERO,7,12.);
-        let b=grass_cells(1,&Slope,|_,_|style.grass,Vec2::new(4.,0.),7,12.);
+        let mut cells = GrassCells::default();
+        let a=cells.roots(1,&Slope,|_,_|style.grass,Vec2::ZERO,7,12.);
+        let b=cells.roots(1,&Slope,|_,_|style.grass,Vec2::new(4.,0.),7,12.);
         assert!(!a.is_empty());let mut overlap=0;
         for root in &a {
             let p=root.placement;

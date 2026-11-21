@@ -60,6 +60,14 @@ through the normal cluster pipeline (cull, raster, shade, shadow). All split
 screen views share one pool. Surface shading lives in
 `shaders/terrain_surface.wgsl`.
 
+When a camera crosses the movement or rotation threshold, the CPU selects
+the patches required by the view and its sun shadows. It propagates neighbour
+splits from fine levels to coarse levels to balance the quadtree. The balanced
+leaves provide the edge and corner stitching masks directly. During small
+moves, the planner updates stitches on changed leaves and on their affected
+neighbours. A large change rebuilds the masks. Patch morphs use the geometry
+retired by that swap.
+
 ## Water at every distance
 
 Ditches, streams and rivers are carved into the height function, but a
@@ -96,6 +104,11 @@ same function on both sides (`wc_*` in WGSL):
   grow and what a distant forest looks like, so the far forest drawn into
   the terrain stands exactly where the near trees are. Sample the terrain at
   a cut above 0: `x / 0` in the terrain fade is not portable WGSL.
+- **Grass streaming.** Terrain Fly caches each sampled meadow cell, including
+  bare cells, for the current scene. Moving the field rechecks the gradual
+  handover to the ground proxy and samples newly encountered cells. Cells
+  outside the new bounding box are dropped. A seed, biome, or world rebuild
+  starts a fresh cache.
 - **Rule placement.** `render::placement` places objects (trees, boulders,
   trunks, flower patches, buildings) from rules on jittered grids. Each
   object has a stable `id` from its grid cell and seed, the same on every

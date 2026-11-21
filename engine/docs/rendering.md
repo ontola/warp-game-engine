@@ -133,7 +133,12 @@ outermost reaches past the drawn trees. Every level is cached like the shared ma
 damaged tiles in every level (one pass for all maps, `shadow_damage::MAX_MAPS`
 slots), projections scroll, and only damaged tiles redraw. Level 0 redraws
 every frame; outer levels keep collecting damage between their staggered
-redraws and redraw at once when they move. Their centres snap to whole tiles
+redraws and redraw at once when they move. On a compatible whole-tile
+translation, accumulated damage moves with the cached depth. Only exposed
+strips and dirty tiles need fresh shadows. An incompatible projection or an
+unaligned move with pending damage requires the full level. The optional
+map-texel dither also forces a full redraw on movement with pending damage.
+Outer level centres snap to whole tiles
 (32 texels: 3 m at level 1, 96 m at level 6), so that happens rarely. The
 outermost level stands in for the shared map in shading (binding 5,
 `shadow_view_proj`); past the outermost level the coarse transmittance applies as past the
