@@ -58,7 +58,8 @@ The room's light is baked ahead by `game-room bake-light` into
 page's one thread it took 44 s, with the file the room is built in 2 s.
 The buttons at the top switch games directly (`switch_game`) and go back
 to the room (`back_to_room`). `--bare` builds `examples/warp_web.rs`
-(crate `warp`) instead: the games and those buttons, no room.
+(crate `warp`) instead: the games and those buttons, no room. What is
+left to do is in [browser-handoff.md](browser-handoff.md).
 
 `--games a,b` picks which `games/` folders are served (default: the six
 Luau games); `games/library.json` is the shelf (titles and player counts
