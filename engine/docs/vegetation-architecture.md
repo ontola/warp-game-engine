@@ -11,6 +11,13 @@ paging, shared poses and shadow caching are integrated. Requested detail,
 upstream two-phase visibility, independent consumer detail and target performance
 are still unaccepted. There is no CPU near-tree pool.
 
+The camera splat pass holds one compact list of visible tree indices per view.
+Its count bounds all reads each frame. Only the ray marcher reserves tile
+candidate and interval storage. Brick occlusion tests the eight corners of the padded bound
+against the depth pyramid and keeps the brick as soon as a depth sample leaves
+it visible. Camera and sun splats use four-vertex strips.
+[Raster and culling measurements](log/2026-11-21-voxel-render-cull.md)
+
 ## 6 November (evening): near-pixel splats, urgent streaming
 
 Measured on the RTX 5070 Ti (Vulkan) after each round; numbers are GPU ms.

@@ -37,17 +37,20 @@ struct VolumeSample {
 // as foliage_voxel::Voxel::projected_area_along. Input direction is normalized
 // by the provider; its inverse-transform length scales sigma per world metre.
 fn volume_direction(d:vec3<f32>)->VolumeDirection {
-    let magnitude=abs(d);
-    var axes=array<u32,3>(0u,1u,2u);
-    if magnitude[axes[0]]<magnitude[axes[1]] {let swap=axes[0];axes[0]=axes[1];axes[1]=swap;}
-    if magnitude[axes[1]]<magnitude[axes[2]] {let swap=axes[1];axes[1]=axes[2];axes[2]=swap;}
-    if magnitude[axes[0]]<magnitude[axes[1]] {let swap=axes[0];axes[0]=axes[1];axes[1]=swap;}
-    let a=axes[0];let b=axes[1];let c=axes[2];
-    var pair=2u;
-    if min(a,b)==0u {pair=select(1u,0u,max(a,b)==1u);}
-    let diagonal=3u+pair*2u+select(0u,1u,d[a]*d[b]<0.0);
+    let m=abs(d);
+    let xy_max=max(m.x,m.y);
+    let xy_min=min(m.x,m.y);
+    let largest=max(xy_max,m.z);
+    let middle=max(xy_min,min(xy_max,m.z));
+    let smallest=min(xy_min,m.z);
+    // Stable x,y,z ordering for equal magnitudes. The smallest axis identifies
+    // the diagonal's plane: z gives XY, y gives XZ, and x gives YZ.
+    let a=select(select(1u,0u,m.x>=m.y),2u,m.z>xy_max);
+    let c=select(select(0u,1u,m.y<=m.x),2u,m.z<=xy_min);
+    let flipped=select(select(d.x*d.y<0.0,d.x*d.z<0.0,c==1u),d.y*d.z<0.0,c==0u);
+    let diagonal=3u+(2u-c)*2u+u32(flipped);
     let corner=9u+select(0u,2u,d.x*d.y<0.0)+select(0u,1u,d.x*d.z<0.0);
-    let weight=vec3<f32>(magnitude[a]-magnitude[b],(magnitude[b]-magnitude[c])*1.41421356,magnitude[c]*1.73205081);
+    let weight=vec3<f32>(largest-middle,(middle-smallest)*1.41421356,smallest*1.73205081);
     return VolumeDirection(vec3<u32>(a,diagonal,corner),weight/max(dot(weight,vec3<f32>(1.0)),1e-8));
 }
 fn volume_sigma(cell:VolumeCell,d:VolumeDirection)->f32 {

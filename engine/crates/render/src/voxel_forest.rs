@@ -19,6 +19,12 @@ const DRAW_OFFSET: u64 = 88;
 // draw arguments, queue length, first-pass splats, second-pass dispatch.
 const CULL_OFFSET: u64 = DRAW_OFFSET + 16;
 const COUNTER_BYTES: u64 = CULL_OFFSET + 40;
+// The compact raster list follows the counters: dispatch xyz, count, then tree indices.
+const SPLAT_LIST_HEADER_BYTES: u64 = 4 * 4;
+fn splat_list_bytes(tile_bytes: u64, trees: u32) -> u64 {
+    // Keep the existing per-view cap and the shader's direct-dispatch overflow path.
+    (SPLAT_LIST_HEADER_BYTES + u64::from(trees) * 4).min(tile_bytes)
+}
 // Additional opt-in scratch, per view, beyond the existing tile worklist.
 const INTERVAL_STREAM_BYTES:u64=32*1024*1024;
 const INTERVAL_STREAM_PIXEL_SLOTS:u32=262_144;
@@ -380,7 +386,7 @@ struct Targets {
     bind: PassSet<wgpu::BindGroup>,
     composite: wgpu::BindGroup,
     counters: wgpu::Buffer,
-    tiles: crate::foliage_select::Region,
+    clear_bytes: u64,
     jobs_at: u64,
     indirect: wgpu::Buffer,
     config: wgpu::Buffer,
@@ -548,10 +554,11 @@ fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgp
         label: Some("voxel splat raster"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
     let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("voxel splat raster"),
         source: wgpu::ShaderSource::Wgsl(include_str!("shaders/voxel_splat_raster.wgsl").into()) });
+    let primitive = wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, ..Default::default() };
     let pipeline = gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("voxel splat raster"), layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
-        primitive: Default::default(),
+        primitive,
         // Reversed Z, like the scene.
         depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: Some(true),
             depth_compare: Some(wgpu::CompareFunction::Greater), stencil: Default::default(), bias: Default::default() }),
@@ -563,7 +570,7 @@ fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgp
     let main_pipeline = gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("voxel splat raster (scene)"), layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
-        primitive: Default::default(),
+        primitive,
         depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: Some(true),
             depth_compare: Some(wgpu::CompareFunction::Greater), stencil: Default::default(), bias: Default::default() }),
         multisample: Default::default(),
@@ -578,7 +585,7 @@ fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgp
     let sun_raster = gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("voxel sun splat raster"), layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
-        primitive: Default::default(),
+        primitive,
         depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: Some(true),
             depth_compare: Some(wgpu::CompareFunction::Less), stencil: Default::default(),
             bias: wgpu::DepthBiasState { constant: 2, slope_scale: 2.0, clamp: 0.0 } }),
@@ -591,7 +598,7 @@ fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgp
     let sun_cached_raster = gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("voxel sun splat raster"), layout: Some(&cached_layout),
         vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
-        primitive: Default::default(),
+        primitive,
         depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: Some(true),
             depth_compare: Some(wgpu::CompareFunction::Less), stencil: Default::default(),
             bias: wgpu::DepthBiasState { constant: 2, slope_scale: 2.0, clamp: 0.0 } }),
@@ -1128,7 +1135,7 @@ impl VoxelRenderer {
     fn targets(&self, gpu: &Gpu, size: (u32, u32), selection: &wgpu::Buffer,
         temporal:Option<(&PassSet<wgpu::BindGroupLayout>,&wgpu::Buffer)>) -> Result<Targets,String> {
         let limits=gpu.device.limits();
-        let interval_stream=if self.integrator_options.global_intervals {
+        let interval_stream=if self.raster.is_none() && self.integrator_options.global_intervals {
             Some(interval_stream_layout(size,limits.max_buffer_size.min(u64::from(limits.max_storage_buffer_binding_size)))?)
         } else {None};
         let layer = gpu.device.create_texture(&wgpu::TextureDescriptor {
@@ -1156,16 +1163,19 @@ impl VoxelRenderer {
         let tile_count = u64::from(size.0.div_ceil(TILE)) * u64::from(size.1.div_ceil(TILE));
         if let Some(stream)=interval_stream {eprintln!("voxel interval target: {}x{} pixel_slots={} records={} total_worklist_bytes={}",
             size.0,size.1,stream.pixel_slots,stream.records,stream.bytes);}
-        let mask_bytes=if self.integrator_options.brick_visibility {tile_count*u64::from(self.count.div_ceil(32))*4} else {4};
-        if mask_bytes + COUNTER_BYTES > u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size) {
-            return Err("voxel brick visibility mask exceeds device limit".into());
-        }
-        // Counters (and the brick mask) from 0, then the tile candidates from
-        // the next 256-byte boundary: one atomic binding (VolumeConfig.layout).
-        let tiles_at = (COUNTER_BYTES + mask_bytes).div_ceil(256) * 256;
-        let tiles_bytes = tile_count * u64::from(CANDIDATES + 1) * 4;
+        let candidate_bytes = tile_count * u64::from(CANDIDATES + 1) * 4;
+        let (tiles_at, tiles_bytes, jobs_bytes, clear_bytes) = if self.raster.is_some() {
+            // Splat generation only consumes the entries appended since this header was reset.
+            let trees = if self.selection.is_some() { self.count - self.consumer_roots } else { 0 };
+            (COUNTER_BYTES, splat_list_bytes(candidate_bytes, trees), 0, COUNTER_BYTES + SPLAT_LIST_HEADER_BYTES)
+        } else {
+            let mask_bytes = if self.integrator_options.brick_visibility { tile_count * u64::from(self.count.div_ceil(32)) * 4 } else { 4 };
+            let tiles_at = (COUNTER_BYTES + mask_bytes).div_ceil(256) * 256;
+            let jobs_bytes = interval_stream.map_or((4 + tile_count) * 4, |s| s.bytes);
+            let clear_bytes = tiles_at + candidate_bytes + if self.active_tiles { 16 } else { 0 };
+            (tiles_at, candidate_bytes, jobs_bytes, clear_bytes)
+        };
         let jobs_at = tiles_at + tiles_bytes;
-        let jobs_bytes = interval_stream.map_or((4+tile_count)*4, |s|s.bytes);
         if jobs_at + jobs_bytes > u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size) {
             return Err("voxel worklists exceed the device binding limit".into());
         }
@@ -1177,7 +1187,6 @@ impl VoxelRenderer {
                 | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let tiles = crate::foliage_select::Region::new(counters.clone(), tiles_at, tiles_bytes);
         // Header: dispatch xyz, active count; then one tile index per job.
         // Keep indirect arguments separate: the integration pass reads jobs
         // as storage, which cannot alias an indirect-dispatch argument buffer.
@@ -1296,7 +1305,7 @@ impl VoxelRenderer {
             bind,
             composite,
             counters,
-            tiles,
+            clear_bytes,
             jobs_at,
             indirect,
             config,
@@ -1326,13 +1335,12 @@ impl VoxelRenderer {
     }
     fn select_splat_trees(&self, encoder:&mut wgpu::CommandEncoder, target:&Targets,
         view:&wgpu::BindGroup, pipeline:&wgpu::ComputePipeline) {
-        encoder.clear_buffer(&target.tiles.buffer,target.tiles.offset,Some(16));
         {
             let mut pass=encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {label:Some("voxel visible tree list"),timestamp_writes:None});
             pass.set_pipeline(pipeline);pass.set_bind_group(0,&self.owner_bind,&[]);pass.set_bind_group(1,view,&[]);pass.set_bind_group(2,&target.bind[Emit],&[]);
             let groups=(self.count-self.consumer_roots).div_ceil(64);pass.dispatch_workgroups(groups.min(65535),groups.div_ceil(65535).max(1),1);
         }
-        encoder.copy_buffer_to_buffer(&target.tiles.buffer,target.tiles.offset,&target.indirect,0,12);
+        encoder.copy_buffer_to_buffer(&target.counters, COUNTER_BYTES, &target.indirect, 0, 12);
     }
     pub(crate) fn render(
         &self,
@@ -1377,21 +1385,14 @@ impl VoxelRenderer {
         // rest only resolves and composites what it rastered.
         let splats_done = stage == Stage::Rest && target.splat.is_some();
         if !splats_done {
-        encoder.clear_buffer(&target.counters, 0, Some(target.tiles.offset));
-        // Counts and slots share a buffer; clearing it preserves a bounded
-        // zero-allocation append path and prevents old counts surviving views.
-        target.tiles.clear(encoder);
-        if self.active_tiles {
-            encoder.clear_buffer(&target.counters, target.jobs_at, Some(16));
-        }
-        if let Some(stream)=target.interval_stream {
-            let bytes=if self.integrator_options.brick_visibility {16+u64::from(stream.pixel_slots)*8}else{16};
-            encoder.clear_buffer(&target.counters,target.jobs_at + u64::from(stream.header_word)*4,Some(bytes));
-        }
+            encoder.clear_buffer(&target.counters, 0, Some(target.clear_bytes));
+            if let Some(stream) = target.interval_stream {
+                let bytes = if self.integrator_options.brick_visibility { 16 + u64::from(stream.pixel_slots) * 8 } else { 16 };
+                encoder.clear_buffer(&target.counters, target.jobs_at + u64::from(stream.header_word) * 4, Some(bytes));
+            }
         }
         if let (Some(raster), Some(splat)) = (&self.raster, &target.splat) {
             if !splats_done {
-            encoder.clear_buffer(&splat.draw, DRAW_OFFSET, Some(16));
             let selection=temporal_pipelines.and_then(|p|p.selection.as_ref()).or(self.selection.as_ref());
             if let Some(p)=selection {
                 if let Some((q,i))=times[0].filter(|_|encoder_times) {encoder.write_timestamp(q,i);}
@@ -2178,6 +2179,15 @@ mod tests {
             assert_eq!(actual,indices.map(|i|super::selection_unpack(words[i])),"{lookup}");
         }
     }
+    #[test]
+    fn raster_worklist_fits_one_index_per_tree_and_keeps_the_view_cap() {
+        let tile_bytes = 240 * 135 * u64::from(super::CANDIDATES + 1) * 4;
+        assert_eq!(super::splat_list_bytes(tile_bytes, 0), 16);
+        assert_eq!(super::splat_list_bytes(tile_bytes, 4096), 16 + 4096 * 4);
+        let one_tile = u64::from(super::CANDIDATES + 1) * 4;
+        assert_eq!(super::splat_list_bytes(one_tile, u32::MAX), one_tile);
+    }
+
     #[test]
     fn raster_budget_accounts_for_headers_and_device_capacity() {
         let cap=super::bounded_splat_capacity;

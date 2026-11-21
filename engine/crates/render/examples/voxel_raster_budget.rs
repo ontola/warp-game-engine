@@ -9,7 +9,7 @@ fn main()->Result<(),String>{
  if !gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY){return Err("GPU timestamps required".into());}
  let shader=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("production voxel raster probe"),source:wgpu::ShaderSource::Wgsl(include_str!("../src/shaders/voxel_splat_raster.wgsl").into())});
  let pipeline=gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {label:None,layout:None,
-  vertex:wgpu::VertexState {module:&shader,entry_point:Some("vs"),compilation_options:Default::default(),buffers:&[]},primitive:Default::default(),
+  vertex:wgpu::VertexState {module:&shader,entry_point:Some("vs"),compilation_options:Default::default(),buffers:&[]},primitive:wgpu::PrimitiveState {topology:wgpu::PrimitiveTopology::TriangleStrip,..Default::default()},
   depth_stencil:Some(wgpu::DepthStencilState {format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:Some(true),depth_compare:Some(wgpu::CompareFunction::Greater),stencil:Default::default(),bias:Default::default()}),multisample:Default::default(),
   fragment:Some(wgpu::FragmentState {module:&shader,entry_point:Some("fs_main"),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState {format:wgpu::TextureFormat::R32Uint,blend:None,write_mask:wgpu::ColorWrites::ALL}),Some(wgpu::ColorTargetState {format:wgpu::TextureFormat::R32Uint,blend:None,write_mask:wgpu::ColorWrites::ALL})]}),multiview_mask:None,cache:None});
  let (w,h)=(1920,1080);
@@ -34,7 +34,7 @@ fn main()->Result<(),String>{
    let mut enc=gpu.device.create_command_encoder(&Default::default());
    {let attachments=[Some(wgpu::RenderPassColorAttachment {view:&vv,resolve_target:None,depth_slice:None,ops:wgpu::Operations {load:wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),store:wgpu::StoreOp::Store}}),Some(wgpu::RenderPassColorAttachment {view:&iv,resolve_target:None,depth_slice:None,ops:wgpu::Operations {load:wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),store:wgpu::StoreOp::Store}})];
     let mut pass=enc.begin_render_pass(&wgpu::RenderPassDescriptor {label:None,color_attachments:&attachments,depth_stencil_attachment:Some(wgpu::RenderPassDepthStencilAttachment {view:&dv,depth_ops:Some(wgpu::Operations {load:wgpu::LoadOp::Clear(0.),store:wgpu::StoreOp::Store}),stencil_ops:None}),timestamp_writes:Some(wgpu::RenderPassTimestampWrites {query_set:&queries,beginning_of_pass_write_index:Some(0),end_of_pass_write_index:Some(1)}),occlusion_query_set:None,multiview_mask:None});
-    pass.set_pipeline(&pipeline);pass.set_bind_group(0,&bind,&[]);pass.draw(0..6,0..count);
+    pass.set_pipeline(&pipeline);pass.set_bind_group(0,&bind,&[]);pass.draw(0..4,0..count);
    }
    enc.resolve_query_set(&queries,0..2,&resolved,0);enc.copy_buffer_to_buffer(&resolved,0,&read,0,16);gpu.queue.submit([enc.finish()]);
    read.slice(..).map_async(wgpu::MapMode::Read,|r|r.unwrap());gpu.wait();let bytes=read.slice(..).get_mapped_range().map_err(|e|e.to_string())?;let stamps:&[u64]=bytemuck::cast_slice(&bytes);let ms=(stamps[1]-stamps[0])as f64*gpu.queue.get_timestamp_period()as f64/1e6;drop(bytes);read.unmap();if frame>=3 {samples.push(ms);}
@@ -46,7 +46,7 @@ fn main()->Result<(),String>{
    let id=u32::from_le_bytes(id.try_into().unwrap());let v=u32::from_le_bytes(v.try_into().unwrap());let z=f32::from_le_bytes(z.try_into().unwrap());
    if id==0 {assert_eq!(v,0);assert_eq!(z,0.);}else{assert!(id<=count);assert_eq!(v,0x80000000|id);assert!((z-expected_z).abs()<1e-6);}
   }
-  let result=json!({"repeat":repeat,"nominal_diameter_px":diameter,"submitted_splats":count,"submitted_triangles":count as u64*2,"submitted_vertices":count as u64*6,"repeated_layers":count.div_ceil(1048576),"visible_pixels":visible,"median_gpu_ms":samples[6],"samples_ms":samples});println!("{result}");results.push(result);
+  let result=json!({"repeat":repeat,"nominal_diameter_px":diameter,"submitted_splats":count,"submitted_triangles":count as u64*2,"submitted_vertices":count as u64*4,"repeated_layers":count.div_ceil(1048576),"visible_pixels":visible,"median_gpu_ms":samples[6],"samples_ms":samples});println!("{result}");results.push(result);
   if repeat==0 && count==1048576 {let rgba=raw.chunks_exact(4).flat_map(|b|{let id=u32::from_le_bytes(b.try_into().unwrap());if id==0 {[15,15,15]}else{[80+(id%150)as u8,140,60]}}).collect::<Vec<_>>();image::save_buffer_with_format(format!("{out}/support-{diameter}.jpg"),&rgba,w,h,image::ColorType::Rgb8,image::ImageFormat::Jpeg).map_err(|e|e.to_string())?;}
  }}}
  std::fs::write(format!("{out}/results.json"),serde_json::to_vec_pretty(&json!({"gpu":gpu.info.name,"viewport":[w,h],"scope":"production vs/fs_main raster only, including target clears; excludes splat generation, selection, shading, shadows and reconstruction; synthetic overlap, not forest quality or game FPS","rows":results})).unwrap()).map_err(|e|e.to_string())?;Ok(())

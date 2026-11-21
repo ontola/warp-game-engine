@@ -1091,7 +1091,7 @@ fn voxel_integrate_pixel(id:vec3<u32>) {
 const VOLUME_SPLAT_HEADER: u32 = 12u;
 const VOLUME_SPLAT_NONE: u32 = 0xffffffffu;
 // One quad per splat (voxel_splat_raster.wgsl).
-const VOLUME_SPLAT_VERTICES: u32 = 6u;
+const VOLUME_SPLAT_VERTICES: u32 = 4u;
 // Splats fainter than this are thinned (volume_splat_append). 0.5 instead
 // of 0.25 halved the camera splat raster (terrain_fly high60 14 -> 7.6 ms,
 // Sideways' mixed forest likewise) with no visible change after TAA.
@@ -1325,6 +1325,21 @@ fn volume_hzb_view()->mat4x4<f32> {
         bitcast<vec4<f32>>(volume_splats[VOLUME_HZB_VIEW+2u]),bitcast<vec4<f32>>(volume_splats[VOLUME_HZB_VIEW+3u]));
 }
 
+struct VolumeBrickColumn {
+    min_xy:vec2<f32>,
+    max_xyz:vec3<f32>,
+    crosses_near:bool,
+}
+fn volume_brick_column(xy:vec2<f32>,lo:f32,hi:f32,view_proj:mat4x4<f32>)->VolumeBrickColumn {
+    let a=view_proj*vec4<f32>(xy,lo,1.0);
+    let b=view_proj*vec4<f32>(xy,hi,1.0);
+    // Bricks touching the near plane stay visible, including corners behind the eye.
+    if min(a.w,b.w)<=0.0001 || a.z>=a.w || b.z>=b.w {
+        return VolumeBrickColumn(vec2<f32>(0.0),vec3<f32>(0.0),true);
+    }
+    let na=a.xyz/a.w;let nb=b.xyz/b.w;
+    return VolumeBrickColumn(min(na.xy,nb.xy),max(na,nb),false);
+}
 fn volume_brick_hidden(index:u32, level:u32, packed:u32, view_proj:mat4x4<f32>)->bool {
     let tree=volume_trees[index];
     let grid=volume_level_origin(tree.identity.y+level);
@@ -1339,15 +1354,17 @@ fn volume_brick_hidden(index:u32, level:u32, packed:u32, view_proj:mat4x4<f32>)-
     // past that but stay under a pixel, inside the pyramid's 2-texel margin.
     let padding=2.0*grid.w*length(vec3<f32>(owner.r0.x,owner.r1.x,owner.r2.x));
     let half=1.5*grid.w*vec3<f32>(dot(abs(owner.r0.xyz),vec3<f32>(1.0)),dot(abs(owner.r1.xyz),vec3<f32>(1.0)),dot(abs(owner.r2.xyz),vec3<f32>(1.0)))+padding;
-    var ndc_min=vec2<f32>(1e30);var ndc_max=vec2<f32>(-1e30);var nearest=0.0;
-    for(var i=0u;i<8u;i++) {
-        let world=vec4<f32>(world_centre+select(-half,half,vec3<bool>((i&1u)!=0u,(i&2u)!=0u,(i&4u)!=0u)),1.0);
-        let clip=view_proj*world;
-        // Near-plane crossings and degenerate projections are always visible.
-        if clip.w<=0.0001 || clip.z>=clip.w {return false;}
-        let ndc=clip.xyz/clip.w;
-        ndc_min=min(ndc_min,ndc.xy);ndc_max=max(ndc_max,ndc.xy);nearest=max(nearest,ndc.z);
-    }
+    // Project the four z-aligned edges independently so adjacent corners
+    // share their x/y terms in the matrix multiply.
+    let lo=world_centre-half;let hi=world_centre+half;
+    let a=volume_brick_column(lo.xy,lo.z,hi.z,view_proj);
+    let b=volume_brick_column(vec2<f32>(hi.x,lo.y),lo.z,hi.z,view_proj);
+    let c=volume_brick_column(vec2<f32>(lo.x,hi.y),lo.z,hi.z,view_proj);
+    let d=volume_brick_column(hi.xy,lo.z,hi.z,view_proj);
+    if a.crosses_near || b.crosses_near || c.crosses_near || d.crosses_near {return false;}
+    let ndc_min=min(min(a.min_xy,b.min_xy),min(c.min_xy,d.min_xy));
+    let high_ndc=max(max(a.max_xyz,b.max_xyz),max(c.max_xyz,d.max_xyz));
+    let ndc_max=high_ndc.xy;let nearest=max(high_ndc.z,0.0);
     if any(ndc_min>vec2<f32>(1.0)) || any(ndc_max<vec2<f32>(-1.0)) {return true;}
     let size=textureDimensions(volume_brick_hzb,0);
     let low=clamp(vec2<f32>(ndc_min.x*0.5+0.5,0.5-ndc_max.y*0.5)*vec2<f32>(size)-2.0,vec2<f32>(0.0),vec2<f32>(size-1u));
@@ -1358,12 +1375,12 @@ fn volume_brick_hidden(index:u32, level:u32, packed:u32, view_proj:mat4x4<f32>)-
     // Shift-and-clamp matches odd-size mip folding, unlike proportional UV.
     let first=min(vec2<u32>(floor(low))>>vec2<u32>(mip),dims-1u);
     let last=min(vec2<u32>(ceil(high))>>vec2<u32>(mip),dims-1u);
-    var farthest=1.0;
+    // Reversed minimum depth. A single sample at or behind the brick keeps it visible.
+    let bound=nearest+0.00001;
     for(var y=first.y;y<=last.y;y++) {for(var x=first.x;x<=last.x;x++) {
-        farthest=min(farthest,textureLoad(volume_brick_hzb,vec2<i32>(i32(x),i32(y)),i32(mip)).x);
+        if textureLoad(volume_brick_hzb,vec2<i32>(i32(x),i32(y)),i32(mip)).x<=bound {return false;}
     }}
-    // Reversed minimum depth: any sky hole (0) prevents rejection.
-    return nearest+0.00001<farthest;
+    return true;
 }
 
 fn volume_splat_wanted(index:u32)->bool {
