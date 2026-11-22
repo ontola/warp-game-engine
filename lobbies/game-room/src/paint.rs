@@ -495,7 +495,7 @@ impl Prompt {
 /// or None where the keyboard has none.
 pub fn key_cap(button: &str) -> Option<&'static str> {
     Some(match button.to_ascii_uppercase().as_str() {
-        "A" => "Space", "X" => "R", "Y" => "F", "LB" => "Q", "RB" => "E", "BACK" => "Tab", "START" => "Enter",
+        "A" => "Space", "B" => "Backspace", "X" => "R", "Y" => "F", "LB" => "Q", "RB" => "E", "BACK" => "Tab", "START" => "Enter", "R3" => "C",
         _ => return None,
     })
 }

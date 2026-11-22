@@ -8,9 +8,10 @@ use std::collections::HashSet;
 use winit::event::{ElementState, MouseButton};
 use winit::keyboard::KeyCode;
 
-/// Buttons as a bit set. Keyboard: Space South, Shift/RMB East, R West,
-/// F North, LMB RightTrigger, Q LeftShoulder, E RightShoulder, Tab Select,
-/// Enter Start, arrows and the D-pad Up/Down/Left/Right.
+/// Buttons as a bit set. Keyboard: Space South, Backspace/RMB East, R West,
+/// F North, LMB RightTrigger, Q/Ctrl LeftShoulder, E/Shift RightShoulder,
+/// C RightStick, Tab Select, Enter Start, arrows and the D-pad
+/// Up/Down/Left/Right.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Buttons(pub u32);
 
@@ -102,8 +103,10 @@ fn key_button(k: KeyCode) -> u32 {
     match k {
         KeyCode::Space => Buttons::SOUTH,
         KeyCode::ShiftLeft | KeyCode::ShiftRight => Buttons::RIGHT_SHOULDER,
+        KeyCode::Backspace => Buttons::EAST,
         KeyCode::KeyR => Buttons::WEST,
         KeyCode::KeyF => Buttons::NORTH,
+        KeyCode::KeyC => Buttons::RIGHT_STICK,
         KeyCode::KeyQ | KeyCode::ControlLeft | KeyCode::ControlRight => Buttons::LEFT_SHOULDER,
         KeyCode::KeyE => Buttons::RIGHT_SHOULDER,
         KeyCode::Tab => Buttons::SELECT,
