@@ -823,6 +823,14 @@ mod tests {
         let mut scene = render::Scene::default();
         assert_eq!(h.attach(&mut scene, 1 << 31).unwrap(), None);
         assert_eq!(scene.skinning.actors.len(), 66);
+        // The face and eyes of every instance share one recipe per identity.
+        // A CPU scene owns only previews, even after all 66 actors are attached.
+        assert_eq!(scene.generated_textures.len(), 2);
+        for &layer in scene.generated_textures.keys() {
+            let face = &scene.textures[layer as usize];
+            assert_eq!(face.rgba.dimensions(), (64, 64));
+            assert_eq!(face.normal.as_ref().unwrap().dimensions(), (64, 64));
+        }
         // A small device cuts every pool instead of failing.
         let mut h = Humans::new(&cfg);
         let mut scene = render::Scene::default();

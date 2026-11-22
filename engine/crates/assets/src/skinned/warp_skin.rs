@@ -115,6 +115,7 @@ pub(super) fn noise(p: Vec3, cell: f32, seed: u32) -> f32 {
 }
 
 /// Where on the head a texel lies.
+#[derive(Clone, Copy)]
 struct Texel {
     /// Metres from the point between the eyes: x to the person's left, y
     /// up, z out of the face.
@@ -125,10 +126,10 @@ struct Texel {
     lid: f32,
 }
 
-/// Rasterize the face triangles into the texture: the head position and
-/// normal under every texel.
-fn unwrap(body: &[BodyVertex], indices: &[u32], eyes: Vec3, size: usize) -> Vec<Option<Texel>> {
-    let mut texels: Vec<Option<Texel>> = (0..size * size).map(|_| None).collect();
+/// Rasterize a band in global UV coordinates, retaining triangle order at overlaps.
+fn unwrap_rows(body: &[BodyVertex], indices: &[u32], eyes: Vec3, size: usize, first: usize, texels: &mut [Option<Texel>]) {
+    texels.fill(None);
+    let end = first + texels.len() / size;
     let s = size as f32;
     for tri in indices.chunks_exact(3) {
         let v = [0, 1, 2].map(|k| &body[tri[k] as usize]);
@@ -142,7 +143,7 @@ fn unwrap(body: &[BodyVertex], indices: &[u32], eyes: Vec3, size: usize) -> Vec<
         }
         let lo = uv[0].min(uv[1]).min(uv[2]).floor().max(Vec2::ZERO);
         let hi = uv[0].max(uv[1]).max(uv[2]).ceil().min(Vec2::splat(s - 1.));
-        for y in lo.y as usize..=hi.y as usize {
+        for y in (lo.y as usize).max(first)..(hi.y as usize + 1).min(end) {
             for x in lo.x as usize..=hi.x as usize {
                 let q = Vec2::new(x as f32, y as f32);
                 let w0 = (uv[1] - q).perp_dot(uv[2] - q) / area;
@@ -154,7 +155,7 @@ fn unwrap(body: &[BodyVertex], indices: &[u32], eyes: Vec3, size: usize) -> Vec<
                     continue;
                 }
                 let inside = w0 >= 0. && w1 >= 0. && w2 >= 0.;
-                let slot = &mut texels[y * size + x];
+                let slot = &mut texels[(y - first) * size + x];
                 if slot.is_some() && !inside {
                     continue;
                 }
@@ -165,7 +166,31 @@ fn unwrap(body: &[BodyVertex], indices: &[u32], eyes: Vec3, size: usize) -> Vec<
             }
         }
     }
-    texels
+}
+
+/// The lash mask is relative to the greatest *sampled* lid displacement.
+/// Only rows covered by a moving lid can contain that maximum. Rasterize
+/// all triangles in those rows so a UV seam has the same winner as in the bake.
+fn lid_travel(body: &[BodyVertex], indices: &[u32], eyes: Vec3, size: usize, scratch: &mut [Option<Texel>]) -> f32 {
+    let (mut first, mut end) = (size, 0);
+    for tri in indices.chunks_exact(3) {
+        let vertices = [0, 1, 2].map(|k| &body[tri[k] as usize]);
+        if vertices[0].material == FACE && vertices.iter().any(|v| v.lid_closure != Vec3::ZERO) {
+            for v in vertices {
+                let y = v.uv[1] * size as f32 - 0.5;
+                first = first.min(y.floor() as usize);
+                end = end.max((y.ceil() as usize + 1).min(size));
+            }
+        }
+    }
+    let rows = scratch.len() / size;
+    let mut longest = 1e-6f32;
+    for y in (first..end).step_by(rows) {
+        let band = &mut scratch[..rows.min(end - y) * size];
+        unwrap_rows(body, indices, eyes, size, y, band);
+        longest = band.iter().flatten().map(|t| t.lid).fold(longest, f32::max);
+    }
+    longest
 }
 
 /// Relief in metres (negative into the skin) and what the albedo is
@@ -572,93 +597,138 @@ pub(super) fn face(
     brows: Brows,
     size: usize,
 ) -> Maps {
-    let texels = unwrap(body, indices, eyes, size);
-    let build = Build::of(body, eyes);
-    let lid_travel = texels.iter().flatten().map(|t| t.lid).fold(1e-6f32, f32::max);
-    let mut height = vec![0f32; size * size];
-    let mut albedo = vec![[0u8; 4]; size * size];
-    let rows = size.div_ceil(render::par::workers());
-    render::par::scope(|scope| {
-        for ((k, heights), colors) in height
-            .chunks_mut(rows * size)
-            .enumerate()
-            .zip(albedo.chunks_mut(rows * size))
-        {
-            let texels = &texels;
-            scope.spawn(move || {
-                for (i, (h, out)) in heights.iter_mut().zip(colors).enumerate() {
-                    let (x, y) = (i % size, k * rows + i / size);
-                    let (u, v) = ((x as f32 + 0.5) / size as f32, (y as f32 + 0.5) / size as f32);
-                    let mut painted = bilinear(base, u, v);
-                    let mut color = Vec3::new(painted[0], painted[1], painted[2]);
-                    if let Some(t) = &texels[y * size + x] {
-                        let lips = lip(painted.map(|c| c as u8), cheek);
-                        let (relief, tint) = skin(t, lips, traits, build);
-                        *h = relief;
-                        color *= tint;
-                        // Under the hair the scalp is seen through it, in
-                        // its shade.
-                        // Through short hair the skin still shows; under
-                        // longer hair it does not, and what is seen there
-                        // is lit as hair: no sheen of skin in the sun.
-                        let hair = cut.grows(t.p);
-                        color = color.lerp(under_hair * 255., 0.7 * hair * cut.inside(t.p, 0., 0.016));
-                        // Deeper in, the hair stands over it: darker, the
-                        // more the less light the hair lets through.
-                        let deep = cut.under(t.p) * smooth(0.005, 0.03, cut.top);
-                        color = color.lerp(under_hair * 255. * (1. - shade), deep);
-                        painted[3] *= 1. - cut.under(t.p) * smooth(0.002, 0.012, cut.top);
-                        color = color.lerp(brows.color * 255., brow(t.p, &brows, traits.seed));
-                        // Lashes: a dark, broken line along the rim of the
-                        // upper lid, which travels furthest in a blink.
-                        let rim = smooth(0.80, 0.96, t.lid / lid_travel);
-                        let lashes = 0.55 + 0.45 * smooth(-0.3, 0.3, noise(Vec3::new(t.p.x / 0.0005, 0., 0.), 1., traits.seed ^ 0x1a5));
-                        color = color.lerp(Vec3::new(14., 10., 9.), 0.9 * rim * lashes);
-                    }
-                    let [r, g, b] = color.to_array().map(|c| c.clamp(0., 255.) as u8);
-                    *out = [r, g, b, painted[3] as u8];
+    let paint = FacePaint { base, cheek, traits, under_hair, shade, cut, brows, build: Build::of(body, eyes) };
+    paint.bake(body, indices, eyes, size, 64)
+}
+
+struct FacePaint<'a> {
+    base: &'a RgbaImage,
+    cheek: Vec3,
+    traits: Traits,
+    under_hair: Vec3,
+    shade: f32,
+    cut: &'a super::warp_hair::Cut,
+    brows: Brows,
+    build: Build,
+}
+
+impl FacePaint<'_> {
+    fn bake(&self, body: &[BodyVertex], indices: &[u32], eyes: Vec3, size: usize, strip_rows: usize) -> Maps {
+        // A one-row halo at either end supplies the central differences for
+        // the normals. All workers share these two buffers, even in large pools.
+        let capacity = (strip_rows + 2).min(size) * size;
+        let mut points = vec![None; capacity];
+        let lid_travel = lid_travel(body, indices, eyes, size, &mut points);
+        let mut heights = vec![0f32; capacity];
+        let mut albedo = RgbaImage::new(size as u32, size as u32);
+        let mut normal = RgbaImage::from_pixel(size as u32, size as u32, image::Rgba([128, 128, 255, 255]));
+        let workers = render::par::workers();
+        for start in (0..size).step_by(strip_rows) {
+            let stop = (start + strip_rows).min(size);
+            let first = start.saturating_sub(1);
+            let end = (stop + 1).min(size);
+            let len = (end - first) * size;
+            let texels = &mut points[..len];
+            unwrap_rows(body, indices, eyes, size, first, texels);
+            let colors = &mut albedo.as_mut()[first * size * 4..end * size * 4];
+            let per_worker = (end - first).div_ceil(workers) * size;
+            render::par::scope(|scope| {
+                for (k, ((texels, heights), colors)) in texels.chunks(per_worker)
+                    .zip(heights[..len].chunks_mut(per_worker))
+                    .zip(colors.chunks_mut(per_worker * 4))
+                    .enumerate()
+                {
+                    scope.spawn(move || {
+                        for (i, ((texel, h), rgba)) in texels.iter().zip(heights).zip(colors.chunks_exact_mut(4)).enumerate() {
+                            let at = k * per_worker + i;
+                            let (color, height) = self.sample(at % size, first + at / size, size, texel.as_ref(), lid_travel);
+                            rgba.copy_from_slice(&color);
+                            *h = height;
+                        }
+                    });
                 }
             });
-        }
-    });
-    // Tangent-space normals from the relief: the slope along u and along
-    // the image's rows, over the true distance between neighbouring texels.
-    let mut normal = RgbaImage::from_pixel(size as u32, size as u32, image::Rgba([128, 128, 255, 255]));
-    for y in 1..size - 1 {
-        for x in 1..size - 1 {
-            let at = |x: usize, y: usize| texels[y * size + x].as_ref().map(|t| (t.p, height[y * size + x]));
-            let slope = |a: Option<(Vec3, f32)>, b: Option<(Vec3, f32)>| match (a, b) {
-                (Some((pa, ha)), Some((pb, hb))) => {
-                    let d = pa.distance(pb);
-                    // Neighbours in the texture that are far apart on the
-                    // head lie across a seam.
-                    if d > 1e-6 && d < 0.004 { (hb - ha) / d } else { 0. }
+            for y in start.max(1)..stop.min(size - 1) {
+                for x in 1..size - 1 {
+                    let i = (y - first) * size + x;
+                    normal.put_pixel(x as u32, y as u32, surface_normal(texels, &heights, i, size, self.cut));
                 }
-                _ => 0.,
-            };
-            let du = slope(at(x - 1, y), at(x + 1, y));
-            let dv = slope(at(x, y - 1), at(x, y + 1));
-            // t = dP/du, b = -dP/dv (shade.wgsl `perturb`).
-            let n = Vec3::new(-du, dv, 1.).normalize();
-            let [r, g, b] = n.to_array().map(|c| ((c * 0.5 + 0.5) * 255.).round() as u8);
-            // Alpha: how much of the skin's sheen shows (the shader's
-            // `gloss`). None where hair stands over it: that scalp is in
-            // the hair's shade and reflects neither sun nor sky. At the
-            // hairline the skin is in plain view and still skin.
-            let bare = texels[y * size + x].as_ref().map_or(1., |t| 1. - cut.under(t.p) * smooth(0.002, 0.012, cut.top));
-            normal.put_pixel(x as u32, y as u32, image::Rgba([r, g, b, (bare * 255.) as u8]));
+            }
         }
+        paint_eye(&mut albedo, self.traits);
+        Maps { albedo, normal }
     }
-    let mut albedo = RgbaImage::from_fn(size as u32, size as u32, |x, y| {
-        image::Rgba(albedo[y as usize * size + x as usize])
-    });
-    paint_eye(&mut albedo, traits);
-    Maps { albedo, normal }
+
+    fn sample(&self, x: usize, y: usize, size: usize, texel: Option<&Texel>, lid_travel: f32) -> ([u8; 4], f32) {
+        let Self { base, cheek, traits, under_hair, shade, cut, brows, build } = *self;
+        let mut height = 0.;
+        let (u, v) = ((x as f32 + 0.5) / size as f32, (y as f32 + 0.5) / size as f32);
+        let mut painted = bilinear(base, u, v);
+        let mut color = Vec3::new(painted[0], painted[1], painted[2]);
+        if let Some(t) = texel {
+            let lips = lip(painted.map(|c| c as u8), cheek);
+            let (relief, tint) = skin(t, lips, traits, build);
+            height = relief;
+            color *= tint;
+            // Under the hair the scalp is seen through it, in
+            // its shade.
+            // Through short hair the skin still shows; under
+            // longer hair it does not, and what is seen there
+            // is lit as hair: no sheen of skin in the sun.
+            let hair = cut.grows(t.p);
+            color = color.lerp(under_hair * 255., 0.7 * hair * cut.inside(t.p, 0., 0.016));
+            // Deeper in, the hair stands over it: darker, the
+            // more the less light the hair lets through.
+            let deep = cut.under(t.p) * smooth(0.005, 0.03, cut.top);
+            color = color.lerp(under_hair * 255. * (1. - shade), deep);
+            painted[3] *= 1. - cut.under(t.p) * smooth(0.002, 0.012, cut.top);
+            color = color.lerp(brows.color * 255., brow(t.p, &brows, traits.seed));
+            // Lashes: a dark, broken line along the rim of the
+            // upper lid, which travels furthest in a blink.
+            let rim = smooth(0.80, 0.96, t.lid / lid_travel);
+            let lashes = 0.55 + 0.45 * smooth(-0.3, 0.3, noise(Vec3::new(t.p.x / 0.0005, 0., 0.), 1., traits.seed ^ 0x1a5));
+            color = color.lerp(Vec3::new(14., 10., 9.), 0.9 * rim * lashes);
+        }
+        let [r, g, b] = color.to_array().map(|c| c.clamp(0., 255.) as u8);
+        ([r, g, b, painted[3] as u8], height)
+    }
+}
+
+/// Tangent-space normal from relief along u and the image rows, using the
+/// true distance between neighbouring texels on the face.
+fn surface_normal(texels: &[Option<Texel>], height: &[f32], i: usize, size: usize, cut: &super::warp_hair::Cut) -> image::Rgba<u8> {
+    let at = |i: usize| texels[i].as_ref().map(|t| (t.p, height[i]));
+    let slope = |a: Option<(Vec3, f32)>, b: Option<(Vec3, f32)>| match (a, b) {
+        (Some((pa, ha)), Some((pb, hb))) => {
+            let d = pa.distance(pb);
+            // Neighbours in the texture that are far apart on the
+            // head lie across a seam.
+            if d > 1e-6 && d < 0.004 { (hb - ha) / d } else { 0. }
+        }
+        _ => 0.,
+    };
+    let du = slope(at(i - 1), at(i + 1));
+    let dv = slope(at(i - size), at(i + size));
+    // t = dP/du, b = -dP/dv (shade.wgsl `perturb`).
+    let n = Vec3::new(-du, dv, 1.).normalize();
+    let [r, g, b] = n.to_array().map(|c| ((c * 0.5 + 0.5) * 255.).round() as u8);
+    // Alpha: how much of the skin's sheen shows (the shader's
+    // `gloss`). None where hair stands over it: that scalp is in
+    // the hair's shade and reflects neither sun nor sky. At the
+    // hairline the skin is in plain view and still skin.
+    let bare = texels[i].as_ref().map_or(1., |t| 1. - cut.under(t.p) * smooth(0.002, 0.012, cut.top));
+    image::Rgba([r, g, b, (bare * 255.) as u8])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn unwrap(body: &[BodyVertex], indices: &[u32], eyes: Vec3, size: usize) -> Vec<Option<Texel>> {
+        let mut texels = vec![None; size * size];
+        unwrap_rows(body, indices, eyes, size, 0, &mut texels);
+        texels
+    }
 
     fn fixture(seed: u64) -> (Vec<BodyVertex>, Vec<u32>, Vec3) {
         let person = render::humans::Instance::person(seed, Vec3::ZERO, 0., &Default::default());
@@ -695,10 +765,18 @@ mod tests {
         let (body, indices, eyes) = fixture(7);
         let base = super::super::warp_human::tile(0);
         let cheek = Vec3::new(0.855, 0.659, 0.541);
-        let a = face(&body, &indices, eyes, &base, cheek, Traits::new(1, 0.8), Vec3::splat(0.2), 0.3, &super::super::warp_hair::Cut::styled(1, super::super::warp_hair::Style::SidePart), Brows { color: Vec3::splat(0.1), spans: [(Vec3::splat(1.), Vec3::splat(-1.)); 2] }, 256);
-        let b = face(&body, &indices, eyes, &base, cheek, Traits::new(2, 0.8), Vec3::splat(0.2), 0.3, &super::super::warp_hair::Cut::styled(1, super::super::warp_hair::Style::SidePart), Brows { color: Vec3::splat(0.1), spans: [(Vec3::splat(1.), Vec3::splat(-1.)); 2] }, 256);
+        let cut = super::super::warp_hair::Cut::styled(1, super::super::warp_hair::Style::SidePart);
+        let brows = Brows { color: Vec3::splat(0.1), spans: [(Vec3::splat(1.), Vec3::splat(-1.)); 2] };
+        let paint = FacePaint {
+            base: &base, cheek, traits: Traits::new(1, 0.8), under_hair: Vec3::splat(0.2),
+            shade: 0.3, cut: &cut, brows, build: Build::of(&body, eyes),
+        };
+        let a = paint.bake(&body, &indices, eyes, 256, 41);
+        let whole = paint.bake(&body, &indices, eyes, 256, 256);
+        assert_eq!(a.albedo.as_raw(), whole.albedo.as_raw());
+        assert_eq!(a.normal.as_raw(), whole.normal.as_raw());
+        let b = face(&body, &indices, eyes, &base, cheek, Traits::new(2, 0.8), Vec3::splat(0.2), 0.3, &cut, brows, 256);
         assert_ne!(a.albedo.as_raw(), b.albedo.as_raw());
-        assert_eq!(a.albedo.as_raw(), face(&body, &indices, eyes, &base, cheek, Traits::new(1, 0.8), Vec3::splat(0.2), 0.3, &super::super::warp_hair::Cut::styled(1, super::super::warp_hair::Style::SidePart), Brows { color: Vec3::splat(0.1), spans: [(Vec3::splat(1.), Vec3::splat(-1.)); 2] }, 256).albedo.as_raw());
         let bent = a.normal.pixels().filter(|p| p[0].abs_diff(128) > 2 || p[1].abs_diff(128) > 2).count();
         assert!(bent > 256 * 256 / 20, "relief bends the normals: {bent}");
         // The shading mask in the painted alpha survives on the face (128

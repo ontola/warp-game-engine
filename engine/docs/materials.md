@@ -135,15 +135,17 @@ gradients so it reads no finer mip than is there (`albedo_lod_floor`,
 instead of black ones. `Renderer::textures_streaming()` counts layers still
 coming; `Renderer::finish_texture_streaming(gpu)` waits for all of them.
 
-Streaming is off by default because headless captures and tests expect
-full detail in their first frame. Sideways turns it on for played windows
-(not `--capture` or smoke runs) and for the next stage it loads. It is off
-in the browser (no threads) and with the portable renderer, whose shader
-has no LOD floor. Screen layers are never streamed.
+Native interactive frames stream layers with a procedural generator, including
+Warp Human faces. Their CPU previews supply the small mips while a single
+worker builds each full albedo and normal pair. Completed jobs wait in a
+bounded queue. Headless frames load procedural layers in sequence at startup
+so the first capture has the full detail. Sideways also streams ordinary
+textures for played windows and the next stage it loads. The browser and
+portable terrain renderer upload during scene setup. Screen layers are
+always available in full.
 
-This is streaming by time, not by visibility: every layer still ends up
-with its full chain in memory. Residency driven by what the camera needs
-(feedback from shading, eviction of unused mips) is open.
+All layers eventually have their full mip chains on the GPU. Camera-driven
+residency and eviction of unused mips are open.
 
 ## Checking it
 

@@ -2146,6 +2146,12 @@ impl Renderer {
     fn near_levels(&self) -> usize { near_levels_for(self.sun_clipmap) }
 
     pub fn new(gpu: &Gpu, scene: &Scene, light: &Lighting) -> Renderer {
+        Self::with_generated_streaming(gpu, scene, light, false)
+    }
+
+    /// Interactive shells can show procedural previews while detailed layers
+    /// bake on a worker. Headless captures use the full textures at creation.
+    pub fn with_generated_streaming(gpu: &Gpu, scene: &Scene, light: &Lighting, stream_generated: bool) -> Renderer {
         let mut startup=crate::startup_profile::Trace::new();
         let geometry_diagnostics=crate::geometry_diagnostics::State::new(scene);
         let u = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
@@ -2183,18 +2189,28 @@ impl Renderer {
         let albedo_encoding = if scene.screen_layers.is_empty() { encoding } else { crate::texture_stream::Encoding::Rgba8 };
         // Streamed layers start with their small mips (texture_stream.rs).
         // Not with the portable renderer: its shader has no LOD floor.
-        // KERN_TEXTURE_STREAMING=0/1 overrides the scene's choice.
-        let streaming = match crate::switches::TEXTURE_STREAMING.var().as_deref() { Ok("0") => false, Ok("1") => true, _ => scene.texture_streaming }
-            && !cfg!(target_arch = "wasm32")
+        let (stream_scene, stream_generated) = match crate::switches::TEXTURE_STREAMING.var().as_deref() {
+            Ok("0") => (false, false),
+            Ok("1") => (true, true),
+            _ => (scene.texture_streaming, stream_generated),
+        };
+        let can_stream = (stream_scene || stream_generated) && !cfg!(target_arch = "wasm32")
             && !(scene.procedural_terrain.is_some() && crate::portable::wanted(gpu));
-        let streamed: Vec<bool> = (0..scene.textures.len()).map(|l| streaming && !scene.screen_layers.contains(&(l as u32))).collect();
-        let albedo = texture_array(gpu, "albedo", &albedo_src, TEXTURE_SIZE, wgpu::TextureFormat::Rgba8UnormSrgb, albedo_encoding, [255; 4], &cutout_layers, &streamed, &mut startup);
+        let streamed: Vec<bool> = (0..scene.textures.len()).map(|l| {
+            let layer = l as u32;
+            can_stream && !scene.screen_layers.contains(&layer)
+                && (stream_scene || (stream_generated && scene.generated_textures.contains_key(&layer)))
+        }).collect();
+        // Generated layers keep compact previews in the scene. Initialize only
+        // their mip tails here, then generate both full maps together below.
+        let tails: Vec<bool> = streamed.iter().enumerate().map(|(l, &stream)| stream || scene.generated_textures.contains_key(&(l as u32))).collect();
+        let albedo = texture_array(gpu, "albedo", &albedo_src, TEXTURE_SIZE, wgpu::TextureFormat::Rgba8UnormSrgb, albedo_encoding, [255; 4], &cutout_layers, &tails, &mut startup);
         let albedo_view = albedo.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() });
         startup.mark("albedo_array");
         // Normal maps, same layers; flat where a texture has none. Material
         // maps (occlusion, roughness, metalness) follow as extra layers.
         let mut normal_src: Vec<Option<&image::RgbaImage>> = scene.textures.iter().map(|t| t.normal.as_ref()).collect();
-        let mut normal_streamed = streamed.clone();
+        let mut normal_streamed = tails;
         let mut material_maps = vec![None; scene.textures.len()];
         for (layer, t) in scene.textures.iter().enumerate() {
             if let Some(orm) = &t.orm {
@@ -2204,25 +2220,43 @@ impl Renderer {
             }
         }
         let normals = texture_array(gpu, "normals", &normal_src, NORMAL_SIZE, wgpu::TextureFormat::Rgba8Unorm, encoding, [128, 128, 255, 255], &[], &normal_streamed, &mut startup);
+        startup.mark("normal_array");
         let floor = |size: u32, streamed: bool| if streamed { (size.ilog2() - crate::texture_stream::TAIL.min(size).ilog2()) as f32 } else { 0.0 };
         let layer_maps: Vec<[u32; 4]> = (0..scene.textures.len()).map(|l| crate::material_maps::layer_word(material_maps[l],
             floor(TEXTURE_SIZE, streamed[l]), floor(NORMAL_SIZE, streamed[l]))).collect();
-        let texture_stream = streaming.then(|| {
-            let linear_cutout_rgb = !crate::switches::CUTOUT_LINEAR_RGB.off();
-            let settings = |size, format, fill, preserve_alpha| crate::texture_cache::Settings { size, format, fill, preserve_alpha, linear_cutout_rgb };
-            let jobs = (0..scene.textures.len()).filter(|&l| streamed[l]).map(|l| {
-                let t = &scene.textures[l];
-                let job = |source: Option<&image::RgbaImage>, array_layer: u32, settings| crate::texture_stream::Job {
-                    source: source.map(|s| std::sync::Arc::new(s.clone())), array_layer, settings };
-                let mut normal = vec![job(t.normal.as_ref(), l as u32, settings(NORMAL_SIZE, wgpu::TextureFormat::Rgba8Unorm, [128, 128, 255, 255], false))];
-                if let Some(at) = material_maps[l] { normal.push(job(t.orm.as_ref(), at, settings(NORMAL_SIZE, wgpu::TextureFormat::Rgba8Unorm, [128, 128, 255, 255], false))); }
-                crate::texture_stream::LayerJobs { layer: l as u32, normal,
-                    albedo: job(Some(&t.rgba), l as u32, settings(TEXTURE_SIZE, wgpu::TextureFormat::Rgba8UnormSrgb, [255; 4], cutout_layers[l])) }
-            }).collect();
-            crate::texture_stream::Stream::start(jobs, [albedo_encoding, encoding], material_maps.clone())
-        });
+        let linear_cutout_rgb = !crate::switches::CUTOUT_LINEAR_RGB.off();
+        let settings = |size, format, fill, preserve_alpha| crate::texture_cache::Settings { size, format, fill, preserve_alpha, linear_cutout_rgb };
+        let encodings = [albedo_encoding, encoding];
+        let mut jobs = Vec::new();
+        for (l, t) in scene.textures.iter().enumerate() {
+            let layer = l as u32;
+            let generate = scene.generated_textures.get(&layer).cloned();
+            if !streamed[l] && generate.is_none() { continue; }
+            let (rgba, normal) = if generate.is_some() { (None, None) } else { (Some(t.rgba.clone()), t.normal.clone()) };
+            let normal_settings = settings(NORMAL_SIZE, wgpu::TextureFormat::Rgba8Unorm, [128, 128, 255, 255], false);
+            // Non-streamed material maps were already uploaded with the ordinary normals.
+            let material = material_maps[l].filter(|_| streamed[l]).map(|at| crate::texture_stream::Job {
+                source: t.orm.clone(), array_layer: at, settings: normal_settings,
+            });
+            let job = crate::texture_stream::LayerJobs {
+                layer, generate,
+                albedo: crate::texture_stream::Job { source: rgba, array_layer: layer,
+                    settings: settings(TEXTURE_SIZE, wgpu::TextureFormat::Rgba8UnormSrgb, [255; 4], cutout_layers[l]) },
+                normal: crate::texture_stream::Job { source: normal, array_layer: layer, settings: normal_settings },
+                material,
+            };
+            if streamed[l] {
+                jobs.push(job);
+            } else {
+                job.build(encodings).upload(gpu, &albedo, &normals, encodings);
+                // Start the transfer now so staging for all generated layers
+                // does not pile up until the first frame's submission.
+                gpu.queue.submit([]);
+            }
+        }
+        let texture_stream = (!jobs.is_empty()).then(|| crate::texture_stream::Stream::start(jobs, encodings, material_maps));
         let normals_view = normals.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() });
-        startup.mark("normal_array");
+        if !scene.generated_textures.is_empty() { startup.mark("generated_textures"); }
         let samp = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::Repeat,
