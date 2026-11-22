@@ -1,0 +1,27 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ontola/gamepad-party/main/catalog/schema.json",
+  "id": "warp-theft-auto",
+  "title": "Warp Theft Auto",
+  "tagline": "Explore Port Meridian on foot, by car or by helicopter. Share the city and take on delivery contracts together.",
+  "developer": "Joep Meindertsma",
+  "players": {
+    "min": 1,
+    "max": 4,
+    "best": 2
+  },
+  "match_minutes": 8,
+  "price": "free",
+  "tags": [
+    "open-world",
+    "driving",
+    "co-op",
+    "split-screen",
+    "warp",
+    "luau"
+  ],
+  "integration": {
+    "level": "integrated",
+    "protocol": 1
+  },
+  "links": {}
+}

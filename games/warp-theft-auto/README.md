@@ -4,6 +4,8 @@ Port Meridian is a 36-block coastal city you can explore on foot, by car or by h
 
 ## Play
 
+The browser playtest supports one keyboard player and additional seats on controllers. Press and release Enter to join with the keyboard or press A on a controller. The host requires WebGPU. To build the same single-game shelf locally, run `python3 engine/tools/build-web.py --warp --games warp-theft-auto --luau-only --serve`, then open `http://localhost:8790/?game=warp-theft-auto&players=1`.
+
 From the Warp repository root, run the game with Cargo. Use the second command for four local players. The keyboard controls the first seat and controllers drive the other seats.
 
 ```sh

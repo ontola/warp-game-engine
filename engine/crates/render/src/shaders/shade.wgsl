@@ -3973,9 +3973,11 @@ fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool) {
     let vis=visible[id>>7u];let cl=clusters[vis.y];let inst=instance_at(vis.x);
     let packed=tri_word(cl.first_tri+(id&127u));
     var points:array<vec3<f32>,3>;var normals:array<vec3<f32>,3>;var uvs:array<vec2<f32>,3>;
+    var local_points:array<vec3<f32>,3>;
     for(var k=0u;k<3u;k++) {
         let v=cluster_vert(cl.first_vert+((packed>>(8u*k))&255u))*8u;
         let pos=vec4<f32>(vertex_f32(v),vertex_f32(v+1u),vertex_f32(v+2u),1.0);
+        local_points[k]=pos.xyz;
         points[k]=wind_position(member_slot(vis.x),inst.r1.w,vec3<f32>(dot(inst.r0,pos),dot(inst.r1,pos),dot(inst.r2,pos)));
         normals[k]=vec3<f32>(vertex_f32(v+3u),vertex_f32(v+4u),vertex_f32(v+5u));
         uvs[k]=vec2<f32>(vertex_f32(v+6u),vertex_f32(v+7u));
@@ -3988,17 +3990,22 @@ fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool) {
     var n=normalize(wind_normal(member_slot(vis.x),xform_dir(inst,authored)));
     if dot(n,dir)>0.0 {n=-n;}
     let m=material(cl.material);var base=m.tint;
+    var surface_emit = vec3<f32>(0.0);
     var sun_vis = 1.0;
     if terrain_lighting {
         let geometric_n = safe_normalize(cross(e1, e2));
         let plane_n = faceForward(geometric_n, dir, geometric_n);
-        if (m.flags & 32770u) == 32770u {
+        if (m.flags & 32768u) != 0u {
             set_pixel_footprint(ndc, p, plane_n, distance(p, view.cam.xyz));
-            let si = SurfaceIn(0u, vis.x, p, p, n, dir, vec3<f32>(b0,b1,b2), uvs[0],uvs[1],uvs[2],
+            let local = local_points[0]*b0 + local_points[1]*b1 + local_points[2]*b2;
+            let si = SurfaceIn(u32(max(-2 - m.layer, 0)), vis.x, p, local, n, dir, vec3<f32>(b0,b1,b2), uvs[0],uvs[1],uvs[2],
                                fp.dx, fp.dy, m.tint, m.roughness, m.metal, m.scale, light.anim.x);
-            let ground = field_surface(si, m.layer);
-            base = ground.albedo;
-            n = ground.normal;
+            var surface: SurfaceOut;
+            if (m.flags & 2u) != 0u { surface = field_surface(si, m.layer); }
+            else { surface = game_surface(si); }
+            base = surface.albedo;
+            n = surface.normal;
+            surface_emit = surface.emission;
         } else if m.layer == -3 && (m.flags & (4608u | 32768u)) == 0u {
             let bark = bark_surface(p, n, m.scale);
             base = bark.albedo;
@@ -4008,6 +4015,7 @@ fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool) {
             sun_vis = shadow_detail_receiver(p, n, plane_n);
             if world_visibility.params.w > 0.5 { sun_vis = min(sun_vis, world_terrain_baked_sun(p)); }
         }
+        sun_vis *= cloud_sun_transmittance(p, light.sun_dir.xyz, light.clouds, light.cloud_motion);
     }
     if m.layer>=0 && !(terrain_lighting && (m.flags&32770u)==32770u) {let uv=uvs[0]*b0+uvs[1]*b1+uvs[2]*b2;
         base*=textureSampleLevel(albedo,samp,uv,m.layer,max(log2(max(distance(p,view.cam.xyz)*0.03,1.0)),albedo_lod_floor(m.layer))).rgb;}
@@ -4018,6 +4026,7 @@ fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool) {
         let sample=incident_light_sample(index,p,n);
         rad+=base*sample.irradiance*max(dot(n,sample.direction),0.0)/PI;
     }
+    rad += surface_emit * light.anim.y;
     if (m.flags&1024u)!=0u {rad+=base*abs(m.scale)*light.anim.y;}
     if (m.flags&4096u)!=0u {rad=base*m.scale*light.anim.y;}
     let style = styled_light(material_kind(m), m.flags, p, n, base, rad, 1.0);
