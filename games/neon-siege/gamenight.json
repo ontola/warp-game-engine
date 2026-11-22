@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/ontola/gamepad-party/main/catalog/schema.json",
-  "id": "neon-siege-warp",
+  "id": "neon-siege",
   "title": "Neon Siege",
   "tagline": "One swarm. One team. Keep moving.",
   "developer": "Joep Meindertsma",

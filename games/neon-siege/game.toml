@@ -2,7 +2,7 @@
 # love-party/games/siege*.lua) to a Luau game on the warp runtime.
 title = "Neon Siege"
 # A separate id from the LÖVE version (neon-siege) while both exist.
-id = "neon-siege-warp"
+id = "neon-siege"
 tick_rate = 60
 # One shared view over the arena, as on the LÖVE screen.
 split = false
