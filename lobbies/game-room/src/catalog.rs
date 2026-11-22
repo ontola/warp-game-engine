@@ -190,7 +190,8 @@ pub fn catalog_layout(lobby: &Lobby, size: [u32; 2]) -> Layout {
     let n = lobby.host.shelf_games().len();
     let mut cards = vec![];
     if n == 0 { return Layout { cards, buttons: vec![] }; }
-    let card_h = h * 0.56;
+    // Tall enough to be big, narrow enough that neighbours show on a narrow screen.
+    let card_h = (h * 0.56).min(w * 0.42 / 0.75);
     let card_w = card_h * 0.75;
     let (cx, cy) = (w / 2.0, h * 0.44);
     let shown = lobby.catalog.shown;
@@ -307,7 +308,8 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
             c.style_box([r[0] - b, r[1] - b, r[2] + 2.0 * b, r[3] + 2.0 * b], [14.0 * scale; 4], if mid { TEXT } else { DIM }.with_alpha(fade), None);
         }
         // Further back is darker (one layer per card: the HUD has few).
-        let far = (1.0 - r[3] / (h * 0.56)) / 0.2;
+        let big = layout.cards.last().map_or(r[3], |c| c.1[3]);
+        let far = (1.0 - r[3] / big) / 0.2;
         let k = if mid { 1.0 } else if hover { 0.85 } else { (0.68 - 0.18 * far).max(0.3) };
         // The part no nearer card covers: a card's title sits there, and
         // nothing of it is drawn under the cards in front.
@@ -327,7 +329,7 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
     }
     c.over();
     let station = lobby.host.station_at((game_room_sim::layout::GAME_SHELF.0 + game_room_sim::layout::GAME_SHELF.1) / 2.0, None);
-    let card_bottom = h * 0.44 + h * 0.28;
+    let card_bottom = layout.cards.last().map_or(h * 0.72, |c| c.1[1] + c.1[3]);
     let title = if shelf[middle].title.is_empty() { "Game" } else { &shelf[middle].title };
     c.text(faces.bold, [0.0, card_bottom + 58.0 * scale], title, TextAlign::Center, w, (44.0 * scale).floor(), TEXT.with_alpha(fade));
     if let Some(s) = station.as_ref().filter(|s| !s.enabled) {
