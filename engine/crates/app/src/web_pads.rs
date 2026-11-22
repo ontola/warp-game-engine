@@ -38,14 +38,21 @@ struct Layout { buttons: [Option<u32>; 12], sticks: [u32; 4], hat: Option<u32> }
 /// L3 R3 = 13 14, sticks on axes 0 1 2 5, the hat on axis 9 (3.29 at rest).
 /// SDL's GameControllerDB numbers the same pad differently (right stick y
 /// on 3, triggers on 4 and 5), so it cannot be used for the browser's
-/// numbers. Others get the standard order.
+/// numbers. Firefox on macOS (measured in Zen) numbers the axes otherwise
+/// again, see below. Others get the standard order.
 fn layout(pad: &web_sys::Gamepad) -> Layout {
     let id = pad.id().to_ascii_lowercase();
     let axes = pad.axes().length();
     if id.contains("2dc8") || id.contains("8bitdo") {
-        // A B _ X Y _ LB RB LT RT Select Start Home L3 R3.
-        return Layout { buttons: [Some(0), Some(1), Some(3), Some(4), Some(6), Some(7), Some(8), Some(9), Some(10), Some(11), Some(13), Some(14)],
-            sticks: [0, 1, 2, 5], hat: (axes > 9).then_some(9) };
+        // A B _ X Y _ LB RB LT RT Select Start Home L3 R3, in both browsers.
+        let buttons = [Some(0), Some(1), Some(3), Some(4), Some(6), Some(7), Some(8), Some(9), Some(10), Some(11), Some(13), Some(14)];
+        // Firefox (and Zen) name it "2dc8-3012-…" and put the hat first:
+        // hat on axis 0, sticks on 1 2 3 4 (7 axes). Chrome names it
+        // "… (Vendor: 2dc8 Product: 3012)": sticks on 0 1 2 5, hat on 9.
+        if id.starts_with("2dc8-") {
+            return Layout { buttons, sticks: [1, 2, 3, 4], hat: Some(0) };
+        }
+        return Layout { buttons, sticks: [0, 1, 2, 5], hat: (axes > 9).then_some(9) };
     }
     Layout { buttons: std::array::from_fn(|i| Some(i as u32)), sticks: [0, 1, 2, 3], hat: (axes > 9).then_some(9) }
 }
