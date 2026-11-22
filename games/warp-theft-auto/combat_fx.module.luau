@@ -12,7 +12,6 @@ local ROOM = {tag="interior_detail", all=true}
 
 -- Shared by all local seats and story/roaming encounters. When full, replace the oldest
 -- of the same kind so persistent stains never crowd out the next visible hit.
-local live = {drop={}, shard={}, splat={}}
 local limits = {drop=16, shard=7, splat=8}
 
 function effects.warm()
@@ -20,14 +19,14 @@ function effects.warm()
 end
 
 function effects.new()
-	return {serial=0}
+	return {serial=0, live={drop={}, shard={}, splat={}}}
 end
 
 local function spawn(ctx, kind, model, pos, rot, size, life)
-	local items = live[kind]
+	local items = ctx.live[kind]
 	if #items >= limits[kind] then world.remove(table.remove(items, 1).id) end
 	local id = world.spawn(model, {pos=pos, rot=rot, size=size, solid=false, tag="combat-"..kind})
-	local item = {id=id, owner=ctx, pos=pos, rot=rot, size=size, age=0, life=life}
+	local item = {id=id, pos=pos, rot=rot, size=size, age=0, life=life}
 	table.insert(items, item)
 	return item
 end
@@ -134,10 +133,17 @@ local function update(item, kind, dt)
 end
 
 function effects.tick(ctx, dt)
-	for kind, items in live do
+	-- Older running games kept their lifetimes in module-local tables. Clear
+	-- those orphaned visuals once. New shots keep their lifetime across reloads.
+	if not ctx.live then
+		ctx.live = {drop={}, shard={}, splat={}}
+		for kind in limits do
+			for _,id in world.find("combat-"..kind) do world.remove(id) end
+		end
+	end
+	for kind, items in ctx.live do
 		for i=#items,1,-1 do
 			local item = items[i]
-			if item.owner ~= ctx then continue end
 			item.age += dt
 			if item.age >= item.life or not update(item,kind,dt) then
 				world.remove(item.id)
@@ -148,10 +154,9 @@ function effects.tick(ctx, dt)
 end
 
 function effects.clear(ctx)
-	for _, items in live do
-		for i=#items,1,-1 do
-			if items[i].owner == ctx then world.remove(table.remove(items,i).id) end
-		end
+	for _,items in ctx.live do
+		for _,item in items do world.remove(item.id) end
+		table.clear(items)
 	end
 end
 

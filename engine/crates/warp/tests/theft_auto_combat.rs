@@ -3,10 +3,15 @@ use app::{Buttons, Controls, Game};
 use std::path::Path;
 use warp::{LuaGame, Overrides};
 
-fn city() -> LuaGame {
-    let folder = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../games/warp-theft-auto");
+fn game_folder() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../games/warp-theft-auto")
+}
+
+fn city() -> LuaGame { load_city(&game_folder()) }
+
+fn load_city(folder: &Path) -> LuaGame {
     let mut game = LuaGame::load(
-        &folder,
+        folder,
         &Overrides { players: Some(2), seed: Some(1948), ..Default::default() },
         None,
     ).unwrap();
@@ -39,6 +44,16 @@ fn shoot() -> Controls {
 // Ground the fixture on a sidewalk so cross traffic cannot knock down the shooter.
 fn line_up(game: &mut LuaGame) {
     check(game, r#"
+        local pop=state.population
+        -- Clear this small sightline when a fixture needs an unobstructed target.
+        for _,person in pop.street do
+            if math.abs(person.pos.x-8)<3 and math.abs(person.pos.z+36)<10 then
+                person.path,person.action=nil,"idle"
+                person.pos+=vector.create(4,0,0)
+                person.nextPos=person.pos
+            end
+        end
+        pop.selectionIn=0
         local p=state.combat.cast.people.rook
         p.pos,p.route,p.arrived=vector.create(8,0,-40),nil,false
         world.place(p.body,p.pos+vector.create(0,.85,0))
@@ -105,7 +120,7 @@ fn free_roam_rivals_take_visible_hits_from_each_seat_and_return() {
 }
 
 #[test]
-fn a_contract_claims_only_its_owners_pistol_and_only_its_named_target() {
+fn a_contract_uses_the_same_gun_and_a_bystander_in_front_intercepts_the_shot() {
     let mut game = city();
     let story = r#"return {
         id="shared",title="Shared sidewalk",
@@ -114,24 +129,237 @@ fn a_contract_claims_only_its_owners_pistol_and_only_its_named_target() {
     }"#;
     game.apply_story(story).unwrap();
     line_up(&mut game);
+    check(&mut game,r#"
+        local pop=state.population
+        for id in pop.pedestrians.active do
+            if not pop.residents[id].building then state.bystander=id; break end
+        end
+        local c=pop.residents[state.bystander]
+        c.path,c.action,c.pos=nil,"idle",vector.create(8,0,-37)
+        c.nextPos=c.pos
+        pop.selectionIn=0
+    "#);
     tick(&mut game, [aim(), aim()], 54);
     check(&mut game, r#"
         assert(state.story.owner==1 and state.story.onTarget)
-        assert(not state.combat.players[1].prop and state.combat.players[2].onTarget)
+        assert(state.combat.players[1].prop and state.combat.players[2].onTarget)
     "#);
+    tick(&mut game, [shoot(), aim()], 1);
+    check(&mut game,r#"
+        assert(state.story.status=="active" and not state.storyCast:wasHit("actor"))
+        assert(state.population.residents[state.bystander].impact.stage=="down")
+        assert(state.combat.players[1].hits==1 and state.combat.players[1].hitFlash>0)
+    "#);
+    tick(&mut game, [aim(), aim()], 24);
     tick(&mut game, [shoot(), shoot()], 1);
     check(&mut game, r#"
         local s=state.combat
         assert(state.story.status=="complete" and state.storyCast:wasHit("actor"))
-        assert(s.enemies.rook.health==1 and s.players[1].hits==0 and s.players[2].hits==1)
-        assert(s.players[1].shotFlash==0 and s.players[2].shotFlash>0)
+        assert(s.enemies.rook.health==1 and s.players[1].hits==2 and s.players[2].hits==1)
+        assert(s.players[1].shotFlash>0 and s.players[2].shotFlash>0)
     "#);
     // On the very next tick ownership returns to normal, with the same cooldown.
     tick(&mut game, [shoot(), aim()], 1);
     check(&mut game, "assert(state.combat.enemies.rook.health==1 and state.combat.players[1].aiming)");
     tick(&mut game, [aim(), aim()], 25);
     tick(&mut game, [shoot(), aim()], 1);
-    check(&mut game, "assert(state.combat.players[1].defeats==1)");
+    check(&mut game, "assert(state.combat.players[1].defeats==3)");
+}
+
+#[test]
+fn an_unfitted_resident_can_be_shot_at_its_rendered_position_and_stays_down() {
+    let mut game=city();
+    line_up(&mut game);
+    tick(&mut game,[aim(),aim()],45);
+    check(&mut game,r#"
+        local pop=state.population
+        for id,actor in pop.pedestrians.active do
+            local c=pop.residents[id]
+            if not c.building and not c.impact then
+                state.bystander=id
+                c.path,c.action,c.pos=nil,"idle",vector.create(8,0,-37)
+                c.nextPos=c.pos
+                humans.remove(actor)
+                pop.pedestrians.active[id]=nil
+                break
+            end
+        end
+        assert(state.bystander and not pop.pedestrians.active[state.bystander])
+        pop.streetRevision+=1
+        pop.selectionIn=1
+        humans.distant("resident",pop.street,pop.pedestrians.active,.4)
+    "#);
+    tick(&mut game,[shoot(),Controls::default()],1);
+    check(&mut game,r#"
+        local pop=state.population
+        local c=pop.residents[state.bystander]
+        assert(c.impact and c.impact.stage=="down" and pop.pedestrians.active[state.bystander])
+        assert(c.shotUntil and state.combat.players[1].hits==1 and state.combat.enemies.rook.health==2)
+        local gun=state.combat.players[1]
+        assert(#world.find("combat-splat")>0 and gun.hitFlash>0 and gun.hitPoint)
+        assert(vector.magnitude(gun.hitPoint-c.pos)<2 and gun.trace and world.exists(gun.trace))
+        state.lastTrace=gun.trace
+    "#);
+    tick(&mut game,[Controls::default();2],16);
+    check(&mut game,r#"
+        local gun=state.combat.players[1]
+        assert(not world.exists(state.lastTrace) and not gun.trace and gun.hitFlash==0 and not gun.hitPoint)
+    "#);
+    tick(&mut game,[Controls::default();2],254);
+    check(&mut game,r#"
+        local pop=state.population
+        local c=pop.residents[state.bystander]
+        assert(c.active==false and not pop.pedestrians.active[state.bystander] and not c.impact)
+    "#);
+}
+
+#[test]
+fn a_shot_can_reach_a_distant_walker_across_a_city_block() {
+    let mut game=city();
+    check(&mut game,r#"
+        local p=state.fleet.players[1]
+        world.place(p.body,vector.create(3.5,.85,17))
+        p.view,p.pitch=0,0
+        local pop=state.population
+        for id,c in pop.street do
+            if c.active and not pop.pedestrians.active[id] then
+                c.path,c.delta,c.action,c.pos=nil,nil,"idle",vector.create(3.5,0,-40)
+                c.nextPos,c.night=c.pos,true
+                state.distantTarget=id
+                break
+            end
+        end
+        assert(state.distantTarget)
+        pop.streetRevision+=1
+        pop.selectionIn=1
+        humans.distant("resident",pop.street,pop.pedestrians.active,.4)
+    "#);
+    let shot=Controls {pressed: Buttons(Buttons::SOUTH), ..Default::default()};
+    tick(&mut game,[shot,Controls::default()],1);
+    check(&mut game,r#"
+        local c=state.population.street[state.distantTarget]
+        local gun=state.combat.players[1]
+        assert(c.shotUntil and gun.hits==1 and vector.magnitude(gun.hitPoint-c.pos)<2)
+    "#);
+}
+
+#[test]
+fn an_ordinary_seated_room_resident_reacts_to_the_pistol() {
+    let mut game=city();
+    check(&mut game,r#"
+        for _,b in state.city.buildings do
+            if b.kind=="office" then state.office=b; break end
+        end
+        local p=state.fleet.players[1]
+        world.place(p.body,state.office.door+vector.create(-.46,.85,-1.1))
+        p.view,p.pitch=0,-.15
+        p.cam:snap()
+    "#);
+    tick(&mut game,[aim(),Controls::default()],30);
+    check(&mut game,r#"
+        local pop=state.population
+        for id,actor in pop.pedestrians.active do
+            local c=pop.residents[id]
+            if c.building==state.office.id then
+                state.worker=id
+                c.delta,c.action,c.pos=nil,"sit",state.office.door+vector.create(0,0,-4.1)
+                break
+            end
+        end
+        assert(state.worker)
+    "#);
+    tick(&mut game,[aim(),Controls::default()],3);
+    tick(&mut game,[shoot(),Controls::default()],1);
+    check(&mut game,r#"
+        local c=state.population.residents[state.worker]
+        assert(c.pose=="sit" and c.impact and c.impact.stage=="down")
+        assert(state.combat.players[1].hits==1 and #world.find("combat-drop")>0)
+    "#);
+    tick(&mut game,[Controls::default();2],270);
+    check(&mut game,r#"assert(not state.population.residents[state.worker].active)"#);
+}
+
+// Use a private game folder so polling the edited modules exercises the normal
+// hot-reload path while other tests and playtests keep running the original.
+fn copy_fixture(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry=entry.unwrap();
+        if entry.file_type().unwrap().is_dir() {
+            copy_fixture(&entry.path(),&to.join(entry.file_name()));
+        } else {
+            std::fs::copy(entry.path(),to.join(entry.file_name())).unwrap();
+        }
+    }
+}
+
+#[test]
+fn space_fires_and_live_module_edits_keep_the_active_cast_contract_and_effects() {
+    let stamp=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let dir=Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("theft-combat-{}-{stamp}",std::process::id()));
+    copy_fixture(&game_folder(),&dir);
+    let mut game=load_city(&dir);
+    let space=Controls{pressed:Buttons(Buttons::SOUTH),..Default::default()};
+    let cast=r#"{
+        {kind="person",key="a",name="Arden",pos=vector.create(8,0,-40)},
+        {kind="person",key="b",name="Bex",pos=vector.create(8,0,-46)}
+    }"#;
+    game.apply_story(&format!(r#"return {{id="two",title="Two contracts",cast={cast},steps={{
+        {{op="contract",person="a",text="Find Arden."}},
+        {{op="contract",person="b",text="Find Bex."}}
+    }}}}"#)).unwrap();
+    line_up(&mut game);
+    check(&mut game,r#"
+        local rook=state.combat.cast.people.rook
+        rook.pos=vector.create(13,0,-40)
+        world.place(rook.body,rook.pos+vector.create(0,.85,0))
+        for _,p in state.fleet.players do
+            world.place(p.body,vector.create(8,.85,-33))
+            p.pitch=0
+        end
+    "#);
+    tick(&mut game,[Controls::default(),space],1);
+    check(&mut game,r#"
+        assert(state.story.step==2 and state.story.status=="active" and state.story.contractPerson=="b")
+        assert(state.combat.players[2].hits==1 and state.storyCast.people.a.impact)
+    "#);
+    check(&mut game,r#"
+        state.keptBody=state.storyCast.people.b.body
+        state.keptDrop=world.find("combat-drop")[1]
+        assert(state.keptDrop and world.exists(state.keptDrop))
+    "#);
+    for module in ["combat","combat_fx","missions","story_cast"] {
+        let path=dir.join(format!("{module}.module.luau"));
+        let old=std::fs::read_to_string(&path).unwrap();
+        let new=if module=="story_cast" {
+            old.replace("return Cast\n","Cast.reloadedDuringTest=true\nreturn Cast\n")
+               .replace("return Cast\r\n","Cast.reloadedDuringTest=true\r\nreturn Cast\r\n")
+        } else { format!("{old}\n-- Hot reload while the first shot is still in flight.\n") };
+        assert!(old!=new);
+        std::fs::write(path,new).unwrap();
+    }
+    let changed=game.reload();
+    assert!(changed.iter().any(|s|s.contains("main.luau: reloaded")),"{changed:?}");
+    check(&mut game,r#"
+        assert(state.storyCast.reloadedDuringTest and state.combat.cast.reloadedDuringTest)
+        assert(state.storyCast.people.b.body==state.keptBody and state.story.step==2)
+        assert(world.exists(state.keptDrop) and state.combat.players[2].hits==1)
+    "#);
+    tick(&mut game,[space,Controls::default()],1);
+    check(&mut game,r#"assert(state.story.status=="complete" and state.storyCast.people.b.impact)"#);
+    tick(&mut game,[Controls::default();2],65);
+    check(&mut game,r#"assert(not world.exists(state.keptDrop))"#);
+    game.apply_story(&format!(r#"return {{id="escort",title="Escort",cast={cast},steps={{
+        {{op="pickup",person="a",text="Pick up Arden."}}
+    }}}}"#)).unwrap();
+    tick(&mut game,[Controls::default();2],20);
+    tick(&mut game,[space,Controls::default()],1);
+    check(&mut game,r#"
+        assert(state.story.status=="failed" and state.story.objective=="Arden was shot.")
+        assert(state.storyCast.people.a.impact and state.storyCast.people.b.shot==nil)
+    "#);
+    drop(game);
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -143,6 +371,10 @@ fn an_unaimed_click_fires_on_foot_but_vehicle_throttle_never_fires() {
         ..Default::default()
     };
     line_up(&mut game);
+    check(&mut game,r#"
+        local seat=state.fleet.players[1]
+        world.place(seat.body,state.combat.cast.people.rook.pos+vector.create(0,.85,7))
+    "#);
     tick(&mut game, [click, Controls::default()], 1);
     check(&mut game, r#"
         assert(state.combat.players[1].shotFlash>0 and not state.combat.players[1].aiming)

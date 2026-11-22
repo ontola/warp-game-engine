@@ -106,9 +106,14 @@ end
 -- continues their routines when a room is revisited.
 local function localResidents(pop, interiors, city)
 	local changed = false
+	pop.absentWorkers = pop.absentWorkers or {}
 	for id, ids in pop.rooms do
 		if not interiors.active[id] then
-			for _, index in ids do pop.residents[index] = nil end
+			for _, index in ids do
+				local untilTime=pop.residents[index].shotUntil
+				if untilTime and untilTime>pop.elapsed then pop.absentWorkers[index]=untilTime end
+				pop.residents[index] = nil
+			end
 			pop.rooms[id] = nil
 			changed = true
 		end
@@ -122,6 +127,11 @@ local function localResidents(pop, interiors, city)
 			local phase = sampleNoise(b.seed,i,3)
 			local c = {building=id, role=anchor.role, action=anchor.pose, pos=anchor.pos,
 				yaw=anchor.yaw, phase=phase*17, night=b.kind=="hotel" or i%4~=0}
+			local untilTime=pop.absentWorkers[index]
+			if untilTime then
+				if untilTime>pop.elapsed then c.shotUntil=untilTime end
+				pop.absentWorkers[index]=nil
+			end
 			if anchor.to then
 				c.a, c.delta = anchor.pos, anchor.to-anchor.pos
 				c.walkTime = vector.magnitude(c.delta)/(.8+.48*phase)
@@ -193,6 +203,14 @@ end
 -- A resident starts or finishes a shift outside the view of every nearby
 -- player. A higher flying observer sees farther across the sidewalks below.
 local function onShift(pop, id, c, hour, observers)
+	if c.shotUntil and not c.impact then
+		if pop.elapsed < c.shotUntil then return false end
+		-- Resume an outdoor routine away from every observer, not under a gun sight.
+		for _, eye in observers do
+			if vector.magnitude(eye-c.pos) < 50 then return false end
+		end
+		c.shotUntil = nil
+	end
 	if c.night or c.impact then return true end
 	if not c.startsAt then
 		c.startsAt = 5.25 + 2.5*sampleNoise(pop.seed,id,111)

@@ -2,16 +2,11 @@
 -- while a player edits, joins a car, drives a gate or follows a passenger.
 local missions={validate=require("story_schema").validate}
 local util=require("kit/util")
-local sidearm=require("sidearm")
-local fx=require("combat_fx")
-missions.warm=sidearm.warm
-local v=vector.create
-local live=setmetatable({},{__mode="k"})
+missions.warm=require("sidearm").warm
 
 local function unequip(m)
-	local ctx=live[m]
-	if ctx then sidearm.remove(ctx) end
 	m.weapon,m.aiming,m.onTarget=nil,false,false
+	m.contractPerson,m.contractRange=nil,nil
 end
 
 local function finish(m,status,message)
@@ -21,7 +16,7 @@ local function finish(m,status,message)
 end
 
 local function enterStep(m,cast)
-	local ctx=live[m]
+	local ctx=m.run
 	local a=ctx.definition.steps[m.step]
 	ctx.entered,ctx.boardCar,ctx.boardAt,ctx.previous,ctx.armed=false,nil,nil,nil,false
 	m.objective,m.action=a.text,a.op
@@ -29,7 +24,7 @@ local function enterStep(m,cast)
 	if a.op=="checkpoint" and m.raceTime==nil then m.raceTime=0 end
 	m.target=a.pos or (a.person and cast:position(a.person)) or (a.car and cast:position(a.car))
 	if a.op=="contract" then
-		m.weapon="Arcade pistol"
+		m.weapon,m.contractPerson,m.contractRange="Arcade pistol",a.person,a.range or 30
 	else
 		unequip(m)
 	end
@@ -46,17 +41,15 @@ function missions.start(definition,fleet,cast,ownerId,avatars)
 	end
 	local m={id=definition.id,title=definition.title,owner=ownerId,step=1,total=#definition.steps,
 		status="active",aiming=false,onTarget=false,shotFlash=0}
-	live[m]={definition=definition,fleet=fleet,avatars=avatars,effects=fx.new()}
+	m.run={definition=definition}
 	enterStep(m,cast)
 	return m
 end
 
 function missions.stop(m,cast)
 	if m then
-		local ctx=live[m]
 		unequip(m)
-		if ctx then sidearm.clearFlash(ctx); fx.clear(ctx.effects) end
-		live[m]=nil
+		m.run=nil
 	end
 	cast:clear()
 end
@@ -67,10 +60,10 @@ local function carFor(a,seat,cast)
 	return not a.car or (cast.cars[a.car] and cast.cars[a.car].index==seat.vehicle)
 end
 
-local function pickup(m,ctx,a,seat,cast)
+local function pickup(m,ctx,a,seat,cast,fleet)
 	local pos=cast:position(a.person)
 	m.target=pos
-	local car=seat.vehicle and ctx.fleet.vehicles[seat.vehicle]
+	local car=seat.vehicle and fleet.vehicles[seat.vehicle]
 	local stopped=car and carFor(a,seat,cast) and math.abs(car.speed)<1.4
 	if not stopped or distance(pos,car.pos)>(a.radius or 7) then
 		if ctx.boardCar then cast:pose(a.person,"idle"); ctx.boardCar,ctx.boardAt=nil,nil end
@@ -101,36 +94,38 @@ local function checkpoint(ctx,a,seat,cast,radius)
 	return distance(previous+delta*t,a.pos)<=r
 end
 
-local function contract(m,ctx,a,seat,cast,inp)
-	local pos=cast:position(a.person)
-	m.target=pos
-	m.aiming=seat.aiming==true and not seat.impact
-	m.onTarget=false
-	local origin,ray
-	if m.aiming then origin,ray=sidearm.ray(m.owner) end
-	sidearm.follow(ctx,ctx.avatars and ctx.avatars[m.owner],seat,ray)
-	if not ray or not pos then return false end
-	local along,point=sidearm.contact(origin,ray,seat.pos,pos,a.range or 30)
-	m.onTarget=along~=nil
-	if not sidearm.discharge(ctx,m,seat,inp) or not along then return false end
-	if not cast:hit(a.person,ray*2+v(0,.3,0)) then return false end
-	fx.hit(ctx.effects,point,ray,true,game.tick()+m.owner)
-	return true
+-- Combat records only confirmed shots. An unrelated hit can never complete
+-- the current step. If a later step needs that actor, explain the failure now.
+local function resolveShots(m,ctx,cast)
+	local shots=m.shotPeople
+	m.shotPeople=nil
+	if not shots then return false end
+	for i=m.step,#ctx.definition.steps do
+		local step=ctx.definition.steps[i]
+		if step.person and shots[step.person] and (i~=m.step or step.op~="contract") then
+			finish(m,"failed",cast.people[step.person].name.." was shot.")
+			return false
+		end
+	end
+	return m.contractPerson~=nil and shots[m.contractPerson]==true
 end
 
 function missions.tick(m,fleet,cast,dt,input)
 	if not m then return end
-	local ctx=live[m]
-	if not ctx then return end
-	sidearm.tickFlash(ctx,m,dt)
-	fx.tick(ctx.effects,dt)
+	local ctx=m.run
+	if m.status~="active" then return end
+	if not ctx then
+		finish(m,"failed","Run this story again after updating the game.")
+		return
+	end
+	local contractHit=resolveShots(m,ctx,cast)
 	if m.status~="active" then return end
 	if m.raceTime~=nil then m.raceTime+=dt end
 	local seat=fleet.players[m.owner]
 	if not seat then
 		local replacement
 		for id,p in fleet.players do if not p.bot and (not replacement or id<replacement) then replacement=id end end
-		if not replacement then sidearm.remove(ctx); sidearm.clearFlash(ctx); m.aiming,m.onTarget=false,false; return end
+		if not replacement then m.aiming,m.onTarget=false,false; return end
 		m.owner,seat=replacement,fleet.players[replacement]
 	end
 	local a=ctx.definition.steps[m.step]
@@ -154,7 +149,7 @@ function missions.tick(m,fleet,cast,dt,input)
 		m.target=cast:position(a.car)
 		done=carFor(a,seat,cast)
 	elseif a.op=="pickup" then
-		done=pickup(m,ctx,a,seat,cast)
+		done=pickup(m,ctx,a,seat,cast,fleet)
 	elseif a.op=="dropoff" then
 		local rider=cast.people[a.person]
 		local car=rider.rideId and fleet.vehicles[rider.rideId]
@@ -162,7 +157,8 @@ function missions.tick(m,fleet,cast,dt,input)
 	elseif a.op=="checkpoint" then
 		done=checkpoint(ctx,a,seat,cast,m.radius)
 	elseif a.op=="contract" then
-		done=contract(m,ctx,a,seat,cast,input[m.owner] or {})
+		m.target=cast:position(a.person)
+		done=contractHit
 	end
 	if done then
 		if m.step==m.total then finish(m,"complete","Story complete.")

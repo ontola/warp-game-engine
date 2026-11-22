@@ -54,7 +54,7 @@ local function tick(dt, input)
 	population.tick(state.population, state.city, state.fleet.players, dt, state.clock.hour, state.interiors)
 	if state.storyCast then state.storyCast:tick(dt) end
 	impacts.tick(state.population, state.fleet, dt)
-	combat.tick(state.combat, state.story, dt, input)
+	combat.tick(state, dt, input)
 	if state.story then stories.tick(state, dt, input) else dispatch.tick(state.job, state.fleet, dt) end
 	waypoint.update(state)
 	ambience.headlights(state.fleet.players, state.clock)
@@ -73,6 +73,7 @@ end
 
 return {
 	init = init, tick = tick, draw = draw, player_joined = join,
+	reload = function() combat.reload(state) end,
 	apply_story = function(definition)
 		local title, err = stories.start(state, definition)
 		if title then waypoint.update(state) end

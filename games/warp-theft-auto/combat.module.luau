@@ -1,8 +1,9 @@
--- Two marked rivals patrol the sidewalk across the first intersection. Civilians
--- and other seats never enter the arcade pistol's list of eligible targets.
+-- One pistol per local seat. Each shot resolves against the nearest visible
+-- person across the shared street crowd, interior residents, rivals and cast.
 local Cast=require("story_cast")
 local crowd=require("kit/crowd")
 local fx=require("combat_fx")
+local impacts=require("impacts")
 local sidearm=require("sidearm")
 local combat={}
 local v=vector.create
@@ -13,16 +14,18 @@ local routes={
 local marker={color="#ff3654",emissive=.45}
 local markerPoints={v(-.23,.16,0),v(.23,.16,0),v(0,.16,-.23),v(0,.16,.23),v(0,-.12,0)}
 local markerEdges={1,5,2,5,3,5,4,5}
--- The city already owns the fleet and avatars. Avoid duplicating them in game state.
-local systems=setmetatable({},{__mode="k"})
 
 function combat.new(fleet,pop)
 	world.warm("wire",marker)
 	fx.warm()
 	local s={players={},enemies={},cast=Cast.new(fleet,pop,crowd.new("rival")),effects=fx.new()}
 	for _,r in routes do s.enemies[r.key]={health=2,respawnIn=0} end
-	systems[s]={fleet=fleet,avatars=pop.avatars}
 	return s
+end
+
+function combat.reload(state)
+	if state.combat then Cast.bind(state.combat.cast,state.fleet,state.population,crowd.new("rival")) end
+	if state.storyCast then Cast.bind(state.storyCast,state.fleet,state.population) end
 end
 
 local function removeMarker(enemy)
@@ -67,57 +70,100 @@ local function updateRivals(s,fleet,dt)
 	end
 end
 
-local function contractOwner(story,seats)
-	if not story or story.status~="active" or not story.weapon then return nil end
-	if seats[story.owner] then return story.owner end
-	-- Missions hands a disconnected owner's contract to the lowest remaining seat.
-	local owner
-	for id,seat in seats do if not seat.bot and (not owner or id<owner) then owner=id end end
-	return owner
+local RANGE=sidearm.range
+
+local function targetOnRay(state,seat,origin,ray)
+	local s,story,cast=state.combat,state.story,state.storyCast
+	local target
+	-- Prefer the authored actor at a tie, e.g. when a story has placed two
+	-- people at the exact same spot. A closer pedestrian always wins.
+	local function consider(kind,key,p,feet,range,actor)
+		local height
+		local pos=feet
+		if p.impact and p.impact.stage=="down" and actor then
+			local hips=humans.joint(actor,"hips")
+			if hips then pos,height=hips-v(0,.23,0),.55 end
+		elseif p.pose=="sit" then height=1.25 end
+		local along,point=sidearm.intersect(origin,ray,seat.pos,pos,range,height)
+		if along and (not target or along<target.along or
+			(along==target.along and kind==target.kind and key<target.key)) then
+			target={kind=kind,key=key,along=along,point=point,feet=feet}
+		end
+	end
+	if cast then
+		for key,p in cast.people do
+			if not p.shot then
+				local range=if story and key==story.contractPerson then story.contractRange else RANGE
+				consider("cast",key,p,p.pos,range,p.actor)
+			end
+		end
+	end
+	for _,route in routes do
+		local p=s.cast.people[route.key]
+		if p and s.enemies[route.key].health>0 then consider("rival",route.key,p,p.pos,RANGE,p.actor) end
+	end
+	impacts.visitResidents(state.population,origin,origin+ray*(RANGE+2),function(id,c,feet,actor)
+		consider("resident",id,c,feet,RANGE,actor)
+	end)
+	if target and sidearm.clear(origin,ray,target.along) then return target end
+	return nil
 end
 
-local function shoot(s,id,player,seat,input)
-	local pressed=input.pressed and input.pressed.fire
-	local aimed=seat.aiming==true
+local function hitTarget(state,target,ray)
+	local s,story,cast=state.combat,state.story,state.storyCast
+	local key=target.key
+	local push=ray*2+v(0,.3,0)
+	if target.kind=="resident" then
+		return impacts.shootResident(state.population,state.fleet,key,target.feet,push),true
+	elseif target.kind=="cast" then
+		local p=cast.people[key]
+		if not cast:hit(key,push) then return false,false end
+		p.shot=true
+		if story and story.status=="active" then
+			story.shotPeople=story.shotPeople or {}
+			story.shotPeople[key]=true
+		end
+		return true,true
+	end
+	local enemy=s.enemies[key]
+	local lethal=enemy.health==1
+	if lethal and not s.cast:hit(key,push) then return false,false end
+	enemy.health-=1
+	if lethal then
+		enemy.respawnIn=12
+		removeMarker(enemy)
+	end
+	return true,lethal
+end
+
+local function shoot(state,id,player,seat,input)
+	local pressed=sidearm.trigger(input)
 	local enabled=seat.mode=="walk" and not seat.impact
-	player.aiming,player.onTarget=enabled and aimed,false
+	player.aiming,player.onTarget=enabled and seat.aiming==true,false
 	if not enabled then
 		sidearm.remove(player)
 		return
 	end
 	local origin,ray
-	if aimed then origin,ray=sidearm.ray(id)
+	if player.aiming then origin,ray=sidearm.ray(id)
 	elseif pressed or player.shotFlash>0 then origin,ray=sidearm.hipRay(seat) end
-	sidearm.follow(player,systems[s].avatars[id],seat,ray)
-	if not ray then return end
-	local key,point,nearest=nil,nil,math.huge
-	for _,route in routes do
-		local actor=s.cast.people[route.key]
-		if actor and not actor.impact and s.enemies[route.key].health>0 then
-			local along,hit=sidearm.contact(origin,ray,seat.pos,actor.pos,42)
-			if along and along<nearest then nearest,key,point=along,route.key,hit end
-		end
-	end
-	player.onTarget=key~=nil
-	if not sidearm.discharge(player,player,seat,input) or not key then return end
-	local enemy=s.enemies[key]
-	local lethal=enemy.health==1
-	if lethal and not s.cast:hit(key,ray*2+v(0,.3,0)) then return end
+	sidearm.follow(player,state.population.avatars[id],seat,ray)
+	if not ray or (not player.aiming and not pressed) then return end
+	local target=targetOnRay(state,seat,origin,ray)
+	player.onTarget=target~=nil
+	if not sidearm.discharge(player,player,seat,input,target and target.point,origin,ray) or not target then return end
+	local hit,lethal=hitTarget(state,target,ray)
+	if not hit then return end
 	player.hits+=1
-	enemy.health-=1
-	fx.hit(s.effects,point,ray,lethal,game.tick()+id)
-	if lethal then
-		player.defeats+=1
-		enemy.respawnIn=12
-		removeMarker(enemy)
-	end
+	if lethal then player.defeats+=1 end
+	sidearm.confirmHit(player,target.point)
+	fx.hit(state.combat.effects,target.point,ray,lethal,game.tick()+id)
 end
 
-function combat.tick(s,story,dt,input)
-	local fleet=systems[s].fleet
+function combat.tick(state,dt,input)
+	local s,fleet,story=state.combat,state.fleet,state.story
 	fx.tick(s.effects,dt)
 	updateRivals(s,fleet,dt)
-	local owner=contractOwner(story,fleet.players)
 	for id,player in s.players do
 		if not fleet.players[id] or fleet.players[id].bot then
 			sidearm.remove(player)
@@ -125,7 +171,6 @@ function combat.tick(s,story,dt,input)
 			s.players[id]=nil
 		end
 	end
-	-- A simultaneous hit is awarded in player order.
 	for _,info in players.list() do
 		local id=info.id
 		local seat=fleet.players[id]
@@ -136,11 +181,9 @@ function combat.tick(s,story,dt,input)
 			s.players[id]=player
 		end
 		sidearm.tickFlash(player,player,dt)
-		if owner==id then
-			player.aiming,player.onTarget=false,false
-			sidearm.remove(player)
-		else
-			shoot(s,id,player,seat,input[id] or {})
+		shoot(state,id,player,seat,input[id] or {})
+		if story and story.weapon and story.owner==id then
+			story.aiming,story.onTarget,story.shotFlash=player.aiming,player.onTarget,player.shotFlash
 		end
 	end
 end

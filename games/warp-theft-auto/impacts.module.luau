@@ -114,6 +114,14 @@ local function advance(pop,p,actor,seat,dt,boxes)
 			p.pos=v(hips.x,p.pos.y,hips.z)
 			if seat or p.story then world.place(p.body,p.pos+HIP,p.yaw) end
 		end
+		if p.shot then return end
+		if p.shotUntil then
+			if hit.elapsed >= 4 then
+				p.impact,p.externalPose,p.previousFeet,p.active=nil,nil,nil,false
+				pop.selectionIn=0
+			end
+			return
+		end
 		-- Wait until the body and its immediate exit are clear of fast chassis.
 		-- A body can come to rest relative to the bonnet while it is still rolling.
 		local clear=hit.elapsed>=1.5
@@ -224,7 +232,7 @@ end
 -- uses. Keep a small spatial index until the next crowd selection. Only cars
 -- near a seat query it, so a helicopter crossing town doesn't fit every driver.
 local indexedPop, revision, sampleTime, streetCells
-local function promoteContacts(pop,fleet,dt,boxes,grid)
+local function indexResidents(pop)
 	if not pop.streetRevision then return end
 	if indexedPop~=pop or revision~=pop.streetRevision then
 		indexedPop,revision,sampleTime,streetCells=pop,pop.streetRevision,pop.elapsed,{}
@@ -237,6 +245,59 @@ local function promoteContacts(pop,fleet,dt,boxes,grid)
 			end
 		end
 	end
+end
+
+-- Fitted humans use exact feet; distant humans use the same interpolated sample
+-- as the renderer. Only visit occupied street cells along this shot's bounds.
+function impacts.visitResidents(pop, origin, endpoint, visit)
+	for id,actor in pop.pedestrians.active do
+		local c=pop.residents[id]
+		if c and c.active~=false and not c.shotUntil then visit(id,c,c.pos,actor) end
+	end
+	indexResidents(pop)
+	if not streetCells then return end
+	local age=math.clamp((pop.elapsed-sampleTime)/.4,0,1)
+	local margin=1.5 -- capsule width and travel between street snapshots
+	for x=math.floor((math.min(origin.x,endpoint.x)-margin)/CELL),math.floor((math.max(origin.x,endpoint.x)+margin)/CELL) do
+		for z=math.floor((math.min(origin.z,endpoint.z)-margin)/CELL),math.floor((math.max(origin.z,endpoint.z)+margin)/CELL) do
+			for _,row in streetCells[cell(x,z)] or EMPTY do
+				local c=pop.residents[row.id]
+				if not c.shotUntil and c.active~=false and not pop.pedestrians.active[row.id] then
+					visit(row.id,c,row.a+(row.b-row.a)*age)
+				end
+			end
+		end
+	end
+end
+
+function impacts.shootResident(pop, fleet, id, feet, push)
+	local c=pop.residents[id]
+	if not c or c.shotUntil then return false end
+	local home=c.pos
+	c.pos=feet
+	local actor=pop.pedestrians.active[id]
+	if not actor then
+		local observers={}
+		for _,seat in fleet.players do if not seat.bot then table.insert(observers,seat.pos) end end
+		actor=pop.pedestrians:promote(id,pop.residents,observers)
+	end
+	c.shotUntil=pop.elapsed+20
+	if actor and humans.ragdoll(actor,push) then
+		c.impact={stage="down",elapsed=0,home=home}
+		c.externalPose=true
+		pop.impactResidents[id]=c
+	else
+		-- On a device with no compatible skin slot, release the distant stand-in
+		-- at the next snapshot. Damage and visible impact effects still register.
+		c.active=false
+	end
+	pop.selectionIn=0
+	return true
+end
+
+local function promoteContacts(pop,fleet,dt,boxes,grid)
+	indexResidents(pop)
+	if not streetCells then return end
 	local observers={}
 	for _,seat in fleet.players do if not seat.bot then table.insert(observers,seat.pos) end end
 	local age=math.clamp((pop.elapsed-sampleTime)/.4,0,1)
@@ -253,7 +314,7 @@ local function promoteContacts(pop,fleet,dt,boxes,grid)
 			for z=math.floor((math.min(a.z,b.z)-MARGIN)/CELL),math.floor((math.max(a.z,b.z)+MARGIN)/CELL) do
 				for _,row in streetCells[cell(x,z)] or EMPTY do
 					local c=pop.residents[row.id]
-					if c.impact or pop.pedestrians.active[row.id] then continue end
+					if c.impact or c.shotUntil or pop.pedestrians.active[row.id] then continue end
 					local delta=row.b-row.a
 					local feet,before=row.a+delta*age,row.a+delta*previous
 					local t,out=contact(box,before,feet)
@@ -291,7 +352,9 @@ function impacts.tick(pop,fleet,dt)
 	end
 	for id,actor in pop.pedestrians.active do
 		local c=pop.residents[id]
-		if c and not c.building then
+		if c and c.building and c.impact then
+			advance(pop,c,actor,false,dt,EMPTY)
+		elseif c and not c.building and c.active~=false then
 			person(pop,c,actor,false,dt,boxes,grid)
 			if c.impact then pop.impactResidents[id]=c end
 		end
@@ -303,6 +366,12 @@ function impacts.tick(pop,fleet,dt)
 		if not c.impact then
 			pop.impactResidents[id]=nil
 		elseif not pop.pedestrians.active[id] then
+			if c.shotUntil then
+				c.pos,c.impact,c.externalPose,c.previousFeet,c.active=c.impact.home,nil,nil,nil,false
+				pop.impactResidents[id]=nil
+				pop.selectionIn=0
+				continue
+			end
 			local point,when=routePoint(pop,c,c.pos,boxes)
 			if not point then point,when=routePoint(pop,c,c.pos,EMPTY) end
 			c.pos,c.impact,c.externalPose,c.previousFeet=point,nil,nil,nil

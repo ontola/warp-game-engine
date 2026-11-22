@@ -7,15 +7,17 @@ local v=vector.create
 local HIP=v(0,.85,0)
 local QUERY={tag="city"}
 local Cast={}
-Cast.__index=Cast
--- Keep the cast's serialized state compact; the city already owns these systems.
-local worlds=setmetatable({},{__mode="k"})
+-- The metatable supplies methods and shared services outside serialized cast
+-- data. Rebind it on a live edit without respawning a person or a car.
+function Cast.bind(self,fleet,population,fitter)
+	fleet.storyPeople=fleet.storyPeople or {}
+	return setmetatable(self,{
+		__index=Cast, fleet=fleet, population=population, fitter=fitter or population.pedestrians,
+	})
+end
 
 function Cast.new(fleet,population,fitter)
-	local self=setmetatable({people={},cars={}},Cast)
-	worlds[self]={fleet=fleet,population=population,fitter=fitter or population.pedestrians}
-	fleet.storyPeople=fleet.storyPeople or {}
-	return self
+	return Cast.bind({people={},cars={}},fleet,population,fitter)
 end
 
 local function duplicate(self,key)
@@ -24,7 +26,7 @@ end
 
 function Cast:person(key,opts)
 	if duplicate(self,key) then return nil,"duplicate cast name" end
-	local systems=worlds[self]
+	local systems=getmetatable(self)
 	local pop=systems.population
 	local observers={}
 	for _,seat in systems.fleet.players do if not seat.bot then table.insert(observers,seat.pos) end end
@@ -52,7 +54,7 @@ end
 
 function Cast:car(key,opts)
 	if duplicate(self,key) then return nil,"duplicate cast name" end
-	local car=mobility.add_car(worlds[self].fleet,opts.pos,opts.yaw or 0,opts.paint)
+	local car=mobility.add_car(getmetatable(self).fleet,opts.pos,opts.yaw or 0,opts.paint)
 	car.name,car.arrived=opts.name or key,true
 	self.cars[key]=car
 	return car
@@ -85,7 +87,7 @@ end
 
 local function resolveCar(self,key)
 	if type(key)=="table" then return key end
-	if type(key)=="number" then return worlds[self].fleet.vehicles[key] end
+	if type(key)=="number" then return getmetatable(self).fleet.vehicles[key] end
 	return self.cars[key]
 end
 
@@ -138,7 +140,7 @@ end
 function Cast:dismount(key)
 	local p=self.people[key]
 	if not p or not p.rideId then return false end
-	local fleet=worlds[self].fleet
+	local fleet=getmetatable(self).fleet
 	local car=fleet.vehicles[p.rideId]
 	local pos=if car then mobility.exitAt(fleet,car,if p.seat=="driver" then -1 else 1) else p.pos
 	if not pos then return false end
@@ -178,7 +180,10 @@ function Cast:hit(key,push)
 	local p=self.people[key]
 	if not p then return false end
 	p.wasHit,p.route,p.arrived=true,nil,false
-	if p.rideId or p.impact then return true end
+	if p.rideId then
+		if not self:dismount(key) then releaseSeat(p,getmetatable(self).fleet.vehicles[p.rideId]) end
+	end
+	if p.impact and p.impact.stage=="down" then return true end
 	if not humans.ragdoll(p.actor,push or v(0,1,-2)) then return false end
 	p.impact={stage="down",elapsed=0,home=p.pos}
 	p.externalPose=true
@@ -191,7 +196,7 @@ function Cast:wasHit(key)
 end
 
 function Cast:tick(dt)
-	local fleet=worlds[self].fleet
+	local fleet=getmetatable(self).fleet
 	for _,p in self.people do
 		if p.impact then continue end
 		if p.rideId then
@@ -216,7 +221,7 @@ function Cast:tick(dt)
 end
 
 function Cast:remove(key)
-	local fleet=worlds[self].fleet
+	local fleet=getmetatable(self).fleet
 	local p=self.people[key]
 	if p then
 		if p.rideId then releaseSeat(p,fleet.vehicles[p.rideId]) end

@@ -128,6 +128,15 @@ fn contract_uses_the_owner_camera_and_a_clear_shot() {
         local s,p=state.storyCast,state.fleet.players[1]
         s:pose("jack","idle")
         local target=s:position("jack")
+        -- Isolate the wall test from pedestrians crossing in front of the cover.
+        for _,c in state.population.street do
+            if math.abs(c.pos.x-target.x)<3 and math.abs(c.pos.z-target.z)<13 then
+                c.path,c.action=nil,"idle"
+                c.pos+=vector.create(5,0,0)
+                c.nextPos=c.pos
+            end
+        end
+        state.population.selectionIn=0
         world.place(p.body,target+vector.create(-.46,.85,7))
         p.view,p.pitch=0,-.055
         state.testWall=world.spawn("cube",{tag="city",solid=true,pos=target+vector.create(0,1.2,3),size=vector.create(2,3,.3)})

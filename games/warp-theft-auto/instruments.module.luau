@@ -1,6 +1,7 @@
 local ui = require("kit/ui")
 local city = require("world")
 local dispatch = require("dispatch")
+local sidearm = require("sidearm")
 local instruments = {}
 local ink, muted, panel = "#fff6df", "#b9cbd0", "#101e26ec"
 local gold, aqua = "#ffd360", "#6bdfd0"
@@ -63,7 +64,7 @@ end
 local function objective(story, left, top, width, s)
 	local headline = if story.status=="active" then story.title .. "   " .. story.step .. "/" .. story.total else story.title
 	if story.raceTime then headline ..= string.format("   %d:%04.1f", math.floor(story.raceTime / 60), story.raceTime % 60) end
-	local info = if story.status=="complete" then "Mission complete" elseif story.status=="failed" then "Mission failed" else story.objective or ""
+	local info = if story.status=="complete" then "Mission complete" elseif story.status=="failed" then "Mission failed · " .. (story.objective or "") else story.objective or ""
 	local lines, line = {}, ""
 	for word in string.gmatch(info, "%S+") do
 		local nextLine = if line=="" then word else line .. " " .. word
@@ -80,13 +81,34 @@ local function objective(story, left, top, width, s)
 	for i, part in lines do text(part,left+11*s,top+(8+i*20)*s,17*s,ink) end
 end
 
-local function reticle(gun,x,y,w,h,s)
+local function reticle(gun,seat,id,x,y,w,h,s)
 	local cx,cy=x+w*.5,y+h*.5
 	if gun.aiming then
 		local c = if gun.onTarget then "#ff9774" else ink
+		local gap = 8+36*(gun.shotFlash or 0)
 		for _,d in {-1,1} do
-			hud.box(cx+d*8*s-1*s,cy-1*s,3*s,2*s,c)
-			hud.box(cx-s,cy+d*8*s-s,2*s,3*s,c)
+			hud.box(cx+(d*gap-1)*s,cy-s,3*s,2*s,c)
+			hud.box(cx-s,cy+(d*gap-1)*s,2*s,3*s,c)
+		end
+	else
+		-- The exploration camera looks down toward the avatar. Project the hip
+		-- shot direction into this seat's view, where the player can actually fire.
+		local origin,ray=sidearm.hipRay(seat)
+		cx,cy=hud.project(origin+ray*25,id)
+		if cx and cx>x+4*s and cx<x+w-4*s and cy>y+4*s and cy<y+h-4*s then
+			local radius=(1.4+9*(gun.shotFlash or 0))*s
+			hud.box(cx-radius-s,cy-radius-s,(radius+s)*2,(radius+s)*2,"#18202898")
+			hud.box(cx-radius,cy-radius,radius*2,radius*2,ink)
+		end
+	end
+	if gun.hitPoint then
+		local hx,hy=hud.project(gun.hitPoint,id)
+		if hx and hx>x+14*s and hx<x+w-14*s and hy>y+14*s and hy<y+h-14*s then
+			for _,dx in {-1,1} do
+				for _,dy in {-1,1} do
+					for k=5,9,2 do hud.box(hx+(dx*k-1)*s,hy+(dy*k-1)*s,2.5*s,2.5*s,"#ffe0bd") end
+				end
+			end
 		end
 	end
 end
@@ -135,10 +157,9 @@ function instruments.draw(cityState, fleet, clock, job, player, story, menu, tit
 		action = if seat.mode == "fly" then "Space / A   Rise     Shift / RB   Lower" else "W / RT   Gas     S / LT   Brake"
 		if seat.mode == "drive" and math.abs(seat.speed) < 2 then action = "W / RT   Gas     F / Y   Exit" end
 	end
-	local gun = if story and story.owner == id and story.weapon == "Arcade pistol" then story else weapon
-	local armed = seat.mode == "walk" and gun ~= nil
-	local gunHint = "RMB / LT   Aim     LMB / RT   Fire"
-	if armed then reticle(gun,x,y,w,h,s) end
+	local armed = seat.mode == "walk" and not seat.impact and weapon ~= nil
+	local gunHint = "RMB / LT   Aim     LMB / Space / RT   Fire"
+	if armed and menu.owner~=id then reticle(weapon,seat,id,x,y,w,h,s) end
 	text("R / X   Stories",mx+2*s,my-39*s,14*s,ink)
 	local aw = math.max(hud.measure(action,16*s), hud.measure(mode,23*s), if armed then hud.measure(gunHint,15*s) else 0) + 24*s
 	local height = (if armed then 80 else 58)*s

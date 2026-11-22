@@ -23,7 +23,7 @@ A new round generates a new city seed. Pass `--seed 1948` to replay a layout. Th
 | Sprint | Shift | RB or LB |
 | Stories | R, arrows and Space | X, D-pad and A |
 | Edit a Luau story in the browser | F2 | |
-| Aim and fire the arcade pistol on foot | Right and left mouse | LT and RT |
+| Aim and fire the arcade pistol on foot | Hold right mouse to aim, left-click or tap Space to fire | LT and RT |
 | Take a vehicle or get out | F | Y / North |
 | Accelerate or brake and reverse | W / S | RT / LT or left stick |
 | Steer and handbrake | A / D, Space | Left stick, A |
@@ -34,7 +34,9 @@ Walk through the double doors under the lit strip to enter any office, hotel or 
 
 Take a parked car or wait alongside a traffic car at a stop. Slow down to get out. A helicopter must land first. On the map, white marks your position and heading, coral marks other players, teal marks available helicopters, and gold marks the current job.
 
-Every on-foot player carries a pistol. From the starting car, look across the first intersection for Rook and Vex, the two red chevrons on the sidewalk. Click or tap RT to fire. Hold the right mouse button or LT for the shoulder view. The crosshair turns coral over a rival in range with a clear line of sight. Two hits knock a rival down. Shots from different seats count toward the same rival’s defeat. The rivals return after 12 seconds.
+Every on-foot player carries a pistol. Click the city to capture the mouse. Left-click, tap Space or press RT to fire. Hold the right mouse button or LT for the shoulder view. The free-roam pistol reaches 75 metres, far enough to shoot across a city block. The crosshair turns coral over a person in range. A brief streak shows the shot, and a cross at the impact point confirms a hit. You can shoot passing pedestrians, people inside buildings, and story characters. Shooting someone needed by a delivery story can fail that mission.
+
+Rook and Vex patrol across the starting intersection under red chevrons. They take two hits and return after 12 seconds. Players in different seats can hit the same person or complete a contract together.
 
 Gold diamonds follow the current person or car in the world. At a destination, a gold ring shows where to stop or land. Race checkpoints add four tall posts around the crossing area. Every seat sees the same objective, including when a custom Luau story moves its target.
 
