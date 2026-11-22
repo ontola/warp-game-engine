@@ -52,9 +52,10 @@ with `warp::web::load` and swaps it in with `app::web::switch_keeping`,
 which keeps the room as it was, its scene still on the GPU
 (`app::web::Parked`). Back (Select, Tab on the keyboard) or the game's own
 Quit brings the room back with `app::web::resume` (`app::web::on_exit`):
-its first frame comes in about 40 ms instead of a new upload of the room
-(5 s on an M5 Pro). Back keeps the game paused, also on the GPU, so the TV
-offers Resume as at home. The queue starts with
+its first frame comes 5 to 10 ms after Back on an M5 Pro, where uploading
+the room again took 5 s. Back keeps the game paused, also on the GPU, so
+the TV offers Resume as at home (and starting that game again resumes it,
+its first frame in about 10 ms). The queue starts with
 every game and never runs dry (a started or skipped game goes to the end).
 The room's light is baked ahead by `game-room bake-light` into
 `room-light.bin` next to the page (`Options::light_cache`): baked on the
