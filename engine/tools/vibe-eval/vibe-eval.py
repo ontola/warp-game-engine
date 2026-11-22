@@ -32,8 +32,12 @@ single game.luau). Read these first: {repo}/engine/docs/kit.md (the game kit:
 controllers, cameras, HUD, round flow, bots), {repo}/engine/crates/warp/starter/types.d.luau
 (the whole API) and {repo}/engine/docs/warp-cli.md. Templates: `{warp} templates`.
 Check your work with `{warp} check . --ticks 1800 --bots 3` (no GPU) until it
-shows no errors. It must work with bots filling empty seats, for 1 to 4 people
-in split screen, and end a round with game.finish().
+shows no errors. Then look at it: `{warp} script . look.json --out shots`
+with look.json `{{"size": [960, 540], "steps": [{{"ticks": 600}}, {{"capture": "a.png"}}]}}`
+renders a frame (on a CPU too), so read the PNG and fix what looks wrong.
+It must work with bots filling empty seats, for 1 to 4 people in split
+screen, and end a round with game.finish() (a normal round length; the
+scorer plays three minutes).
 """
 
 
