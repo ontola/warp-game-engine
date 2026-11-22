@@ -85,7 +85,10 @@ profiles on seats (the player there takes their name, skin, face and
 colour) and a game a phone picked (first in the queue, or started at once),
 or a change to the queue. A pickup at a door in the room (Y) reaches the
 page through `Lobby::outbox` (`room_pickup`) and claims the profile for
-that seat (`/v1/lobbies/pickup`). The cloud sends no CORS headers, so the
+that seat (`/v1/lobbies/pickup`). A phone that asks to play on the phone
+alone (the cloud's phone seat) gets a player without a controller, which
+the page claims for it after the next poll; the room seats it on the
+bench with the phones, and it leaves when its profile leaves. The cloud sends no CORS headers, so the
 page must come from the cloud's own origin (behind the same web server) or
 name it with `?cloud=`; without a cloud the room shows no code and plays on.
 To test locally, run `gamenight-cloud` and serve `build/web` and `/v1` on

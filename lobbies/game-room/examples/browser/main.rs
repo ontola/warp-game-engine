@@ -62,6 +62,11 @@ mod page {
         /// The device on each seat; None: free (the next device pressing a
         /// button takes it).
         bound: Vec<Option<Device>>,
+        /// Seats of players who play on their phone alone (the cloud's
+        /// "phone seat"): no device takes them.
+        pub(crate) phone: Vec<bool>,
+        /// The next new player's id number (ids stay when others leave).
+        next_id: usize,
         pub(crate) cloud: crate::cloud::Cloud,
     }
 
@@ -105,9 +110,9 @@ mod page {
         for (dev, c) in devices {
             let active = c.pressed.0 != 0 || c.mv[0].abs().max(c.mv[1].abs()) > 0.6;
             if !active || h.bound.contains(&Some(*dev)) { continue; }
-            let seat = match h.bound.iter().position(Option::is_none) {
+            let seat = match (0..h.bound.len()).find(|&i| h.bound[i].is_none() && !h.phone[i]) {
                 Some(i) => i,
-                None if h.bound.len() < MAX_SEATS => add_player(h),
+                None if h.bound.len() < MAX_SEATS => add_player(h, false),
                 None => continue,
             };
             h.bound[seat] = Some(*dev);
@@ -117,6 +122,8 @@ mod page {
             let controller = match b {
                 Some(d) if devices.iter().any(|(x, _)| x == d) => json!(format!("web:{d}")),
                 Some(_) => Value::Null,
+                // A phone player has no controller; the party lists its phone.
+                None if h.phone[i] => Value::Null,
                 None => json!(format!("demo:{i}")),
             };
             if h.party["seats"][i]["controller"] != controller {
@@ -127,10 +134,17 @@ mod page {
         Some(h.bound.iter().map(|b| b.iter().copied().collect()).collect())
     }
 
-    /// A new player on a new seat at the end; returns the seat.
-    fn add_player(h: &mut Host) -> usize {
+    /// The seat of player `id`.
+    pub(crate) fn seat_of(h: &Host, id: &str) -> Option<usize> {
+        h.party["players"].as_array()?.iter().position(|p| p["id"] == id)
+    }
+
+    /// A new player on a new seat at the end (`phone`: one who plays on
+    /// their phone alone); returns the seat.
+    pub(crate) fn add_player(h: &mut Host, phone: bool) -> usize {
         let i = h.bound.len();
-        let id = format!("p{i}");
+        let id = format!("p{}", h.next_id);
+        h.next_id += 1;
         let mut look = json!({});
         look["id"] = json!(id);
         look["name"] = json!(format!("Player {}", i + 1));
@@ -141,28 +155,36 @@ mod page {
         h.own_looks.push(look.clone());
         if let Some(list) = h.party["players"].as_array_mut() { list.push(look); }
         if let Some(seats) = h.party["seats"].as_array_mut() { seats.push(json!({"index": i, "occupant": {"kind": "local", "player_id": id}, "controller": null})); }
+        if phone { if let Some(phones) = h.party["phones"].as_array_mut() { phones.push(json!(id)); } }
         h.bound.push(None);
+        h.phone.push(phone);
         h.players = h.bound.len();
         h.cloud.add_seat();
         h.dirty = true;
         i
     }
 
-    /// The room took a player out (their pad stayed gone). A player who
-    /// joined leaves the table when theirs is the last seat; one of
-    /// `?players=` (or a joined one between others) stays as a free seat for
-    /// the next pad, in their own look again.
-    fn leave_party(h: &mut Host, id: &str) {
-        let Some(i) = id.strip_prefix('p').and_then(|i| i.parse::<usize>().ok()).filter(|i| *i < h.bound.len()) else { return };
-        h.bound[i] = None;
-        h.cloud.free_seat(i);
-        if let Some(own) = h.own_looks.get(i) { h.party["players"][i] = own.clone(); }
-        while h.bound.len() > h.base && h.bound.last() == Some(&None) {
-            h.bound.pop();
-            h.own_looks.pop();
-            if let Some(list) = h.party["players"].as_array_mut() { list.pop(); }
-            if let Some(seats) = h.party["seats"].as_array_mut() { seats.pop(); }
-            h.cloud.drop_seat();
+    /// The room took player `id` out (their pad stayed gone, or their phone
+    /// left). One of the `?players=` seats stays as a free seat for the next
+    /// pad, in its own look again; any other player leaves the table.
+    pub(crate) fn leave_party(h: &mut Host, id: &str) {
+        let Some(i) = seat_of(h, id) else { return };
+        if let Some(phones) = h.party["phones"].as_array_mut() { phones.retain(|p| p != id); }
+        if i < h.base {
+            h.bound[i] = None;
+            h.phone[i] = false;
+            h.cloud.free_seat(i);
+            if let Some(own) = h.own_looks.get(i) { h.party["players"][i] = own.clone(); }
+        } else {
+            h.bound.remove(i);
+            h.phone.remove(i);
+            h.own_looks.remove(i);
+            if let Some(list) = h.party["players"].as_array_mut() { list.remove(i); }
+            if let Some(seats) = h.party["seats"].as_array_mut() {
+                seats.remove(i);
+                for (k, seat) in seats.iter_mut().enumerate() { seat["index"] = json!(k); }
+            }
+            h.cloud.remove_seat(i);
         }
         h.players = h.bound.len();
         h.dirty = true;
@@ -208,7 +230,7 @@ mod page {
                 "close_overlay" => resume(),
                 "leave_party" => with(|h| leave_party(h, msg["player_id"].as_str().unwrap_or_default())),
                 "room_pickup" => {
-                    let seat = msg["player_id"].as_str().and_then(|p| p.strip_prefix('p')).and_then(|i| i.parse().ok());
+                    let seat = msg["player_id"].as_str().and_then(|p| with(|h| seat_of(h, p)));
                     if let (Some(pending), Some(seat)) = (msg["pending"].as_str(), seat) { crate::cloud::pickup(pending.to_string(), seat); }
                 }
                 _ => {}
@@ -219,8 +241,9 @@ mod page {
     impl Game for Room {
         fn local_players(&self) -> usize { self.lobby.local_players() }
         fn tick(&mut self, controls: &[Controls]) {
-            if let Some((party, players)) = with(|h| std::mem::take(&mut h.dirty).then(|| (h.party.clone(), h.players))) {
-                self.lobby.set_local((0..players).map(|i| format!("p{i}")).collect());
+            if let Some(party) = with(|h| std::mem::take(&mut h.dirty).then(|| h.party.clone())) {
+                let ids = party["players"].as_array().map(|l| l.iter().filter_map(|p| p["id"].as_str().map(String::from)).collect()).unwrap_or_default();
+                self.lobby.set_local(ids);
                 self.lobby.set_party(party);
             }
             if let Some(links) = with(|h| std::mem::take(&mut h.links_dirty).then(|| h.links.clone())) { self.lobby.set_links(links); }
@@ -354,7 +377,7 @@ mod page {
         // Nobody at the doors until the cloud room reports someone.
         let links = json!({"room": {"pending": []}, "linked": {}});
         lobby.set_links(links.clone());
-        with(|h| { h.party = party; h.players = players; h.base = players; h.bound = vec![None; players]; h.links = links; h.own_looks = own_looks; });
+        with(|h| { h.party = party; h.players = players; h.base = players; h.bound = vec![None; players]; h.phone = vec![false; players]; h.next_id = players; h.links = links; h.own_looks = own_looks; });
         app::web::on_exit(leave);
         app::web::on_devices(|d| with(|h| devices(h, d)));
         app::web::run(room_config(), Box::new(Room { lobby }));

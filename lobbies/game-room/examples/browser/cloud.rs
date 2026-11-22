@@ -28,6 +28,9 @@ pub(crate) struct Cloud {
     pub(crate) refresh: bool,
     /// Seats a profile holds, with its account and profile revision.
     applied: Vec<Option<(String, u64)>>,
+    /// Phones that asked to play on the phone alone, by their waiting id:
+    /// the player made for them, and whether it was claimed for them yet.
+    phone_seats: std::collections::HashMap<String, (String, bool)>,
 }
 
 impl Cloud {
@@ -38,10 +41,12 @@ impl Cloud {
         self.refresh = true;
     }
 
-    /// The last seat's player left the table.
-    pub(crate) fn drop_seat(&mut self) {
-        self.seats.pop();
-        self.applied.pop();
+    /// Seat `index`'s player left the table; the seats after it move up.
+    pub(crate) fn remove_seat(&mut self, index: usize) {
+        if index >= self.seats.len() { return; }
+        self.seats.remove(index);
+        self.applied.remove(index);
+        for (k, seat) in self.seats.iter_mut().enumerate() { seat["index"] = json!(k); }
         self.refresh = true;
     }
 
@@ -193,6 +198,7 @@ fn apply(h: &mut Host, reply: &Value) -> Option<(String, bool)> {
         }
         h.dirty = true;
     }
+    phones(h, reply, &held);
     // A game a phone on a seat picked (first in the queue, or started now),
     // or its change to the queue.
     let s = &reply["selection"];
@@ -217,6 +223,46 @@ fn apply(h: &mut Host, reply: &Value) -> Option<(String, bool)> {
     h.cloud.refresh = true;
     queue(h, &game, true);
     Some((game, s["start"] == true))
+}
+
+/// Phones that asked to play on the phone alone (the cloud's phone seat,
+/// as the native host's bridge does it): a player without a controller is
+/// added for each, and claimed for it once a poll has reported that seat. A
+/// phone player whose profile left, or whose phone gave up waiting before
+/// the claim, leaves the table again.
+fn phones(h: &mut Host, reply: &Value, held: &[Option<(String, u64, Value)>]) {
+    let waiting: Vec<&Value> = reply["pending"].as_array().into_iter().flatten().filter(|p| p["phone_seat"] == true).collect();
+    let mut leave = vec![];
+    for p in &waiting {
+        let Some(id) = p["id"].as_str() else { continue };
+        match h.cloud.phone_seats.get(id).cloned() {
+            None if h.cloud.seats.len() < 8 => {
+                let seat = crate::page::add_player(h, true);
+                let player = h.party["players"][seat]["id"].as_str().unwrap_or_default().to_string();
+                if let Some(name) = p["profile"]["display_name"].as_str() { h.party["players"][seat]["name"] = json!(name); }
+                h.cloud.phone_seats.insert(id.to_string(), (player, false));
+            }
+            // The poll that brought this reply already reported the new seat.
+            Some((player, false)) => if let Some(seat) = crate::page::seat_of(h, &player) {
+                pickup(id.to_string(), seat);
+                h.cloud.phone_seats.insert(id.to_string(), (player, true));
+            },
+            _ => {}
+        }
+    }
+    let gone: Vec<String> = h.cloud.phone_seats.keys().filter(|id| !waiting.iter().any(|p| p["id"] == id.as_str())).cloned().collect();
+    for id in gone {
+        let Some((player, _)) = h.cloud.phone_seats.remove(&id) else { continue };
+        let linked = crate::page::seat_of(h, &player).is_some_and(|seat| held.get(seat).is_some_and(Option::is_some));
+        if !linked { leave.push(player); }
+    }
+    // A phone player whose profile left its seat.
+    for (seat, now) in held.iter().enumerate() {
+        if now.is_none() && h.phone.get(seat) == Some(&true) && !h.cloud.phone_seats.values().any(|(p, _)| h.party["players"][seat]["id"] == p.as_str()) {
+            if let Some(id) = h.party["players"][seat]["id"].as_str() { leave.push(id.to_string()); }
+        }
+    }
+    for player in leave { crate::page::leave_party(h, &player); }
 }
 
 /// The room's QR code as the native host draws it (game_room::qr reads it back).
