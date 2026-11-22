@@ -30,6 +30,9 @@ splitscreen-club = { path = "../../engine/crates/splitscreen-club" }
 # its shelf. Only for wasm32, so native builds and tests never compile warp.
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 warp = { path = "../../engine/crates/warp" }
+# Rust games built into the page (examples/browser/builtin.rs).
+spellstorm-app = { path = "../../games/spellstorm/app" }
+spaceracer-app = { path = "../../games/spaceracer/app" }
 script = { path = "../../engine/crates/script" }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"

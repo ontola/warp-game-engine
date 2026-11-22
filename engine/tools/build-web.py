@@ -144,6 +144,20 @@ def luau_env(env):
     env['RUSTFLAGS'] += f' -L {cxx}'
 
 
+# Rust games built into the page's engine (examples/browser/builtin.rs):
+# `root` is what files.json is relative to (the game fetches
+# games/NAME/files.json and those files), `files` globs below it, and its
+# shelf entry: `meta` a gamenight.json (cover.png beside it) or the fields
+# inline with `cover`.
+RUST_GAMES = {
+    'spellstorm': {'root': 'games/spellstorm/app/assets', 'files': ['kits/**/*', 'characters/**/*'],
+                   'meta': 'games/spellstorm/store/gamenight.json'},
+    'spaceracer': {'root': 'games/spaceracer', 'files': ['rules/*.luau'] + [f'assets/source/assets/{n}.png' for n in ('office-facade', 'corporate-posters', 'city-billboards', 'paint-wear')] + ['assets/source/assets/forest/authored/**/*'],
+                   'id': 'spaceracer', 'title': 'Space Racer', 'players': {'min': 1, 'max': 4},
+                   'cover': 'games/spaceracer/assets/source/assets/gamenight/cover.png'},
+}
+
+
 def copy_games(names):
     """games/NAME for each Luau game, with files.json (its files),
     games/index.json (the names) and games/library.json (the room's shelf:
@@ -176,6 +190,26 @@ def copy_games(names):
                          'players': f'{lo}-{hi}' if lo != hi else str(lo), 'min_players': lo, 'max_players': hi, 'has_cover': cover.exists(),
                          # Bots the game brings itself (game.toml): they fill seats people leave empty.
                          'bots': tomllib.loads((src / 'game.toml').read_text()).get('bots', 0) if (src / 'game.toml').exists() else 0})
+    for name, game in RUST_GAMES.items():
+        # A Rust game built into the engine (examples/browser/builtin.rs):
+        # its files, files.json relative to its root, and its shelf entry.
+        src = ROOT / game['root']
+        files = sorted({str(p.relative_to(src)).replace(os.sep, '/') for pattern in game['files'] for p in src.glob(pattern)
+                        if p.is_file() and p.suffix not in ('.md', '.txt')})
+        if not files: sys.exit(f'{name}: no files match {game["files"]} in {game["root"]}')
+        for rel in files:
+            (out / name / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(src / rel, out / name / rel)
+        (out / name / 'files.json').write_text(json.dumps(files))
+        meta = json.loads((ROOT / game['meta']).read_text()) if 'meta' in game else game
+        cover = ROOT / (game['cover'] if 'cover' in game else game['meta'].rsplit('/', 1)[0] + '/cover.png')
+        if cover.exists(): shutil.copy(cover, out / name / 'cover.png')
+        kb = sum((src / f).stat().st_size for f in files) / 1024
+        print(f'build/web/games/{name}: {len(files)} files, {kb:.0f} KB (built in)')
+        players = meta.get('players', {})
+        lo, hi = players.get('min', 1), players.get('max', 4)
+        library.append({'id': meta.get('id', name), 'folder': name, 'title': meta.get('title', name), 'tagline': meta.get('tagline', ''),
+                         'players': f'{lo}-{hi}' if lo != hi else str(lo), 'min_players': lo, 'max_players': hi, 'has_cover': cover.exists(), 'bots': 0, 'builtin': True})
     (out / 'index.json').write_text(json.dumps(names))
     (out / 'library.json').write_text(json.dumps(library))
 
