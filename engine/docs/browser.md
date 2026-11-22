@@ -90,8 +90,20 @@ name it with `?cloud=`; without a cloud the room shows no code and plays on.
 To test locally, run `gamenight-cloud` and serve `build/web` and `/v1` on
 one port.
 
-The buttons at the top switch games directly (`switch_game`) and go back
-to the room (`back_to_room`). `--bare` builds `examples/warp_web.rs`
+The page (`examples/browser/index.html`, with the room's fonts and icon) is
+Splitscreen Club's loading screen until the room's first frame; later
+loads (a game) show as a small card at the bottom. `?debug` shows the
+engine log and buttons at the top that switch games directly
+(`switch_game`) and go back to the room (`back_to_room`).
+
+Resolution follows the native shell: a canvas taller than 1440 lines
+starts its 3D view at 1440, and `app::quality::AdaptiveQuality` lowers it
+(down to 0.67) while frames miss the game's target (60 fps unless it names
+one), logging each change. On a MacBook Pro M5 Pro (Chrome, 2992x1704
+canvas) the room is GPU-bound: 19.4 ms a frame at full size with about
+5 ms on the page thread, 8.3 ms (120 Hz) at 1080 lines. Every 300 frames
+the page logs the frame interval and the page thread's ticks, draw and
+encode; `?render=H` fixes the 3D view's height to tell GPU from CPU. `--bare` builds `examples/warp_web.rs`
 (crate `warp`) instead: the games and those buttons, no room. What is
 left to do is in [browser-handoff.md](browser-handoff.md).
 

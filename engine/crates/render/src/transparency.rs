@@ -268,24 +268,37 @@ fn sorted_indices(
     excluded_categories: u32,
 ) -> Vec<u32> {
     let forward = (camera.target - camera.pos).normalize_or(Vec3::NEG_Z);
-    let mut depths: Vec<_> = triangles
-        .iter()
-        .enumerate()
-        .filter(|(_, triangle)| visible_in_view(&owners[&triangle.owner], view_index, excluded_categories))
-        .map(|(index, triangle)| {
-            let rows = owners[&triangle.owner].rows;
-            let p = triangle.center.extend(1.0);
-            let world = Vec3::new(
-                glam::Vec4::from(rows[0]).dot(p),
-                glam::Vec4::from(rows[1]).dot(p),
-                glam::Vec4::from(rows[2]).dot(p),
-            );
-            (index as u32, (world - camera.pos).dot(forward))
-        })
-        .collect();
-    // Stable tie-break prevents equal-depth coplanar decals flipping order.
-    depths.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    depths.into_iter().map(|(index, _)| index).collect()
+    // Triangles come in runs of one owner: look each run's owner up once
+    // (the hashing cost more than the depths in the Game Room, in a browser).
+    let mut last: Option<(u32, Option<[glam::Vec4; 3]>)> = None;
+    let mut keys: Vec<u64> = Vec::with_capacity(triangles.len());
+    for (index, triangle) in triangles.iter().enumerate() {
+        let rows = match last {
+            Some((owner, rows)) if owner == triangle.owner => rows,
+            _ => {
+                let instance = &owners[&triangle.owner];
+                let rows = visible_in_view(instance, view_index, excluded_categories)
+                    .then(|| [0, 1, 2].map(|r| glam::Vec4::from(instance.rows[r])));
+                last = Some((triangle.owner, rows));
+                rows
+            }
+        };
+        let Some(rows) = rows else { continue };
+        let p = triangle.center.extend(1.0);
+        let world = Vec3::new(rows[0].dot(p), rows[1].dot(p), rows[2].dot(p));
+        let depth = (world - camera.pos).dot(forward);
+        // Farthest first, then by index (a stable tie-break keeps equal-depth
+        // coplanar decals from flipping order): one u64 key per triangle.
+        keys.push(u64::from(!ordered_bits(depth)) << 32 | index as u64);
+    }
+    keys.sort_unstable();
+    keys.into_iter().map(|k| k as u32).collect()
+}
+
+/// `f`'s bits as a u32 that sorts in the same order as the floats.
+fn ordered_bits(f: f32) -> u32 {
+    let b = f.to_bits();
+    if b & 0x8000_0000 != 0 { !b } else { b | 0x8000_0000 }
 }
 
 fn visible_in_view(instance: &GpuInstance, view_index: usize, excluded_categories: u32) -> bool {

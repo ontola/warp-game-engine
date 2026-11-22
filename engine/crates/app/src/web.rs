@@ -186,6 +186,9 @@ struct Shell {
     /// `?render=H`: draw the 3D view at most H pixels high (to tell GPU-bound
     /// from CPU-bound), whatever the game asks.
     render_height: Option<u32>,
+    /// Lowers the 3D view's resolution while frames miss the game's target
+    /// (60 fps unless it names one), as the native shell does.
+    quality: Option<crate::quality::AdaptiveQuality>,
 }
 
 /// Replace the running game with `game` at the next frame, keeping the
@@ -262,7 +265,7 @@ pub fn run(cfg: crate::Config, game: Box<dyn Game>) {
     let mut devices = Devices::new(cfg.keyboard);
     devices.pointer_enabled = cfg.pointer;
     let shell = Shell { cfg, game, devices, window: None, live: Rc::new(RefCell::new(None)), acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), failed: false, announced: false, hidden_editor:None, switched: None, exited: false, times: Vec::new(),
-        render_height: query_param("render").and_then(|h| h.parse().ok()) };
+        render_height: query_param("render").and_then(|h| h.parse().ok()), quality: None };
     match EventLoop::new() {
         Ok(events) => events.spawn_app(shell),
         Err(e) => log(&format!("event loop: {e}")),
@@ -281,7 +284,7 @@ impl Shell {
         let window = Arc::new(event_loop.create_window(attributes).map_err(|e| e.to_string())?);
         self.window = Some(window.clone());
         let live = self.live.clone();
-        progress(Some(0.8), "Starting WebGPU");
+        progress(Some(0.8), "Starting the graphics");
         wasm_bindgen_futures::spawn_local(async move {
             match setup(window.clone()).await {
                 Ok(l) => {
@@ -332,6 +335,8 @@ impl Shell {
             self.acc = 0.0;
             self.switched = Some(Instant::now());
             self.times.clear();
+            // Each game starts at full resolution, chasing its own target.
+            if let Some(q) = &mut self.quality { q.set_enabled(false); q.set_enabled(true); q.idle(); q.set_target_fps(self.game.target_fps(), None); }
             if let Some(w) = &self.window { w.set_title(&self.cfg.title); }
         }
         // The canvas takes its size from the page's layout, which can settle
@@ -372,7 +377,7 @@ impl Shell {
         // The first scene upload blocks for seconds: show it first.
         if live.renderer.is_none() && !self.announced {
             self.announced = true;
-            progress(Some(0.9), "Uploading the world to the GPU");
+            progress(Some(0.9), "Getting the world ready");
             return Ok(());
         }
         let t_draw = Instant::now();
@@ -395,9 +400,26 @@ impl Shell {
             }
         };
         let view = texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(live.config.format.add_srgb_suffix()), ..Default::default() });
-        live.out.draw(&live.gpu, renderer, &draw, size, split, &view, self.render_height.or(self.cfg.max_render_height))?;
+        let quality = self.quality.get_or_insert_with(|| crate::quality::AdaptiveQuality::new(self.game.target_fps(), None, Instant::now()).unwrap_or_else(|| unreachable!()));
+        // As natively: a large canvas starts from 1440 lines, 0 is native,
+        // and the controller scales down from there.
+        let height = match self.render_height {
+            Some(h) => Some(h),
+            None => match self.cfg.max_render_height {
+                Some(0) => Some(quality.render_height(size[1])).filter(|h| *h < size[1]),
+                Some(h) => Some(quality.render_height(h)),
+                None => Some(quality.render_height(size[1].min(ADAPTIVE_BASE_HEIGHT))).filter(|h| *h < size[1]),
+            },
+        };
+        live.out.draw(&live.gpu, renderer, &draw, size, split, &view, height)?;
         live.gpu.queue.present(texture);
         self.frames += 1;
+        if self.switched.is_none() && self.render_height.is_none() {
+            if quality.frame(f64::from(dt) * 1000.0, Instant::now()) {
+                let next = match self.cfg.max_render_height { Some(0) => quality.render_height(size[1]), Some(m) => quality.render_height(m), None => quality.render_height(size[1].min(ADAPTIVE_BASE_HEIGHT)) };
+                log(&format!("{}: 3D view now {} lines high (chasing {:.0} fps)", self.cfg.title, next.min(size[1]), quality.target_fps()));
+            }
+        }
         if self.switched.is_none() { stats(&mut self.times, &self.cfg.title, [dt * 1000.0, tick_ms, draw_ms, ms(t_out)]); }
         if self.frames == 1 { progress(None, "Ready"); }
         if let Some(at) = self.switched.take() { progress(None, "Ready"); log(&format!("{}: first frame {:.0} ms after the switch", self.cfg.title, at.elapsed().as_secs_f32() * 1000.0)); }
@@ -439,6 +461,9 @@ fn stats(times: &mut Vec<[f32; 4]>, title: &str, sample: [f32; 4]) {
     times.clear();
 }
 
+
+/// A canvas taller than this starts its 3D view here (as natively).
+const ADAPTIVE_BASE_HEIGHT: u32 = 1440;
 
 async fn setup(window: Arc<Window>) -> Result<Live, String> {
     let instance = render::gpu::instance();

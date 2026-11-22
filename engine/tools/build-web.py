@@ -169,7 +169,11 @@ if not args.no_build:
     OUT.mkdir(parents=True, exist_ok=True)
     wasm = ROOT / f'target/wasm32-unknown-unknown/release/examples/{args.example}.wasm'
     subprocess.run([bindgen, '--target', 'web', '--no-typescript', '--out-dir', str(OUT / 'pkg'), str(wasm)], check=True)
-    page = (ROOT / 'engine/crates/app/web/index.html').read_text().replace('terrain_fly', args.example)
+    # The Game Room's page is Splitscreen Club's own (branded loading screen,
+    # the log and game buttons only with ?debug); the others are the engine's.
+    room = args.warp and not args.bare
+    template = ROOT / ('lobbies/game-room/examples/browser/index.html' if room else 'engine/crates/app/web/index.html')
+    page = template.read_text().replace('terrain_fly', args.example)
     if args.warp:
         page = page.replace('<title>Terrain fly</title>', '<title>Warp</title>')
         page = page.replace(f"import init from './pkg/{args.example}.js';", f"import init, * as warp from './pkg/{args.example}.js';\nwindow.warp = warp;")
@@ -177,6 +181,11 @@ if not args.no_build:
             page = page.replace('<title>Warp</title>', '<title>Splitscreen Club</title>')
         page = page.replace('</body>', WARP_PICKER.replace('ROOM', 'false' if args.bare else 'true') + '</body>').replace('</head>', AUDIO_UNLOCK + '</head>')
     (OUT / 'index.html').write_text(page)
+    if room:
+        (OUT / 'fonts').mkdir(exist_ok=True)
+        for name in ('bungee-regular.ttf', 'outfit-600.ttf', 'outfit-800.ttf', 'bungee-LICENSE.txt', 'outfit-LICENSE.txt'):
+            shutil.copy(ROOT / 'lobbies/game-room/assets/fonts' / name, OUT / 'fonts')
+        shutil.copy(ROOT / 'lobbies/game-room/assets/splitscreen-club-icon.png', OUT)
     (OUT / 'assets').mkdir(exist_ok=True)
     if args.example == 'terrain_fly':
         for name in TEXTURES:
