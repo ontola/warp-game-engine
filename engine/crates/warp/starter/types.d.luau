@@ -68,6 +68,7 @@ export type EntityOptions = {
 	roughness: number?, -- 0 mirror .. 1 matte (default 0.7)
 	metal: number?, -- 0 .. 1
 	surface: number?, -- a kind (0 .. 255) of the game's own shader, surface.wgsl; false for none
+	coverage: (number | false)?, -- opaque primitive proxy coverage from 0 to 1; false restores the ordinary material
 	points: { Vec }?, -- "wire" only: points in the entity's own space (set them each tick to animate)
 	edges: { { number } }?, -- "wire" only: pairs of 1-based point numbers, or a flat list
 	width: number?, -- "wire" only: edge thickness in metres at size 1 (default 0.05)
@@ -84,13 +85,14 @@ export type Player = {
 	color: Vec, -- sRGB 0..1, the lobby's colour under Splitscreen Club
 	bot: boolean,
 	human: boolean,
+	view: number?, -- assigned zero-based camera index, including shared split-screen views
 	seat: number?, -- the Splitscreen Club seat
 	couch: number?, -- couch position from the lobby, 0 leftmost
 }
 
 export type Entity = {
 	id: number, parent: number?, world_pos: Vec, shape: string, pos: Vec, rot: Vec, size: Vec, color: Vec,
-	emissive: number, roughness: number, metal: number, surface: number?, solid: boolean, visible: boolean, shadow_only: boolean, hide_views: number, tag: string,
+	emissive: number, roughness: number, metal: number, surface: number?, coverage: number?, solid: boolean, visible: boolean, shadow_only: boolean, hide_views: number, tag: string,
 }
 
 export type Query = {
@@ -115,7 +117,7 @@ declare world: {
 	-- things that move every tick.
 	place: (id: number, pos: Vec, yaw: number?) -> (),
 	-- Prepare a shape and look in init, so spawning it later never stalls.
-	warm: (shape: string, look: { color: Color?, emissive: number?, roughness: number?, metal: number?, surface: number? }?) -> (),
+	warm: (shape: string, look: { color: Color?, emissive: number?, roughness: number?, metal: number?, surface: number?, coverage: (number | false)? }?) -> (),
 	-- An entity's fields, or nil once removed.
 	get: (id: number) -> Entity?,
 	exists: (id: number) -> boolean,

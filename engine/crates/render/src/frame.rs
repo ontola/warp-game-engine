@@ -148,7 +148,8 @@ struct CloseCasterChanges {
     changed: Vec<[f32; 4]>,
 }
 impl CloseCasterChanges {
-    fn update(&mut self, first: usize, instances: &[crate::scene::GpuInstance]) {
+    fn update(&mut self, first: usize, instances: &[crate::scene::GpuInstance]) -> bool {
+        let before = self.changed.len();
         for (old,new) in self.previous[first..first+instances.len()].iter_mut().zip(instances) {
             if bytemuck::bytes_of(old)==bytemuck::bytes_of(new) { continue; }
             for source in [&*old,new] {
@@ -158,6 +159,7 @@ impl CloseCasterChanges {
             }
             *old=*new;
         }
+        self.changed.len() != before
     }
     // An orthographic sunlight map sees a sphere's full silhouette along the
     // sun axis. Check the old and new bounds, including a disappearing caster.
@@ -235,7 +237,7 @@ pub(crate) fn cull_source() -> String { cull_source_with(true) }
 /// keeps every caster and needs no binding 14, which keeps it at the 8
 /// storage buffers per stage of the engine rule (browser.md).
 pub(crate) fn cull_source_with(receiver_demand: bool) -> String {
-    format!("{}\n{}\n{}\n{}\n{}", concat!(include_str!("shaders/virtual_member.wgsl"), "\n", include_str!("shaders/tree_history_key.wgsl"), "\n", include_str!("shaders/grass_common.wgsl")), concat!(include_str!("shaders/cull.wgsl"), "\n", include_str!("shaders/shadow_damage_query.wgsl")), include_str!("shaders/cluster_traversal.wgsl"), crate::receiver_shadow_demand::cull_source(receiver_demand),crate::source_replacement::query_source())
+    format!("{}\n{}\n{}\n{}\n{}", concat!(include_str!("shaders/virtual_member.wgsl"), "\n", include_str!("shaders/tree_history_key.wgsl"), "\n", include_str!("shaders/grass_common.wgsl")), concat!(include_str!("shaders/lod_coverage.wgsl"), "\n", include_str!("shaders/cull.wgsl"), "\n", include_str!("shaders/shadow_damage_query.wgsl")), include_str!("shaders/cluster_traversal.wgsl"), crate::receiver_shadow_demand::cull_source(receiver_demand),crate::source_replacement::query_source())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -4763,11 +4765,16 @@ impl Renderer {
         if let Some(portable)=&self.portable {portable.lock().unwrap().update(first,instances);}
         if let Some(cache) = &self.static_sun { cache.lock().unwrap().update_instances(gpu,first,instances)?; }
         if !instances.is_empty() {
-            if let Some(changes)=&self.close_caster_changes { changes.lock().unwrap().update(first,instances); }
+            let changed_caster = self.close_caster_changes.as_ref().map(|c| c.lock().unwrap().update(first,instances));
             // Canopy density only changes with foliage. Moving cars and the
             // streamed grass pool must not rebuild the static forest volumes.
             let mut flags = self.instance_flags.lock().unwrap();
             let old = &mut flags[first..first + instances.len()];
+            // Coverage changes modify an instance buffer, not a shadowcaster.
+            // The close-map mirror also recognises unchanged casters inside a
+            // wide slot upload. Other scenes conservatively check both masks.
+            let invalidate_sun = !upload || changed_caster.unwrap_or_else(||
+                old.iter().zip(instances).any(|(&before,after)| (before & after.flags) & crate::scene::NO_SHADOW == 0));
             if old.iter().zip(instances).any(|(&before, after)|
                 (before | after.flags) & crate::scene::FOLIAGE != 0) {
                 self.foliage_revision.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -4785,7 +4792,7 @@ impl Renderer {
             self.far_sun.update(gpu,first,instances);
             self.foliage_sun_pages.update(gpu,first,instances);
             if let Some(transparency) = &self.transparency { transparency.update_instances(first, instances); }
-            self.invalidate_dynamic_shadow();
+            if invalidate_sun { self.invalidate_dynamic_shadow(); }
         }
         Ok(())
     }
@@ -7551,7 +7558,8 @@ mod layout_tests {
         assert!(changes.touches(far, 12.0));
         changes.changed.clear();
         car.sphere[0] = 2.0;
-        changes.update(1, &[car]);
+        car.set_hit_flash(0.5); // proxy coverage shares this non-caster byte
+        assert!(!changes.update(1, &[car]));
         assert!(changes.changed.is_empty());
     }
 
@@ -7699,6 +7707,39 @@ fn max_column(m: Mat4) -> f32 {
 mod raster_split_tests {
     use crate::{Camera,Lighting,Renderer,ViewRect,scene::{Material,Scene,ALPHA_TEST}};
     use glam::{Affine3A,Quat,Vec3};
+    #[test]
+    #[ignore="exclusive GPU fixture"]
+    fn gpu_proxy_coverage_reveals_the_detail_in_only_its_own_view() {
+        let gpu = crate::Gpu::new().unwrap();
+        let mut scene = Scene::default();
+        let paint = Material { tint: [0.5;3], layer:-1, roughness:1.0, flags:0, scale:1.0, metal:0.0 };
+        let far = scene.add_material(Material { layer:crate::scene::LOD_PROXY_LAYER_BIAS-1, ..paint });
+        let near = scene.add_material(paint);
+        let detail = scene.add_mesh(&crate::primitives::cube(near).mesh());
+        let proxy = scene.add_mesh(&crate::primitives::cube(far).mesh());
+        let transform = |z| Affine3A::from_scale_rotation_translation(Vec3::new(12.,12.,0.2), Quat::IDENTITY, Vec3::new(0.,0.,z));
+        scene.add_instance(detail, transform(-2.));
+        scene.add_instance(proxy, transform(0.));
+        scene.instances[1].hide_in_views(2);
+        scene.instances[1].flags |= crate::scene::NO_SHADOW;
+        let light = Lighting {gi:0.,sun_lux:0.,shadow_strength:0.,..Default::default()};
+        let renderer = Renderer::new(&gpu, &scene, &light);
+        let cam = Camera {pos:Vec3::new(0.,0.,6.),target:Vec3::ZERO,fov_y:1.,near:0.05};
+        let views = [ViewRect {cam,x:0,y:0,w:64,h:64},ViewRect {cam,x:64,y:0,w:64,h:64}];
+        for byte in [255u32, 191, 128, 64, 0, 128] {
+            scene.instances[1].set_hit_flash(byte as f32/255.);
+            renderer.update_instances(&gpu, 1, &scene.instances[1..2]).unwrap();
+            renderer.try_render_views(&gpu,&views,&light,128,64,&[]).unwrap();
+            for view in 0..2 {
+                let image = renderer.debug_geometry_owner_pixels(&gpu,view,None).unwrap();
+                let kept = image.owners.iter().filter(|&&owner| owner==1).count();
+                let expected = if view==1 {0} else if byte==255 {4096} else {byte as usize*16};
+                assert_eq!(kept,expected,"view {view}, coverage {byte}");
+                assert!(image.owners.iter().all(|&owner|owner==0 || owner==1),"the detail receives all uncovered rays");
+            }
+        }
+    }
+
     // Opaque and alpha-tested clusters draw through different pipelines. The
     // cutout must still cut (the wall shows through its holes), and each
     // pixel must have the same owner as with the single discard pipeline.

@@ -228,6 +228,7 @@ fn alpha_cut(in: VOut) -> bool {
     if in.grass_opacity < GRASS_OPAQUE_THRESHOLD { return true; }
     if game_mask(in.world,in.instance,in.material) {return true;}
     let m = material(in.material);
+    if lod_proxy(m.layer) && lod_proxy_discards(in.pos.xy, instance_byte(instance_at(in.instance).flags)) { return true; }
     if (m.flags & 1u) != 0u && m.layer >= 0 {
         // PIXEL_ART keeps the top mip's hard silhouette.
         let sharp = select(1.0, 0.0, (m.flags & 8192u) != 0u);

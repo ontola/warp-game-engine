@@ -72,16 +72,18 @@ pub struct Look {
     pub surface: Option<u8>,
     /// Scattering opacity of 4 mm architectural glass; None is opaque.
     pub glass: Option<f32>,
+    /// Opaque screen-door coverage on a visual LOD proxy; the value lives in the instance.
+    pub coverage: Option<u8>,
 }
 
 impl Default for Look {
-    fn default() -> Self { Look { color: [0.8, 0.8, 0.8], emissive: 0.0, roughness: 0.7, metal: 0.0, surface: None, glass: None } }
+    fn default() -> Self { Look { color: [0.8, 0.8, 0.8], emissive: 0.0, roughness: 0.7, metal: 0.0, surface: None, glass: None, coverage: None } }
 }
 
 impl Look {
-    fn key(&self) -> [i32; 8] {
+    fn key(&self) -> [i32; 9] {
         let q = |v: f32| (v.clamp(0.0, 1000.0) * 1000.0).round() as i32;
-        [q(self.color[0]), q(self.color[1]), q(self.color[2]), q(self.emissive), q(self.roughness), q(self.metal), self.surface.map_or(-1, i32::from), self.glass.map_or(-1, q)]
+        [q(self.color[0]), q(self.color[1]), q(self.color[2]), q(self.emissive), q(self.roughness), q(self.metal), self.surface.map_or(-1, i32::from), self.glass.map_or(-1, q), i32::from(self.coverage.is_some())]
     }
 }
 
@@ -178,18 +180,23 @@ impl Default for Spawn {
 /// Put an entity's slots where it is: one for a shape, one per edge for a
 /// wire (as many as fit), none while hidden.
 fn show(slots: &mut Slots, scene: &mut Scene, e: &mut Entity) {
+    let mask = if e.shadow_only { 0xff } else { e.hide_views };
+    let drawable = e.visible && e.look.coverage != Some(0);
     let Some(w) = &e.wire else {
-        match (e.visible, e.slot) {
+        match (drawable, e.slot) {
             (true, Some(slot)) => slots.set(scene, slot, e.mesh, e.transform()),
             (true, None) => e.slot = slots.add(scene, e.mesh, e.transform()),
             (false, Some(slot)) => { slots.remove(scene, slot); e.slot = None; }
             (false, None) => {}
         }
         // Every time: a reused slot keeps the flags of whatever had it before.
-        if let Some(slot) = e.slot { slots.hide_in_views(scene, slot, if e.shadow_only { 0xff } else { e.hide_views }); }
+        if let Some(slot) = e.slot {
+            slots.hide_in_views(scene, slot, mask);
+            slots.set_proxy_coverage(scene, slot, e.look.coverage);
+        }
         return;
     };
-    let want = if e.visible { w.edges.len() } else { 0 };
+    let want = if drawable { w.edges.len() } else { 0 };
     while e.edge_slots.len() > want { slots.remove(scene, e.edge_slots.pop().unwrap()); }
     let xf = e.transform();
     let width = w.width * e.size.abs().max_element();
@@ -204,6 +211,8 @@ fn show(slots: &mut Slots, scene: &mut Scene, e: &mut Entity) {
             Some(&slot) => slots.set(scene, slot, e.mesh, edge),
             None => match slots.add(scene, e.mesh, edge) { Some(slot) => e.edge_slots.push(slot), None => break },
         }
+        slots.hide_in_views(scene, e.edge_slots[i], mask);
+        slots.set_proxy_coverage(scene, e.edge_slots[i], e.look.coverage);
     }
 }
 
@@ -234,11 +243,11 @@ pub struct World {
     next: u32,
     pub scene: Scene,
     slots: Slots,
-    materials: HashMap<[i32; 8], u32>,
+    materials: HashMap<[i32; 9], u32>,
     meshes: HashMap<(usize, u32), usize>,
     models: HashMap<String, ModelInfo>,
     /// Explicitly preloaded looks survive scene replacement even with no live instances.
-    warmed: BTreeMap<(Shape, [i32; 8]), Look>,
+    warmed: BTreeMap<(Shape, [i32; 9]), Look>,
     /// Meshes or materials were added since the renderer was made.
     pub rebuild: bool,
     /// The shapes and looks that caused it (for the log).
@@ -349,6 +358,9 @@ impl World {
 
     /// The mesh and unit collision box for a shape and look.
     fn mesh(&mut self, shape: &Shape, look: &Look) -> Result<(usize, (Vec3, Vec3)), String> {
+        if look.coverage.is_some() && (look.glass.is_some() || matches!(shape, Shape::Model(_))) {
+            return Err("coverage needs an opaque primitive with a Warp material".into());
+        }
         let half = Vec3::splat(0.5);
         let kind = match shape {
             Shape::Cube | Shape::Wire => 0,
@@ -429,6 +441,7 @@ impl World {
         let mut instances = BTreeSet::new();
         for &id in ids {
             let e = self.get(id).ok_or_else(|| format!("no entity {id} (removed, or never spawned)"))?;
+            if e.look.coverage.is_some() { continue; }
             for &slot in e.slot.iter().chain(&e.edge_slots) {
                 instances.insert(self.slots.instance(slot));
             }
@@ -450,7 +463,7 @@ impl World {
             return Err("shape: a wire stays a wire, and other shapes cannot become one (spawn a new entity)".into());
         }
         let moved_children = !e.children.is_empty() && (e.pos != old.pos || e.rot != old.rot);
-        if e.shape != old.shape || e.look != old.look {
+        if e.shape != old.shape || (e.look != old.look && e.look.key() != old.look.key()) {
             (e.mesh, e.local) = self.mesh(&e.shape, &e.look)?;
         }
         if let Some(w) = &e.wire { e.local = w.bounds(); }
@@ -687,11 +700,12 @@ fn material(look: &Look) -> Material {
     let (flags, scale) = if look.emissive > 0.0 { (EMISSIVE, look.emissive * EMISSIVE_NITS) } else { (0, 1.0) };
     // The game's own surface decides its glow itself: `scale` hands it the
     // emissive in nits, and the EMISSIVE flag would add the tint on top.
-    if let Some(kind) = look.surface {
-        let scale = if look.emissive > 0.0 { look.emissive * EMISSIVE_NITS } else { 1.0 };
-        return Material { tint, layer: -2 - i32::from(kind), roughness: look.roughness.clamp(0.02, 1.0), flags: SURFACE, scale, metal: look.metal.clamp(0.0, 1.0) };
+    let (mut flags, mut layer) = look.surface.map_or((flags, -1), |kind| (SURFACE, -2 - i32::from(kind)));
+    if look.coverage.is_some() {
+        flags |= render::scene::NO_AMBIENT_OCCLUSION;
+        layer += render::scene::LOD_PROXY_LAYER_BIAS;
     }
-    Material { tint, layer: -1, roughness: look.roughness.clamp(0.02, 1.0), flags, scale, metal: look.metal.clamp(0.0, 1.0) }
+    Material { tint, layer, roughness: look.roughness.clamp(0.02, 1.0), flags, scale, metal: look.metal.clamp(0.0, 1.0) }
 }
 
 /// A sphere against a box rotated about Y.
@@ -722,6 +736,34 @@ mod tests {
         w.remove(id);
         w.spawn(Spawn::default()).unwrap();
         assert_eq!(mask(&w), 0, "the next one in that slot is seen");
+    }
+
+    #[test]
+    fn warmed_proxy_coverage_reuses_geometry_and_restores_shadow_and_view_flags() {
+        use render::scene::{HIDE_IN_VIEW_MASK, HIDE_IN_VIEW_SHIFT, HIT_FLASH_MASK, HIT_FLASH_SHIFT, NO_SHADOW};
+        let mut w = world();
+        let look = Look { surface: Some(20), coverage: Some(255), ..Default::default() };
+        w.warm(&Shape::Cube, &look).unwrap();
+        let meshes = w.scene.meshes.len();
+        let id = w.spawn(Spawn { look, solid: false, hide_views: 2, ..Default::default() }).unwrap();
+        let flags = |w: &World| w.scene.instances[w.slots.instance(w.get(id).unwrap().slot.unwrap())].flags;
+        let material = w.scene.materials.last().unwrap();
+        assert_eq!(material.layer - render::scene::LOD_PROXY_LAYER_BIAS, -22);
+        w.rebuild = false;
+        for byte in [176, 23, 1, 255] {
+            w.update(id, |e| e.look.coverage = Some(byte)).unwrap();
+            assert_eq!((flags(&w) & HIT_FLASH_MASK) >> HIT_FLASH_SHIFT, u32::from(byte));
+            assert_eq!((flags(&w) & HIDE_IN_VIEW_MASK) >> HIDE_IN_VIEW_SHIFT, 2);
+            assert_ne!(flags(&w) & NO_SHADOW, 0);
+        }
+        assert_eq!(w.room_occluders(&[id]).unwrap().triangles(), 0);
+        w.update(id, |e| e.look.coverage = Some(0)).unwrap();
+        assert!(w.get(id).unwrap().slot.is_none());
+        assert_eq!(w.scene.meshes.len(), meshes);
+        assert!(!w.rebuild, "a change of coverage must not rebuild any renderer");
+        w.update(id, |e| e.look.coverage = None).unwrap();
+        assert_eq!(flags(&w) & (NO_SHADOW | HIT_FLASH_MASK), 0);
+        assert!(w.room_occluders(&[id]).unwrap().triangles() > 0);
     }
 
     #[test]

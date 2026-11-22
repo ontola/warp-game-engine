@@ -214,7 +214,7 @@ fn cluster_bucket(triangles: u32) -> u32 {
 // grass card can discard. The game mask disables RASTER_SPLIT on the CPU.
 fn masked_cluster(flags:u32, material:u32) -> bool {
     let m=cull_material(material);
-    return ((m.flags&1u)!=0u && m.layer>=0) || (flags&8u)!=0u;
+    return ((m.flags&1u)!=0u && m.layer>=0) || (flags&8u)!=0u || (lod_proxy(m.layer) && instance_byte(flags)<255u);
 }
 fn count_cluster(flags:u32, cl:Cluster) {
     let bucket=cluster_bucket(cl.tri_count);

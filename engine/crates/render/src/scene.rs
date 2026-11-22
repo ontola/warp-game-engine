@@ -8,6 +8,10 @@ use std::collections::HashMap;
 
 /// Material flags.
 pub const ALPHA_TEST: u32 = 1;
+/// An opaque untextured proxy carries its ordinary negative material layer
+/// offset by this amount. This preserves the procedural surface number and
+/// all material flags without an additional WebGPU binding.
+pub const LOD_PROXY_LAYER_BIAS: i32 = -65536;
 pub const TERRAIN: u32 = 2;
 pub const ROAD: u32 = 4;
 pub const TWO_SIDED: u32 = 8;

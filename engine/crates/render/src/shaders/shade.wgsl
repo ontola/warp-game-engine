@@ -1,5 +1,5 @@
 fn material_kind(m: Material) -> i32 {
-    return select(-1, -2 - m.layer, (m.flags & 32768u) != 0u && (m.flags & 2u) == 0u);
+    return select(-1, -2 - source_layer(m.layer), (m.flags & 32768u) != 0u && (m.flags & 2u) == 0u);
 }
 fn styled_light(kind: i32, flags: u32, p: vec3<f32>, n: vec3<f32>, base: vec3<f32>, rad: vec3<f32>, shadow: f32) -> StyledLight {
     return game_lighting(LightingSample(kind, flags, p, n, base, rad, light.sun_dir.xyz, light.sun_dir.w, shadow, light.anim.x));
@@ -3068,7 +3068,7 @@ fn terrain_coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
     for (var k = 0u; k < 3u; k++) { local += pos_of(vi[k]) * w[k]; }
     let corner = array<vec2<f32>, 3>(vec2<f32>(vertex_f32(vi[0] + 6u), vertex_f32(vi[0] + 7u)),
         vec2<f32>(vertex_f32(vi[1] + 6u), vertex_f32(vi[1] + 7u)), vec2<f32>(vertex_f32(vi[2] + 6u), vertex_f32(vi[2] + 7u)));
-    let si = SurfaceIn(u32(max(-2 - m.layer, 0)), vis.x, p, local, n, dir, vec3<f32>(b0, b1, b2),
+    let si = SurfaceIn(u32(max(-2 - source_layer(m.layer), 0)), vis.x, p, local, n, dir, vec3<f32>(b0, b1, b2),
         corner[0], corner[1], corner[2], fp.dx, fp.dy, m.tint, m.roughness, m.metal, m.scale, light.anim.x);
     field_sun = 1.0;
     let so = field_surface(si, m.layer);
@@ -3529,7 +3529,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         for (var k = 0u; k < 3u; k++) { local += pos_of(vi[k]) * w[k]; }
         let corner = array<vec2<f32>, 3>(vec2<f32>(vertex_f32(vi[0] + 6u), vertex_f32(vi[0] + 7u)),
             vec2<f32>(vertex_f32(vi[1] + 6u), vertex_f32(vi[1] + 7u)), vec2<f32>(vertex_f32(vi[2] + 6u), vertex_f32(vi[2] + 7u)));
-        let si = SurfaceIn(u32(max(-2 - m.layer, 0)), vis.x, p, local, n, dir, vec3<f32>(b0, b1, b2),
+        let si = SurfaceIn(u32(max(-2 - source_layer(m.layer), 0)), vis.x, p, local, n, dir, vec3<f32>(b0, b1, b2),
             corner[0], corner[1], corner[2], fp.dx, fp.dy, m.tint, rough_m, metal, m.scale, light.anim.x);
         // TERRAIN + SURFACE: the engine's procedural terrain, not the game's.
         var so: SurfaceOut;
@@ -3871,7 +3871,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     rad = style.radiance;
     // Hit flash (instance bits 16..23): the body itself lights up white,
     // nearly evenly; a slight facing term keeps its form readable.
-    let flash = f32((inst.flags >> 16u) & 0xffu) / 255.0;
+    let flash = select(f32(instance_byte(inst.flags)) / 255.0, 0.0, lod_proxy(m.layer));
     if flash > 0.0 {
         let facing = clamp(dot(n, -dir), 0.0, 1.0);
         let white = vec3<f32>(1.0, 0.97, 0.92) * light.anim.z * (0.8 + 0.2 * facing);
@@ -4027,7 +4027,7 @@ fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool) {
         if (m.flags & 32768u) != 0u {
             set_pixel_footprint(ndc, p, plane_n, distance(p, view.cam.xyz));
             let local = local_points[0]*b0 + local_points[1]*b1 + local_points[2]*b2;
-            let si = SurfaceIn(u32(max(-2 - m.layer, 0)), vis.x, p, local, n, dir, vec3<f32>(b0,b1,b2), uvs[0],uvs[1],uvs[2],
+            let si = SurfaceIn(u32(max(-2 - source_layer(m.layer), 0)), vis.x, p, local, n, dir, vec3<f32>(b0,b1,b2), uvs[0],uvs[1],uvs[2],
                                fp.dx, fp.dy, m.tint, m.roughness, m.metal, m.scale, light.anim.x);
             var surface: SurfaceOut;
             if (m.flags & 2u) != 0u { surface = field_surface(si, m.layer); }
@@ -4072,7 +4072,7 @@ fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool) {
     if (m.flags&4096u)!=0u {rad=base*m.scale*light.anim.y;}
     let style = styled_light(material_kind(m), m.flags, p, n, base, rad, 1.0);
     rad = style.radiance;
-    let flash=f32((inst.flags>>16u)&255u)/255.0;
+    let flash=select(f32(instance_byte(inst.flags)) / 255.0, 0.0, lod_proxy(m.layer));
     rad=mix(rad,vec3<f32>(1.0,0.97,0.92)*light.anim.z*(0.8+0.2*max(dot(n,-dir),0.0)),flash*0.9);
     let glow=game_glow(p,vis.x,cl.material);rad=rad*(1.0-glow.a)+glow.rgb;
     rad=apply_distance_fog(rad,distance(p,view.cam.xyz),dir);

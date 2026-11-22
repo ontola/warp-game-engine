@@ -247,6 +247,15 @@ keyboard mapping is in `app::input`.
   outline is a hollow regular polygon lying flat (3 to 64 sides, corners
   on the 1 m box's circle, the first towards +X) whose edge is the given
   share of the box wide (default 0.06): neon line art seen from above.
+- **LOD proxy coverage.** On an opaque primitive, `coverage` from 0 to 1 controls
+  the fraction of pixels that keep the proxy and its depth. The GPU uses a stable
+  ordered pattern. The opaque detailed geometry behind it supplies the remaining
+  pixels. Proxies cast no shadows and do not enter room light bakes. Collision
+  follows `solid` separately. Use `world.warm("cube", look)` with `coverage=1`
+  to prepare one proxy material for every coverage value. Update it through
+  `world.set`; `coverage=false` restores the ordinary material. For independent
+  split-screen transitions, assign proxy copies to cameras with `hide_views`.
+  `players.list()` exposes each displayed player's zero-based `view` index.
 - **Window glass** uses a two-sided `"pane"` in local XY. For a 3 m wide,
   2 m high window, spawn it with `size = vector.create(3, 2, 1)`. Its
   collider is 4 mm thick at unit depth. Set `glass = 0.045` for lightly

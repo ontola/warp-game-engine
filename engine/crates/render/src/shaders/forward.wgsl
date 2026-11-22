@@ -8,7 +8,7 @@ struct Material {tint:vec3<f32>,layer:i32,roughness:f32,flags:u32,scale:f32,meta
 @group(0) @binding(4) var stone_field:texture_2d<f32>;
 @group(0) @binding(5) var<storage,read> joints:array<vec4<f32>>;
 struct Out {@builtin(position) pos:vec4<f32>,@location(0) color:vec3<f32>,@location(1) world:vec3<f32>,@location(2) @interpolate(flat) lava:vec4<f32>,
- @location(3) stone_uv:vec2<f32>,@location(4) @interpolate(flat) stone:vec2<f32>};
+ @location(5) @interpolate(flat) coverage:u32, @location(3) stone_uv:vec2<f32>,@location(4) @interpolate(flat) stone:vec2<f32>};
 @vertex fn vs(@location(0) position:vec3<f32>,@location(1) normal:vec3<f32>,@location(2) uv:vec2<f32>,
  @location(3) r0:vec4<f32>,@location(4) r1:vec4<f32>,@location(5) r2:vec4<f32>,@location(6) material:u32,@location(7) flags:u32,@location(8) rigid:u32)->Out {
  var p=vec4<f32>(position,1.0);var bent=normal;var surface_material=material;
@@ -27,11 +27,11 @@ struct Out {@builtin(position) pos:vec4<f32>,@location(0) color:vec3<f32>,@locat
    illumination+=lamp.intensity.rgb*(cone*max(dot(n,-outward),0.0)*(1.0-d/lamp.position.w)/max(d,0.2));}}
  var value=m.tint*illumination/3.14159265;
  if (m.flags&5120u)!=0u {value+=m.tint*m.scale*u.camera.w*u.sun_color.w;}
- let flash=f32((flags>>16u)&255u)/255.0;value=mix(value,vec3<f32>(1.0),flash*0.9);
+ let proxy=lod_proxy(m.layer);let flash=select(f32(instance_byte(flags))/255.0,0.0,proxy);value=mix(value,vec3<f32>(1.0),flash*0.9);
  if u.ambient.z==2.0 {value=m.tint;}
  if u.ambient.z==11.0 {value=n*0.5+0.5;}
  let mapped=sqrt(max(value,vec3<f32>(0.0))/(1.0+max(value,vec3<f32>(0.0))));
- var out:Out;out.pos=u.vp*vec4<f32>(world,1.0);out.color=mapped;out.world=world;
+ var out:Out;out.coverage=select(255u,instance_byte(flags),proxy);out.pos=u.vp*vec4<f32>(world,1.0);out.color=mapped;out.world=world;
  out.lava=vec4<f32>(m.tint*select(0.0,m.scale*u.camera.w*u.sun_color.w,(m.flags&4096u)!=0u && u.ambient.z==0.0),flash);
  // Stone: mapped along the face's main axis (blocks are boxes), with cracks
  // opening as the material's damage (scale) grows.
@@ -60,6 +60,15 @@ fn surface(in:Out,srgb:bool)->vec3<f32> {
  let value=mix(radiance*in.lava.rgb,vec3<f32>(1.0),in.lava.w*0.9);
  let mapped=value/(1.0+value);
  if srgb {return mapped;}return encode_srgb(mapped);
+}
+// Select these entries only in minimal scenes which explicitly use coverage.
+@fragment fn fs_proxy(in:Out)->@location(0) vec4<f32> {
+    if lod_proxy_discards(in.pos.xy,in.coverage) {discard;}
+    return vec4<f32>(surface(in,false),1.0);
+}
+@fragment fn fs_proxy_srgb(in:Out)->@location(0) vec4<f32> {
+    if lod_proxy_discards(in.pos.xy,in.coverage) {discard;}
+    return vec4<f32>(surface(in,true),1.0);
 }
 @fragment fn fs(in:Out)->@location(0) vec4<f32>{return vec4<f32>(surface(in,false),1.0);}
 @fragment fn fs_srgb(in:Out)->@location(0) vec4<f32>{return vec4<f32>(surface(in,true),1.0);}

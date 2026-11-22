@@ -294,7 +294,7 @@ pub fn shape(name: &str) -> mlua::Result<Shape> {
     })
 }
 
-const ENTITY_KEYS: &[&str] = &["shape", "pos", "rot", "size", "color", "emissive", "roughness", "metal", "surface", "glass", "solid", "visible", "shadow_only", "hide_views", "tag", "points", "edges", "width"];
+const ENTITY_KEYS: &[&str] = &["shape", "pos", "rot", "size", "color", "emissive", "roughness", "metal", "surface", "glass", "coverage", "solid", "visible", "shadow_only", "hide_views", "tag", "points", "edges", "width"];
 
 fn boolean(v: &Value, what: &str) -> mlua::Result<bool> {
     match v { Value::Boolean(b) => Ok(*b), _ => Err(rt(format!("{what}: expected true or false"))) }
@@ -349,7 +349,7 @@ fn apply(opts: &[(String, Value)], shape_: &mut Shape, look: &mut Look, pos: &mu
             "pos" => *pos = vec3(v, "pos")?,
             "rot" => *rot = vec3(v, "rot")?,
             "size" => *sz = size(v, "size")?,
-            "color" | "emissive" | "roughness" | "metal" | "surface" | "glass" => { look_key(look, k, v)?; }
+            "color" | "emissive" | "roughness" | "metal" | "surface" | "glass" | "coverage" => { look_key(look, k, v)?; }
             "solid" => *solid = boolean(v, "solid")?,
             "visible" => *visible = boolean(v, "visible")?,
             "shadow_only" => *shadow_only = boolean(v, "shadow_only")?,
@@ -405,6 +405,16 @@ fn look_key(look: &mut Look, k: &str, v: &Value) -> mlua::Result<bool> {
         "emissive" => look.emissive = number(v, "emissive")?.max(0.0),
         "roughness" => look.roughness = number(v, "roughness")?,
         "metal" => look.metal = number(v, "metal")?,
+        "coverage" => look.coverage = match v {
+            Value::Boolean(false) => None,
+            _ => {
+                let coverage = number(v, "coverage")?;
+                if !(0.0..=1.0).contains(&coverage) {
+                    return Err(rt("coverage: a number from 0 to 1, or false"));
+                }
+                Some((coverage * 255.0).round() as u8)
+            }
+        },
         "glass" => look.glass = match v {
             Value::Nil | Value::Boolean(false) => None,
             _ => {
@@ -475,6 +485,7 @@ fn entity_table(lua: &Lua, id: u32, e: &Entity) -> mlua::Result<Table> {
     t.raw_set("emissive", e.look.emissive)?;
     t.raw_set("roughness", e.look.roughness)?;
     t.raw_set("metal", e.look.metal)?;
+    if let Some(byte) = e.look.coverage { t.raw_set("coverage", f32::from(byte) / 255.0)?; }
     if let Some(alpha) = e.look.glass { t.raw_set("glass", alpha)?; }
     if let Some(k) = e.look.surface { t.raw_set("surface", k)?; }
     t.raw_set("solid", e.solid)?;
@@ -545,6 +556,7 @@ pub fn player_table(lua: &Lua, p: &Player) -> mlua::Result<Table> {
     t.raw_set("color", Value::Vector(Vector::new(p.color[0], p.color[1], p.color[2])))?;
     t.raw_set("bot", p.bot)?;
     t.raw_set("human", !p.bot)?;
+    if let Some(view) = p.view { t.raw_set("view", view)?; }
     if let Some(s) = p.seat { t.raw_set("seat", s)?; }
     if let Some(c) = p.couch { t.raw_set("couch", c)?; }
     Ok(t)
@@ -715,7 +727,7 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             let s = shape(&name)?;
             let mut look = Look::default();
             if let Some(t) = opts {
-                for (k, v) in options(&t, &["color", "emissive", "roughness", "metal", "surface", "glass"], "world.warm")? { look_key(&mut look, &k, &v)?; }
+                for (k, v) in options(&t, &["color", "emissive", "roughness", "metal", "surface", "glass", "coverage"], "world.warm")? { look_key(&mut look, &k, &v)?; }
             }
             lock(&core).world.warm(&s, &look).map_err(rt)
         })),

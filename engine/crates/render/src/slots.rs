@@ -133,6 +133,19 @@ impl Slots {
         if i.flags != before { self.touch(id.0); }
     }
 
+    /// Warp's primitive pool uses the hit-flash byte for coverage on the
+    /// explicitly marked proxy material. A reused ordinary slot casts shadows.
+    pub fn set_proxy_coverage(&mut self, scene: &mut Scene, id: SlotId, coverage: Option<u8>) {
+        use crate::scene::{HIT_FLASH_MASK, HIT_FLASH_SHIFT, NO_SHADOW};
+        let instance = &mut scene.instances[self.first + id.0];
+        let before = instance.flags;
+        instance.flags &= !(HIT_FLASH_MASK | NO_SHADOW);
+        if let Some(byte) = coverage {
+            instance.flags |= NO_SHADOW | (u32::from(byte) << HIT_FLASH_SHIFT);
+        }
+        if instance.flags != before { self.touch(id.0); }
+    }
+
     pub fn remove(&mut self, scene: &mut Scene, id: SlotId) {
         if !std::mem::replace(&mut self.used[id.0], false) { return; }
         self.prev[id.0] = None;
