@@ -17,6 +17,8 @@
 //! `?cloud=off` plays without one). See engine/docs/browser.md.
 
 #[cfg(target_arch = "wasm32")]
+mod builtin;
+#[cfg(target_arch = "wasm32")]
 mod cloud;
 
 #[cfg(target_arch = "wasm32")]
@@ -464,12 +466,15 @@ mod page {
         let Some((game, folder, players)) = found else { app::web::log(&format!("{game}: not on this page, or a game is loading")); return };
         wasm_bindgen_futures::spawn_local(async move {
             let t0 = web_time::Instant::now();
-            let loaded = warp::web::load(&folder, Some(players)).await;
+            let loaded = match crate::builtin::load(&folder, players).await {
+                Some(l) => l,
+                None => warp::web::load(&folder, Some(players)).await.map(|(c, g)| (c, Box::new(g) as Box<dyn Game>)),
+            };
             with(|h| {
                 h.loading = None;
                 h.party["warm_session"] = Value::Null;
                 h.dirty = true;
-                let (cfg, lua) = match loaded {
+                let (cfg, game_box) = match loaded {
                     Ok(l) => l,
                     Err(e) => { app::web::log(&format!("{folder}: {e}")); return; }
                 };
@@ -477,7 +482,7 @@ mod page {
                 h.paused = None;
                 // From the room: keep it. From another game (the page's
                 // buttons): that game goes, the room is already kept.
-                if h.on_screen.is_none() { app::web::switch_keeping(cfg, Box::new(lua), |p| with(|h| h.room = Some(p))); } else { app::web::switch(cfg, Box::new(lua)); }
+                if h.on_screen.is_none() { app::web::switch_keeping(cfg, game_box, |p| with(|h| h.room = Some(p))); } else { app::web::switch(cfg, game_box); }
                 h.on_screen = Some(game.clone());
                 set_session(h, Some(&game), "running");
                 h.played.retain(|g| *g != game);

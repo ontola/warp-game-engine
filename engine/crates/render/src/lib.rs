@@ -184,7 +184,7 @@ pub use gpu::{Gpu, Stopwatch, write_png};
 pub use auto_exposure::AutoExposure;
 pub use scene::Scene;
 pub use material_maps::MaterialLayers;
-pub use shaders::{checked as validated, set_game_surface, set_game_mask};
+pub use shaders::{checked as validated, clear_game_hooks, set_game_surface, set_game_mask};
 /// A test frame: a compute shader fills an RGBA8 image with a gradient.
 /// Proves the device, compute, readback and PNG path end to end.
 pub fn test_frame(gpu: &Gpu, w: u32, h: u32) -> Vec<u8> {

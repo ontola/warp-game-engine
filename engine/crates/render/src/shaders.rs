@@ -339,6 +339,14 @@ static GAME_MASK: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None)
 /// True discards the fragment, including its shadow. May read `aux` and materials.
 /// Set before renderer construction; this hook is immutable for that renderer.
 pub fn set_game_mask(source: &str) { *GAME_MASK.lock().unwrap() = Some(source.to_owned()); }
+
+/// Back to the built-in surface (no game_surface/game_glow of a game's own)
+/// and no game mask: a host that runs several games in one process (the
+/// browser) calls it before a game that sets neither, as they are global.
+pub fn clear_game_hooks() {
+    *GAME_SURFACE.lock().unwrap() = None;
+    *GAME_MASK.lock().unwrap() = None;
+}
 /// Whether a game supplied [`set_game_mask`]: it may discard any material.
 pub(crate) fn has_game_mask() -> bool { GAME_MASK.lock().unwrap().is_some() }
 pub(crate) fn game_mask() -> String {
