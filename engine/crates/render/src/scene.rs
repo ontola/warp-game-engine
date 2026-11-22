@@ -464,7 +464,7 @@ pub fn sibling_map(albedo: &std::path::Path, kinds: &[&str]) -> Option<std::path
         let rest = &stem[at + token.len()..];
         (rest.is_empty() || rest.starts_with('_')).then(|| (&stem[..at], rest))
     })?;
-    kinds.iter().flat_map(|k| ["jpg", "png"].map(|e| albedo.with_file_name(format!("{prefix}_{k}{suffix}.{e}")))).find(|p| p.exists())
+    kinds.iter().flat_map(|k| ["jpg", "png"].map(|e| albedo.with_file_name(format!("{prefix}_{k}{suffix}.{e}")))).find(|p| crate::files::exists(p))
 }
 
 /// Decode an albedo with its sibling normal and material maps.

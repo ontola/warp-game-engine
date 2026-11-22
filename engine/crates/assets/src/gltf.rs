@@ -32,7 +32,7 @@ fn read_uri(base: &Path, uri: &str) -> Result<Vec<u8>, String> {
         return base64_decode(b64);
     }
     let path = base.join(uri.replace("%20", " "));
-    std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))
+    vfs::read(&path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 pub fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
@@ -91,7 +91,8 @@ pub fn load(scene: &mut Scene, path: &Path) -> Result<Model, String> {
 /// `scene`: every node with a mesh, in world space (the node hierarchy's
 /// transforms applied), in depth-first order.
 pub fn read(scene: &mut Scene, path: &Path) -> Result<Document, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    // vfs: the filesystem natively, the page's fetched files in a browser.
+    let bytes = vfs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     read_bytes(scene, &bytes, path)
 }
 

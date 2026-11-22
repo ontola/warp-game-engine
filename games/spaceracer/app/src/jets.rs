@@ -55,7 +55,7 @@ impl Config {
         let mut host = Host::new(Limits::default(), |_, _| Ok(()))?;
         host.add_source(
             "jets.luau",
-            &std::fs::read_to_string(root.join("../rules/jets.luau")).map_err(|e| e.to_string())?,
+            &vfs::read_to_string(root.join("../rules/jets.luau")).map_err(|e| e.to_string())?,
         )?;
         let value = host.modules()[0]
             .exports

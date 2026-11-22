@@ -24,7 +24,7 @@ impl Settings {
         let mut host = Host::new(Limits::default(), |_, _| Ok(()))?;
         host.add_source(
             "party.luau",
-            &std::fs::read_to_string(root.join("rules/party.luau")).map_err(|e| e.to_string())?,
+            &vfs::read_to_string(root.join("rules/party.luau")).map_err(|e| e.to_string())?,
         )?;
         let specs: Value = host
             .lua()

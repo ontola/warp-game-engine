@@ -16,6 +16,7 @@ mod stage_mesh;
 mod stage_terrain;
 mod visuals;
 mod weapon_art;
+pub mod web;
 pub mod xr;
 use app::{Buttons, Controls, Device, Draw, Frame, Game};
 use glam::{Mat3, Quat};
@@ -75,18 +76,44 @@ struct Racer {
     next: Option<Next>,
     /// Ticks since the race ended; A continues only after a short beat.
     over_ticks: u32,
+    /// The menu's Back to lobby, for a host in this program (a browser page).
+    back: bool,
 }
 /// Results stay on screen this long before A starts the next race (120 Hz).
 const CONTINUE_AFTER_TICKS: u32 = 240;
 /// A next race preloaded behind the results, with the grid it was built for.
 struct Next {
-    worker: std::thread::JoinHandle<Result<(Race, visuals::Visuals), String>>,
+    worker: Worker,
     grid: (usize, usize),
 }
 /// A race being built on a worker thread.
 struct Loading {
-    worker: std::thread::JoinHandle<Result<(Race, visuals::Visuals), String>>,
-    started: std::time::Instant,
+    worker: Worker,
+    started: Instant,
+}
+/// `std::time::Instant` panics in a browser.
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
+type Built = Result<(Race, visuals::Visuals), String>;
+/// A race build: a worker thread natively; in a browser (one thread, and
+/// the GPU handles are not `Send`) built at once.
+#[cfg(not(target_arch = "wasm32"))]
+struct Worker(std::thread::JoinHandle<Built>);
+#[cfg(not(target_arch = "wasm32"))]
+impl Worker {
+    fn spawn(spec: RaceSpec) -> Self { Self(std::thread::spawn(move || spec.build())) }
+    fn is_finished(&self) -> bool { self.0.is_finished() }
+    fn join(self) -> Built { self.0.join().map_err(|_| "race build panicked".to_string())? }
+}
+#[cfg(target_arch = "wasm32")]
+struct Worker(Built);
+#[cfg(target_arch = "wasm32")]
+impl Worker {
+    fn spawn(spec: RaceSpec) -> Self { Self(spec.build()) }
+    fn is_finished(&self) -> bool { true }
+    fn join(self) -> Built { self.0 }
 }
 /// What a new race is built from; all owned, so it can move to a worker.
 struct RaceSpec {
@@ -194,6 +221,7 @@ impl Racer {
             loading: None,
             next: None,
             over_ticks: 0,
+            back: false,
         })
     }
     /// The grid: the people here plus the AI racers. Auto is a full grid for
@@ -227,7 +255,7 @@ impl Racer {
         if self.background_loading {
             visuals::progress(0);
             self.menu = None;
-            self.loading = Some(Loading { worker: std::thread::spawn(move || spec.build()), started: std::time::Instant::now() });
+            self.loading = Some(Loading { worker: Worker::spawn(spec), started: Instant::now() });
             return Ok(());
         }
         let (race, visuals) = spec.build()?;
@@ -262,7 +290,7 @@ impl Racer {
         self.roll_random()?;
         let spec = self.race_spec();
         let grid = (spec.players, spec.racers);
-        self.next = Some(Next { worker: std::thread::spawn(move || spec.build()), grid });
+        self.next = Some(Next { worker: Worker::spawn(spec), grid });
         Ok(())
     }
     /// Results hint: None while racing, else whether the next race is ready.
@@ -284,12 +312,12 @@ impl Racer {
         if let Some(next) = self.next.take() {
             if !self.settings_dirty && next.grid == (self.players, self.racers()) {
                 if next.worker.is_finished() {
-                    let (race, visuals) = next.worker.join().map_err(|_| "race build panicked".to_string())??;
+                    let (race, visuals) = next.worker.join()?;
                     return self.finish_restart(race, visuals);
                 }
                 visuals::progress(500);
                 self.menu = None;
-                self.loading = Some(Loading { worker: next.worker, started: std::time::Instant::now() });
+                self.loading = Some(Loading { worker: next.worker, started: Instant::now() });
                 return Ok(());
             }
         }
@@ -387,7 +415,7 @@ impl Racer {
     fn menu_pointer(&mut self, at: [f32; 2], size: [u32; 2], click: bool) -> bool {
         if self.menu.is_none() { return false; }
         let ui_scale = (size[1] as f32 / 900.).max(1.);
-        let Some((row, side)) = menu_view::hit(size.map(|x| x as f32 / ui_scale), self.race_started, self.party.is_some(), at.map(|v| v / ui_scale)) else { return false };
+        let Some((row, side)) = menu_view::hit(size.map(|x| x as f32 / ui_scale), self.race_started, self.lobby(), at.map(|v| v / ui_scale)) else { return false };
         self.menu = Some(row);
         if click { self.menu_click = Some(side); }
         true
@@ -423,7 +451,7 @@ impl Racer {
                 0
             };
         self.menu_axis = axis;
-        let out=self.race.rules.call::<serde_json::Value>("menu",json!({"players":self.players,"biome":if self.random_biome {-1}else{self.biome as i64},"difficulty":if self.random_difficulty {-1}else{self.difficulty as i64},"seed":if self.random_seed {0}else{self.seed},"can_resume":self.race_started,"row":row,"vertical":vertical,"horizontal":horizontal,"accept":c.pressed.has(Buttons::SOUTH) || ((row < 2 || row == menu_view::LOBBY) && click.is_some()),"start":c.pressed.has(Buttons::START),"lobby":self.party.is_some()}));
+        let out=self.race.rules.call::<serde_json::Value>("menu",json!({"players":self.players,"biome":if self.random_biome {-1}else{self.biome as i64},"difficulty":if self.random_difficulty {-1}else{self.difficulty as i64},"seed":if self.random_seed {0}else{self.seed},"can_resume":self.race_started,"row":row,"vertical":vertical,"horizontal":horizontal,"accept":c.pressed.has(Buttons::SOUTH) || ((row < 2 || row == menu_view::LOBBY) && click.is_some()),"start":c.pressed.has(Buttons::START),"lobby":self.lobby()}));
         let result = (|| -> Result<(), String> {
             let out = out?;
             let row = out["row"].as_u64().ok_or("menu row")? as usize;
@@ -450,7 +478,7 @@ impl Racer {
                 // The host pauses the race and shows its room.
                 "lobby" => {
                     self.menu=None;
-                    if let Some(p)=&self.party {p.overlay();}
+                    if let Some(p)=&self.party {p.overlay();} else {self.back=true;}
                 }
                 _=>{}
             }
@@ -461,7 +489,24 @@ impl Racer {
         }
     }
 }
+impl Racer {
+    /// A race for a browser page (web.rs): straight into the race as under
+    /// Splitscreen Club, the world drawn from `seed`, later races on Random.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    fn for_page(root: PathBuf, players: usize, seed: u64) -> Result<Self, String> {
+        let mut game = Racer::new(root, players, (seed % 99999) as i64 + 1, (seed / 7 % BIOMES.len() as u64) as usize, 1, false)?;
+        game.random_biome = true;
+        game.random_difficulty = true;
+        game.random_seed = true;
+        game.menu = None;
+        game.race_started = true;
+        Ok(game)
+    }
+    /// A host takes Back to lobby: Splitscreen Club natively, the page in a browser.
+    fn lobby(&self) -> bool { self.party.is_some() || app::host_takes_back() }
+}
 impl Game for Racer {
+    fn take_back(&mut self) -> bool { std::mem::take(&mut self.back) }
     fn scene_tuning(&self)->Option<&app::editor::SceneTuning>{Some(&self.handling)}
     fn scene_tuning_mut(&mut self)->Option<&mut app::editor::SceneTuning>{Some(&mut self.handling)}
     fn local_players(&self) -> usize {
@@ -522,7 +567,7 @@ impl Game for Racer {
                 self.loading = Some(loading);
                 return;
             }
-            let built = loading.worker.join().map_err(|_| "race build panicked".to_string()).and_then(|r| r);
+            let built = loading.worker.join();
             let started = loading.started;
             match built.and_then(|(race, visuals)| self.finish_restart(race, visuals)) {
                 Ok(()) => println!("race built in the background in {} ms", started.elapsed().as_millis()),
@@ -972,7 +1017,7 @@ fn menu_entropy() -> u32 {
     std::collections::hash_map::RandomState::new().build_hasher().finish() as u32
 }
 /// SpaceRacer's vehicle surface and mask shaders, before any renderer exists.
-fn install_shaders(no_reflections: bool) {
+pub fn install_shaders(no_reflections: bool) {
     let mut surface = include_str!("../shaders/surfaces.wgsl").to_owned();
     // Diagnostic omission only; never persisted as a player quality setting.
     if no_reflections {

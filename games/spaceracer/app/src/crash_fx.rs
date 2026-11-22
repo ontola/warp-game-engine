@@ -78,7 +78,7 @@ impl Crashes {
         let mut host = Host::new(Limits::default(), |_, _| Ok(()))?;
         host.add_source(
             "effects.luau",
-            &std::fs::read_to_string(root.join("../rules/effects.luau"))
+            &vfs::read_to_string(root.join("../rules/effects.luau"))
                 .map_err(|e| e.to_string())?,
         )?;
         let table = host.modules()[0]

@@ -7,6 +7,17 @@ use std::path::Path;
 #[cfg(not(target_arch = "wasm32"))]
 pub fn read(path: impl AsRef<Path>) -> std::io::Result<Vec<u8>> { std::fs::read(path) }
 
+/// Whether an asset file is there: on disk natively; in a browser among
+/// the game's fetched files (vfs) or the preloaded ones.
+pub fn exists(path: impl AsRef<Path>) -> bool {
+    let path = path.as_ref();
+    #[cfg(target_arch = "wasm32")]
+    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        if preloaded::has(name) { return true; }
+    }
+    vfs::is_file(path)
+}
+
 /// Decode an image file (format from its contents or extension).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn open_image(path: impl AsRef<Path>) -> image::ImageResult<image::DynamicImage> { image::open(path) }
@@ -26,7 +37,12 @@ mod preloaded {
         FILES.lock().unwrap().get_or_insert_with(HashMap::new).insert(name.to_owned(), bytes);
     }
 
+    pub(super) fn has(name: &str) -> bool { FILES.lock().unwrap().as_ref().is_some_and(|f| f.contains_key(name)) }
+
+    /// A file the game fetched into the vfs at its path, else one
+    /// preloaded under its file name.
     pub fn read(path: impl AsRef<Path>) -> std::io::Result<Vec<u8>> {
+        if let Ok(bytes) = vfs::read(path.as_ref()) { return Ok(bytes); }
         let name = path.as_ref().file_name().and_then(|n| n.to_str()).unwrap_or_default();
         FILES.lock().unwrap().as_ref().and_then(|f| f.get(name).cloned())
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, format!("{name} was not preloaded")))

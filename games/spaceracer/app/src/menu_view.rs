@@ -102,7 +102,7 @@ pub fn draw(hud: &mut HudDrawList, size: [f32; 2], row: usize, r: &super::Racer)
         if r.random_seed {"RANDOM".into()} else {format!("{:05}", r.seed)},
         String::new(),
     ];
-    let rows = order(r.race_started, r.party.is_some());
+    let rows = order(r.race_started, r.lobby());
     for (k, &i) in rows.iter().enumerate() {
         let y = 180. + k as f32 * 66.;
         let selected = i == row;

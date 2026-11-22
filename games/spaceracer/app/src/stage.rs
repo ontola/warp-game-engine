@@ -669,7 +669,7 @@ impl Stage {
                 Ok(())
             },
         )?;
-        let source = std::fs::read_to_string(root.join("../rules/stages.luau"))
+        let source = vfs::read_to_string(root.join("../rules/stages.luau"))
             .map_err(|e| e.to_string())?;
         host.add_source("stages.luau", &source)?;
         let function = host.modules()[0]
