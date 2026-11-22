@@ -35,6 +35,7 @@ and session notes are in the [development log](log/README.md).
 | [Running in a browser](browser.md) | terrain_fly built for wasm32 and WebGPU: building it, what a browser needs, how that build differs, what is open. |
 | [Parenting and attachment points](parenting.md) | Luau entities, native model sockets and posed instance groups. |
 | [Making a game](making-a-game.md) | The `app::Game` trait, the loop, building a scene, costs and gotchas. Starts from the `hello` example. |
+| [The game kit](kit.md) | `require("kit/...")` in any Luau game: controllers (platformer, walker, third person, kart), camera rigs, HUD, round flow, bots, timers. Templates built on it (`warp new --template`). |
 | [Games in Luau: the warp executable](warp-cli.md) | `warp new`, `run`, `script`, `serve`, `check`: a game of Luau scripts, sound patches and glTF assets with hot reload and live MCP control. The Luau game API. |
 | [Luau or Rust](luau-or-rust.md) | Where game code goes: rules and content in Luau, loops over many things in Rust, per-pixel and per-instance work on the GPU. What a crossing costs, the patterns to copy, moving code across. |
 | [Scripting and modding](scripting.md) | The Luau host: sandbox, hot reload, step budget. Growing Guns' mod API as the worked example. |

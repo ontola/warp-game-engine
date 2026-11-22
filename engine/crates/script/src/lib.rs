@@ -151,7 +151,14 @@ impl Host {
     }
 
     /// Enable local *.module.luau libraries for a folder game before watching it.
-    pub fn enable_libraries(&mut self) { self.libraries = Some(Default::default()); }
+    pub fn enable_libraries(&mut self) { self.libraries.get_or_insert_with(Default::default); }
+
+    /// Add a library compiled into the engine, `require`-able by `name` from
+    /// every module (also in a one-file game). A game's own
+    /// `name.module.luau` wins over it. Enables libraries.
+    pub fn builtin_library(&mut self, name: &str, source: &'static str) {
+        self.libraries.get_or_insert_with(Default::default).builtin(name, source);
+    }
 
     /// Skip these top-level folders of the root when scanning for modules
     /// (a game folder whose `sounds/` hold synth patches, not modules).
