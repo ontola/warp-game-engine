@@ -467,14 +467,22 @@ impl Character {
             // CPU consumers (e.g. rigid-part colours) and the streaming tail
             // use this small painted face. The recipe holds only parameters.
             let preview = bake(&body, &indices, 64);
+            #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
             let person = *person;
+            // A browser bakes on the page's one thread, a face a frame: refitting
+            // and settling the body took ~1.6 s a face there (M5 Pro), so it
+            // paints the body it already has at 128 texels (no age settling).
+            #[cfg(target_arch = "wasm32")]
+            let generate: render::scene::GeneratedTexture = {
+                let (body, indices) = (body.clone(), indices.clone());
+                std::sync::Arc::new(move || { let maps = bake(&body, &indices, 128); (maps.albedo, maps.normal) })
+            };
+            #[cfg(not(target_arch = "wasm32"))]
             let generate: render::scene::GeneratedTexture = std::sync::Arc::new(move || {
                 let (mut body, indices) = person.fitted_mesh(gripping);
                 let rest_eyes = eye_midpoint(&body);
                 warp_skin::settle(&mut body, &indices, rest_eyes, traits.age);
-                // A browser bakes on the page's one thread, a face a frame: at 128
-                // texels each takes ~0.1 s there (512 took ~1.8 s on an M5 Pro).
-                let size = if cfg!(target_arch = "wasm32") { 128 } else { render::frame::TEXTURE_SIZE };
+                let size = render::frame::TEXTURE_SIZE;
                 let maps = bake(&body, &indices, size as usize);
                 (maps.albedo, maps.normal)
             });

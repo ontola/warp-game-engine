@@ -173,6 +173,7 @@ impl Mesh {
 
 /// Bind-pose geometry for a full-size actor using the same face morphs and
 /// selected hair as the crowd. Arm/leg masks are cumulative along each limb.
+#[derive(Clone, Copy)]
 pub struct BodyVertex {
     pub position: Vec3,
     pub normal: Vec3,
