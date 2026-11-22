@@ -140,6 +140,9 @@ pub struct View {
     probes: Vec<Probe>,
     /// Wizard kit pieces per seat (their robes recoloured).
     wizard_pieces: HashMap<usize, Vec<Piece>>,
+    /// How many wizards the scene was built with: one joining mid-run
+    /// rebuilds it.
+    built_wizards: usize,
     wizard_anims: Vec<anim::WizardAnim>,
     enemy_anims: HashMap<hecs::Entity, anim::EnemyAnim>,
     /// The monsters' motion-captured clips, and each kit's rig.
@@ -208,6 +211,7 @@ impl View {
             cards: vec![],
             probes: vec![],
             wizard_pieces: HashMap::new(),
+            built_wizards: 0,
             wizard_anims: vec![],
             dolls: Default::default(),
             enemy_dolls: Default::default(),
@@ -238,11 +242,12 @@ impl View {
 
     /// The level changed (a new one was built): the scene must be made again.
     pub fn stale(&self, w: &World) -> bool {
-        level_key(&w.level) != self.level_key
+        level_key(&w.level) != self.level_key || w.wizards.len() != self.built_wizards
     }
 
     /// Build the scene for the world's level.
     pub fn build(&mut self, w: &World) -> Result<(), String> {
+        self.built_wizards = w.wizards.len();
         let mut scene = Scene::default();
         // The table of monsters being made (making.wgsl), first in aux.
         scene.aux = vec![0; MK_AT + MK_N * 8];
