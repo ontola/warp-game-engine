@@ -231,7 +231,7 @@ fn menu(lobby: &Lobby, c: &mut Canvas, id: &str, at: [f32; 2], fs: f32) {
     c.rect([x, y0, mw, mh], rgba(0.04, 0.035, 0.08, 0.95));
     let edge = VIOLET.with_alpha(0.9);
     for r in [[x, y0, mw, 3.0], [x, y0 + mh - 3.0, mw, 3.0], [x, y0, 3.0, mh], [x + mw - 3.0, y0, 3.0, mh]] { c.rect(r, edge); }
-    let heading = match state.page.as_str() { "lobbies" => "CHOOSE A LOBBY".to_string(), "remove" => "REMOVE A PLAYER".into(), _ if mouse => MOUSE_HEADING.into(), _ => lobby.name(id).to_uppercase() };
+    let heading = match state.page.as_str() { "lobbies" => "CHOOSE A LOBBY".to_string(), "remove" => "REMOVE A PLAYER".into(), page if page.starts_with("player:") => lobby.name(&page["player:".len()..]).to_uppercase(), _ if mouse => MOUSE_HEADING.into(), _ => lobby.name(id).to_uppercase() };
     text(c, &heading, [x + 24.0, y0 + 18.0 + (fs * 0.7).floor()], (fs * 0.7).floor(), AMBER);
     let mut y = y0 + menu_head(fs);
     for (i, item) in items.iter().enumerate() {
