@@ -774,8 +774,9 @@ fn pose(rig: &Rig, body: &Skeleton, p: &Person, zombie: bool, alpha: f32, palett
             let collar = rig.joint[clavicle as usize];
             turn(palette, &[collar, upper, fore, hand], at(clavicle, palette), Quat::from_rotation_z(-side * still * 0.10));
             let shoulder = at(if left { Bone::UpperArmL } else { Bone::UpperArmR }, palette);
-            // The capture's rest holds the arms a hand away from the hips.
-            turn(palette, &[upper, fore, hand], shoulder, Quat::from_rotation_z(-side * still * 0.10) * Quat::from_rotation_x(still * 0.04));
+            // Keep the capture's outward arm angle as the shoulder settles.
+            // Adducting the arm with the collarbone puts the fingers inside the hip.
+            turn(palette, &[upper, fore, hand], shoulder, Quat::from_rotation_z(side * still * 0.10) * Quat::from_rotation_x(still * 0.04));
             let elbow = at(if left { Bone::LowerArmL } else { Bone::LowerArmR }, palette);
             turn(palette, &[fore, hand], elbow, Quat::from_rotation_x(-still * (0.22 + 0.02 * breath)));
         }
@@ -1011,6 +1012,48 @@ mod tests {
         let now = chest(&p, &mut palette);
         p.age += 1.3;
         assert!(chest(&p, &mut palette) != now);
+    }
+
+    #[test]
+    fn local_player_hands_clear_the_shirt_and_hips_at_rest() {
+        let rig = Rig::shared().unwrap();
+        let cfg = HumanPool { seed: 45, count: 1, variety: 1, height: [1.63, 1.87], ..Default::default() };
+        let mut humans = Humans::new(&BTreeMap::from([("local".into(), cfg)]));
+        let id = humans.spawn("local", Vec3::ZERO, 0.).unwrap().unwrap();
+        let mut scene = Scene::default();
+        humans.attach(&mut scene, 1 << 30).unwrap();
+        let actor = &scene.skinning.actors[0];
+        let mut palette = actor.palette.clone();
+        let mut player = humans.people[&id].clone();
+        let body = humans.skeleton(rig, &player);
+        let arm_joints = [Bone::UpperArmL, Bone::LowerArmL, Bone::HandL, Bone::UpperArmR, Bone::LowerArmR, Bone::HandR].map(|b| rig.joint[b as usize] as u32);
+        for age in [0., 2.5, 6.] {
+            player.age = age;
+            pose(rig, body, &player, false, 1., &mut palette);
+            for (side, hand) in [(1., Bone::HandL), (-1., Bone::HandR)] {
+                let hand = rig.joint[hand as usize] as u32;
+                let mut palm = Vec::new();
+                let mut torso = Vec::new();
+                for (v, inf) in scene.vertices.iter().zip(&actor.influences) {
+                    let p = render::skinning::skin_position(v.pos.into(), inf, &palette);
+                    let mut arm_weight = 0.;
+                    let mut hand_weight = 0.;
+                    for (joint, weight) in inf.joints.iter().zip(inf.weights) {
+                        if arm_joints.contains(joint) { arm_weight += weight; }
+                        if *joint == hand { hand_weight += weight; }
+                    }
+                    if hand_weight > 0.95 { palm.push(p); }
+                    if arm_weight < 0.01 { torso.push(p); }
+                }
+                assert!(!palm.is_empty());
+                let lo = palm.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+                let hi = palm.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max);
+                let edge = torso.iter().filter(|p| (lo..=hi).contains(&p.y))
+                    .map(|p| side * p.x).reduce(f32::max).unwrap();
+                let visible = palm.iter().filter(|p| side * p.x > edge).count();
+                assert!(visible * 10 >= palm.len() * 9, "side {side} at {age}s: {visible}/{} hand vertices clear torso edge {edge} m", palm.len());
+            }
+        }
     }
 
     #[test]
