@@ -361,7 +361,14 @@ fn game_surface(s: SurfaceIn) -> SurfaceOut {
         let tile=pm_band((fract(s.p.x/1.4+0.5)-0.5)*1.4,.034,aa);
         if s.kind==4u {
             let mown=select(.92,1.03,fract((s.p.x+s.p.z*.35)/4.0)>.5);
-            out.albedo=mix(s.tint*mown,vec3<f32>(.57,.49,.34),path);
+            // The clipped turf underneath the blades also carries the lawn at
+            // distance. Filter the fine colour variation as it becomes subpixel.
+            let cut=vec2<f32>(s.p.x+s.p.z*.35,s.p.z-s.p.x*.35);
+            let thatch=(pm_hash(floor(cut*vec2<f32>(42.,18.)))-.5)
+                *(1.-smoothstep(.012,.055,aa));
+            let turf=s.tint*(mown+.22*thatch);
+            out.albedo=mix(turf,vec3<f32>(.57,.49,.34),path);
+            out.rough=mix(.96,out.rough,path);
         } else {
             let ring=pm_band(length(p)-9.5,.32,aa);
             out.albedo=mix(s.tint*(1.0-.07*tile),vec3<f32>(.26,.40,.40),max(path,ring)*.65);

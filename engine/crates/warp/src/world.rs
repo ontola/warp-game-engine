@@ -322,6 +322,8 @@ impl World {
         for ((shape, _), look) in &self.warmed {
             w.mesh(shape, look)?;
         }
+        w.scene.meadow = self.scene.meadow.take();
+        w.scene.meadow_footprints = std::mem::take(&mut self.scene.meadow_footprints);
         self.entities = std::mem::take(&mut w.entities);
         self.scene = w.scene;
         self.slots = w.slots;
@@ -510,6 +512,10 @@ impl World {
     }
 
     pub fn clear(&mut self) {
+        if self.scene.meadow.take().is_some() {
+            self.scene.meadow_footprints.clear();
+            self.rebuild = true;
+        }
         self.fleet = None;
         let ids: Vec<u32> = self.entities.keys().copied().collect();
         for id in ids { self.remove(id); }

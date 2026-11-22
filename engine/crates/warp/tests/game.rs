@@ -62,6 +62,33 @@ end }
 }
 
 #[test]
+fn luau_clouds_use_the_native_layer_and_validate_a_whole_weather_change() {
+    let dir = folder("sky-clouds");
+    write(&dir.join("main.luau"), "return {}");
+    let mut g = game(&dir);
+    assert!(g.core().light.sky_volume.is_none());
+
+    g.luau("sky.clouds(true)").unwrap();
+    assert_eq!(g.core().light.sky_volume, Some(render::sky_volume::SkyVolume::default()));
+    g.luau("sky.clouds({coverage=0.6, wind_x=200, wind_z=0, steps=32, aerial=false}); sky.set('night:haze')").unwrap();
+    let weather = g.core().light.sky_volume.unwrap();
+    let layer = weather.clouds.unwrap();
+    assert!(!weather.aerial);
+    assert_eq!((layer.coverage, layer.wind.to_array(), layer.steps), (0.6, [200.0, 0.0], 32));
+    assert_eq!(layer.base_m, render::sky_volume::Clouds::default().base_m);
+
+    for bad in ["{coverage=2}", "{steps=20.5}", "{wind_x=200,wind_z=1}", "{coverge=0.4}"] {
+        assert!(g.luau(&format!("sky.clouds({bad})")).is_err());
+        assert_eq!(g.core().light.sky_volume, Some(weather));
+    }
+    g.luau("sky.clouds(false)").unwrap();
+    assert!(g.core().light.sky_volume.is_none());
+    g.luau("sky.clouds({})").unwrap();
+    g.restart();
+    assert!(g.core().light.sky_volume.is_none());
+}
+
+#[test]
 fn the_repo_copy_of_hello_warp_is_the_starter() {
     let dir = repo().join("games/hello-warp");
     for (rel, text) in warp::starter::FILES {

@@ -6,6 +6,7 @@ local STEP = city.STEP
 local BOUND = city.BOUND
 
 local ASPHALT, OFFICE, HOTEL, WAREHOUSE, LAWN, WATER, PAD, PLAZA, CONTAINER = 0, 1, 2, 3, 4, 5, 6, 7, 8
+local PARK_WIDTH, DIAGONAL_PATH, TREE_GRATE = 37, 1.15, 1.8
 local GROUND_HEIGHT = 4.2
 local GROUND_SURFACES = { office=20, hotel=21, warehouse=22 }
 local OFFICE_COLORS = { "#738f96", "#63868b", "#83999d", "#797f8c" }
@@ -214,8 +215,8 @@ function city.set_clock(s,hour)
         place(face,face.minute,(minute%60)*math.pi/30,.50,.028)
     end
 end
-local function park(s,x,z,plaza)
-    box(x,.018,z,37,.036,37,if plaza then "#d0b78f" else "#739466",if plaza then PLAZA else LAWN)
+local function park(s,x,z,plaza,lawns)
+    box(x,.018,z,PARK_WIDTH,.036,PARK_WIDTH,if plaza then "#d0b78f" else "#657d49",if plaza then PLAZA else LAWN)
     table.insert(s.parks,{x=x,z=z})
     if plaza then
         -- Ferry exchange: an illuminated four-faced clock on a stepped pier.
@@ -226,6 +227,14 @@ local function park(s,x,z,plaza)
         obstacle(s,x,6.76,z,3.5,.34,3.5,METAL)
         obstacle(s,x,7.38,z,1.1,.92,1.1,"#5c8685")
     else
+        local center = v(x,.036,z)
+        table.insert(lawns.patches,{pos=center,width=PARK_WIDTH,depth=PARK_WIDTH})
+        -- surface.wgsl paints the paths where abs(localX ± localZ) <= 1.15.
+        -- Its diagonal coordinate is sqrt(2) times the perpendicular distance.
+        for _,turn in {-1,1} do
+            table.insert(lawns.cutouts,{pos=center,width=DIAGONAL_PATH*math.sqrt(2),
+                depth=PARK_WIDTH*math.sqrt(2),yaw=turn*math.pi/4})
+        end
         for _,i in {-1,1} do
             box(x+9*i,.52,z+11,3.5,.22,.8,"#976d4e")
             for _,endX in {-1,1} do box(x+9*i+endX*1.1,.23,z+11,.22,.46,.6,METAL) end
@@ -327,6 +336,7 @@ end
 
 function city.build(seed)
     seed = math.floor(seed or 1)
+    local lawns = {patches={}, cutouts={}, seed=seed, growth=.30, distance=16}
     local s = { seed=seed, blocks={}, buildings={}, parks={}, walkLoops={}, plantSites={}, lamps={}, landmarks={} }
     for i=1,36 do s.blocks[i]={} end
     box(0,-3.9,0,30000,.8,30000,"#467e84",WATER)
@@ -345,7 +355,7 @@ function city.build(seed)
             local plaza = ix==0 and iz==0
             local garden = (ix==-2 and iz==1) or (ix==1 and iz==-2)
             if pad then helipad(x,z)
-            elseif plaza or garden then park(s,x,z,plaza)
+            elseif plaza or garden then park(s,x,z,plaza,lawns)
             elseif ix==2 then docks(s,x,z,ix,iz,seed)
             elseif (ix==-1 or ix==0 or ix==1) and (iz==-1 or iz==0) then office(s,x,z,ix,iz,seed)
             else hotel(s,x,z,ix,iz,seed) end
@@ -354,7 +364,11 @@ function city.build(seed)
             table.insert(s.walkLoops,{v(x-reach,0,z-reach),v(x+reach,0,z-reach),v(x+reach,0,z+reach),v(x-reach,0,z+reach)})
             if plaza or garden then
                 for _,dx in {-13,13} do
-                    for _,dz in {-13,13} do table.insert(s.plantSites,v(x+dx,0,z+dz)) end
+                    for _,dz in {-13,13} do
+                        local pos=v(x+dx,0,z+dz)
+                        table.insert(s.plantSites,pos)
+                        if garden then table.insert(lawns.cutouts,{pos=pos,width=TREE_GRATE,depth=TREE_GRATE}) end
+                    end
                 end
             elseif iz==0 and not pad then
                 -- Leave the path from the sidewalk to the front lobby clear.
@@ -364,10 +378,11 @@ function city.build(seed)
             if (ix+iz)%2==0 then streetLamp(s,x-20.9,z+(if plaza then 20 else -15)) end
         end
     end
+    grass.set(lawns)
     avenue(s)
     -- Vegetation supplies the visible trunk and crown; movement uses the trunk.
     for _,pos in s.plantSites do
-        box(pos.x,.035,pos.z,1.8,.04,1.8,"#747e75",17)
+        box(pos.x,.035,pos.z,TREE_GRATE,.04,TREE_GRATE,"#747e75",17)
         obstacle(s,pos.x,1.65,pos.z,.32,3.3,.32,"#655445",nil,{visible=false})
     end
     harbor()

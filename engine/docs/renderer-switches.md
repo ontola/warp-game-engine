@@ -47,7 +47,7 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_CUTOUT_LINEAR_RGB` | Alpha-cutout textures mip in sRGB instead of linear RGB. |
 | `KERN_GRASS_LEAF_BRDF`, `KERN_GRASS_SUN_OCCLUSION` | Plain grass lighting, no grass self-shadow from the sun. |
 | `KERN_GRASS_DEPTH_PREPASS` | No depth prepass for transition grass. |
-| `KERN_MEADOW_INDEXED`, `KERN_MEADOW_OCCLUSION` | Unindexed meadow geometry; no meadow occlusion. |
+| `KERN_MEADOW_INDEXED`, `KERN_MEADOW_OCCLUSION` | `KERN_MEADOW_INDEXED=0` selects unindexed meadow geometry. `KERN_MEADOW_OCCLUSION=0` skips hierarchical depth culling. Bounded mown lawns with a draw range of 24 m or less skip it by default and keep the normal depth test. `KERN_MEADOW_OCCLUSION=1` forces hierarchical culling for those lawns too. |
 | `KERN_VOXEL_SURFACE`, `KERN_VOXEL_PASS`, `KERN_VOXEL_EMPTY_CEILING` | Voxel forest without its surface pass, separate voxel shade pass, or empty-space ceiling. |
 | `KERN_REUSE_SUN_TEXTURE`, `KERN_ZERO_SUN_FAST_PATH` | Recreate the sun texture; shade a sunless scene the long way. |
 | `KERN_WIND_FREEZE` | Trees keep moving in the wind at every distance (`off` works too). Default: frozen to the rest pose between 60 and 90 m, so distant crowns match cached sun shadows; `start,end` in metres sets the band. |

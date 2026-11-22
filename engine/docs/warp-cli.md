@@ -223,6 +223,7 @@ keyboard mapping is in `app::input`.
 | `sound` | `play(name, {at, db, pitch, <param> = value}) -> handle`, `set_param(handle, param, value)`, `stop(handle)`, `list()` |
 | `hud` | `text(text, x, y, {size, color, align, width})`, `box(x, y, w, h, color)`, `size() -> w, h`, `measure(text, size?) -> w, h` (one line of `text` in the HUD font, in pixels), `view(player) -> x, y, w, h`, `project(pos, player?) -> x, y or nil` |
 | `post` | `set({bloom, bloom_radius, bloom_threshold, bloom_wide, contrast, saturation, vignette, grain, aberration})`, `reset()` |
+| `grass` | `set({patches, cutouts, seed, growth, distance})` places native meadow blades on horizontal plots. `set(nil)` clears the field. |
 | `plants` | `grow({age, seed, pos, yaw, scale, species, look, full})` → id, `remove(id)`, `clear()`, `defaults()`, `status()` |
 | `humans` | `spawn(pool, {pos, yaw})` → id or nil when the pool is full, `set(id, {pos, yaw, pose, t, tired, coil, visible})`, `hit(id, dir)`, `ragdoll(id, push)`, `remove(id)`, `head(id)` and `joint(id, name)` → vector, `room(pool)` → free, total |
 | `lights` | `set({{pos, color, intensity, range}, ...})` (at most 32), `spots({{pos, dir, color, intensity, range, angle, inner}, ...})` (at most 8, with shadows), `clear()` |
@@ -304,6 +305,7 @@ keyboard mapping is in `app::input`.
   `exposure_min` and `exposure_max`, shifted by `exposure_bias` stops, at
   `adapt_speed` per second. See [Exposure and HDR output](hdr-and-exposure.md),
   which also covers HDR screens (`WARP_HDR=1`, or F10).
+- **Volumetric clouds.** Call `sky.clouds(true)` to load the native cumulus layer or supply a table such as `sky.clouds({coverage = 0.5, base = 1400, thickness = 1000, wind_x = 5, wind_z = 1.5, aerial = false})`. Altitudes and distances are in metres, wind in metres per second. `coverage`, `density` and `shadow` control cover, optical density and sun attenuation. `steps`, `light_steps` and `far` control rendering cost and range. Set `aerial = false` to keep the current scene fog. The field follows simulation time across cameras and sky presets. `sky.clouds(false)` clears the volume. [Atmosphere and clouds](atmosphere.md)
 - **Post and lights**: `post.set` is the look after lighting: `bloom`
   (0 to 2), `bloom_radius` (blur rounds 1 to 6), `bloom_threshold`
   (exposed brightness where it starts), `bloom_wide` (true, the default: a
@@ -325,6 +327,7 @@ keyboard mapping is in `app::input`.
   at a low emissive (0.03) with soft wide bloom, a glossy dark deck and a
   lamp over each player. Neon Siege is Geometry Wars style: outlines at
   emissive 0.14 under a tight bloom, a camera straight down, no sky light.
+- **Grass.** Call `grass.set` during world generation. Replacing the field rebuilds the scene. Supply each horizontal rectangle as `{pos = vector.create(x, y, z), width = 18, depth = 12}`. `pos` is the centre at ground level. An optional `yaw` in radians rotates the rectangle around that centre. `cutouts` use the same shape for paths, paving or grates. All patches share the seed, growth scale (default 0.3) and blade draw distance (default 24 m). The GPU chooses detail for each camera. Keep the lawn’s ground material underneath for distant views.
 - **Plants**. `age` controls the number of growing seasons. Choose a small
   set of ages, seeds, growth rules and looks for a grove. Placements with
   the same recipe share a cook. Set each placement’s `pos`, `yaw` and

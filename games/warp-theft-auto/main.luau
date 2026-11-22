@@ -23,6 +23,14 @@ local function init()
 	state.population = population.new(state.city, state.seed)
 	state.clock = daycycle.new(16, 480, "clear")
 	daycycle.tick(state.clock, 0)
+	-- A maritime cumulus layer shared by the streets, parks and flight views.
+	-- Seed the fair-weather cover and breeze without advancing the city RNG.
+	sky.clouds({
+		coverage = .44 + .12 * (state.seed % 97) / 96,
+		base = 1400, thickness = 1000, far = 36000,
+		wind_x = 4 + 2 * (state.seed % 53) / 52, wind_z = 1.5,
+		shadow = .5, steps = 36, light_steps = 4, aerial = false,
+	})
 	city.set_clock(state.city, state.clock.hour)
 	state.job = dispatch.new(state.city)
 	light.set({exposure = "auto", exposure_min = 3, exposure_max = 16, adapt_speed = 6})

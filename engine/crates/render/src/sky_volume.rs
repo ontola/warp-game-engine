@@ -19,8 +19,8 @@
 //!
 //! Limits: the background sky texture is still the CPU bake seen from the
 //! ground (no sky from altitude, no clouds in reflections or the SH9
-//! skylight), terrain does not shadow the air, vegetation shaded outside
-//! the shade pass (grass and foliage cards) gets no cloud shadows.
+//! skylight), terrain does not shadow the air, legacy grass and foliage cards in their separate passes
+//! do not receive cloud shadows. The GPU meadow shares the ground's cloud transmittance.
 use crate::Gpu;
 use crate::atmosphere::{AtmosphereTables, MULTI_SCATTER_SIZE};
 use bytemuck::{Pod, Zeroable};

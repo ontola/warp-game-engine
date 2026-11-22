@@ -221,6 +221,9 @@ declare post: {
 -- spotlights, at most 8 (`spots`). intensity is about
 -- lux at 1 m (a few hundred under the night sky), range in metres.
 declare lights: {
+	-- Opt in with room_lighting = true. Static entities are baked when visited.
+	-- Set up to four rooms. Clear a room with lights.room(id, nil) on leaving.
+	room: (id: number, opts: { min: Vec, max: Vec, entities: {number}, panels: {{pos: Vec, color: Color, intensity: number, range: number, width: number, depth: number}}? }?) -> (),
 	set: (list: { { pos: Vec, color: Color?, intensity: number?, range: number? } }) -> (),
 	-- Spotlights that cast shadows, at most 8 (torches, headlights, a lamp
 	-- over a door): dir is where the beam points, angle the outer half-angle
@@ -233,7 +236,7 @@ declare lights: {
 
 -- Warp Humans from game.toml's [humans.NAME] pools: spawn returns nil when
 -- the pool is full. Set pos (feet) and yaw each tick; the legs follow.
--- pose: walk, idle, crouch, wave, reach, raise, strike, aim, shove, attack, punch, jab,
+-- pose: walk, idle, sit, crouch, wave, reach, raise, strike, aim, shove, attack, punch, jab,
 -- hit, hit_head, cast, roll, dead, down, feed (crouched, bent over something on the
 -- ground), rise (getting up off the ground over t); t is its progress, 0 to 1.
 -- The shared four-wheel vehicle simulation. Reset snapshots solid boxes once.
@@ -261,6 +264,15 @@ declare humans: {
 	room: (pool: string) -> (number, number),
 }
 
+type GrassRect = { pos: Vec, width: number, depth: number, yaw: number? }
+
+declare grass: {
+    -- Replace the horizontal GPU grass field, or clear it with nil. Rectangles use
+    -- world metres and optional yaw in radians. The top of each ground surface is pos.y.
+    set: (opts: { patches: {GrassRect}, cutouts: {GrassRect}?, seed: number?,
+        growth: number?, distance: number? }?) -> (),
+}
+
 declare plants: {
 	-- A grown plant (a Jeffrey pine unless `species` changes its rules): its
 	-- age in years sets how many shoots, limbs and needle brushes it has, not
@@ -284,7 +296,18 @@ declare plants: {
 	load: (name: string) -> any,
 }
 
+export type CloudSettings = {
+	coverage: number?, density: number?, shadow: number?,
+	base: number?, thickness: number?, far: number?,
+	wind_x: number?, wind_z: number?, steps: number?, light_steps: number?,
+	aerial: boolean?,
+}
+
 declare sky: {
+	-- Set the shared native cumulus layer in init or tick. True uses fair-weather defaults.
+	-- Heights and distances are metres, wind is metres/second and density is per metre.
+	-- aerial=false keeps the game's surface fog. False disables the volume.
+	clouds: (settings: boolean | CloudSettings) -> (),
 	-- "gradient" or TIME[:WEATHER]: sunrise, morning, noon, afternoon, sunset,
 	-- night; clear, haze, mist ("sunset:haze"). A preset bakes in about 0.2 s.
 	set: (name: string) -> (),

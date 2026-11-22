@@ -11,6 +11,7 @@ pub mod api;
 pub mod config;
 pub mod face;
 pub mod game;
+mod grass;
 pub mod humans;
 pub mod kit;
 mod editor_menus;

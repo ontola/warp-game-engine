@@ -102,6 +102,8 @@ pub struct LightOverride {
     /// `exposure = "auto"` and its tuning: the camera adapts like an eye.
     pub auto: Option<render::AutoExposure>,
     pub fog: [Option<f32>; 3],
+    /// Native aerial perspective and clouds, shared by every camera (`sky.clouds`).
+    pub sky_volume: Option<render::sky_volume::SkyVolume>,
 }
 
 /// The look after the scene is lit (`post.set`): bloom and the tone pass.
@@ -190,6 +192,13 @@ pub struct Core {
     /// One shared view (game.toml `split = false`): every camera call is the viewer's.
     pub shared_view: bool,
     pub phase: Phase,
+}
+
+impl Core {
+    /// Interpolated simulation time for rendering between the last two fixed ticks.
+    pub(crate) fn render_time(&self, alpha: f32) -> f64 {
+        (self.tick as f64 - 1.0 + f64::from(alpha)).max(0.0) / f64::from(self.tick_rate)
+    }
 }
 
 pub type Shared = Arc<Mutex<Core>>;
@@ -292,6 +301,31 @@ fn boolean(v: &Value, what: &str) -> mlua::Result<bool> {
 }
 
 fn number(v: &Value, what: &str) -> mlua::Result<f32> { num(v).ok_or_else(|| rt(format!("{what}: expected a number"))) }
+
+/// A complete weather declaration. Start with the native fair-weather defaults.
+fn cloud_volume(value: Value) -> mlua::Result<Option<render::sky_volume::SkyVolume>> {
+    use render::sky_volume::{Clouds, SkyVolume};
+    match value {
+        Value::Boolean(false) => Ok(None),
+        Value::Boolean(true) => Ok(Some(SkyVolume::default())),
+        Value::Table(t) => {
+            let mut volume = SkyVolume::default();
+            let mut wind = Clouds::default().wind;
+            for (key, value) in options(&t, &["coverage", "base", "thickness", "density", "wind_x", "wind_z", "shadow", "steps", "light_steps", "far", "aerial"], "sky.clouds")? {
+                match key.as_str() {
+                    "aerial" => volume.aerial = boolean(&value, &key)?,
+                    "wind_x" => wind.x = number(&value, &key)?,
+                    "wind_z" => wind.y = number(&value, &key)?,
+                    _ => volume.set(&format!("cloud_{key}"), number(&value, &key)?).map_err(rt)?,
+                }
+            }
+            // Validate the two wind components together (the limit is on speed).
+            volume.clouds.as_mut().unwrap().wind = wind;
+            Ok(Some(volume.validated().map_err(rt)?))
+        }
+        _ => Err(rt("sky.clouds expects true, false or a cloud settings table")),
+    }
+}
 
 /// Apply `world.spawn`/`world.set` options to an entity's fields.
 #[allow(clippy::too_many_arguments)]
@@ -554,6 +588,37 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
     macro_rules! f {
         ($core:ident, $body:expr) => {{ let $core = core.clone(); lua.create_function($body)? }};
     }
+
+    table("grass", vec![("set", f!(core, move |_, opts: Option<Table>| {
+        let mut c = lock(&core);
+        sim(&c, "grass.set")?;
+        if let Some(opts) = opts {
+            options(&opts, &["patches", "cutouts", "seed", "growth", "distance"], "grass.set")?;
+            let rectangles = |key: &str| -> mlua::Result<Vec<crate::grass::Rect>> {
+                let Some(list) = opts.raw_get::<Option<Table>>(key)? else { return Ok(vec![]) };
+                list.sequence_values::<Table>().map(|t| {
+                    let t = t?;
+                    options(&t, &["pos", "width", "depth", "yaw"], "grass rectangle")?;
+                    crate::grass::Rect::new(vec3(&t.raw_get("pos")?, "grass rectangle pos")?,
+                        number(&t.raw_get("width")?, "grass rectangle width")?,
+                        number(&t.raw_get("depth")?, "grass rectangle depth")?,
+                        t.raw_get::<Option<f32>>("yaw")?.unwrap_or(0.)).map_err(rt)
+                }).collect()
+            };
+            let lawns = crate::grass::Lawns { patches: rectangles("patches")?, cutouts: rectangles("cutouts")?,
+                seed: opts.raw_get::<Option<u32>>("seed")?.unwrap_or(1),
+                growth: opts.raw_get::<Option<f32>>("growth")?.unwrap_or(0.3),
+                distance: opts.raw_get::<Option<f32>>("distance")?.unwrap_or(24.) };
+            let (field, footprints) = lawns.build().map_err(rt)?;
+            c.world.scene.meadow = Some(field);
+            c.world.scene.meadow_footprints = footprints;
+            c.world.rebuild = true;
+        } else if c.world.scene.meadow.take().is_some() {
+            c.world.scene.meadow_footprints.clear();
+            c.world.rebuild = true;
+        }
+        Ok(())
+    }))])?;
 
     table("plants", vec![
         ("grow", f!(core, move |_, opts: Table| {
@@ -876,6 +941,12 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             Ok(())
         })),
         ("get", f!(core, move |_, ()| Ok(lock(&core).sky.name()))),
+        ("clouds", f!(core, move |_, value: Value| {
+            let mut c = lock(&core);
+            sim(&c, "sky.clouds")?;
+            c.light.sky_volume = cloud_volume(value)?;
+            Ok(())
+        })),
         // Bake a sky the game will switch to later, in the background, so
         // the switch does not stall a frame (a bake is a few hundred ms).
         ("warm", f!(core, move |_, name: String| {

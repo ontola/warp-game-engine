@@ -626,6 +626,9 @@ pub struct Scene {
     pub grass_ranges: Vec<crate::grass::GrassRange>,
     /// GPU-generated ground cover: terrain/settings/recipes once, no CPU tuft stream.
     pub meadow: Option<crate::meadow_data::MeadowField>,
+    /// Optional bounds enclosing authored meadow coverage in world metres.
+    /// Each rectangle is [min_x, min_z, max_x, max_z]. An empty list uses the full field.
+    pub meadow_footprints: Vec<[f32; 4]>,
     /// Shared CPU residency / per-view GPU fade policy for source grass.
     pub grass_detail: crate::vegetation_detail::DistanceProfile,
     /// Optional world-fixed terrain-following grass density field.

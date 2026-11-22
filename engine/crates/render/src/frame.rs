@@ -3831,6 +3831,11 @@ impl Renderer {
                 self.invalidate_dynamic_shadow();
             }
         }
+        self.set_meadow_wind(state)
+    }
+
+    /// Animate the procedural blades independently of a scene's mesh and tree wind.
+    pub fn set_meadow_wind(&self, state: &crate::wind::WindState) -> Result<(), String> {
         if let Some(meadow) = &self.meadow {
             // Ordinary elapsed time retains correspondence with the previous
             // rendered wind state. Only discontinuous field changes reset it.
@@ -5376,7 +5381,8 @@ impl Renderer {
                 let vp=proj*camera_view(v.cam,camera_up_axes.get(vi).copied());
                 let mask=1|if near_enabled {1<<(vi+1)}else{0};
                 cameras.push(ReceiverCamera {view_projection:vp,map_mask:mask});
-                if let Some(meadow)=&self.meadow_receivers {meadow.append(v.cam.pos,vp,0.5*v.h as f32/(v.cam.fov_y*0.5).tan(),mask,debug_options,&mut extra);}
+                if let Some(meadow) = self.meadow_receivers.as_ref().filter(|_| self.meadow.as_ref()
+                    .is_some_and(|m| m.in_view_range(v.cam.pos, debug_options.meadow_distance_scale))) {meadow.append(v.cam.pos,vp,0.5*v.h as f32/(v.cam.fov_y*0.5).tan(),mask,debug_options,&mut extra);}
             }
             extra.extend(self.wheel_particles.shadow_receiver_bounds((1u32<<maps.len())-1));
             // Unsupported receiver providers must keep full maps. Registration
@@ -5836,9 +5842,10 @@ impl Renderer {
             main_uniform.extra[3] = light.grass_reference;
             let grass_band = self.grass_detail.for_views(views.len());
             main_uniform.grass = [grass_band.fade_start, grass_band.fade_end, (vi + 1) as f32, 0.0];
-            let meadow_edge_active = self.meadow.as_ref().is_some_and(|m| m.edge_shadow_stats().is_some_and(|s| s.enabled))
-                && self.meadow_brick_fixture.is_none() && debug_options.draws_meadow()
-                && geometry_diagnostic.grass_enabled();
+            let view_meadow = self.meadow.as_ref().filter(|m| self.meadow_brick_fixture.is_none()
+                && debug_options.draws_meadow() && geometry_diagnostic.grass_enabled()
+                && m.in_view_range(cam.pos, debug_options.meadow_distance_scale));
+            let meadow_edge_active = view_meadow.is_some_and(|m| m.edge_shadow_stats().is_some_and(|s| s.enabled));
             main_uniform.grass[3] = if meadow_edge_active { 1.0 } else { 0.0 };
             main_uniform.fog_cull = camera_fog_cull(light);
             // One allocation-free terrain horizon query per physical camera.
@@ -5928,8 +5935,7 @@ impl Renderer {
                 });
                 self.meadow.as_ref().unwrap().prepare_edge_shadow(gpu, &mut enc, vi, &main.uniform, debug_options, time)?;
             }
-            let hidden_meadow=if let Some(meadow)=self.meadow.as_ref().filter(|m|m.skip_hidden_shade_enabled()
-                && self.meadow_brick_fixture.is_none() && debug_options.draws_meadow() && geometry_diagnostic.grass_enabled()) {
+            let hidden_meadow=if let Some(meadow)=view_meadow.filter(|m|m.skip_hidden_shade_enabled()) {
                 let mut times=[None;10];
                 for (slot,name) in [(0,"meadow placement"),(6,"meadow visibility")] {
                     times[slot]=self.query.as_ref().map(|(qs,_,_)| {names.push(name);(qs,timestamp_pair(&mut ts))});
@@ -6236,8 +6242,7 @@ impl Renderer {
                             volume_view.as_ref().unwrap(),&hdr_v,
                             brick.generation.load(std::sync::atomic::Ordering::Relaxed),brick.lod_pixels,times)?;
                     }
-                    if let Some(meadow) = self.meadow.as_ref().filter(|_| self.meadow_brick_fixture.is_none()
-                        && debug_options.draws_meadow() && geometry_diagnostic.grass_enabled()) {
+                    if let Some(meadow) = view_meadow {
                         let times = ["meadow placement", "meadow render", "meadow aggregate placement",
                             "meadow aggregate depth", "meadow merge", "meadow composite",
                             "meadow visibility", "meadow resolve", "meadow aggregate material",
@@ -6366,7 +6371,7 @@ impl Renderer {
                 let grass_motion = self.grass.as_ref().filter(|_|geometry_diagnostic.grass_enabled()).and_then(|g| g.motion_layer(vi));
                 let glass_motion = self.transparency.as_ref().filter(|_|debug_options.transparency_enabled).and_then(|t| t.motion_layer(vi));
                 let voxel_motion = self.voxel_forest.as_ref().and_then(|v|v.motion_layer(vi));
-                let meadow_motion = self.meadow.as_ref().filter(|_|debug_options.draws_meadow() && geometry_diagnostic.grass_enabled()).and_then(|g|g.motion_layer(vi));
+                let meadow_motion = view_meadow.and_then(|g| g.motion_layer(vi));
                 let motion_time = self.query.as_ref().map(|(qs, _, _)| {
                     names.push("motion vectors"); (qs, timestamp_pair(&mut ts))
                 });

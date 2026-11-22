@@ -6,6 +6,73 @@ use std::path::Path;
 use warp::{LuaGame, Overrides};
 
 #[test]
+fn both_city_lawns_follow_their_diagonal_walks_and_tree_grates() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../games/warp-theft-auto");
+    let mut game = LuaGame::load(&dir, &Overrides { seed: Some(1948), ..Default::default() }, None).unwrap();
+    game.tick(&[Controls::default()]);
+    assert!(game.errors().is_empty(), "{:?}", game.errors());
+
+    let core = game.core();
+    let field = core.world.scene.meadow.as_ref().expect("city lawn meadow");
+    let sample = |x: f32, z: f32| {
+        let ix = ((x - field.origin[0]) / field.cell).round() as usize;
+        let iz = ((z - field.origin[1]) / field.cell).round() as usize;
+        field.samples[iz * field.width as usize + ix]
+    };
+    for (x,z) in [(-84.,84.), (84.,-84.)] {
+        let slab = core.world.entities.values().find(|e| {
+            e.look.surface == Some(4) && e.pos.x == x && e.pos.z == z
+        }).expect("lawn surface under the blades");
+        for (dx,dz) in [(8.,0.), (0.,8.), (-8.,0.), (0.,-8.)] {
+            let root = sample(x+dx,z+dz);
+            assert_eq!(root[2], 1.);
+            assert!((root[0] - slab.pos.y - slab.size.y / 2.).abs() < 0.001);
+            assert!(root[1] > 0.9, "expected grass at {}, {}", x+dx,z+dz);
+        }
+        for dx in [-1.,1.] {
+            for dz in [-1.,1.] {
+                assert!(sample(x+dx*7.,z+dz*7.)[1] < 0.9, "paved diagonal");
+                // This point is 0.4 m inside a grate but only 0.11 m inside the path.
+                let grate = sample(x+dx*13.5,z+dz*12.5);
+                assert!(grate[2] == 0. || grate[1] < 0.6, "tree grate clearance {grate:?}");
+            }
+        }
+    }
+    for (x,z) in [(0.,0.), (28.,28.), (-84.,64.), (84.,-64.)] {
+        let hardscape = sample(x,z);
+        assert!(hardscape[2] == 0. || hardscape[1] < 0.9, "grass outside the lawns at {x}, {z}");
+    }
+}
+
+#[test]
+fn city_weather_follows_the_seed_and_survives_the_day_cycle() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../games/warp-theft-auto");
+    let load_city = |seed| {
+        let mut game = LuaGame::load(&dir, &Overrides { seed: Some(seed), ..Default::default() }, None).unwrap();
+        game.tick(&[Controls::default()]);
+        assert!(game.errors().is_empty(), "{:?}", game.errors());
+        game
+    };
+    let mut game = load_city(1948);
+    let clouds = game.state_json()["clouds"].clone();
+    assert!((0.0..1.0).contains(&clouds["coverage"].as_f64().unwrap()));
+    assert!(clouds["thickness"].as_f64().unwrap() > 0.0);
+    assert!(clouds["wind"][0].as_f64().unwrap() > 0.0);
+    assert_eq!(clouds["aerial"], false);
+
+    for (hour, phase) in [(19, "sunset"), (22, "night"), (6, "sunrise"), (9, "morning"), (12, "noon"), (16, "afternoon")] {
+        game.luau(&format!("state.clock.hour = {hour}")).unwrap();
+        game.tick(&[Controls::default()]);
+        let state = game.state_json();
+        assert_eq!(state["sky"], format!("{phase}:clear"));
+        assert_eq!(state["clouds"], clouds);
+    }
+    game.restart();
+    assert_eq!(game.state_json()["clouds"], clouds);
+    assert_ne!(load_city(1949).state_json()["clouds"], clouds);
+}
+
+#[test]
 fn shared_car_then_helicopter_with_an_abrupt_pilot_departure() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../games/warp-theft-auto");
     let mut g = LuaGame::load(&dir, &Overrides { players: Some(2), seed: Some(1948), ..Default::default() }, None).unwrap();

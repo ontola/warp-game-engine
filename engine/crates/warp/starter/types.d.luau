@@ -264,6 +264,15 @@ declare humans: {
 	room: (pool: string) -> (number, number),
 }
 
+type GrassRect = { pos: Vec, width: number, depth: number, yaw: number? }
+
+declare grass: {
+    -- Replace the horizontal GPU grass field, or clear it with nil. Rectangles use
+    -- world metres and optional yaw in radians. The top of each ground surface is pos.y.
+    set: (opts: { patches: {GrassRect}, cutouts: {GrassRect}?, seed: number?,
+        growth: number?, distance: number? }?) -> (),
+}
+
 declare plants: {
 	-- A grown plant (a Jeffrey pine unless `species` changes its rules): its
 	-- age in years sets how many shoots, limbs and needle brushes it has, not
@@ -287,7 +296,18 @@ declare plants: {
 	load: (name: string) -> any,
 }
 
+export type CloudSettings = {
+	coverage: number?, density: number?, shadow: number?,
+	base: number?, thickness: number?, far: number?,
+	wind_x: number?, wind_z: number?, steps: number?, light_steps: number?,
+	aerial: boolean?,
+}
+
 declare sky: {
+	-- Set the shared native cumulus layer in init or tick. True uses fair-weather defaults.
+	-- Heights and distances are metres, wind is metres/second and density is per metre.
+	-- aerial=false keeps the game's surface fog. False disables the volume.
+	clouds: (settings: boolean | CloudSettings) -> (),
 	-- "gradient" or TIME[:WEATHER]: sunrise, morning, noon, afternoon, sunset,
 	-- night; clear, haze, mist ("sunset:haze"). A preset bakes in about 0.2 s.
 	set: (name: string) -> (),

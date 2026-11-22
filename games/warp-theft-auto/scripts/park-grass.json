@@ -1,0 +1,15 @@
+{
+  "size": [3840,2160],
+  "steps": [
+    {"ticks":32},
+    {"cmd":"lua state.clock.hour=12; local pts={{-84,77},{75,-79},{28,35},{-68,94}}; for i,p in state.fleet.players do local xy=pts[i]; world.place(p.body,vector.create(xy[1],.85,xy[2])); p.view=({2.9,-.84,2.1,1.8})[i] end","ticks":45},
+    {"expect":"/grass/patches","equals":2},
+    {"expect":"/clouds/aerial","equals":false},
+    {"bench":40},
+    {"bench":100,"capture":"four-lawns-4k.png"},
+    {"cmd":"lua sky.clouds(false)","bench":40},
+    {"expect":"/clouds","equals":null},
+    {"bench":100,"capture":"four-lawns-grass-only.png"},
+    {"expect":"/errors","equals":[]}
+  ]
+}

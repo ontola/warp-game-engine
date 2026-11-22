@@ -618,6 +618,13 @@ impl LuaGame {
             "sky": c.sky.name(), "entities": c.world.entities.len(), "max_entities": c.world.capacity(), "tags": tags,
             "cameras": cams, "sounds": sounds, "modules": modules, "errors": errors, "state": game,
             "room_lighting": c.rooms.status(),
+            "clouds": c.light.sky_volume.and_then(|v| v.clouds.map(|cloud| json!({
+                "coverage": cloud.coverage, "base": cloud.base_m, "thickness": cloud.thickness_m, "density": cloud.density,
+                "wind": cloud.wind.to_array(), "shadow": cloud.shadow, "steps": cloud.steps, "light_steps": cloud.light_steps,
+                "far": cloud.far_m, "aerial": v.aerial,
+            }))),
+            "grass": c.world.scene.meadow.as_ref().map(|m| json!({"patches": c.world.scene.meadow_footprints.len(),
+                "grid": [m.width, m.height], "seed": m.seed, "distance": m.radius, "growth": m.growth})),
         })
     }
 
@@ -806,6 +813,7 @@ impl LuaGame {
         match want {
             SkyChoice::Gradient => {
                 c.world.scene.sky = Some(primitives::gradient_sky([0.25, 0.45, 0.8], [0.75, 0.82, 0.9], [0.35, 0.33, 0.3]));
+                c.world.scene.atmosphere = None;
                 self.light = Lighting::default();
                 c.world.rebuild = true;
                 self.sky_upload = None;
@@ -825,9 +833,11 @@ impl LuaGame {
         }
     }
 
-    fn lighting(&self) -> Lighting {
+    fn lighting(&self, alpha: f32) -> Lighting {
         let mut l = self.light.clone();
-        let o = self.core().light;
+        let c = self.core();
+        let o = c.light;
+        l.sky_volume = o.sky_volume;
         if let Some(s) = o.sun { l.sun_dir = s; }
         if let Some(v) = o.sun_lux { l.sun_lux = v; }
         if let Some(v) = o.sky_lux { l.sky_lux = v; }
@@ -836,14 +846,13 @@ impl LuaGame {
         if let Some(v) = o.fog[0] { l.fog_start = v; }
         if let Some(v) = o.fog[1] { l.fog_end = v; }
         if let Some(v) = o.fog[2] { l.fog_density = v; }
-        let c = self.core();
         let p = c.post;
         l.contrast = p.contrast;
         l.saturation = p.saturation;
         l.vignette = p.vignette;
         l.grain = p.grain;
         l.aberration = p.aberration;
-        l.time = c.tick as f32 / c.tick_rate;
+        l.time = if l.sky_volume.is_some() { c.render_time(alpha) as f32 } else { c.tick as f32 / c.tick_rate };
         l
     }
 
@@ -1108,7 +1117,7 @@ impl Game for LuaGame {
         self.core().phase = Phase::Sim;
         self.attach_plants();
         self.update_sky();
-        let light = self.lighting();
+        let light = self.lighting(frame.alpha);
         let mut c = api::lock(&self.core);
         let mut surface_line = None;
         let added = std::mem::take(&mut c.world.added);
@@ -1160,6 +1169,10 @@ impl Game for LuaGame {
         }
         let r = frame.renderer().ok_or("no renderer")?;
         c.world.flush_at(frame.gpu, r, frame.alpha)?;
+        if c.world.scene.meadow.is_some() {
+            let time = c.render_time(frame.alpha);
+            r.set_meadow_wind(&render::wind::WindState { time_seconds: time, strength: 0.35, ..Default::default() })?;
+        }
         post(r, &c.post, &c.lamps, &c.spots)?;
         if c.rooms.enabled {
             let c = &mut *c;
