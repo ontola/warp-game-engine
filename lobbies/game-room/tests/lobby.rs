@@ -333,3 +333,24 @@ fn the_catalog_shows_every_game_and_plays_the_middle_one() {
     press(&mut lobby, BTN_B);
     assert!(!lobby.catalog_open(), "B goes back to the room view");
 }
+
+#[test]
+fn the_back_panel_shows_the_hosts_chords_for_its_player() {
+    let mut lobby = Lobby::new(options(), 0, 2).unwrap();
+    let player = lobby.world.players[0].id.clone();
+    assert!(game_room::hud::back_rows(&lobby).is_none(), "no back_menu, no panel");
+    let mut party = lobby.host.party.clone();
+    party["back_menu"] = json!({"player": player, "confirm_leave": false, "chords": [
+        {"button": "rb", "action": "next", "label": "Play next game"}, {"button": "b", "action": "leave"}]});
+    lobby.set_party(party.clone());
+    let (who, rows) = game_room::hud::back_rows(&lobby).unwrap();
+    assert_eq!(who.as_deref(), Some(player.as_str()));
+    assert_eq!(rows, vec![("RB".to_string(), "Play next game".to_string(), false), ("B".into(), "Leave the party".into(), false)]);
+    party["back_menu"]["confirm_leave"] = json!(true);
+    lobby.set_party(party.clone());
+    assert_eq!(game_room::hud::back_rows(&lobby).unwrap().1[1], ("B".into(), "Press B again to leave".into(), true));
+    let _ = game_room::hud::draw(&lobby, [1920, 1080], 1.0);
+    party["back_menu"] = Value::Null;
+    lobby.set_party(party);
+    assert!(game_room::hud::back_rows(&lobby).is_none(), "an empty back_menu hides it");
+}

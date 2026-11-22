@@ -110,6 +110,8 @@ pub fn draw(lobby: &Lobby, size: [u32; 2], _alpha: f32) -> HudDrawList {
         menu(lobby, &mut c, crate::mouse::MOUSE, at, fs);
     }
     c.over();
+    back_panel(lobby, &mut c, view_proj, size, scale);
+    c.over();
     bench(lobby, &mut c, scale);
 
     // Toasts, bottom centre.
@@ -221,6 +223,67 @@ fn menu_layout(lobby: &Lobby, id: &str, at: [f32; 2], fs: f32, size: [u32; 2]) -
 fn menu_head(fs: f32) -> f32 { 18.0 + (fs * 0.7).floor() + 14.0 }
 
 /// main.gd `_draw_menu`: a player's Start menu over their head.
+/// The rows of the host's Back panel (`back_menu` in the party): the
+/// player it is for, then per chord its button, label and whether it is
+/// the leave waiting for a second B.
+pub fn back_rows(lobby: &Lobby) -> Option<(Option<String>, Vec<(String, String, bool)>)> {
+    let menu = &lobby.host.party["back_menu"];
+    let chords = menu["chords"].as_array().filter(|c| !c.is_empty())?;
+    let player = menu["player"].as_str().filter(|p| !p.is_empty()).map(String::from)
+        .or_else(|| menu["controller"].as_str().and_then(|c| lobby.controllers.get(c).cloned()));
+    let confirm = menu["confirm_leave"].as_bool().unwrap_or(false);
+    let rows = chords.iter().map(|chord| {
+        let button = chord["button"].as_str().unwrap_or("").to_uppercase();
+        let action = chord["action"].as_str().unwrap_or("");
+        let fallback = match action { "next" => "Play the next game", "previous" => "Play the previous game", "leave" => "Leave the party", other => other };
+        let label = chord["label"].as_str().filter(|l| !l.is_empty()).unwrap_or(fallback).to_string();
+        let waiting = confirm && action == "leave";
+        (button, if waiting { "Press B again to leave".into() } else { label }, waiting)
+    }).collect();
+    Some((player, rows))
+}
+
+/// While a player holds Back: what Back plus another button does, over
+/// their head (or bottom centre for someone not in the room).
+fn back_panel(lobby: &Lobby, c: &mut Canvas, view_proj: Mat4, size: [u32; 2], scale: f32) {
+    let Some((player, rows)) = back_rows(lobby) else { return };
+    let (w, h) = (size[0] as f32, size[1] as f32);
+    let fs = (24.0 * scale).floor();
+    let line = fs * 2.0;
+    let key_w = fs * 2.6;
+    let head = fs * 1.9;
+    let pad = fs * 0.8;
+    let text_w = rows.iter().map(|r| width(&r.1, fs)).fold(width("Hold Back and press", (fs * 0.8).floor()), f32::max);
+    let (pw, ph) = (pad * 2.0 + key_w + fs * 0.7 + text_w, pad * 2.0 + head + line * rows.len() as f32);
+    let anchor = player.as_ref().and_then(|id| {
+        let p = lobby.world.player(id)?;
+        project(view_proj, size, Vec3::new(p.x as f32, p.y as f32 + if p.sleeping { 1.3 } else { 2.25 }, lobby.actor_depth(id)))
+    });
+    let (x, y) = match anchor {
+        Some(at) => (at[0] - pw / 2.0, at[1] - ph - 34.0 * scale),
+        None => (w / 2.0 - pw / 2.0, h - ph - 120.0 * scale),
+    };
+    let (x, y) = (x.clamp(8.0, w - pw - 8.0), y.clamp(8.0, h - ph - 8.0));
+    c.style_box([x, y, pw, ph], [fs * 0.6; 4], rgba(0.03, 0.03, 0.06, 0.94), Some(((2.0 * scale).max(1.0), Color::hex("b4b2c8").with_alpha(0.6))));
+    let name = player.as_deref().map(|id| lobby.name(id)).unwrap_or_default();
+    let title = if name.is_empty() { "BACK".to_string() } else { format!("BACK  ·  {}", short(&name, 14).to_uppercase()) };
+    c.text(bold(), [x + pad, y + pad + fs * 0.9], &title, TextAlign::Left, -1.0, fs, TEXT);
+    c.text(regular(), [x + pad, y + pad + fs * 1.75], "Hold Back and press", TextAlign::Left, -1.0, (fs * 0.8).floor(), DIM);
+    for (i, (button, label, waiting)) in rows.iter().enumerate() {
+        let top = y + pad + head + line * i as f32 + fs * 0.25;
+        let r = [x + pad, top, key_w, line - fs * 0.5];
+        if button == "B" {
+            let center = [r[0] + r[2] / 2.0, r[1] + r[3] / 2.0];
+            c.circle(center, r[3] / 2.0, Color::hex("e2574c"));
+            c.text(bold(), [r[0], center[1] + fs * 0.36], "B", TextAlign::Center, r[2], fs, Color::hex("0b0b12"));
+        } else {
+            crate::paint::bumper(c, r, button, 0, 0.0);
+        }
+        let color = if *waiting { AMBER } else { TEXT };
+        c.text(regular(), [r[0] + key_w + fs * 0.7, r[1] + r[3] / 2.0 + fs * 0.36], label, TextAlign::Left, -1.0, fs, color);
+    }
+}
+
 fn menu(lobby: &Lobby, c: &mut Canvas, id: &str, at: [f32; 2], fs: f32) {
     let items = lobby.menu_items(id);
     let Some(state) = lobby.menus.get(id) else { return };

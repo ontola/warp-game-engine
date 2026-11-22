@@ -4,7 +4,7 @@
 //!   game-room shot [--dump DIR] --out room.png [--size 1280x720]
 //!   game-room play [--players 1] [--bots 3] [--fullscreen]
 //!   game-room bake-light --out room-light.bin
-//!   game-room live-shot --out room.png [--ticks 180] [--bots 3] [--items] [--fx] [--mouse X,Y] [--mouse-menu] [--pending NAME] [--queue TITLE] [--keys] [--catalog]
+//!   game-room live-shot --out room.png [--ticks 180] [--bots 3] [--items] [--fx] [--mouse X,Y] [--mouse-menu] [--pending NAME] [--queue TITLE] [--keys] [--catalog] [--back-menu]
 //!
 //! For now the room comes from the Godot lobby's export (tools/
 //! warp_export.gd in gamenight/lobbies/game-room), so both engines draw the
@@ -96,6 +96,16 @@ fn run() -> Result<(), String> {
             }
             lobby.host.shelf_offset = 1;
             lobby.open_catalog();
+        }
+        // `--back-menu`: the host's Back panel for the first player, leave armed.
+        if flag("--back-menu") {
+            let mut party = lobby.host.party.clone();
+            let player = lobby.world.players.first().map(|p| p.id.clone()).unwrap_or_default();
+            party["back_menu"] = serde_json::json!({"player": player, "confirm_leave": true, "chords": [
+                {"button": "rb", "action": "next", "label": "Play next game"},
+                {"button": "lb", "action": "previous", "label": "Play previous game"},
+                {"button": "b", "action": "leave", "label": "Leave the party"}]});
+            lobby.set_party(party);
         }
         let ticks = numf("--ticks", 180.0) as u32;
         let mut rgba = headless.frame(&mut lobby)?;
