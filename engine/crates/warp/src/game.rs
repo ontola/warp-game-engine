@@ -565,6 +565,9 @@ impl LuaGame {
         let seats: Vec<(u32, Option<usize>)> = self.core().roster.iter().map(|p| (p.id, p.seat)).collect();
         for l in &r.logs { self.say(format!("room log: {l}")); }
         if r.finish { self.say("game.finish: the match is over".into()); }
+        // In a browser page the page's host keeps the room log.
+        #[cfg(target_arch = "wasm32")]
+        if self.party.is_none() { for l in &r.logs { crate::web::room_log(l); } }
         let Some(party) = self.party.as_mut() else { return };
         for l in &r.logs { party.room_log(l); }
         for (id, weak, strong, secs) in r.rumble {

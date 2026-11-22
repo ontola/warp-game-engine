@@ -84,7 +84,7 @@ fn hat(value: f64) -> u32 {
 /// Every connected pad, now: standard ones as the browser maps them,
 /// others through [`layout`].
 pub fn read() -> Vec<Reading> {
-    pads().into_iter().map(|p| {
+    let readings: Vec<Reading> = pads().into_iter().map(|p| {
         let buttons = p.buttons();
         let button = |i: u32| buttons.get(i).dyn_into::<web_sys::GamepadButton>().ok();
         let down = |i: u32| button(i).is_some_and(|b| b.pressed() || b.value() > 0.4);
@@ -104,7 +104,28 @@ pub fn read() -> Vec<Reading> {
         let trigger = |k: usize| l.buttons[k].map_or(0.0, |b| if down(b) { value(b).max(1.0) } else { 0.0 });
         let [lx, ly, rx, ry] = l.sticks.map(axis);
         Reading { index: p.index(), held, sticks: [lx, -ly, rx, -ry], triggers: [trigger(6), trigger(7)] }
-    }).collect()
+    }).collect();
+    if debug() { for r in &readings { show(r); } }
+    readings
+}
+
+/// With `?debug` in the page's address: every change of what a pad reads.
+fn debug() -> bool {
+    thread_local! { static ON: bool = web_sys::window().and_then(|w| w.location().search().ok()).is_some_and(|q| q.contains("debug")); }
+    ON.with(|on| *on)
+}
+
+/// Log a pad's reading when it changed (sticks to a tenth): what the
+/// engine sees, to tell a pad's layout apart from a game's reading of it.
+fn show(r: &Reading) {
+    thread_local! { static LAST: std::cell::RefCell<std::collections::HashMap<u32, String>> = Default::default(); }
+    const NAMES: [(u32, &str); 14] = [(Buttons::SOUTH, "A"), (Buttons::EAST, "B"), (Buttons::WEST, "X"), (Buttons::NORTH, "Y"), (Buttons::LEFT_SHOULDER, "LB"), (Buttons::RIGHT_SHOULDER, "RB"),
+        (Buttons::LEFT_TRIGGER, "LT"), (Buttons::RIGHT_TRIGGER, "RT"), (Buttons::SELECT, "Back"), (Buttons::START, "Start"), (Buttons::UP, "up"), (Buttons::DOWN, "down"), (Buttons::LEFT, "left"), (Buttons::RIGHT, "right")];
+    let held: Vec<&str> = NAMES.iter().filter(|(b, _)| r.held & b != 0).map(|(_, n)| *n).collect();
+    let s = r.sticks.map(|v| (v * 10.0).round() / 10.0);
+    let line = format!("pad{} reads: held [{}], left stick {:+.1} {:+.1}, right stick {:+.1} {:+.1} (up is +)", r.index, held.join(" "), s[0], s[1], s[2], s[3]);
+    let changed = LAST.with(|l| l.borrow_mut().insert(r.index, line.clone()).as_deref() != Some(line.as_str()));
+    if changed { crate::web::log(&line); }
 }
 
 /// Vibrate pad `index` (Chrome and Edge: `vibrationActuator`, "dual-rumble").

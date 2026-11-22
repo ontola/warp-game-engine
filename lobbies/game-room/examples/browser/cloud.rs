@@ -153,7 +153,7 @@ fn snapshot(h: &Host) -> Value {
     let current = if session.is_null() { h.loading.clone().map(Value::from).unwrap_or(Value::Null) } else { session.clone() };
     let next = party["playlist"]["entries"].get(0).map(|e| e["game"].clone()).unwrap_or(Value::Null);
     json!({"seats": h.cloud.seats, "discovery": {"games": games, "playlist": party["playlist"], "session": party["active_session"],
-        "current": current, "next": next, "acknowledged": h.cloud.acknowledged}})
+        "current": current, "next": next, "acknowledged": h.cloud.acknowledged}, "activity": h.activity})
 }
 
 /// Take a poll reply: the room's links, profiles on seats, a phone's pick.

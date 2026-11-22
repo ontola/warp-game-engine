@@ -22,6 +22,7 @@ WASI_SYSROOT=a wasi-sdk share/wasi-sysroot).
 """
 import argparse
 import json
+import time
 import os
 import re
 import shutil
@@ -81,6 +82,20 @@ paint();
 WARP_GAMES = ['neon-siege', 'stack-together', 'neon-trails', 'hello-warp', 'relay-keepers', 'dead-miles']
 SKIP = {'scripts', 'tests', 'docs', 'build'}
 TEXTURES = ['grass_ground', 'forest_leaves_02', 'forest_ground_04', 'rock_face_03', 'gravel_ground_01', 'mossy_rock']
+
+# An old index.html from the browser's cache: load the current build instead
+# (a new ?v= in the address is a new page for the cache).
+VERSION_CHECK = """
+<script>
+fetch('version.json', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).then(v => {
+  const mine = document.documentElement.dataset.version;
+  if (!v || !mine || v.version === mine) return;
+  const q = new URLSearchParams(location.search);
+  if (q.get('v') === v.version) return;
+  q.set('v', v.version);
+  location.replace(location.pathname + '?' + q + location.hash);
+}).catch(() => {});
+</script>"""
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument('--serve', action='store_true', help='serve build/web after building')
@@ -186,6 +201,16 @@ if not args.no_build:
         if not args.bare:
             page = page.replace('<title>Warp</title>', '<title>Splitscreen Club</title>')
         page = page.replace('</body>', WARP_PICKER.replace('ROOM', 'false' if args.bare else 'true') + '</body>').replace('</head>', AUDIO_UNLOCK + '</head>')
+    # Without cache headers from the server a browser keeps an old build:
+    # every file the page and the engine fetch carries this build's
+    # version (?v=, app::web::fetch adds it), and a page that finds a newer
+    # version.json (never cached) loads itself again under the new version.
+    version = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'], cwd=ROOT, capture_output=True, text=True).stdout.strip() or 'dev'
+    version += '-' + time.strftime('%Y%m%d%H%M%S', time.gmtime())
+    page = page.replace(f"./pkg/{args.example}.js'", f"./pkg/{args.example}.js?v={version}'").replace(f"'pkg/{args.example}_bg.wasm'", f"'pkg/{args.example}_bg.wasm?v={version}'")
+    page = page.replace('<html lang="en">', f'<html lang="en" data-version="{version}">', 1)
+    page = page.replace('<meta charset="utf-8">', '<meta charset="utf-8">\n<meta http-equiv="Cache-Control" content="no-cache">' + VERSION_CHECK, 1)
+    (OUT / 'version.json').write_text(json.dumps({'version': version}))
     (OUT / 'index.html').write_text(page)
     if room:
         (OUT / 'fonts').mkdir(exist_ok=True)

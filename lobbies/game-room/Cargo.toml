@@ -38,7 +38,7 @@ web-time = "1.1"
 getrandom = { version = "0.3", features = ["wasm_js"] }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["Window", "Document", "Element"] }
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "DomRect"] }
 
 [dev-dependencies]
 tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }

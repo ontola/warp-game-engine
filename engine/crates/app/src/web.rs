@@ -108,7 +108,11 @@ pub async fn yield_to_browser() {
 pub async fn fetch(url: &str) -> Result<Vec<u8>, String> {
     use wasm_bindgen_futures::JsFuture;
     let window = web_sys::window().ok_or("no window")?;
-    let response: web_sys::Response = JsFuture::from(window.fetch_with_str(url)).await.map_err(|e| format!("{url}: {e:?}"))?
+    // A file next to the page is this build's (`<html data-version>`, set
+    // by build-web.py): never an older one from the browser's cache.
+    let version = window.document().and_then(|d| d.document_element()).and_then(|e| e.get_attribute("data-version"));
+    let versioned = match version { Some(v) if !url.contains("://") && !url.contains('?') => format!("{url}?v={v}"), _ => url.to_string() };
+    let response: web_sys::Response = JsFuture::from(window.fetch_with_str(&versioned)).await.map_err(|e| format!("{url}: {e:?}"))?
         .dyn_into().map_err(|_| format!("{url}: not a response"))?;
     if !response.ok() { return Err(format!("{url}: HTTP {}", response.status())); }
     let buffer = JsFuture::from(response.array_buffer().map_err(|e| format!("{url}: {e:?}"))?).await.map_err(|e| format!("{url}: {e:?}"))?;

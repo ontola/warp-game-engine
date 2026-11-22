@@ -70,6 +70,10 @@ mod page {
         pub(crate) cloud: crate::cloud::Cloud,
         /// A key pressed since the room last ticked (its buttons).
         key: Option<u32>,
+        /// The room log for the cloud room's phones, oldest first (its
+        /// `activity`), and the next line's id.
+        pub(crate) activity: Vec<Value>,
+        activity_id: u64,
         /// Covers fetched for the room's catalog: (game id, PNG).
         covers: Vec<(String, Vec<u8>)>,
     }
@@ -101,6 +105,21 @@ mod page {
         h.cloud.refresh = true;
     }
 
+    /// A line in the room log (the phones' Room log): `kind` as the
+    /// party protocol's ActivityKind (joined, left, game_started, game...).
+    pub(crate) fn note(h: &mut Host, kind: &str, text: &str, game: Option<&str>) {
+        h.activity_id += 1;
+        let at = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let mut line = json!({"id": h.activity_id, "at": at, "kind": kind, "text": text.chars().take(300).collect::<String>()});
+        if let Some(g) = game { line["game"] = json!(g); }
+        h.activity.push(line);
+        let skip = h.activity.len().saturating_sub(100);
+        h.activity.drain(..skip);
+        h.cloud.refresh = true;
+    }
+
+    fn name(h: &Host, seat: usize) -> String { h.party["players"][seat]["name"].as_str().unwrap_or("Someone").to_string() }
+
     /// Put `game` first in the queue (or last, unless `first`).
     pub(crate) fn queue(h: &mut Host, game: &str, first: bool) {
         let entry = json!({"game": game, "title": title(&h.party, game)});
@@ -120,7 +139,11 @@ mod page {
     fn devices(h: &mut Host, devices: &[(Device, Controls)]) -> Option<Vec<Vec<Device>>> {
         for (dev, c) in devices {
             // Any key on the keyboard: the keyboard on the room's table hops.
-            if *dev == Device::Keyboard && c.pressed.0 != 0 { h.key = Some(c.pressed.0); }
+            // (WASD and the arrows move: they count as keys too.)
+            if *dev == Device::Keyboard && (c.pressed.0 != 0 || c.mv[0].abs().max(c.mv[1].abs()) > 0.5) {
+                h.key = Some(c.pressed.0 | ((c.mv[0] > 0.0) as u32) << 30 | ((c.mv[1] > 0.0) as u32) << 31);
+                if !c.pressed.has(Buttons::START) && !h.bound.contains(&Some(Device::Keyboard)) { key_hint(); }
+            }
             // A pad joins with any button or its stick; the keyboard only
             // with Enter, so typing or a stray key adds nobody.
             let active = match dev {
@@ -134,6 +157,8 @@ mod page {
                 None => continue,
             };
             h.bound[seat] = Some(*dev);
+            let text = format!("{} joined with {}", name(h, seat), if *dev == Device::Keyboard { "the keyboard" } else { "a controller" });
+            note(h, "joined", &text, None);
             app::web::log(&format!("{dev} plays as {}", h.party["players"][seat]["name"].as_str().unwrap_or("?")));
         }
         for (i, b) in h.bound.iter().enumerate() {
@@ -150,6 +175,7 @@ mod page {
             }
         }
         warp::web::set_seats(seats(h));
+        for line in warp::web::take_room_log() { let game = h.on_screen.clone(); note(h, "game", &line, game.as_deref()); }
         Some(h.bound.iter().map(|b| b.iter().copied().collect()).collect())
     }
 
@@ -199,6 +225,8 @@ mod page {
     /// pad, in its own look again; any other player leaves the table.
     pub(crate) fn leave_party(h: &mut Host, id: &str) {
         let Some(i) = seat_of(h, id) else { return };
+        let text = format!("{} left", name(h, i));
+        note(h, "left", &text, None);
         if let Some(phones) = h.party["phones"].as_array_mut() { phones.retain(|p| p != id); }
         if i < h.base {
             h.bound[i] = None;
@@ -228,6 +256,20 @@ mod page {
         if SHOWN.with(|s| s.replace(Some(empty))) == Some(empty) { return; }
         let Some(root) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.document_element()) else { return };
         let _ = if empty { root.set_attribute("data-empty", "") } else { root.remove_attribute("data-empty") };
+    }
+
+    /// A key pressed while nobody plays on the keyboard: the page shows
+    /// for a moment that Enter joins (`<html data-key-hint>`, see index.html).
+    fn key_hint() {
+        thread_local! { static LAST: std::cell::Cell<Option<web_time::Instant>> = const { std::cell::Cell::new(None) }; }
+        if LAST.with(|l| l.get().is_some_and(|t| t.elapsed().as_secs_f32() < 4.0)) { return; }
+        LAST.with(|l| l.set(Some(web_time::Instant::now())));
+        app::web::log("keyboard: a key, nobody on it; Enter joins");
+        let Some(root) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.document_element()) else { return };
+        // Off, a layout, on: the animation runs again.
+        let _ = root.remove_attribute("data-key-hint");
+        let _ = root.get_bounding_client_rect();
+        let _ = root.set_attribute("data-key-hint", "");
     }
 
     /// The first game this page starts: the page shows for a few seconds how
@@ -369,6 +411,8 @@ mod page {
                 if h.on_screen.is_none() { app::web::switch_keeping(cfg, Box::new(lua), |p| with(|h| h.room = Some(p))); } else { app::web::switch(cfg, Box::new(lua)); }
                 h.on_screen = Some(game.clone());
                 set_session(h, Some(&game), "running");
+                let text = format!("Started {}", title(&h.party, &game));
+                note(h, "game_started", &text, Some(&game));
                 empty_room(false);
                 back_hint();
             });

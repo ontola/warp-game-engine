@@ -14,7 +14,14 @@ thread_local! {
     static SOUND: std::cell::RefCell<Option<(app::sound::Speaker, audio::synth::SoundSender)>> = const { std::cell::RefCell::new(None) };
     /// The page host's seats and how often they changed ([`set_seats`]).
     static SEATS: std::cell::RefCell<(u64, Vec<SeatInfo>)> = const { std::cell::RefCell::new((0, Vec::new())) };
+    /// Lines games wrote with `game.log`, for the page's room log ([`take_room_log`]).
+    static ROOM_LOG: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
+
+pub(crate) fn room_log(line: &str) { ROOM_LOG.with(|l| l.borrow_mut().push(line.to_string())); }
+
+/// The lines games wrote for the room log (`game.log`) since the last call.
+pub fn take_room_log() -> Vec<String> { ROOM_LOG.with(|l| std::mem::take(&mut *l.borrow_mut())) }
 
 /// The page host's people now, on their seats: a running game follows at
 /// its next tick (joins, leaves, names, colours), a paused one when it

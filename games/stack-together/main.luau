@@ -554,7 +554,19 @@ local function build_scene()
 	build_ends()
 	build_sides()
 	look()
-	camera.set(1, { pos = vector.create(0, H / 2 + 0.2, 23.5), target = vector.create(0, H / 2 + 0.2, 0), fov = 50 })
+	state.cam_aspect = nil
+end
+
+-- The camera keeps the well and both players' corners in view: from 23.5
+-- on a wide screen, further back on a narrow one (a browser with a sidebar).
+local HALF_WIDTH = 16.5 -- the faces at x = ±13, with a margin
+local function fit_camera()
+	local w, h = hud.size()
+	local aspect = if h > 0 then w / h else 16 / 9
+	if state.cam_aspect == aspect then return end
+	state.cam_aspect = aspect
+	local dist = math.max(23.5, HALF_WIDTH / (math.tan(math.rad(25)) * aspect))
+	camera.set(1, { pos = vector.create(0, H / 2 + 0.2, dist), target = vector.create(0, H / 2 + 0.2, 0), fov = 50 })
 end
 
 -- ---------------------------------------------------------------------------
@@ -801,6 +813,7 @@ local function reload()
 end
 
 local function tick(dt, input)
+	fit_camera()
 	if state.phase == "play" then
 		step(input, dt)
 		if state.phase ~= "play" and not state.finished then

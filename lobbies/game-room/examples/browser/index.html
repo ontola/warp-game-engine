@@ -47,13 +47,15 @@ html[data-empty] #club-notice{opacity:1;visibility:visible;transform:translate(-
 #club-notice strong{display:block;font-weight:800;font-size:clamp(17px,2vw,22px)}
 #club-notice span{color:var(--muted);font-size:clamp(14px,1.6vw,17px)}
 /* The first game: how to get back to the room, for a few seconds. */
-#back-hint{position:fixed;top:28px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:14px;padding:14px 22px;border-radius:18px;
+#back-hint,#key-hint{position:fixed;top:28px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:14px;padding:14px 22px;border-radius:18px;
   background:rgba(13,16,32,.86);border:1px solid rgba(255,255,255,.1);box-shadow:0 12px 36px rgba(0,0,0,.45);backdrop-filter:blur(8px);
   opacity:0;visibility:hidden;z-index:1;max-width:calc(100vw - 32px);box-sizing:border-box;font-size:clamp(15px,1.8vw,19px)}
 html[data-back-hint] #back-hint{animation:back-hint 7s ease forwards}
+/* A key pressed with nobody on the keyboard yet: how to join with it. */
+html[data-key-hint] #key-hint{animation:back-hint 4s ease forwards}
 @keyframes back-hint{0%{opacity:0;visibility:visible;transform:translate(-50%,-12px)}8%,85%{opacity:1;visibility:visible;transform:translate(-50%,0)}100%{opacity:0;visibility:hidden}}
-#back-hint kbd{font:800 .85em Outfit,system-ui;padding:4px 10px;border-radius:8px;background:var(--violet);color:#0d1020;white-space:nowrap}
-#back-hint span{color:var(--muted)}
+#back-hint kbd,#key-hint kbd{font:800 .85em Outfit,system-ui;padding:4px 10px;border-radius:8px;background:var(--violet);color:#0d1020;white-space:nowrap}
+#back-hint span,#key-hint span{color:var(--muted)}
 #warp-log{display:none;position:fixed;left:8px;bottom:8px;white-space:pre-wrap;max-width:90vw;max-height:40vh;overflow:hidden;pointer-events:none;font:12px monospace;color:#ddd;text-shadow:0 0 3px #000;z-index:3}
 #warp-games{display:none!important}
 body.debug #warp-log{display:block}
@@ -78,9 +80,10 @@ body.debug #warp-games{display:flex!important}
 <div id="club-notice" role="status">
   <svg viewBox="0 0 48 48" aria-hidden="true"><rect x="4" y="12" width="40" height="22" rx="10" fill="#ffb454"/><circle cx="12" cy="30" r="9" fill="#ffb454"/><circle cx="36" cy="30" r="9" fill="#ffb454"/>
     <rect x="9" y="21" width="10" height="3.5" rx="1.75" fill="#0d1020"/><rect x="12.25" y="17.75" width="3.5" height="10" rx="1.75" fill="#0d1020"/><circle cx="33" cy="19.5" r="2.6" fill="#0d1020"/><circle cx="38" cy="24.5" r="2.6" fill="#0d1020"/></svg>
-  <div><strong>Connect a controller and press any button</strong><span>or scan the QR code on the wall with your phone</span></div>
+  <div><strong>Connect a controller and press any button</strong><span>press Enter on the keyboard, or scan the QR code on the wall with your phone</span></div>
 </div>
 <div id="back-hint" role="status"><kbd>Back</kbd><div>Back or Select takes you back to the room <span>(Tab on a keyboard)</span></div></div>
+<div id="key-hint" role="status"><kbd>Enter</kbd><div>Press Enter to play with the keyboard</div></div>
 <div id="warp-log"></div>
 <script type="module">
 import init from './pkg/terrain_fly.js';
