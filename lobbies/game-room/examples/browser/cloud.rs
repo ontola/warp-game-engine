@@ -146,7 +146,7 @@ fn snapshot(h: &Host) -> Value {
     let people = h.cloud.seats.len() as u64;
     let session = party["active_session"].as_object().map(|s| s["game"].clone()).unwrap_or(Value::Null);
     let games: Vec<Value> = party["library"].as_array().into_iter().flatten().map(|g| {
-        let fits = g["min_players"].as_u64().unwrap_or(1) <= people && people <= g["max_players"].as_u64().unwrap_or(8);
+        let fits = crate::page::fits(party, g["id"].as_str().unwrap_or_default(), people as usize) && people <= g["max_players"].as_u64().unwrap_or(8);
         let state = if session == g["id"] { "playing" } else if h.loading.as_deref() == g["id"].as_str() { "loading" } else if fits { "available" } else { "unavailable" };
         json!({"id": g["id"], "selectable": fits, "state": state})
     }).collect();

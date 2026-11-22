@@ -23,6 +23,7 @@ WASI_SYSROOT=a wasi-sdk share/wasi-sysroot).
 import argparse
 import json
 import time
+import tomllib
 import os
 import re
 import shutil
@@ -172,7 +173,9 @@ def copy_games(names):
         players = meta.get('players', {})
         lo, hi = players.get('min', 1), players.get('max', 4)
         library.append({'id': meta.get('id', name), 'folder': name, 'title': meta.get('title', name), 'tagline': meta.get('tagline', ''),
-                         'players': f'{lo}-{hi}' if lo != hi else str(lo), 'min_players': lo, 'max_players': hi, 'has_cover': cover.exists()})
+                         'players': f'{lo}-{hi}' if lo != hi else str(lo), 'min_players': lo, 'max_players': hi, 'has_cover': cover.exists(),
+                         # Bots the game brings itself (game.toml): they fill seats people leave empty.
+                         'bots': tomllib.loads((src / 'game.toml').read_text()).get('bots', 0) if (src / 'game.toml').exists() else 0})
     (out / 'index.json').write_text(json.dumps(names))
     (out / 'library.json').write_text(json.dumps(library))
 

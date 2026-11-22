@@ -76,6 +76,8 @@ mod page {
         activity_id: u64,
         /// Back held in the room: since when (or the last chord), and whether B armed leaving.
         backs: Vec<(Device, web_time::Instant, bool)>,
+        /// Enter held on the keyboard while nobody plays on it.
+        kb_enter: bool,
         /// A chord to run when the room ticks.
         chord: Option<Chord>,
         /// RB held on a seat's device (Back with RB in a game skips ahead).
@@ -98,8 +100,12 @@ mod page {
         game_meta(party, game).and_then(|g| g["min_players"].as_u64()).unwrap_or(1) as usize
     }
 
-    /// Whether `players` people are enough for `game`.
-    pub(crate) fn fits(party: &Value, game: &str, players: usize) -> bool { players >= min_players(party, game) }
+    /// Whether `players` people are enough for `game`, with the bots it
+    /// brings (Stack Together: one person and its bot).
+    pub(crate) fn fits(party: &Value, game: &str, players: usize) -> bool {
+        let bots = game_meta(party, game).and_then(|g| g["bots"].as_u64()).unwrap_or(0) as usize;
+        players >= 1 && players + bots >= min_players(party, game)
+    }
 
     fn title(party: &Value, game: &str) -> String {
         game_meta(party, game).and_then(|g| g["title"].as_str()).unwrap_or(game).to_string()
@@ -154,8 +160,13 @@ mod page {
             }
             // A pad joins with any button or its stick; the keyboard only
             // with Enter, so typing or a stray key adds nobody.
+            // The keyboard joins when Enter comes back up, so that Enter
+            // does not also open the new player's Start menu.
+            let enter = *dev == Device::Keyboard && c.held.has(Buttons::START);
+            let released = *dev == Device::Keyboard && h.kb_enter && !enter;
+            if *dev == Device::Keyboard { h.kb_enter = enter && !h.bound.contains(&Some(Device::Keyboard)); }
             let active = match dev {
-                Device::Keyboard => c.pressed.has(Buttons::START),
+                Device::Keyboard => released,
                 Device::Pad(_) => c.pressed.0 != 0 || c.mv[0].abs().max(c.mv[1].abs()) > 0.6,
             };
             if !active || h.bound.contains(&Some(*dev)) { continue; }
