@@ -130,6 +130,12 @@ pub fn store(key: &str, value: &str) {
 }
 
 /// The page's origin (`https://splitscreen.club`).
+/// A value from the page's query string.
+pub fn query_param(k: &str) -> Option<String> {
+    let query = web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default();
+    query.trim_start_matches('?').split('&').find_map(|kv| kv.split_once('=').filter(|(key, _)| *key == k).map(|(_, v)| v.to_owned()))
+}
+
 pub fn origin() -> String { web_sys::window().and_then(|w| w.location().origin().ok()).unwrap_or_default() }
 
 /// The wasm module's linear memory, in MB (it only grows).
@@ -174,6 +180,12 @@ struct Shell {
     switched: Option<Instant>,
     /// The running game has left once ([`on_exit`]): wait for the switch.
     exited: bool,
+    /// Per frame: time since the last frame, ticks, the game's draw, and the
+    /// engine's encode and submit, in ms ([`Shell::stats`]).
+    times: Vec<[f32; 4]>,
+    /// `?render=H`: draw the 3D view at most H pixels high (to tell GPU-bound
+    /// from CPU-bound), whatever the game asks.
+    render_height: Option<u32>,
 }
 
 /// Replace the running game with `game` at the next frame, keeping the
@@ -249,7 +261,8 @@ pub fn run(cfg: crate::Config, game: Box<dyn Game>) {
     install_panic_hook();
     let mut devices = Devices::new(cfg.keyboard);
     devices.pointer_enabled = cfg.pointer;
-    let shell = Shell { cfg, game, devices, window: None, live: Rc::new(RefCell::new(None)), acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), failed: false, announced: false, hidden_editor:None, switched: None, exited: false };
+    let shell = Shell { cfg, game, devices, window: None, live: Rc::new(RefCell::new(None)), acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), failed: false, announced: false, hidden_editor:None, switched: None, exited: false, times: Vec::new(),
+        render_height: query_param("render").and_then(|h| h.parse().ok()) };
     match EventLoop::new() {
         Ok(events) => events.spawn_app(shell),
         Err(e) => log(&format!("event loop: {e}")),
@@ -304,6 +317,7 @@ impl Shell {
         let step = 1.0 / self.cfg.tick_hz;
         self.acc += dt;
         let mut steps = 0;
+        let ms = |t: Instant| t.elapsed().as_secs_f32() * 1000.0;
         let mut live = self.live.borrow_mut();
         let Some(live) = live.as_mut() else { return Ok(()) };
         if let Some((next, keep)) = NEXT.with(|n| n.borrow_mut().take()) {
@@ -317,6 +331,7 @@ impl Shell {
             self.exited = false;
             self.acc = 0.0;
             self.switched = Some(Instant::now());
+            self.times.clear();
             if let Some(w) = &self.window { w.set_title(&self.cfg.title); }
         }
         // The canvas takes its size from the page's layout, which can settle
@@ -332,6 +347,7 @@ impl Shell {
         }
         let size = [live.config.width, live.config.height];
         self.devices.poll();
+        let t_tick = Instant::now();
         while self.acc >= step && steps < 6 {
             self.acc -= step;
             steps += 1;
@@ -350,6 +366,7 @@ impl Shell {
             if !self.exited && self.game.quit() { self.exited = exit(Exit::Quit); }
         }
         if steps == 6 { self.acc = 0.0; }
+        let tick_ms = ms(t_tick);
         let alpha = (self.acc / step).clamp(0.0, 1.0);
         let split = self.game.split();
         // The first scene upload blocks for seconds: show it first.
@@ -358,6 +375,7 @@ impl Shell {
             progress(Some(0.9), "Uploading the world to the GPU");
             return Ok(());
         }
+        let t_draw = Instant::now();
         let mut frame = Frame { gpu: &live.gpu, size, dt, alpha, split, scene_fps: if dt > 0.0 { 1.0 / dt } else { 0.0 }, scene_worst_ms: dt * 1000.0, focused: true, hdr: None, renderer: &mut live.renderer };
         let mut draw: Draw = self.game.draw(&mut frame)?;
         // The touch stick, while a thumb is on it.
@@ -367,6 +385,8 @@ impl Shell {
             draw.hud.circle(knob, r * 0.42, [1.0, 1.0, 1.0, 0.5], clip);
         }
         let Some(renderer) = live.renderer.as_ref() else { return Ok(()) };
+        let draw_ms = ms(t_draw);
+        let t_out = Instant::now();
         let texture = match live.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             other => {
@@ -375,9 +395,10 @@ impl Shell {
             }
         };
         let view = texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(live.config.format.add_srgb_suffix()), ..Default::default() });
-        live.out.draw(&live.gpu, renderer, &draw, size, split, &view, self.cfg.max_render_height)?;
+        live.out.draw(&live.gpu, renderer, &draw, size, split, &view, self.render_height.or(self.cfg.max_render_height))?;
         live.gpu.queue.present(texture);
         self.frames += 1;
+        if self.switched.is_none() { stats(&mut self.times, &self.cfg.title, [dt * 1000.0, tick_ms, draw_ms, ms(t_out)]); }
         if self.frames == 1 { progress(None, "Ready"); }
         if let Some(at) = self.switched.take() { progress(None, "Ready"); log(&format!("{}: first frame {:.0} ms after the switch", self.cfg.title, at.elapsed().as_secs_f32() * 1000.0)); }
         if self.frames <= 4 || self.frames.is_power_of_two() && self.frames >= 64 {
@@ -400,6 +421,24 @@ impl Shell {
         }
     }
 }
+
+/// Every 300 frames, log the frame times: the interval between frames
+/// (what players see), and the page thread's ticks, the game's draw and
+/// the engine's encode and submit. An interval well above their sum is
+/// the GPU (or vsync); `?render=720` shows which.
+fn stats(times: &mut Vec<[f32; 4]>, title: &str, sample: [f32; 4]) {
+    times.push(sample);
+    if times.len() < 300 { return; }
+    let pick = |k: usize, q: f32| {
+        let mut v: Vec<f32> = times.iter().map(|t| t[k]).collect();
+        v.sort_by(f32::total_cmp);
+        v[((v.len() - 1) as f32 * q) as usize]
+    };
+    log(&format!("{}: frame every {:.1} ms (p95 {:.1}); page thread ticks {:.1}, draw {:.1}, encode {:.1} ms (medians)",
+        title, pick(0, 0.5), pick(0, 0.95), pick(1, 0.5), pick(2, 0.5), pick(3, 0.5)));
+    times.clear();
+}
+
 
 async fn setup(window: Arc<Window>) -> Result<Live, String> {
     let instance = render::gpu::instance();
