@@ -8,23 +8,7 @@
 //! The sim is games/spellstorm/sim (hecs, the Godot game's rules); the look
 //! comes from the Godot game's own models and materials (assets/kits).
 //! SPELLSTORM_EVENTS=1 makes a shot count the sim's events.
-mod anim;
-mod effects;
-mod fx;
-mod hud;
-mod interp;
-mod kits;
-mod live;
-mod look;
-mod marks;
-mod menu;
-mod party;
-mod play;
-mod ragdoll;
-mod rig;
-mod shrines;
-mod skins;
-mod view;
+use spellstorm_app::{kits, live, party, play};
 
 use render::Gpu;
 

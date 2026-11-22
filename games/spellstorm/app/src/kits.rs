@@ -112,9 +112,9 @@ impl Kits {
     /// The kits next to the binary's sources (app/assets/kits), or `dir`.
     pub fn load(dir: Option<&Path>) -> Result<Kits, String> {
         let dir = dir.map(Path::to_path_buf).unwrap_or_else(default_dir);
-        let text = std::fs::read_to_string(dir.join("kits.json")).map_err(|e| format!("{}: {e}", dir.join("kits.json").display()))?;
+        let text = vfs::read_to_string(dir.join("kits.json")).map_err(|e| format!("{}: {e}", dir.join("kits.json").display()))?;
         let file: File = serde_json::from_str(&text).map_err(|e| format!("kits.json: {e}"))?;
-        let gz = std::fs::read(dir.join("meshes.bin.gz")).map_err(|e| format!("meshes.bin.gz: {e}"))?;
+        let gz = vfs::read(dir.join("meshes.bin.gz")).map_err(|e| format!("meshes.bin.gz: {e}"))?;
         let mut bin = Vec::new();
         flate2::read::GzDecoder::new(&gz[..]).read_to_end(&mut bin).map_err(|e| format!("meshes.bin.gz: {e}"))?;
         let mut kits = HashMap::new();
@@ -221,6 +221,10 @@ impl Kits {
 }
 
 pub fn default_dir() -> PathBuf {
+    // In a browser the page fetched the assets under this name (web.rs).
+    if cfg!(target_arch = "wasm32") {
+        return PathBuf::from(crate::web::KITS);
+    }
     if let Some(d) = std::env::var_os("SPELLSTORM_KITS") {
         return PathBuf::from(d);
     }

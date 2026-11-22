@@ -101,7 +101,7 @@ impl Look {
             for cell in 0..64.min(n - chunk * 64) {
                 let t = chunk * 64 + cell;
                 let d = &kits.file.textures[t];
-                let img = image::open(kits.dir.join(&d.file)).map_err(|e| format!("{}: {e}", d.file))?.to_luma8();
+                let img = vfs::read(kits.dir.join(&d.file)).map_err(|e| e.to_string()).and_then(|b| image::load_from_memory(&b).map_err(|e| e.to_string())).map_err(|e| format!("{}: {e}", d.file))?.to_luma8();
                 let img = if (img.width(), img.height()) != (256, 256) { image::imageops::resize(&img, 256, 256, image::imageops::FilterType::Triangle) } else { img };
                 let (ox, oy) = ((cell % 8) as u32 * 256, (cell / 8) as u32 * 256);
                 for (x, y, p) in img.enumerate_pixels() {

@@ -7,6 +7,7 @@ description = "Asset import for Warp scenes: glTF models with materials and text
 
 [dependencies]
 render = { path = "../render" }
+vfs = { path = "../vfs" }
 glam = "0.31"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 gltf = { version = "1.4", default-features = false, features = ["utils", "names", "extras", "KHR_texture_transform", "allow_empty_texture", "extensions"] }

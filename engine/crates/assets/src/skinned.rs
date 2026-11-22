@@ -180,14 +180,12 @@ pub struct ActorHandle {
 }
 
 fn read(path: &Path) -> Result<Vec<u8>, String> {
-    let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    if meta.len() > 256 * 1024 * 1024 {
-        return Err(format!(
-            "{} exceeds character file capacity",
-            path.display()
-        ));
+    // vfs: the filesystem natively, the page's fetched files in a browser.
+    let bytes = vfs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if bytes.len() > 256 * 1024 * 1024 {
+        return Err(format!("{} exceeds character file capacity", path.display()));
     }
-    std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
+    Ok(bytes)
 }
 fn source_path(base: &Path, name: &str) -> Result<PathBuf, String> {
     let path = Path::new(name);

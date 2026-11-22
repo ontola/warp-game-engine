@@ -5,6 +5,10 @@ version.workspace = true
 license.workspace = true
 description = "Spellstorm on Warp: the Godot game's look over the hecs sim"
 
+[lib]
+name = "spellstorm_app"
+path = "src/lib.rs"
+
 [[bin]]
 name = "spellstorm"
 path = "src/main.rs"
@@ -19,6 +23,7 @@ assets = { path = "../../../engine/crates/assets" }
 body = { path = "../../../engine/crates/body" }
 splitscreen-club = { path = "../../../engine/crates/splitscreen-club" }
 live = { path = "../../../engine/crates/live" }
+vfs = { path = "../../../engine/crates/vfs" }
 glam = "0.31"
 image = { version = "0.25", default-features = false, features = ["png"] }
 serde = { workspace = true }
@@ -29,3 +34,7 @@ hecs = "0.10"
 [dev-dependencies]
 naga = { version = "30", features = ["wgsl-in"] }
 tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
+
+# The browser build (web.rs): std::time::Instant panics there.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-time = "1.1"

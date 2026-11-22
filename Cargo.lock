@@ -290,6 +290,7 @@ dependencies = [
  "render",
  "serde",
  "serde_json",
+ "vfs",
 ]
 
 [[package]]
@@ -5807,6 +5808,8 @@ dependencies = [
  "spellstorm",
  "splitscreen-club",
  "tungstenite",
+ "vfs",
+ "web-time",
 ]
 
 [[package]]
