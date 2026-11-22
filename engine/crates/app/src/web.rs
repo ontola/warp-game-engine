@@ -402,6 +402,7 @@ impl Shell {
         let mut live = self.live.borrow_mut();
         let Some(live) = live.as_mut() else { return Ok(()) };
         if let Some((next, keep)) = NEXT.with(|n| n.borrow_mut().take()) {
+            let generation = PRESENTATION.with(|p| p.get());
             // The old game's scene goes with its renderer, kept or dropped;
             // a new game builds its own on its first draw, a resumed one
             // brings its renderer back.
@@ -412,7 +413,7 @@ impl Shell {
             self.devices.pointer_enabled = self.cfg.pointer;
             self.exited = false;
             self.acc = 0.0;
-            self.switched = Some((PRESENTATION.with(|p| p.get()), Instant::now()));
+            self.switched = Some((generation, Instant::now()));
             self.times.clear();
             // Each game starts at full resolution, chasing its own target.
             if let Some(q) = &mut self.quality { q.set_enabled(false); q.set_enabled(true); q.idle(); q.set_target_fps(chase(self.game.target_fps()), None); }
@@ -583,7 +584,11 @@ async fn setup(window: Arc<Window>) -> Result<Live, String> {
         }
         if first.swap(true, Relaxed) { log(&format!("GPU error: {text}")) } else { log_pinned(&format!("First GPU error: {text}")) }
     }));
-    gpu.device.set_device_lost_callback(|reason, message| log_pinned(&format!("GPU device lost ({reason:?}): {message}")));
+    gpu.device.set_device_lost_callback(|reason, message| {
+        let error = format!("GPU device lost ({reason:?}): {message}");
+        log_pinned(&error);
+        stopped(&error);
+    });
     let out = Output::new(&gpu, config.format.add_srgb_suffix())?;
     Ok(Live { surface, config, gpu, out, renderer: None })
 }
