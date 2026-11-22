@@ -257,6 +257,18 @@ impl Lobby {
         }
     }
 
+/// Whether player `id` plays on a keyboard (their seat's controller is
+    /// one, as the browser host's "web:keyboard").
+    pub fn on_keyboard(&self, id: &str) -> bool {
+        self.controllers.iter().any(|(token, player)| player == id && token.contains("keyboard"))
+    }
+
+    /// Pad button `button` as player `id` presses it: its key on a keyboard.
+    pub fn button_name(&self, id: &str, button: &str) -> String {
+        if self.on_keyboard(id) { if let Some(cap) = crate::paint::key_cap(button) { return cap.into(); } }
+        button.into()
+    }
+
     pub fn station_for(&self, id: &str) -> Option<Station> { self.world.player(id).and_then(|p| self.host.station_for(p)) }
 
     fn cooldown(&mut self, key: String) -> bool {
@@ -678,10 +690,14 @@ impl Lobby {
     /// The floating buttons light up while someone stands where they work.
     pub fn update_prompts(&mut self) {
         let mut occupied: HashMap<String, Station> = HashMap::new();
+        // Per prompt: whether everyone standing there plays on the keyboard.
+        let mut keys: HashMap<String, bool> = HashMap::new();
         let ids: Vec<String> = self.world.players.iter().map(|p| p.id.clone()).collect();
         for id in &ids {
             if self.menus.contains_key(id) { continue; }
             if let Some(station) = self.station_for(id) {
+                let k = keys.entry(crate::mouse::prompt_name(&station).to_string()).or_insert(true);
+                *k = *k && self.on_keyboard(id);
                 if !occupied.contains_key(&station.id) || station.enabled { occupied.insert(station.id.clone(), station); }
             }
         }
@@ -725,6 +741,8 @@ impl Lobby {
             let mouse = mouse_only.as_deref() == Some(name.as_str());
             let hover = if mouse { self.mouse.hover.as_ref().and_then(|h| h.1.clone()) } else { None };
             if p.mouse != mouse || p.hover != hover { p.mouse = mouse; p.hover = hover; self.screens_dirty = true; }
+            let k = keys.get(name).copied().unwrap_or(false);
+            if p.keys != k { p.keys = k; self.screens_dirty = true; }
         }
         let waiting = self.host.pending_profiles().len();
         for i in 0..game_room_sim::layout::PROFILE_DOORS.len() {

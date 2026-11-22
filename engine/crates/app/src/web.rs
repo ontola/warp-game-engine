@@ -31,6 +31,45 @@ thread_local! {
     /// Whether the page shows later loading itself ([`quiet_progress`]),
     /// and whether that is in effect (from the first frame on).
     static QUIET: std::cell::Cell<(bool, bool)> = const { std::cell::Cell::new((false, false)) };
+    /// The screen's refresh rate as the page's animation frames come
+    /// ([`probe_refresh`]), and whether the shell has used it yet.
+    static REFRESH: std::cell::Cell<(Option<f32>, bool)> = const { std::cell::Cell::new((None, false)) };
+}
+
+/// Time the page's animation frames for about two seconds: their cadence
+/// is the screen's refresh rate (60 Hz, 120 Hz on a ProMotion Mac). A long
+/// frame now and then (building the room) only lengthens some, so the
+/// fastest quarter decides.
+fn probe_refresh() {
+    use wasm_bindgen::closure::Closure;
+    let times: Rc<RefCell<Vec<f64>>> = Rc::default();
+    let tick: Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>> = Rc::default();
+    let again = tick.clone();
+    *tick.borrow_mut() = Some(Closure::new(move |at: f64| {
+        let mut t = times.borrow_mut();
+        t.push(at);
+        if t.len() > 120 {
+            let mut gaps: Vec<f64> = t.windows(2).map(|w| w[1] - w[0]).filter(|g| *g > 1.0).collect();
+            gaps.sort_by(f64::total_cmp);
+            if let Some(&gap) = gaps.get(gaps.len() / 4) {
+                let hz = (1000.0 / gap) as f32;
+                REFRESH.with(|r| r.set((Some(hz), false)));
+                log(&format!("screen refresh about {hz:.0} Hz"));
+            }
+            again.borrow_mut().take();
+            return;
+        }
+        if let (Some(w), Some(f)) = (web_sys::window(), again.borrow().as_ref()) { let _ = w.request_animation_frame(f.as_ref().unchecked_ref()); }
+    }));
+    if let (Some(w), Some(f)) = (web_sys::window(), tick.borrow().as_ref()) { let _ = w.request_animation_frame(f.as_ref().unchecked_ref()); }
+}
+
+/// The frame rate adaptive quality chases for a game: its own target, but
+/// never above the screen's refresh (a game asking 120 on a 60 Hz screen
+/// would lower its resolution for nothing). None stays None (60).
+fn chase(target: Option<f32>) -> Option<f32> {
+    let hz = REFRESH.with(|r| r.get().0);
+    target.map(|t| hz.map_or(t, |hz| t.min(hz)))
 }
 
 /// Once the first frame is drawn, [`progress`] only logs: the page shows
@@ -287,6 +326,7 @@ pub fn on_devices(f: impl FnMut(&[(crate::Device, crate::Controls)]) -> Option<V
 /// closes. Returns at once: the browser drives the frames.
 pub fn run(cfg: crate::Config, game: Box<dyn Game>) {
     install_panic_hook();
+    probe_refresh();
     let mut devices = Devices::new(cfg.keyboard);
     devices.pointer_enabled = cfg.pointer;
     let shell = Shell { cfg, game, devices, window: None, live: Rc::new(RefCell::new(None)), acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), failed: false, announced: false, hidden_editor:None, switched: None, exited: false, times: Vec::new(),
@@ -361,7 +401,7 @@ impl Shell {
             self.switched = Some(Instant::now());
             self.times.clear();
             // Each game starts at full resolution, chasing its own target.
-            if let Some(q) = &mut self.quality { q.set_enabled(false); q.set_enabled(true); q.idle(); q.set_target_fps(self.game.target_fps(), None); }
+            if let Some(q) = &mut self.quality { q.set_enabled(false); q.set_enabled(true); q.idle(); q.set_target_fps(chase(self.game.target_fps()), None); }
             if let Some(w) = &self.window { w.set_title(&self.cfg.title); }
         }
         // The canvas takes its size from the page's layout, which can settle
@@ -407,7 +447,7 @@ impl Shell {
             return Ok(());
         }
         let t_draw = Instant::now();
-        let mut frame = Frame { gpu: &live.gpu, size, dt, alpha, split, scene_fps: if dt > 0.0 { 1.0 / dt } else { 0.0 }, scene_worst_ms: dt * 1000.0, focused: true, hdr: None, stream_generated_textures: false, renderer: &mut live.renderer };
+        let mut frame = Frame { gpu: &live.gpu, size, dt, alpha, split, scene_fps: if dt > 0.0 { 1.0 / dt } else { 0.0 }, scene_worst_ms: dt * 1000.0, focused: true, hdr: None, stream_generated_textures: true, renderer: &mut live.renderer };
         let mut draw: Draw = self.game.draw(&mut frame)?;
         // The touch stick, while a thumb is on it.
         if let Some((from, knob, r)) = self.devices.touch_stick(size) {
@@ -426,7 +466,9 @@ impl Shell {
             }
         };
         let view = texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(live.config.format.add_srgb_suffix()), ..Default::default() });
-        let quality = self.quality.get_or_insert_with(|| crate::quality::AdaptiveQuality::new(self.game.target_fps(), None, Instant::now()).unwrap_or_else(|| unreachable!()));
+        let quality = self.quality.get_or_insert_with(|| crate::quality::AdaptiveQuality::new(chase(self.game.target_fps()), None, Instant::now()).unwrap_or_else(|| unreachable!()));
+        // The refresh rate just became known: chase what the screen can show.
+        if REFRESH.with(|r| { let (hz, used) = r.get(); r.set((hz, true)); hz.is_some() && !used }) { quality.set_target_fps(chase(self.game.target_fps()), None); }
         // As natively: a large canvas starts from 1440 lines, 0 is native,
         // and the controller scales down from there.
         let height = match self.render_height {

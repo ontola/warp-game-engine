@@ -29,7 +29,9 @@ pub(crate) enum Encoding { Rgba8, Bc7 }
 
 /// Whether this device and environment compress the texture arrays.
 pub(crate) fn compression(gpu: &Gpu) -> Encoding {
-    let on = !crate::switches::TEXTURE_COMPRESSION.off();
+    // In a browser the BC7 encoder runs on the page's one thread, seconds
+    // a layer: the arrays stay RGBA8 there.
+    let on = !crate::switches::TEXTURE_COMPRESSION.off() && !cfg!(target_arch = "wasm32");
     if on && gpu.features.contains(wgpu::Features::TEXTURE_COMPRESSION_BC) { Encoding::Bc7 } else { Encoding::Rgba8 }
 }
 
@@ -119,12 +121,20 @@ impl Job {
         let source = self.source.as_ref();
         let (cached, key) = cache.load(source, self.settings, false, &mut stats);
         let chain = cached.unwrap_or_else(|| {
-            let (chain, _) = crate::frame::texture_mips::build(source, self.settings, false, self.array_layer as usize);
+            let (chain, _t) = crate::frame::texture_mips::build(source, self.settings, cfg!(target_arch = "wasm32"), self.array_layer as usize);
+            #[cfg(target_arch = "wasm32")]
+            DETAIL.with(|d| { use std::fmt::Write; let _ = write!(d.borrow_mut(), " [{}px from {}x{}: resize {:.0}, alpha {:.0}, mips {:.0}, coverage {:.0}, copies {:.0}, linear rgb {:.0} ms]",
+                self.settings.size, _t.source_size[0], _t.source_size[1], _t.base_resize_ms, _t.alpha_analysis_ms, _t.mip_resize_ms, _t.coverage_ms, _t.chain_copy_ms, _t.linear_rgb_ms); });
             if let Some(key) = key { cache.store(key, self.settings, &chain, false, &mut stats); }
             chain
         });
         drop(self.source);
-        (self.array_layer, encode(chain, encoding, key, &cache))
+        #[cfg(target_arch = "wasm32")]
+        let t = web_time::Instant::now();
+        let encoded = encode(chain, encoding, key, &cache);
+        #[cfg(target_arch = "wasm32")]
+        DETAIL.with(|d| { use std::fmt::Write; let _ = write!(d.borrow_mut(), " encode {} ms", t.elapsed().as_millis()); });
+        (self.array_layer, encoded)
     }
 }
 
@@ -141,7 +151,11 @@ pub(crate) struct LayerJobs {
 impl LayerJobs {
     pub fn build(mut self, encoding: [Encoding; 2]) -> Ready {
         if let Some(generate) = self.generate {
+            #[cfg(target_arch = "wasm32")]
+            let t = web_time::Instant::now();
             let (albedo, normal) = generate();
+            #[cfg(target_arch = "wasm32")]
+            DETAIL.with(|d| { use std::fmt::Write; let _ = write!(d.borrow_mut(), " generate {} ms", t.elapsed().as_millis()); });
             self.albedo.source = Some(albedo);
             self.normal.source = Some(normal);
         }
@@ -175,8 +189,44 @@ impl Ready {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static SLOW: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Where the current layer's time went.
+    static DETAIL: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+/// Lines about layers that took 50 ms or more to bake on the page thread.
+#[cfg(target_arch = "wasm32")]
+pub fn take_slow_lines() -> Vec<String> { SLOW.with(|l| std::mem::take(&mut *l.borrow_mut())) }
+
+/// A browser bakes a generated layer (a Warp Human's face) once per page:
+/// a renderer rebuilt for a new look mid-game reuses it.
+#[cfg(target_arch = "wasm32")]
+fn generated_memo(job: LayerJobs, encoding: [Encoding; 2]) -> std::rc::Rc<Ready> {
+    use std::{cell::RefCell, rc::Rc};
+    thread_local! {
+        static BAKED: RefCell<Vec<(crate::scene::GeneratedTexture, u32, Rc<Ready>)>> = const { RefCell::new(Vec::new()) };
+    }
+    let Some(recipe) = job.generate.clone() else { return Rc::new(job.build(encoding)) };
+    let (layer, albedo_at, normal_at) = (job.layer, job.albedo.array_layer, job.normal.array_layer);
+    let found = BAKED.with(|b| b.borrow().iter().find(|(r, l, _)| std::sync::Arc::ptr_eq(r, &recipe) && *l == layer).map(|(_, _, ready)| ready.clone()));
+    if let Some(ready) = found && ready.albedo.0 == albedo_at && ready.normal.0 == normal_at { return ready; }
+    let ready = Rc::new(job.build(encoding));
+    BAKED.with(|b| {
+        let mut b = b.borrow_mut();
+        b.retain(|(r, l, _)| !(std::sync::Arc::ptr_eq(r, &recipe) && *l == layer));
+        // Faces of a few games, not every face of a long session.
+        if b.len() >= 48 { b.remove(0); }
+        b.push((recipe, layer, ready.clone()));
+    });
+    ready
+}
+
 pub(crate) struct Stream {
     ready: std::sync::Mutex<std::sync::mpsc::Receiver<Ready>>,
+    /// A browser has no threads: `pump` builds these one per frame.
+    #[cfg(target_arch = "wasm32")]
+    todo: std::sync::Mutex<std::collections::VecDeque<LayerJobs>>,
     remaining: std::sync::atomic::AtomicUsize,
     encoding: [Encoding; 2],
     material_maps: Vec<Option<u32>>,
@@ -185,6 +235,22 @@ pub(crate) struct Stream {
 impl Stream {
     /// Start a worker that builds every layer's full chains.
     pub fn start(jobs: Vec<LayerJobs>, encoding: [Encoding; 2], material_maps: Vec<Option<u32>>) -> Stream {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let (_, ready) = std::sync::mpsc::sync_channel(1);
+            let remaining = std::sync::atomic::AtomicUsize::new(jobs.len());
+            // Generated layers (faces) first: their previews are the coarsest.
+            let (generated, regular): (Vec<_>, Vec<_>) = jobs.into_iter().partition(|job| job.generate.is_some());
+            let mut todo: std::collections::VecDeque<_> = generated.into();
+            todo.extend(regular);
+            return Stream { ready: std::sync::Mutex::new(ready), todo: std::sync::Mutex::new(todo), remaining, encoding, material_maps };
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        Self::start_threads(jobs, encoding, material_maps)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn start_threads(jobs: Vec<LayerJobs>, encoding: [Encoding; 2], material_maps: Vec<Option<u32>>) -> Stream {
         // A paused renderer must not accumulate full mip chains for every layer.
         let (send, ready) = std::sync::mpsc::sync_channel(1);
         let remaining = std::sync::atomic::AtomicUsize::new(jobs.len());
@@ -215,6 +281,26 @@ impl Stream {
     pub fn pump(&self, gpu: &Gpu, albedo: &wgpu::Texture, normals: &wgpu::Texture, tables: &crate::scene_tables::SceneTables, wait: bool) {
         use std::sync::atomic::Ordering::Relaxed;
         if self.remaining() == 0 { return; }
+        #[cfg(target_arch = "wasm32")]
+        {
+            // One layer a frame, so the page keeps drawing; all of them for a capture.
+            let Ok(mut todo) = self.todo.try_lock() else { return };
+            while let Some(job) = todo.pop_front() {
+                let t = web_time::Instant::now();
+                let generated = job.generate.is_some();
+                let layer = generated_memo(job, self.encoding);
+                let ms = t.elapsed().as_millis();
+                let detail = DETAIL.with(|d| std::mem::take(&mut *d.borrow_mut()));
+                if ms >= 50 { SLOW.with(|l| l.borrow_mut().push(format!("texture layer {} {}baked in {ms} ms ({} left):{detail}", layer.layer, if generated { "(generated) " } else { "" }, todo.len()))); }
+                layer.upload(gpu, albedo, normals, self.encoding);
+                tables.write_layer_map(gpu, layer.layer as usize, crate::material_maps::layer_word(self.material_maps.get(layer.layer as usize).copied().flatten(), 0.0, 0.0));
+                self.remaining.fetch_sub(1, Relaxed);
+                gpu.queue.submit([]);
+                if !wait { break; }
+            }
+            return;
+        }
+        #[allow(unreachable_code)]
         let Ok(ready) = self.ready.try_lock() else { return };
         let mut spent = 0;
         while self.remaining.load(Relaxed) > 0 && (wait || spent < BUDGET) {

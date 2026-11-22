@@ -4,7 +4,7 @@
 //!   game-room shot [--dump DIR] --out room.png [--size 1280x720]
 //!   game-room play [--players 1] [--bots 3] [--fullscreen]
 //!   game-room bake-light --out room-light.bin
-//!   game-room live-shot --out room.png [--ticks 180] [--bots 3] [--items] [--fx] [--mouse X,Y] [--mouse-menu] [--pending NAME] [--queue TITLE] [--keys] [--catalog] [--back-menu]
+//!   game-room live-shot --out room.png [--ticks 180] [--bots 3] [--items] [--fx] [--mouse X,Y] [--mouse-menu] [--pending NAME] [--queue TITLE] [--keys] [--catalog] [--back-menu] [--keyboard]
 //!
 //! For now the room comes from the Godot lobby's export (tools/
 //! warp_export.gd in gamenight/lobbies/game-room), so both engines draw the
@@ -90,6 +90,8 @@ fn run() -> Result<(), String> {
             let games = [("dead-miles", "Dead Miles", "#b5482f"), ("relay-keepers", "Relay Keepers", "#3fb6a8"), ("neon-siege", "Neon Siege", "#ff3df0"), ("spellstorm", "Spellstorm", "#7c5cff"), ("sideways", "Sideways", "#f2a93b")];
             party["library"] = serde_json::Value::Array(games.iter().map(|(id, title, color)| serde_json::json!({"id": id, "title": title, "color": color})).collect());
             party["playlist"] = serde_json::json!({"entries": [{"game": "neon-siege", "title": "Neon Siege"}, {"game": "sideways", "title": "Sideways"}, {"game": "spellstorm", "title": "Spellstorm"}], "current": null});
+            party["warm_session"] = serde_json::json!({"game": "neon-siege", "phase": "preparing", "progress": 0.6});
+            party["active_session"] = serde_json::Value::Null;
             lobby.set_party(party);
             let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../games");
             for (id, ..) in games {
@@ -108,6 +110,12 @@ fn run() -> Result<(), String> {
                 {"button": "b", "action": "leave", "label": "Leave the party"}]});
             lobby.set_party(party);
         }
+        // `--keyboard`: the first player plays on the keyboard, at the game shelf.
+        if flag("--keyboard") {
+            let mut party = lobby.host.party.clone();
+            party["seats"][0]["controller"] = serde_json::json!("web:keyboard");
+            lobby.set_party(party);
+        }
         let ticks = numf("--ticks", 180.0) as u32;
         let mut rgba = headless.frame(&mut lobby)?;
         for t in 0..ticks {
@@ -123,6 +131,9 @@ fn run() -> Result<(), String> {
                 app::Game::pointer(&mut lobby, app::Pointer { position: at, moved: true, ..Default::default() }, [w, h]);
             }
             if flag("--mouse-menu") && t == 0 { app::Game::escape(&mut lobby); }
+            if flag("--keyboard") && t < 3 {
+                if let Some(p) = lobby.world.players.first_mut() { p.x = -9.6; p.y = 0.0; }
+            }
             // `--keys`: someone typing, caught mid-keystroke.
             if flag("--keys") && t + 4 == ticks { lobby.key_pressed(t); }
             app::Game::tick(&mut lobby, &vec![app::Controls::default(); local]);

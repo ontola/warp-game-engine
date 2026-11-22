@@ -78,6 +78,9 @@ struct Racer {
     over_ticks: u32,
     /// The menu's Back to lobby, for a host in this program (a browser page).
     back: bool,
+    /// The frame rate adaptive quality chases; None is the screen's refresh
+    /// natively. A browser page says 120 (its shell would chase 60).
+    target_fps: Option<f32>,
 }
 /// Results stay on screen this long before A starts the next race (120 Hz).
 const CONTINUE_AFTER_TICKS: u32 = 240;
@@ -222,6 +225,7 @@ impl Racer {
             next: None,
             over_ticks: 0,
             back: false,
+            target_fps: None,
         })
     }
     /// The grid: the people here plus the AI racers. Auto is a full grid for
@@ -500,6 +504,7 @@ impl Racer {
         game.random_seed = true;
         game.menu = None;
         game.race_started = true;
+        game.target_fps = Some(120.);
         Ok(game)
     }
     /// A host takes Back to lobby: Splitscreen Club natively, the page in a browser.
@@ -507,6 +512,7 @@ impl Racer {
 }
 impl Game for Racer {
     fn take_back(&mut self) -> bool { std::mem::take(&mut self.back) }
+    fn target_fps(&self) -> Option<f32> { self.target_fps }
     fn scene_tuning(&self)->Option<&app::editor::SceneTuning>{Some(&self.handling)}
     fn scene_tuning_mut(&mut self)->Option<&mut app::editor::SceneTuning>{Some(&mut self.handling)}
     fn local_players(&self) -> usize {

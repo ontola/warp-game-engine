@@ -227,7 +227,11 @@ impl LuaGame {
     pub fn core(&self) -> std::sync::MutexGuard<'_, Core> { api::lock(&self.core) }
 
     fn say(&mut self, line: String) {
+        #[cfg(not(target_arch = "wasm32"))]
         if self.echo { println!("{line}"); }
+        // In a browser the page's log (the console; on screen with ?debug).
+        #[cfg(target_arch = "wasm32")]
+        if self.echo { app::web::log(&line); }
         self.log.push_back(line.clone());
         while self.log.len() > LOG_KEEP { self.log.pop_front(); }
         if let Some(l) = &self.live_logs { l.push(line); }
@@ -1139,6 +1143,8 @@ impl Game for LuaGame {
         }
         let rebuild = std::mem::take(&mut c.world.rebuild) || frame.renderer().is_none();
         if rebuild {
+            #[cfg(target_arch = "wasm32")]
+            render::startup_profile::force(true);
             if c.rooms.enabled { crate::room_scene::prepare(&mut c.world.scene)?; }
             if loading && let Some(p) = self.party.as_mut() { p.loading(93, "building the scene"); }
             let t = web_time::Instant::now();
@@ -1156,6 +1162,11 @@ impl Game for LuaGame {
             }
             self.sky_upload = None;
             steps.push(format!("scene {} ms", t.elapsed().as_millis()));
+            // A browser build has no KERN_STARTUP_PROFILE: name the slow parts.
+            #[cfg(target_arch = "wasm32")]
+            if let Some(p) = frame.renderer().and_then(|r| r.startup_profile()) && p.total_cpu_ms >= 500.0 {
+                app::web::log(&format!("renderer built in {}", p.slowest(6)));
+            }
         } else {
             if self.surface.pending() {
                 let gpu = frame.gpu;
@@ -1167,6 +1178,8 @@ impl Game for LuaGame {
                 if let Some(r) = frame.renderer_mut() && let Err(e) = r.update_sky(gpu, &p.sky, &mut l) { eprintln!("sky unchanged on the GPU: {e}"); }
             }
         }
+        #[cfg(target_arch = "wasm32")]
+        for line in render::slow_texture_lines() { app::web::log(&line); }
         let r = frame.renderer().ok_or("no renderer")?;
         c.world.flush_at(frame.gpu, r, frame.alpha)?;
         if c.world.scene.meadow.is_some() {
@@ -1191,7 +1204,7 @@ impl Game for LuaGame {
         drop(c);
         if let Some(line) = surface_line { self.say(line); }
         if let Some(line) = late { self.say(line); }
-        if loading && !steps.is_empty() { self.say(format!("{} loading: {}", app::manners::stamp(), steps.join(", "))); }
+        if (loading || cfg!(target_arch = "wasm32")) && !steps.is_empty() { self.say(format!("{} loading: {}", app::manners::stamp(), steps.join(", "))); }
         let hud = self.hud(frame.size);
         if std::mem::take(&mut self.ready_due) && let Some(p) = self.party.as_mut() { p.ready(); }
         Ok(Draw { cameras, light, hud })

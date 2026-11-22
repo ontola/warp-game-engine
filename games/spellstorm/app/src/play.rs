@@ -99,9 +99,9 @@ impl Spellstorm {
         let mut hud = crate::hud::Hud::default();
         hud.level(&world);
         let mut menu = crate::menu::Menu::new(party.is_none());
-        if humans > 0 {
-            menu.show(true, &world);
-        }
+        // Straight into the first level, no title screen (Joep); Start
+        // opens the menu.
+        let _ = humans;
         Spellstorm { world, view: View::new(kits), hud, menu, humans, drive: (0..humans).collect(), party, party_seats: vec![], quit: false, built: false, ready_after_build: false, interp: Default::default(), tuning, shader, live: None, scan_t: 0 }
     }
 
@@ -138,6 +138,24 @@ impl Spellstorm {
         self.view.fx = crate::fx::Fx::default();
         self.menu.open = false;
         self.built = false;
+    }
+
+    /// A player picks up a controller mid-run (Joep): their wizard joins
+    /// the run in progress, driven by the next controls. Without a party
+    /// host only; under one the host seats people.
+    pub fn join_player(&mut self, name: Option<&str>, color: Option<[f32; 3]>) -> bool {
+        if self.party.is_some() || self.drive.len() >= 4 {
+            return false;
+        }
+        let k = self.drive.len();
+        let mut seat = Seat::player(k, name.filter(|n| !n.is_empty()).unwrap_or(NAMES[k % NAMES.len()]));
+        if let Some(c) = color {
+            seat.robe = [c[0], c[1], c[2], 1.0];
+        }
+        let i = self.world.join(&seat);
+        self.drive.push(i);
+        self.humans = self.drive.len();
+        true
     }
 
     /// The party's news, then its controllers for this tick.
@@ -213,6 +231,10 @@ impl Spellstorm {
 }
 
 impl app::Game for Spellstorm {
+    fn player_joins(&mut self, name: Option<&str>, color: Option<[f32; 3]>) -> bool {
+        self.join_player(name, color)
+    }
+
     fn scene_tuning(&self)->Option<&app::editor::SceneTuning>{Some(&self.view.spell_effects)}
     fn scene_tuning_mut(&mut self)->Option<&mut app::editor::SceneTuning>{Some(&mut self.view.spell_effects)}
     fn local_players(&self) -> usize {

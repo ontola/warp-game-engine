@@ -1644,7 +1644,9 @@ fn bind(gpu: &Gpu, layout: &wgpu::BindGroupLayout, entries: &[(u32, wgpu::Bindin
 fn texture_array(gpu: &Gpu, label: &'static str, images: &[Option<&image::RgbaImage>], size: u32, format: wgpu::TextureFormat, encoding: crate::texture_stream::Encoding, fill: [u8; 4], cutout_layers: &[bool], tail: &[bool], profile: &mut crate::startup_profile::Trace) -> wgpu::Texture {
     let enabled=profile.enabled();
     let allocation_start=enabled.then(web_time::Instant::now);
-    let linear_cutout_rgb = !crate::switches::CUTOUT_LINEAR_RGB.off();
+    // A browser bakes on the page's one thread, where this pass took
+    // over a second a cutout layer: it keeps the plain mips.
+    let linear_cutout_rgb = !crate::switches::CUTOUT_LINEAR_RGB.off() && !cfg!(target_arch = "wasm32");
     let layers = images.len().max(1) as u32;
     let mips = size.ilog2() + 1;
     let compressed = encoding != crate::texture_stream::Encoding::Rgba8;
@@ -2226,9 +2228,12 @@ impl Renderer {
         let (stream_scene, stream_generated) = match crate::switches::TEXTURE_STREAMING.var().as_deref() {
             Ok("0") => (false, false),
             Ok("1") => (true, true),
+            // A browser bakes on the page's only thread: every layer streams,
+            // one a frame, so a scene never stalls the page for seconds.
+            _ if cfg!(target_arch = "wasm32") => (stream_generated, stream_generated),
             _ => (scene.texture_streaming, stream_generated),
         };
-        let can_stream = (stream_scene || stream_generated) && !cfg!(target_arch = "wasm32")
+        let can_stream = (stream_scene || stream_generated)
             && !(scene.procedural_terrain.is_some() && crate::portable::wanted(gpu));
         let streamed: Vec<bool> = (0..scene.textures.len()).map(|l| {
             let layer = l as u32;
@@ -2258,7 +2263,9 @@ impl Renderer {
         let floor = |size: u32, streamed: bool| if streamed { (size.ilog2() - crate::texture_stream::TAIL.min(size).ilog2()) as f32 } else { 0.0 };
         let layer_maps: Vec<[u32; 4]> = (0..scene.textures.len()).map(|l| crate::material_maps::layer_word(material_maps[l],
             floor(TEXTURE_SIZE, streamed[l]), floor(NORMAL_SIZE, streamed[l]))).collect();
-        let linear_cutout_rgb = !crate::switches::CUTOUT_LINEAR_RGB.off();
+        // A browser bakes on the page's one thread, where this pass took
+    // over a second a cutout layer: it keeps the plain mips.
+    let linear_cutout_rgb = !crate::switches::CUTOUT_LINEAR_RGB.off() && !cfg!(target_arch = "wasm32");
         let settings = |size, format, fill, preserve_alpha| crate::texture_cache::Settings { size, format, fill, preserve_alpha, linear_cutout_rgb };
         let encodings = [albedo_encoding, encoding];
         let mut jobs = Vec::new();

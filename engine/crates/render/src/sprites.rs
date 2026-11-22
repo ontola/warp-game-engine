@@ -263,6 +263,12 @@ impl SpriteRenderer {
         let mut order: Vec<(usize, f32)> = self.sprites.iter().enumerate()
             .filter(|(_, s)| self.images.contains_key(&s.image) && s.opacity > 0.0)
             .map(|(i, s)| (i, s.center.distance_squared(camera.pos))).collect();
+        // A new game sprite shader builds its pipeline at once, not on the
+        // first frame with sprites: a heavy one (Space Racer's jet plumes)
+        // took 5 s to compile in a browser, mid-race.
+        if GAME_SPRITE.lock().unwrap().0 != self.game {
+            (self.game, self.pipeline) = Self::pipeline(gpu, &self.layout, &self.image_layout, wgpu::TextureFormat::Rgba16Float);
+        }
         if order.is_empty() { return Ok(None); }
         if !if ldr {matches!(input.format(),wgpu::TextureFormat::Rgba8Unorm|wgpu::TextureFormat::Rgba8UnormSrgb)}else{input.format()==wgpu::TextureFormat::Rgba16Float} { return Err("sprites require an HDR input".into()); }
         if GAME_SPRITE.lock().unwrap().0 != self.game {

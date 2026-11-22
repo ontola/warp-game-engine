@@ -151,6 +151,10 @@ fn run() -> Result<(), String> {
                     cast(&mut game, &list);
                     game.view.fx.absorb(&game.world);
                 }
+                // --join-at TICK: a player picks up a controller mid-run.
+                if arg("--join-at").and_then(|v| v.parse::<u32>().ok()) == Some(t) {
+                    eprintln!("join: {}", game.join_player(None, None));
+                }
                 if lua_at == Some(t) && let Some(code) = arg("--lua") {
                     eprintln!("lua: {}", spellstorm::rules::console(&mut game.world, &code)?);
                     // Its events (a nova, a burst) show: the next tick clears them.

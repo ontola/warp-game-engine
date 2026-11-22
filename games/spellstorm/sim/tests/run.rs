@@ -324,3 +324,24 @@ fn r3_shakes_the_staff_empty() {
     assert!(wz.mana <= mana + 8.0, "shaking gives no mana back (only the regen while held)");
     assert!(wz.shake_t > 0.0 && wz.used & spellstorm::wizard::used::SHAKE != 0);
 }
+
+/// Joep: a player who joins mid-run gets as many tomes as the others,
+/// stands beside them and plays at once.
+#[test]
+fn a_player_joining_mid_run_gets_as_many_tomes() {
+    let mut w = World::new(&[Seat::player(0, "Joep")], 7, Settings::default());
+    let first = w.wizards[0];
+    for r in [0, 1, 2] {
+        w.give_relic(first, r);
+    }
+    let i = w.join(&Seat::player(1, "Guest"));
+    assert_eq!(i, 1);
+    let guest = w.wizards[1];
+    assert_eq!(w.wiz(guest).relics.len(), w.wiz(first).relics.len());
+    assert!(w.alive(guest));
+    assert!((w.pos(guest) - w.pos(first)).length() < 3.0);
+    for _ in 0..120 {
+        w.step();
+    }
+    assert!(w.alive(guest));
+}

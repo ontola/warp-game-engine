@@ -466,6 +466,8 @@ pub struct Prompt {
     /// controller buttons, and the hovered button lit.
     pub mouse: bool,
     pub hover: Option<String>,
+    /// Whoever stands there plays on the keyboard: keys instead of pad buttons.
+    pub keys: bool,
 }
 
 impl Prompt {
@@ -489,14 +491,37 @@ impl Prompt {
     }
 }
 
+/// The key a keyboard player presses for a pad button (app::input's keys),
+/// or None where the keyboard has none.
+pub fn key_cap(button: &str) -> Option<&'static str> {
+    Some(match button.to_ascii_uppercase().as_str() {
+        "A" => "Space", "B" => "Backspace", "X" => "R", "Y" => "F", "LB" => "Q", "RB" => "E", "BACK" => "Tab", "START" => "Enter", "R3" => "C",
+        _ => return None,
+    })
+}
+
+/// How wide a keyboard key's cap is at prompt size (44 px labels).
+pub fn key_cap_width(cap: &str) -> f32 { (render::hud::measure(cap, bold(), 38.0)[0] + 36.0).max(72.0) }
+
+/// A keyboard key: a light cap with the key's name, `r` its rectangle.
+pub fn keycap(c: &mut Canvas, r: [f32; 4], cap: &str, pressed: f32, on: bool) {
+    let r = [r[0], r[1] + pressed * 6.0, r[2], r[3]];
+    let radius = r[3] * 0.22;
+    c.style_box([r[0], r[1] + r[3] * 0.1, r[2], r[3]], [radius; 4], Color::hex("0b0b12"), None);
+    c.style_box(r, [radius; 4], if on { Color::hex("f2f1f8") } else { Color::hex("8d8aa0") }, Some(((r[3] * 0.05).max(1.5), Color::hex("0b0b12"))));
+    let size = (r[3] * 0.5).floor();
+    c.text(bold(), [r[0], r[1] + r[3] / 2.0 + size * 0.36], cap, TextAlign::Center, r[2], size, Color::hex("0b0b12"));
+}
+
 pub fn prompt(c: &mut Canvas, state: &Prompt) {
     let h = 96.0;
     let mut x = 20.0;
     for (key, label, item_on) in &state.items {
-        let bumper_key = key == "LB" || key == "RB";
-        let badge = if bumper_key { 150.0 } else { 96.0 };
+        let cap = if state.keys && !state.mouse { key_cap(key) } else { None };
+        let bumper_key = cap.is_none() && (key == "LB" || key == "RB");
+        let badge = match cap { Some(cap) => key_cap_width(cap) + 24.0, None if bumper_key => 150.0, None => 96.0 };
         let tw = render::hud::measure(label, bold(), 44.0)[0];
-        let (w, scale) = if bumper_key { (1.0, 1.0) } else { state.reveal() };
+        let (w, scale) = if bumper_key || cap.is_some() { (1.0, 1.0) } else { state.reveal() };
         let label_x = x + (badge - 6.0) * w + 24.0 * (1.0 - w);
         let pill = label_x - x + tw + 22.0;
         let hovered = state.mouse && state.hover.as_deref() == Some(key.as_str());
@@ -506,7 +531,9 @@ pub fn prompt(c: &mut Canvas, state: &Prompt) {
         let on = state.enabled && *item_on;
         let color = if on { match key.as_str() { "A" => Color::hex("5cb85c"), "B" => Color::hex("e2574c"), "X" => Color::hex("3b8eea"), "Y" => Color::hex("f8cd34"), _ => TEXT } } else { Color::hex("55516a") };
         let pressed = state.pressed.as_ref().filter(|p| &p.0 == key).map_or(0.0, |p| p.1);
-        if state.mouse {
+        if let Some(cap) = cap {
+            keycap(c, [x + 12.0, 20.0, badge - 24.0, 56.0], cap, pressed, on);
+        } else if state.mouse {
             // A mouse with its left button lit (the wheel for LB/RB), and an
             // arrow for the way a bumper browses.
             let cx = if bumper_key { x + 40.0 } else { x + h / 2.0 - 4.0 };

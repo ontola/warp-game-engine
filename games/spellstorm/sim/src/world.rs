@@ -285,6 +285,56 @@ impl World {
         self.unlocks_changed();
     }
 
+    /// A player joins the run in progress (Joep): a wizard beside a living
+    /// one, with as many tomes as the most any human here carries, picked at
+    /// random among those their elements can use. Returns its index.
+    pub fn join(&mut self, seat: &Seat) -> usize {
+        let i = self.wizards.len();
+        let used: Vec<C> = self.wizards.iter().map(|&w| self.wiz(w).robe).collect();
+        let robe = if used.contains(&seat.robe) { COLORS.iter().copied().find(|c| !used.contains(c)).unwrap_or(COLORS[i % COLORS.len()]) } else { seat.robe };
+        let n = self.wizards.iter().filter(|&&w| self.wiz(w).bot.is_none()).map(|&w| self.wiz(w).relics.len()).max().unwrap_or(0);
+        let near = self.wizards.iter().copied().find(|&w| self.alive(w)).map(|w| self.pos(w));
+        // What the others learned, they know too.
+        let unlocks = self.wizards.iter().filter(|&&w| self.wiz(w).bot.is_none()).map(|&w| self.wiz(w).unlocks).max();
+        let (actor, mut wiz) = Wizard::make(i, seat, robe, &self.settings);
+        if let Some(u) = unlocks {
+            wiz.unlocks = wiz.unlocks.max(u);
+        }
+        let id = self.ecs.spawn((actor, wiz));
+        self.wizards.push(id);
+        self.unlocks_changed();
+        if let Some(p) = near {
+            let at = p + Vec3::new(1.2, 0.0, 0.8);
+            let mut a = self.am(id);
+            a.pos = at;
+            a.vel = Vec3::ZERO;
+        }
+        let (els, forms) = {
+            let wz = self.wiz(id);
+            (wz.open_elements(), crate::grammar::FORMS.iter().copied().filter(|&f| wz.form_open(f)).collect::<Vec<_>>())
+        };
+        let has = |need: crate::relics::Need| match need {
+            crate::relics::Need::Nothing => true,
+            crate::relics::Need::El(e) => e.parts().iter().all(|p| els.contains(p)),
+            crate::relics::Need::Form(f) => forms.contains(&f),
+        };
+        let mut rng = Pcg::new(self.seed ^ (i as u64 + 1).wrapping_mul(0x9e37_79b9));
+        // Stacking tomes may come twice; a one-off only once.
+        let mut picks: Vec<usize> = Vec::new();
+        while picks.len() < n {
+            let avoid: Vec<usize> = picks.iter().copied().filter(|&r| !crate::relics::stacks(r)).collect();
+            let more = crate::relics::pick(n - picks.len(), &mut rng, &avoid, &has);
+            if more.is_empty() {
+                break;
+            }
+            picks.extend(more);
+        }
+        for r in picks {
+            self.give_relic(id, r);
+        }
+        i
+    }
+
     /// A fresh run (main.gd new_run): the next seed, the first biome.
     pub fn new_run(&mut self) {
         let s = self.seed;

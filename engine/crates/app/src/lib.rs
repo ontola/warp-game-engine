@@ -202,6 +202,12 @@ pub trait Game {
     /// game kept paused (as Back does); true once per request. Only offered
     /// when [`host_takes_back`] holds.
     fn take_back(&mut self) -> bool { false }
+    /// A player picked up a controller while this game runs (a browser host
+    /// that showed "press A to join"): add them to the game in progress, as
+    /// the next player in controls order. `name` and `color` (sRGB) are
+    /// their look, when the host knows it. False: this game cannot take
+    /// players mid-game (the host keeps them for the next one).
+    fn player_joins(&mut self, name: Option<&str>, color: Option<[f32; 3]>) -> bool { let _ = (name, color); false }
     /// Extra menus and controls for the F2 debug menu, with ids from
     /// [`debug::GAME_IDS`] up (a control's `menu` may name an engine menu).
     fn debug(&self) -> (Vec<render::debug_ui::DebugMenu>, Vec<render::debug_ui::DebugControl>) { Default::default() }

@@ -30,8 +30,30 @@ fn project(view_proj: Mat4, size: [u32; 2], p: Vec3) -> Option<[f32; 2]> {
     Some([(ndc.x * 0.5 + 0.5) * size[0] as f32, (0.5 - ndc.y * 0.5) * size[1] as f32])
 }
 
+/// The room camera for a screen of `size`: on screens narrower than 16:9
+/// the field of view grows, so the room keeps its 16:9 width and the door
+/// and the QR code at the sides stay in view. It grows mostly upwards: the
+/// camera tilts up, so the room sits low with more ceiling above it and
+/// only a little more floor below.
+pub fn fitted(camera: &render::Camera, size: [u32; 2]) -> render::Camera {
+    let aspect = size[0] as f32 / size[1].max(1) as f32;
+    let wide = 16.0 / 9.0;
+    let mut camera = *camera;
+    if aspect < wide {
+        let fov = 2.0 * ((camera.fov_y / 2.0).tan() * wide / aspect).atan();
+        // Most of the new room goes above: a little floor stays in front.
+        let tilt = (fov - camera.fov_y) / 2.0 * 0.6;
+        let forward = camera.target - camera.pos;
+        let right = forward.cross(Vec3::Y).normalize_or_zero();
+        camera.target = camera.pos + glam::Quat::from_axis_angle(right, tilt) * forward;
+        camera.fov_y = fov;
+    }
+    camera
+}
+
 /// The room camera's view-projection for a screen of `size`.
 pub fn view_proj(camera: &render::Camera, size: [u32; 2]) -> Mat4 {
+    let camera = &fitted(camera, size);
     let (w, h) = (size[0] as f32, size[1] as f32);
     let view = Mat4::look_at_rh(camera.pos, camera.target, Vec3::Y);
     let proj = Mat4::perspective_rh(camera.fov_y, w / h.max(1.0), camera.near.max(0.05), 4000.0);
@@ -114,16 +136,18 @@ pub fn draw(lobby: &Lobby, size: [u32; 2], _alpha: f32) -> HudDrawList {
     c.over();
     bench(lobby, &mut c, scale);
 
-    // Toasts, bottom centre.
-    let mut y = h - 40.0 * scale;
+    // Toasts, bottom centre; in the catalog view top centre, clear of its
+    // buttons and hints.
+    let catalog = lobby.catalog_open();
+    let mut y = if catalog { 40.0 * scale } else { h - 40.0 * scale };
     for t in lobby.toasts.iter().rev() {
         let fs = (22.0 * scale).floor();
         let tw = width(&t.text, fs) + 44.0;
-        let r = [w / 2.0 - tw / 2.0, y - fs - 20.0, tw, fs + 24.0];
+        let r = if catalog { [w / 2.0 - tw / 2.0, y, tw, fs + 24.0] } else { [w / 2.0 - tw / 2.0, y - fs - 20.0, tw, fs + 24.0] };
         c.rect(r, PANEL);
         c.rect([r[0], r[1], 4.0, r[3]], t.color);
         text(&mut c, &t.text, [r[0] + 24.0, r[1] + fs + 4.0], fs, TEXT);
-        y -= r[3] + 10.0;
+        y += if catalog { r[3] + 10.0 } else { -(r[3] + 10.0) };
     }
     if !lobby.host.update_ready().is_empty() {
         let fs = (18.0 * scale).floor();
@@ -280,11 +304,15 @@ fn back_panel(lobby: &Lobby, c: &mut Canvas, view_proj: Mat4, size: [u32; 2], sc
     let name = player.as_deref().map(|id| lobby.name(id)).unwrap_or_default();
     let title = if name.is_empty() { "BACK".to_string() } else { format!("BACK  ·  {}", short(&name, 14).to_uppercase()) };
     c.text(bold(), [x + pad, y + pad + fs * 0.9], &title, TextAlign::Left, -1.0, fs, TEXT);
-    c.text(regular(), [x + pad, y + pad + fs * 1.75], "Hold Back and press", TextAlign::Left, -1.0, (fs * 0.8).floor(), DIM);
+    let keyboard = player.as_deref().is_some_and(|id| lobby.on_keyboard(id));
+    let hold = if keyboard { "Hold Tab and press" } else { "Hold Back and press" };
+    c.text(regular(), [x + pad, y + pad + fs * 1.75], hold, TextAlign::Left, -1.0, (fs * 0.8).floor(), DIM);
     for (i, (button, label, waiting)) in rows.iter().enumerate() {
         let top = y + pad + head + line * i as f32 + fs * 0.25;
         let r = [x + pad, top, key_w, line - fs * 0.5];
-        if button == "B" {
+        if let Some(cap) = keyboard.then(|| crate::paint::key_cap(button)).flatten() {
+            crate::paint::keycap(c, r, cap, 0.0, true);
+        } else if button == "B" {
             let center = [r[0] + r[2] / 2.0, r[1] + r[3] / 2.0];
             c.circle(center, r[3] / 2.0, Color::hex("e2574c"));
             c.text(bold(), [r[0], center[1] + fs * 0.36], "B", TextAlign::Center, r[2], fs, Color::hex("0b0b12"));
@@ -315,8 +343,9 @@ fn menu(lobby: &Lobby, c: &mut Canvas, id: &str, at: [f32; 2], fs: f32) {
         let selected = i == state.index;
         let couch = item.action == "couch";
         let mut label = item.label.clone();
-        if item.action == "quit" && state.confirm && selected { label = if mouse { "Click again to quit" } else { "Press A again to quit" }.into(); }
-        if item.action == "remove" && state.confirm && selected { label = format!("Press A again to remove {}", short(&item.name, 14)); }
+        let a = lobby.button_name(id, "A");
+        if item.action == "quit" && state.confirm && selected { label = if mouse { "Click again to quit".into() } else { format!("Press {a} again to quit") }; }
+        if item.action == "remove" && state.confirm && selected { label = if mouse { format!("Click again to remove {}", short(&item.name, 14)) } else { format!("Press {a} again to remove {}", short(&item.name, 14)) }; }
         if selected { c.rect([x + 12.0, y, mw - 24.0, line - 4.0 + if couch { row } else { 0.0 }], VIOLET.with_alpha(0.35)); }
         text(c, &label, [x + 32.0, y + fs], fs, if selected { TEXT } else { DIM });
         if couch {

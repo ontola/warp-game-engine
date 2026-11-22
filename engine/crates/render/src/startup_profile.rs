@@ -87,6 +87,25 @@ impl StartupProfile {
     }
 }
 
+/// Profile every renderer built from now on, whatever `KERN_STARTUP_PROFILE`
+/// says (a browser has no environment).
+static FORCED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub fn force(on: bool) { FORCED.store(on, std::sync::atomic::Ordering::Relaxed); }
+
+impl StartupProfile {
+    /// The `n` slowest sections and texture arrays, one short line.
+    pub fn slowest(&self, n: usize) -> String {
+        let mut parts: Vec<(f64, String)> = self.sections.iter().map(|s| (s.cpu_ms, s.name.to_string())).collect();
+        parts.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let mut line = format!("{:.0} ms:", self.total_cpu_ms);
+        for (ms, name) in parts.iter().take(n) { write!(line, " {name} {ms:.0}").unwrap(); }
+        for a in &self.textures {
+            write!(line, "; {} {}px {} layers (build {:.0} ms, upload {:.0} ms)", a.name, a.size, a.layers.len(), a.build_wall_ms, a.upload_cpu_ms).unwrap();
+        }
+        line
+    }
+}
+
 pub(crate) struct Trace {
     start: Option<Instant>,
     last: Option<Instant>,
@@ -94,7 +113,7 @@ pub(crate) struct Trace {
 }
 impl Trace {
     pub fn new() -> Self {
-        let start=(crate::switches::STARTUP_PROFILE.on()).then(Instant::now);
+        let start=(crate::switches::STARTUP_PROFILE.on() || FORCED.load(std::sync::atomic::Ordering::Relaxed)).then(Instant::now);
         Self {start,last:start,profile:StartupProfile::default()}
     }
     pub fn enabled(&self)->bool {self.start.is_some()}
@@ -111,7 +130,7 @@ impl Trace {
         let start=self.start?;
         self.mark("finalize_renderer");
         self.profile.total_cpu_ms=self.last.unwrap().duration_since(start).as_secs_f64()*1000.;
-        eprintln!("{}",self.profile.to_json());
+        if !FORCED.load(std::sync::atomic::Ordering::Relaxed) { eprintln!("{}",self.profile.to_json()); }
         Some(self.profile)
     }
 }

@@ -354,3 +354,15 @@ fn the_back_panel_shows_the_hosts_chords_for_its_player() {
     lobby.set_party(party);
     assert!(game_room::hud::back_rows(&lobby).is_none(), "an empty back_menu hides it");
 }
+
+#[test]
+fn a_keyboard_player_sees_keys() {
+    let mut lobby = Lobby::new(options(), 0, 1).unwrap();
+    let mut party = lobby.host.party.clone();
+    party["seats"][0]["controller"] = json!("web:keyboard");
+    lobby.set_party(party);
+    let id = lobby.world.players[0].id.clone();
+    assert!(lobby.on_keyboard(&id));
+    assert_eq!(lobby.button_name(&id, "A"), "Space");
+    assert_eq!(game_room::paint::key_cap("Y"), Some("F"));
+}
