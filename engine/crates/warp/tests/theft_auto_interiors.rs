@@ -8,7 +8,7 @@ fn eval(game: &mut LuaGame, code: &str) -> String {
 }
 
 // Keep an exact count for the city and its rooms while separately accounting
-// for the currently owned rival bodies, their markers and the six-piece pistols.
+// for rival bodies, their markers, the pistols and per-view facade proxies.
 fn eval_entities(game: &mut LuaGame, code: &str) -> String {
     let counts = r#"
         local extras = 0
@@ -22,6 +22,12 @@ fn eval_entities(game: &mut LuaGame, code: &str) -> String {
         for _, gear in state.combat.players do
             if gear.prop then assert(world.exists(gear.prop)); extras += 6 end
         end
+        local copies = 0
+        for _, facade in state.interiors.facades do
+            for _, copy in facade.copies do assert(world.exists(copy.id)); copies += 1 end
+        end
+        assert(copies<=4, "at most one extra facade per view")
+        extras += copies
         local base = (state.baseCount or 0) + extras
     "#;
     eval(game, &format!("{counts}\n{code}"))
@@ -52,7 +58,7 @@ fn start(players: usize, seed: u64) -> LuaGame {
             end
             if not state.testLots[b.kind] then state.testLots[b.kind] = b end
             local shell = world.get(b.shell)
-            assert(shell.solid and shell.visible)
+            assert(shell.solid and shell.visible and shell.coverage==nil and shell.hide_views==0)
         end
         state.baseCount = world.count() - extras
     "#);
@@ -125,7 +131,7 @@ fn each_door_can_be_walked_through_and_regenerates_the_same_furnishings() {
             state.roomIds = state.interiors.active[b.id]
             assert(world.count() == base + #state.roomIds)
             local shell = world.get(b.shell)
-            assert(not shell.visible and not shell.solid)
+            assert(shell.visible and not shell.solid and shell.coverage>0 and shell.coverage<1)
             local ray = vector.create(0, 0, -1)
             for _, x in {-3.5, 0, 3.5} do
                 local hit = world.raycast(b.door + vector.create(x, 1, 1), ray, 2, {tag="city"})
@@ -147,6 +153,7 @@ fn each_door_can_be_walked_through_and_regenerates_the_same_furnishings() {
             local b, p = state.lot, state.fleet.players[1]
             assert(p.pos.z > b.door.z + 4.5 and p.pos.z < b.door.z + 7)
             assert(p.building == nil and state.interiors.active[b.id] == state.roomIds)
+            assert(world.get(b.shell).coverage==1, "far facade covers the room before eviction")
         "#);
         walk_to(&mut game, leave, 8.5);
         eval_entities(&mut game, r#"
@@ -155,7 +162,7 @@ fn each_door_can_be_walked_through_and_regenerates_the_same_furnishings() {
             assert(world.count() == base)
             for _, id in state.roomIds do assert(not world.exists(id)) end
             local shell = world.get(b.shell)
-            assert(shell.solid and shell.visible)
+            assert(shell.solid and shell.visible and shell.coverage==nil and shell.hide_views==0)
         "#);
         walk_to(&mut game, enter, 3.4);
         assert_eq!(furnishings(&mut game, kind), layout, "{kind} changed on re-entry");
@@ -224,6 +231,86 @@ fn multiplayer_visitors_share_rooms_and_release_them_on_departure() {
         assert(world.count() == base - 4)
     "#);
     assert_eq!(game.state_json()["room_lighting"]["active"], 0);
+}
+
+#[test]
+fn facade_coverage_is_reversible_and_follows_the_rendered_view() {
+    let mut game = start(2, 1948);
+    let still = [Controls::default(); 2];
+    let sample = |game: &mut LuaGame, dz: f32| -> f64 {
+        stage(game, 1, "office", 0., dz);
+        run(game, 4, &still);
+        eval(game, r#"
+            local b = state.testLots.office
+            local f = state.interiors.facades[b.id]
+            local base = world.get(b.shell)
+            assert(f and base.solid==false and base.coverage==1)
+            local view = players.get(1).view
+            if bit32.band(base.hide_views,2^view)==0 then return base.coverage end
+            local copy = f.copies[view]
+            if not copy then return 0 end
+            local e = world.get(copy.id)
+            assert(e.hide_views==255-2^view and e.solid==false)
+            return e.coverage
+        "#).parse().unwrap()
+    };
+    let first = sample(&mut game, 4.49);
+    let middle = sample(&mut game, 3.);
+    let nearer = sample(&mut game, 2.);
+    assert!(first > 0.98 && (0.5..0.6).contains(&middle) && (0.0..0.2).contains(&nearer));
+    assert_eq!(sample(&mut game, 1.), 0.);
+    assert_eq!(sample(&mut game, 3.), middle);
+
+    // View indices can change even though both player IDs persist.
+    eval(&mut game, "camera.views({[1]=2,[2]=1})");
+    assert_eq!(sample(&mut game, 3.), middle);
+    eval(&mut game, r#"
+        local b = state.testLots.office
+        local f = state.interiors.facades[b.id]
+        assert(world.get(b.shell).hide_views==2)
+        assert(not f.copies[0] and f.copies[1])
+    "#);
+
+    // Once both seats share a camera the facade follows its first owner.
+    eval(&mut game, "camera.views({[1]=1,[2]=1})");
+    run(&mut game, 2, &still);
+    eval(&mut game, r#"
+        local b = state.testLots.office
+        local f = state.interiors.facades[b.id]
+        local shell = world.get(b.shell)
+        assert(next(f.copies)==nil and shell.hide_views==0 and shell.coverage>0 and shell.coverage<1)
+    "#);
+    stage(&mut game, 1, "office", 0., 9.);
+    run(&mut game, 4, &still);
+    eval(&mut game, r#"
+        local b=state.testLots.office
+        assert(state.interiors.count==0 and next(state.interiors.facades)==nil)
+        local shell=world.get(b.shell)
+        assert(shell.visible and shell.solid and shell.coverage==nil)
+    "#);
+}
+
+#[test]
+fn neighboring_hotel_windows_close_their_previews_at_the_room_handoff() {
+    let mut game = start(1, 1948);
+    eval(&mut game, r#"
+        local b = state.testLots.hotel
+        local other = state.city.buildings[b.id+1]
+        assert(other.kind=="hotel" and other.z==b.z)
+        state.alley = vector.create((b.x+b.w/2+other.x-other.w/2)/2,.85,b.z+1.4)
+        state.rightHotel = other
+    "#);
+    for (dx, expected) in [(-0.08, "state.testLots.hotel"), (0.08, "state.rightHotel")] {
+        eval(&mut game, &format!(
+            "world.place(state.fleet.players[1].body, state.alley+vector.create({dx},0,0))"
+        ));
+        run(&mut game, 4, &[Controls::default()]);
+        eval(&mut game, &format!(r#"
+            local b = {expected}
+            assert(state.interiors.count==1 and state.fleet.players[1].nearRoom==b.id)
+            assert(world.get(b.shell).coverage>.93)
+        "#));
+    }
 }
 
 #[test]
@@ -335,6 +422,30 @@ fn room_activities_place_people_on_chairs_or_clear_floor() {
                 local b = state.testLots.{kind}
                 local stations = state.interiors.activities[b.id]
                 assert(#stations>=8)
+                -- The GPU preview decodes this key without consulting the live room.
+                local key = world.get(b.shell).surface-64
+                local archetype = if b.kind=="office" then 0 elseif b.kind=="hotel" then 1 else 2
+                assert(key>=0 and key<36 and key%3==archetype)
+                local variant = math.floor(key/3)
+                local mirror = if variant%2==1 then -1 else 1
+                assert((stations[1].pos.x-b.x)*mirror<0, "proxy furniture is mirrored")
+                if b.kind~="warehouse" then
+                    local fabrics = {{vector.create(67,140,135),vector.create(184,93,70),vector.create(86,111,136)}}
+                    local upholstery = fabrics[math.floor(variant/2)%3+1]/255
+                    local wood = (if variant>=6 then vector.create(129,87,61) else vector.create(172,118,77))/255
+                    local foundSofa, foundDesk = false, false
+                    for _, id in state.interiors.active[b.id] do
+                        local piece=world.get(id)
+                        if math.abs(piece.size.x-1.03)<.001 and math.abs(piece.pos.y-.32)<.001 then
+                            assert(vector.magnitude(piece.color-upholstery)<.001)
+                            foundSofa=true
+                        elseif math.abs(piece.size.z-.94)<.001 and math.abs(piece.pos.y-.46)<.001 then
+                            assert(vector.magnitude(piece.color-wood)<.001)
+                            foundDesk=true
+                        end
+                    end
+                    assert(foundSofa and foundDesk)
+                end
                 local walkers, sitters = 0, 0
                 local function clear(p,role)
                     assert(math.abs(p.x-b.x)<b.w/2-.45 and math.abs(p.z-b.z)<b.d/2-.45)

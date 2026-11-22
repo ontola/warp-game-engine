@@ -302,6 +302,8 @@ lights.room(id, {
 lights.room(id, nil)
 ```
 
+Warp Theft Auto uses a GPU preview for distant doors and windows. The material intersects the view ray with the room envelope and a few boxes representing furnishings. It gets the room footprint, orientation and palette from the same seeded layout as the detailed room. It needs no room lights, reflection probe, actors or furniture entities. When a walker approaches, the game registers the full room with `lights.room` and reduces the proxy's GPU coverage as the walker gets closer. Each viewport can reveal a different amount of the same room. The proxy shell contributes neither shadow casters nor bake geometry while it overlaps the furnished room.
+
 Panel sizes and range are metres. Intensity is candela along the downward axis. Place each emitter just below its visible fixture. A room supports up to eight panels. Enable `light.set({exposure = "auto"})` for eye adaptation.
 
 On entry, Warp traces 64 paths from the room centre through the actual windows, doorway and furnishings. Their sky, sun and fixture contributions reach up to two diffuse bounces. This first sample lights the room immediately while its spatial grid is built. All split-screen views share that grid.

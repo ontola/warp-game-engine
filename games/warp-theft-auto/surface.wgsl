@@ -186,75 +186,148 @@ fn pm_masonry(s: SurfaceIn, aa: f32) -> SurfaceOut {
     return out;
 }
 
-fn pm_distant_pane(s: SurfaceIn, across: f32, width: f32, sill: f32, head: f32,
-                   divisions: f32, transom: bool, aa: f32) -> SurfaceOut {
-    let u=across/width;
-    let h=clamp((s.p.y-sill)/(head-sill),0.0,1.0);
-    let cell=width/divisions;
-    let stile=pm_band((fract(across/cell+.5)-.5)*cell,.034,aa);
-    let rail=select(0.0,pm_band(s.p.y-2.17,.034,aa),transom);
-    let frame=max(stile,rail);
-    let sky=vec3<f32>(.14,.25,.27);
-    let room=vec3<f32>(.15,.105,.075)*(1.0+.12*sin(floor(u*divisions)*5.0));
-    let glimpse=mix(room,sky,.16+.56*h+.11*abs(dot(normalize(s.dir),s.n)));
-    let ink=vec3<f32>(.072,.104,.106);
-    return SurfaceOut(mix(glimpse,ink,frame),s.n,mix(.16,.62,frame),0.0,
-        glimpse*(.85+.46*h)*(1.0-frame));
+// Analytic ground-floor LOD. Only visible openings trace a ray. Coordinates
+// are in the same room space as room.module.luau, mirrored once per lot.
+struct PmRoomSample {
+    distance: f32,
+    color: vec3<f32>,
+};
+
+fn pm_furniture_hit(current: PmRoomSample, origin: vec3<f32>, inv: vec3<f32>,
+                    center: vec3<f32>, half_size: vec3<f32>, color: vec3<f32>) -> PmRoomSample {
+    let a=(center-half_size-origin)*inv;
+    let b=(center+half_size-origin)*inv;
+    let entry=min(a,b);
+    let exit_t=max(a,b);
+    let t=max(max(entry.x,entry.y),entry.z);
+    if t<=0.0 || t>=current.distance || t>min(min(exit_t.x,exit_t.y),exit_t.z) { return current; }
+    let facing=select(select(.65,.82,entry.x>entry.z),1.04,entry.y>=max(entry.x,entry.z));
+    return PmRoomSample(t,color*facing);
+}
+
+fn pm_room_view(s: SurfaceIn, size: vec3<f32>, archetype: u32, variant: u32, aa: f32) -> vec3<f32> {
+    let mirror=select(1.0,-1.0,(variant&1u)!=0u);
+    let axis=vec3<f32>(mirror,1.0,1.0);
+    let origin=vec3<f32>(s.local.x*size.x,s.p.y,s.local.z*size.z)*axis;
+    let dir=s.dir*axis;
+    // Clamping grazing components keeps parallel slab tests finite on WebGPU.
+    let inv=select(vec3<f32>(1.0),vec3<f32>(-1.0),dir<vec3<f32>(0.0))/max(abs(dir),vec3<f32>(.00001));
+    let lo=vec3<f32>(-.5*size.x+.23,.024,-.5*size.z+.23);
+    let hi=vec3<f32>(.5*size.x-.23,size.y-.17,.5*size.z-.23);
+    let exits=max((lo-origin)*inv,(hi-origin)*inv);
+    let travel=max(0.0,min(min(exits.x,exits.y),exits.z));
+    let p=origin+dir*travel;
+    let hotel=archetype==1u;
+    let warehouse=archetype==2u;
+    var wall=select(vec3<f32>(.51,.49,.40),vec3<f32>(.58,.42,.31),hotel);
+    if warehouse { wall=vec3<f32>(.36,.42,.40); }
+    var c=wall*select(.70,1.0,exits.z<exits.x);
+    if exits.y<=min(exits.x,exits.z) {
+        if dir.y<0.0 {
+            let edge=abs(fract(p.xz/.85+.5)-.5)*.85;
+            let joint=pm_band(min(edge.x,edge.y),.012,aa);
+            c=select(vec3<f32>(.22,.27,.26),vec3<f32>(.53,.45,.34),hotel)*(1.0-.18*joint);
+            if warehouse { c=vec3<f32>(.33,.35,.33); }
+        } else {
+            c=vec3<f32>(.47,.45,.40);
+            let panel=abs(abs(p.xz)-size.xz*vec2<f32>(.23,.22));
+            if panel.x<.75 && panel.y<.30 { c=vec3<f32>(2.3,2.05,1.7); }
+        }
+    } else if p.z<lo.z+.015 && abs(p.x)<select(2.4,1.3,hotel) && abs(p.y-2.1)<.78 {
+        c=select(vec3<f32>(.11,.29,.25),vec3<f32>(.49,.22,.12),hotel);
+    }
+    var hit=PmRoomSample(travel,c);
+    let wood=select(vec3<f32>(.39,.19,.081),vec3<f32>(.225,.107,.057),variant>=6u);
+    let upholstery=array<vec3<f32>,3>(vec3<f32>(.070,.26,.24),vec3<f32>(.49,.16,.085),vec3<f32>(.099,.16,.25));
+    let fabric=upholstery[(variant/2u)%3u];
+    // Furniture converges to the room shell as its silhouettes become subpixel.
+    let detail_weight=1.0-smoothstep(.20,.36,aa);
+    if detail_weight>0.0 {
+        if warehouse {
+            for (var side=-1; side<=1; side+=2) {
+                let x=f32(side)*size.x*.29;
+                let z=-size.z*.05;
+                hit=pm_furniture_hit(hit,origin,inv,vec3<f32>(x,1.87,z),vec3<f32>(1.15,.085,size.z*.30),vec3<f32>(.43,.16,.085));
+                for (var bay=-1; bay<=1; bay+=2) {
+                    let crate_z=z+f32(bay)*size.z*.145;
+                    hit=pm_furniture_hit(hit,origin,inv,vec3<f32>(x,1.4,crate_z),vec3<f32>(.85,1.12,size.z*.073),vec3<f32>(.46,.31,.16));
+                }
+            }
+        } else {
+            let desk_x=-size.x*select(.26,.285,hotel);
+            let desk_z=size.z*select(.235,.23,hotel);
+            let desk_w=select(4.8,size.x*.26,hotel);
+            hit=pm_furniture_hit(hit,origin,inv,vec3<f32>(desk_x,.46,desk_z),vec3<f32>(desk_w*.5-.11,.44,.47),wood);
+            hit=pm_furniture_hit(hit,origin,inv,vec3<f32>(desk_x,.955,desk_z),vec3<f32>(desk_w*.5,.055,.56),vec3<f32>(.61,.55,.42));
+            hit=pm_furniture_hit(hit,origin,inv,vec3<f32>(desk_x,1.40,desk_z),vec3<f32>(.365,.215,.045),vec3<f32>(.043,.10,.10));
+            let sofa=vec3<f32>(size.x*select(.29,.34,hotel),.39,size.z*select(.23,.21,hotel));
+            hit=pm_furniture_hit(hit,origin,inv,sofa,vec3<f32>(.515,.37,select(2.20,1.40,hotel)),fabric);
+            let back=select(vec2<f32>(-.26,-.25),vec2<f32>(.265,-.32),hotel)*size.xz;
+            hit=pm_furniture_hit(hit,origin,inv,vec3<f32>(back.x,.62,back.y),select(vec3<f32>(2.20,.34,.825),vec3<f32>(1.11,.24,1.56),hotel),select(wood,vec3<f32>(.70,.65,.51),hotel));
+        }
+    }
+    let shaded_wall=c*(.52+.48*exp(-.095*travel));
+    let shaded_hit=hit.color*(.52+.48*exp(-.095*hit.distance));
+    return mix(shaded_wall,shaded_hit,detail_weight);
+}
+
+fn pm_opening(s: SurfaceIn, size: vec3<f32>, archetype: u32, variant: u32,
+              across: f32, width: f32, divisions: f32, glazed: bool, transom: bool, aa: f32) -> SurfaceOut {
+    let interior=pm_room_view(s,size,archetype,variant,aa);
+    // The room's indirect illumination stays recessed behind the facade.
+    var out=SurfaceOut(interior*.064,s.n,.87,0.0,interior*.43);
+    if glazed {
+        let grazing=pow(1.0-clamp(abs(dot(s.dir,s.n)),0.0,1.0),5.0);
+        let reflection=.043+.43*grazing;
+        let street=vec3<f32>(.090,.15,.17);
+        out.albedo=mix(out.albedo,street,reflection);
+        out.rough=mix(.59,.18,grazing);
+        let cell=width/divisions;
+        let stile=pm_band((fract(across/cell+.5)-.5)*cell,.034,aa);
+        let rail=select(0.0,pm_band(s.p.y-2.17,.034,aa),transom);
+        let frame=max(stile,rail);
+        out.albedo=mix(out.albedo,vec3<f32>(.052,.083,.089),frame);
+        out.emission*=1.0-frame;
+    }
+    return out;
 }
 
 fn pm_ground_floor(s: SurfaceIn, aa: f32) -> SurfaceOut {
+    // Kinds 20–22 are the original, unparameterized ground floors.
+    let encoded=select(s.kind-20u,s.kind-64u,s.kind>=64u);
+    let archetype=encoded%3u;
+    let variant=encoded/3u;
+    let warehouse=archetype==2u;
+    let hotel=archetype==1u;
     var out=pm_masonry(s,aa);
-    let warehouse=s.kind==22u;
-    let hotel=s.kind==21u;
     if warehouse {
         var face=s;
         face.kind=3u;
         out=pm_facade(face,aa);
     }
+    if abs(s.n.y)>.6 || s.n.z<-.8 { return out; }
+    let inst=instance_at(s.instance);
+    let size=abs(vec3<f32>(inst.r0.x,inst.r1.y,inst.r2.z));
     if abs(s.n.x)>.8 {
-        let block_z=(floor(s.p.z/56.0)+.5)*56.0;
-        let center=block_z+select(1.4,-3.0,warehouse);
         let span=select(select(7.4,5.6,hotel),7.2,warehouse);
         let sill=select(select(.72,.85,hotel),2.45,warehouse);
-        let u=s.p.z-center+span*.5;
+        let u=s.local.z*size.z-select(1.4,0.0,warehouse)+span*.5;
         if u>=0.0 && u<=span && s.p.y>=sill && s.p.y<=3.58 {
-            return pm_distant_pane(s,u,span,sill,3.58,2.0,false,aa);
+            return pm_opening(s,size,archetype,variant,u,span,2.0,true,false,aa);
         }
         return out;
     }
-    if s.n.z<.8 || s.p.y>2.5 { return out; }
-    let center=(floor(s.p.x/56.0)+.5)*56.0;
-    var door_x=center;
-    if hotel { door_x+=select(-9.0,9.0,s.p.x>center); }
-    if warehouse { door_x-=5.0; }
-    let x=s.p.x-door_x;
-    if abs(x)>1.4 {
-        let inner=select(1.76,2.24,warehouse);
-        let sill=select(select(.47,.60,hotel),1.02,warehouse);
-        if s.p.y<sill { return out; }
-        if abs(x)<inner {
-            out.albedo=vec3<f32>(.072,.104,.106);
-            return out;
-        }
-        let half_width=abs(x)/(2.0*max(.0001,abs(s.local.x)));
-        let outer=select(half_width-.66,4.78,warehouse);
-        if abs(x)<=outer {
-            return pm_distant_pane(s,abs(x)-inner,outer-inner,sill,2.50,select(3.0,2.0,hotel||warehouse),true,aa);
-        }
-        return out;
+    if s.p.y>2.50 { return out; }
+    let x=abs(s.local.x)*size.x;
+    if x<=1.40 {
+        return pm_opening(s,size,archetype,variant,x,2.8,1.0,false,false,aa);
     }
-    let door=pm_band(x,1.4,aa);
-    if door<.001 { return out; }
-    // Recessed glass and brass pulls read as an entrance across the street.
-    let frame=max(pm_band(abs(x)-1.34,.06,aa),pm_band(x,.034,aa));
-    let kick=1.0-smoothstep(.21-aa,.21+aa,s.p.y);
-    let glass=mix(vec3<f32>(.047,.087,.085),vec3<f32>(.11,.22,.23),s.p.y/2.5);
-    let leaf=mix(glass,vec3<f32>(.20,.23,.20),max(frame,kick));
-    let pull=pm_band(abs(x)-.16,.034,aa)*pm_band(s.p.y-1.06,.22,aa);
-    out.albedo=mix(out.albedo,mix(leaf,vec3<f32>(.70,.53,.28),pull),door);
-    out.emission=mix(out.emission,glass*.75*(1.0-frame)*(1.0-kick),door);
-    out.rough=mix(out.rough,.29+.34*frame,door);
-    return out;
+    let inner=select(1.76,2.24,warehouse);
+    let outer=select(.5*size.x-.66,4.78,warehouse);
+    let sill=select(select(.47,.60,hotel),1.02,warehouse);
+    if s.p.y<sill || x>outer { return out; }
+    if x<inner { out.albedo=vec3<f32>(.052,.083,.089); return out; }
+    return pm_opening(s,size,archetype,variant,x-inner,outer-inner,select(3.0,2.0,hotel||warehouse),true,true,aa);
 }
 
 fn pm_interior(s: SurfaceIn, aa: f32) -> SurfaceOut {
@@ -320,7 +393,7 @@ fn game_surface(s: SurfaceIn) -> SurfaceOut {
     let aa=clamp(max(length(s.dx),length(s.dy))*0.56,0.012,0.5);
     var out=SurfaceOut(s.tint,s.n,s.rough,s.metal,vec3<f32>(0.0));
     if s.kind==29u { return pm_masonry(s,aa); }
-    if s.kind>=20u && s.kind<=22u { return pm_ground_floor(s,aa); }
+    if (s.kind>=20u && s.kind<=22u) || (s.kind>=64u && s.kind<100u) { return pm_ground_floor(s,aa); }
     if s.kind==23u {
         // Brass end caps on a narrow, warm welcome light.
         let strip=pm_band(s.local.x,.448,min(aa*.32,.08));

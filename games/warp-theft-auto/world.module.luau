@@ -1,5 +1,6 @@
 -- Port Meridian. Streets, sidewalk loops and collision all use metres in the
 -- same coordinate system. Buildings and civic landmarks are generated once.
+local room = require("room")
 local city = { STEP = 56, BOUND = 178 }
 local v = vector.create
 local STEP = city.STEP
@@ -8,7 +9,6 @@ local BOUND = city.BOUND
 local ASPHALT, OFFICE, HOTEL, WAREHOUSE, LAWN, WATER, PAD, PLAZA, CONTAINER = 0, 1, 2, 3, 4, 5, 6, 7, 8
 local PARK_WIDTH, DIAGONAL_PATH, TREE_GRATE = 37, 1.15, 1.8
 local GROUND_HEIGHT = 4.2
-local GROUND_SURFACES = { office=20, hotel=21, warehouse=22 }
 local OFFICE_COLORS = { "#738f96", "#63868b", "#83999d", "#797f8c" }
 local HOTEL_COLORS = { "#d79d81", "#dfc79a", "#bbc3a9", "#c89783", "#dfb5a3" }
 local DOCK_COLORS = { "#97a7a3", "#bf8a71", "#bcb498" }
@@ -130,10 +130,11 @@ end
 -- The index keeps its footprint for cars, rotorcraft and roof queries.
 local function groundFloor(s,kind,x,z,w,d,color,surface,seed)
     local front = z+d/2
-    local shell = obstacle(s,x,GROUND_HEIGHT/2,z,w,GROUND_HEIGHT,d,color,GROUND_SURFACES[kind])
+    local proxySurface = room.proxy_surface(kind,seed)
+    local shell = obstacle(s,x,GROUND_HEIGHT/2,z,w,GROUND_HEIGHT,d,color,proxySurface)
     table.insert(s.buildings,{
         id=#s.buildings+1, kind=kind, seed=seed, shell=shell, door=v(x,0,front),
-        x=x, z=z, w=w, h=GROUND_HEIGHT, d=d, color=color, surface=surface,
+        x=x, z=z, w=w, h=GROUND_HEIGHT, d=d, color=color, surface=surface, proxySurface=proxySurface,
     })
     -- A lit transom marks the same opening before and after streaming.
     box(x,2.59,front+.20,3.10,.18,.48,METAL,23)
@@ -250,7 +251,7 @@ local function park(s,x,z,plaza,lawns)
     else
         local center = v(x,.036,z)
         table.insert(lawns.patches,{pos=center,width=PARK_WIDTH,depth=PARK_WIDTH})
-        -- surface.wgsl paints the paths where abs(localX ± localZ) <= 1.15.
+        -- surface.wgsl paints the paths where abs(localX Â± localZ) <= 1.15.
         -- Its diagonal coordinate is sqrt(2) times the perpendicular distance.
         for _,turn in {-1,1} do
             table.insert(lawns.cutouts,{pos=center,width=DIAGONAL_PATH*math.sqrt(2),

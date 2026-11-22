@@ -57,6 +57,24 @@ local function sampler(seed)
 	end
 end
 
+-- The GPU window preview uses the same mirror, upholstery and wood as the
+-- furnished room. A small set of surface kinds shares meshes between lots.
+local function style(kind, draw)
+	local mirror = if draw()<.5 then -1 else 1
+	local mirrorBit = if mirror<0 then 1 else 0
+	if kind=="warehouse" then return mirror, nil, nil, 66+3*mirrorBit end
+	local fabric = math.floor(draw()*#FABRICS)
+	local dark = (draw()<.5) == (kind=="hotel")
+	local variant = mirrorBit + 2*fabric + (if dark then 6 else 0)
+	local surface = (if kind=="hotel" then 65 else 64) + 3*variant
+	return mirror, FABRICS[fabric+1], if dark then WALNUT else OAK, surface
+end
+
+function room.proxy_surface(kind, seed)
+	local _, _, _, surface = style(kind, sampler(seed))
+	return surface
+end
+
 -- These dimensions also drive the distant glaze drawn by pm_ground_floor.
 local function sideWindow(b)
 	if b.kind=="warehouse" then return 7.2, 0, 2.45, 3.58 end
@@ -153,10 +171,8 @@ local function sofa(put,x,z,length,color)
 	put(x+.42,.77,z,.19,.72,length,color)
 end
 
-local function office(b,put,pane,activity,draw)
+local function office(b,put,pane,activity,draw,fabric,wood)
 	local w,d = b.w,b.d
-	local fabric = FABRICS[1+math.floor(draw()*#FABRICS)]
-	local wood = if draw()<.5 then OAK else WALNUT
 	envelope(b,put,pane,PLASTER,SLATE,COOL_LIGHT)
 	local receptionZ = d*(.21+.05*draw())
 	desk(put,-w*.26,receptionZ,4.8,wood)
@@ -189,10 +205,8 @@ local function office(b,put,pane,activity,draw)
 	put(0,2.08,-d/2+.32,4.8,1.95,.065,PRINTS[1],false)
 end
 
-local function hotel(b,put,pane,activity,draw)
+local function hotel(b,put,pane,activity,draw,fabric,wood)
 	local w,d = b.w,b.d
-	local fabric = FABRICS[1+math.floor(draw()*#FABRICS)]
-	local wood = if draw()<.5 then WALNUT else OAK
 	envelope(b,put,pane,CREAM,STONE,LIGHT)
 	put(0,.032,0,2.15,.014,d*.89,fabric,false)
 	local receptionZ = d*(.20+.06*draw())
@@ -265,7 +279,7 @@ end
 function room.build(b)
 	local ids, activities = {}, {}
 	local draw = sampler(b.seed)
-	local mirror = if draw()<.5 then -1 else 1
+	local mirror, fabric, wood = style(b.kind, draw)
 	local function point(x,y,z) return v(b.x+mirror*x,y,b.z+z) end
 	local function put(x,y,z,w,h,d,look,solid)
 		local blocking = solid ~= false
@@ -292,8 +306,8 @@ function room.build(b)
 			to=if endX then point(endX,0,endZ) else nil,
 		})
 	end
-	if b.kind=="office" then office(b,put,pane,activity,draw)
-	elseif b.kind=="hotel" then hotel(b,put,pane,activity,draw)
+	if b.kind=="office" then office(b,put,pane,activity,draw,fabric,wood)
+	elseif b.kind=="hotel" then hotel(b,put,pane,activity,draw,fabric,wood)
 	else warehouse(b,put,pane,activity,draw) end
 	return ids, activities
 end

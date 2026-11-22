@@ -120,8 +120,8 @@ local function cameraFor(p, inp, dt)
 		return
 	end
 	local drive, fly = p.mode=="drive", p.mode=="fly"
-	local h, d = 2.7, 4.3
-	if p.building or p.doorway then h, d = 2.05, 2.7 end
+	local doorBlend = p.doorBlend or 0
+	local h, d = 2.7-.65*doorBlend, 4.3-1.6*doorBlend
 	if drive or fly then
 		p.view += util.angle_diff(p.yaw,p.view)*(1-math.exp(-5*dt)) - (inp.look_x or 0)
 		p.pitch = math.clamp(util.damp(p.pitch,0,1.7,dt)+(inp.look_y or 0),-.55,.20)
