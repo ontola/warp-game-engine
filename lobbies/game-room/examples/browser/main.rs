@@ -160,19 +160,23 @@ mod page {
         for (dev, c) in devices {
             // Any key on the keyboard: the keyboard on the room's table hops.
             // (WASD and the arrows move: they count as keys too.)
-            if *dev == Device::Keyboard && (c.pressed.0 != 0 || c.mv[0].abs().max(c.mv[1].abs()) > 0.5) {
+            let key_action = c.pressed.0 != 0 || c.mv != [0.0; 2];
+            // A solo game link already reserved one player. Their first movement,
+            // action or captured mouse look can claim that seat in this tick.
+            let solo_seat = h.on_screen.is_some() && h.bound.as_slice() == [None] && !h.phone[0];
+            if *dev == Device::Keyboard && key_action {
                 h.key = Some(c.pressed.0 | ((c.mv[0] > 0.0) as u32) << 30 | ((c.mv[1] > 0.0) as u32) << 31);
-                if !c.pressed.has(Buttons::START) && !h.bound.contains(&Some(Device::Keyboard)) { key_hint(); }
+                if !solo_seat && !c.pressed.has(Buttons::START) && !h.bound.contains(&Some(Device::Keyboard)) { key_hint(); }
             }
-            // A pad joins with A; the keyboard only
-            // with Enter, so typing or a stray key adds nobody.
+            // A pad joins with A. In the room or when adding another player,
+            // the keyboard joins with Enter, so typing doesn't add a player.
             // The keyboard joins when Enter comes back up, so that Enter
             // does not also open the new player's Start menu.
-            let enter = *dev == Device::Keyboard && c.held.has(Buttons::START);
+            let enter = *dev == Device::Keyboard && (c.held.has(Buttons::START) || c.pressed.has(Buttons::START));
             let released = *dev == Device::Keyboard && h.kb_enter && !enter;
             if *dev == Device::Keyboard { h.kb_enter = enter && !h.bound.contains(&Some(Device::Keyboard)); }
             let active = match dev {
-                Device::Keyboard => released,
+                Device::Keyboard => released || (solo_seat && !enter && (key_action || c.look != [0.0; 2])),
                 // As at home: A joins; anything else only jiggles the pads on the table.
                 Device::Pad(_) => c.pressed.has(Buttons::SOUTH),
             };
@@ -581,7 +585,12 @@ mod page {
         // Nobody at the doors until the cloud room reports someone.
         let links = json!({"room": {"pending": []}, "linked": {}});
         lobby.set_links(links.clone());
-        with(|h| { h.party = party; h.players = players; h.base = players; h.bound = vec![None; players]; h.phone = vec![false; players]; h.next_id = players; h.links = links; h.own_looks = own_looks; });
+        with(|h| {
+            h.party = party; h.players = players; h.base = players; h.bound = vec![None; players];
+            h.phone = vec![false; players]; h.next_id = players; h.links = links; h.own_looks = own_looks;
+            // A direct game load can finish before the room's first device tick.
+            warp::web::set_seats(seats(h));
+        });
         // The catalog's covers, fetched after the room is up (it shows a
         // title card until a cover arrives).
         let covers: Vec<(String, String)> = with(|h| h.party["library"].as_array().into_iter().flatten()
