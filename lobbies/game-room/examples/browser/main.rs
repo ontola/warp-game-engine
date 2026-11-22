@@ -76,6 +76,10 @@ mod page {
         activity_id: u64,
         /// Back held in the room: since when (or the last chord), and whether B armed leaving.
         backs: Vec<(Device, web_time::Instant, bool)>,
+        /// Pads not playing with their stick pushed, and whether one was
+        /// heard since the room last ticked (the table's pads jiggle).
+        pushed: Vec<Device>,
+        pad_heard: bool,
         /// Enter held on the keyboard while nobody plays on it.
         kb_enter: bool,
         /// A chord to run when the room ticks.
@@ -158,7 +162,7 @@ mod page {
                 h.key = Some(c.pressed.0 | ((c.mv[0] > 0.0) as u32) << 30 | ((c.mv[1] > 0.0) as u32) << 31);
                 if !c.pressed.has(Buttons::START) && !h.bound.contains(&Some(Device::Keyboard)) { key_hint(); }
             }
-            // A pad joins with any button or its stick; the keyboard only
+            // A pad joins with A; the keyboard only
             // with Enter, so typing or a stray key adds nobody.
             // The keyboard joins when Enter comes back up, so that Enter
             // does not also open the new player's Start menu.
@@ -167,8 +171,15 @@ mod page {
             if *dev == Device::Keyboard { h.kb_enter = enter && !h.bound.contains(&Some(Device::Keyboard)); }
             let active = match dev {
                 Device::Keyboard => released,
-                Device::Pad(_) => c.pressed.0 != 0 || c.mv[0].abs().max(c.mv[1].abs()) > 0.6,
+                // As at home: A joins; anything else only jiggles the pads on the table.
+                Device::Pad(_) => c.pressed.has(Buttons::SOUTH),
             };
+            if let Device::Pad(_) = dev && !active && !h.bound.contains(&Some(*dev)) {
+                let pushed = c.mv[0].abs().max(c.mv[1].abs()) > 0.6;
+                let was = h.pushed.contains(dev);
+                if pushed && !was { h.pushed.push(*dev); } else if !pushed { h.pushed.retain(|d| d != dev); }
+                if c.pressed.0 != 0 || (pushed && !was) { h.pad_heard = true; }
+            }
             if !active || h.bound.contains(&Some(*dev)) { continue; }
             let seat = match (0..h.bound.len()).find(|&i| h.bound[i].is_none() && !h.phone[i]) {
                 Some(i) => i,
@@ -409,6 +420,7 @@ mod page {
             if let Some(links) = with(|h| std::mem::take(&mut h.links_dirty).then(|| h.links.clone())) { self.lobby.set_links(links); }
             empty_room(with(|h| h.players == 0 && h.on_screen.is_none()));
             if let Some(code) = with(|h| h.key.take()) { self.lobby.key_pressed(code); }
+            if with(|h| std::mem::take(&mut h.pad_heard)) { self.lobby.pad_heard(); }
             for (game, png) in with(|h| std::mem::take(&mut h.covers)) { self.lobby.set_cover(&game, &png); }
             match with(|h| h.chord.take()) {
                 Some(Chord::Next) => next_game(),

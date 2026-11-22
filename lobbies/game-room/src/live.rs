@@ -216,6 +216,12 @@ impl Lobby {
     /// adds one when a pad joins and drops one that left).
     pub fn set_local(&mut self, ids: Vec<String>) { self.local = ids; }
 
+    /// A controller that hasn't joined pressed something (not A): the
+    /// pads on the table jiggle, as for a host's unjoined controller.
+    pub fn pad_heard(&mut self) {
+        if self.accepts_input() { self.mood.pad_activity = 2.0; self.mood.pad_hop = 0.0; }
+    }
+
     /// A key was typed: the keyboard on the table hops and a few keys dip,
     /// as the logo pads do for an unjoined controller. `code` picks which.
     pub fn key_pressed(&mut self, code: u32) {
