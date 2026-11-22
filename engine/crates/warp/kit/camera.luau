@@ -5,6 +5,7 @@
 --   state.cams[p.id]:chase(pos, yaw, dt)              -- in tick: behind and above
 --   state.cams[p.id]:side(pos, dt)                    -- platformer side view
 --   state.cams[p.id]:top_down(pos, dt)                -- from above, tilted
+--   state.cams[p.id]:first_person(eye, yaw, pitch)    -- through the eyes
 --   state.cam = cam.rig()   state.cam:frame(points, dt)  -- one shared view
 --                                                     -- (game.toml split = false)
 -- Move cameras in tick, not draw: sound listeners follow them. The first
@@ -63,6 +64,14 @@ function Rig:chase(focus: vector, yaw: number, dt: number, opts: { [string]: num
 	local back = util.forward(yaw) * (-d * math.cos(pitch))
 	local pos = focus + back + v(0, h - d * math.sin(pitch), 0)
 	self:look(pos, focus + v(0, opts.look_height or 1, 0), dt, opts.fov)
+end
+
+-- Through the eyes (first person): yaw and pitch in radians (pitch up
+-- positive, as kit/controller's first_person keeps them). No easing.
+function Rig:first_person(eye: vector, yaw: number, pitch: number, opts: { fov: number? }?)
+	local dir = util.forward(yaw) * math.cos(pitch) + v(0, math.sin(pitch), 0)
+	self.pos, self.target = nil, nil
+	self:look(eye, eye + dir, 0, opts and opts.fov)
 end
 
 -- A side view along -Z (a platformer). opts: distance (16), height (3),

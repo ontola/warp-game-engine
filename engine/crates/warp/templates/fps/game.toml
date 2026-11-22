@@ -1,0 +1,9 @@
+# Frag Yard, the first-person template (`warp new DIR --template fps`).
+# Every key is optional; see engine/docs/warp-cli.md.
+title = "Frag Yard"
+tick_rate = 60
+players = 1
+bots = 3
+min_players = 4
+seed = 5
+sky = "afternoon"

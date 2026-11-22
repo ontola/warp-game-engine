@@ -238,7 +238,7 @@ function Third:update(input, dt: number)
 	local ev = {}
 	local was = self.grounded
 	self.yaw -= axis(input, "look_x")
-	self.pitch = math.clamp(self.pitch + axis(input, "look_y"), -1.2, 0.9)
+	self.pitch = math.clamp(self.pitch + axis(input, "look_y"), -(self.max_pitch or 1.2), self.max_pitch or 0.9)
 	local speed = self.speed * (if held(input, "left_shoulder") then self.sprint else 1)
 	local dir = util.clamp_length(util.right(self.yaw) * axis(input, "move_x") + util.forward(self.yaw) * axis(input, "move_y"), 1)
 	local h = approach_vec(util.flat(self.vel), dir * speed, self.accel * dt)
@@ -251,6 +251,31 @@ function Third:update(input, dt: number)
 	face(self, self.yaw)
 	respawn_if_fallen(self, ev)
 	return ev
+end
+
+-- First person: the same body as third person, tuned for a shooter
+-- (quicker, a lower jump, a wider look range). Use with kit/camera's
+-- first_person and kit/weapon; ctl:eye() and ctl:aim() give the view.
+function controller.first_person(body: number, opts: { [string]: any }?)
+	opts = opts or {}
+	local c = controller.third_person(body, {
+		speed = opts.speed or 7, sprint = opts.sprint or 1.35, accel = opts.accel or 70,
+		jump = opts.jump or 6.5, gravity = opts.gravity or 20,
+		spawn = opts.spawn, kill_y = opts.kill_y, query = opts.query,
+	})
+	c.eye_height = opts.eye_height or 0.7 -- above the body's centre
+	c.max_pitch = 1.45
+	return c
+end
+
+-- Where the eyes are and where they look (first and third person).
+function Third:eye(): vector
+	local e = world.get(self.body)
+	return (if e then e.pos else ZERO) + v(0, self.eye_height or 0.7, 0)
+end
+
+function Third:aim(): vector
+	return util.forward(self.yaw) * math.cos(self.pitch) + v(0, math.sin(self.pitch), 0)
 end
 
 ------------------------------------------------------------------------------

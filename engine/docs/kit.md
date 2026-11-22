@@ -12,6 +12,7 @@ local round = require("kit/round")
 local bot = require("kit/bot")
 local timer = require("kit/timer")
 local util = require("kit/util")
+local weapon = require("kit/weapon")
 ```
 
 Use the kit before writing your own movement, cameras, HUD or match flow.
@@ -24,8 +25,8 @@ Kit objects (controllers, rigs, rounds, timers) are tables with methods.
 Keep them in `state`, so they survive hot reloads, and call methods with
 `:` (`state.round:tick(dt)`).
 
-`warp new my-game --template platformer` starts from a whole game built
-on the kit (`warp templates` lists them).
+`warp new my-game --template platformer` (or `fps`) starts from a whole
+game built on the kit (`warp templates` lists them).
 
 ## A whole game, short
 
@@ -84,6 +85,7 @@ and bump into the level).
 | `controller.platformer(body, opts)` | side view in the X-Y plane: run with move_x, jump with A/Space, hold for higher, coyote time and jump buffer | `speed` 7, `accel` 70, `air_accel` 40, `friction` 60, `jump` 13 (about 2.6 m), `gravity` 32, `fall_gravity` 55, `max_fall` 28, `coyote` 0.1, `buffer` 0.12, `air_jumps` 0, `depth` (the plane's z: the spawn's; false: free) |
 | `controller.walker(body, opts)` | top-down, twin-stick, arena, party: the stick walks on the ground relative to a view yaw, faces where it walks or aims | `speed` 6, `accel` 45, `friction` 40, `turn` 14, `jump` 0 (none), `gravity` 28, `face` "move" or "aim", `view_yaw` 0, `dash` 0 (speed; B dashes), `dash_time` 0.15, `dash_cooldown` 0.7 |
 | `controller.third_person(body, opts)` | look_x turns, the stick walks relative to facing, LB sprints | `speed` 6, `sprint` 1.6, `accel` 50, `jump` 7.5, `gravity` 22 |
+| `controller.first_person(body, opts)` | shooters: a third_person tuned for a camera in the head; `ctl:eye()` is the eye point, `ctl:aim()` the look direction | `speed` 7, `sprint` 1.35, `accel` 70, `jump` 6.5, `gravity` 20, `eye_height` 0.7, `max_pitch` 1.45 |
 | `controller.kart(body, opts)` | arcade driving: stick forward or RT throttle, back or LT brake and reverse, sideways steers | `max_speed` 24, `accel` 16, `brake` 35, `reverse` 7, `drag` 4, `turn` 2.4, `grip` 8 (below 4 drifts), `gravity` 25 |
 
 All take `spawn` (where to respawn; default where the body is),
@@ -106,6 +108,7 @@ rig:chase(pos, yaw, dt, { distance = 7, height = 3, look_height = 1, pitch = 0 }
 rig:side(pos, dt, { distance = 16, height = 3, look_height = 1.5, vel = ctl.vel, lead = 2 })
 rig:top_down(pos, dt, { height = 16, back = 7 })
 rig:frame(points, dt, { pitch = 0.95, yaw = 0, margin = 1.3, min_distance = 10, max_distance = 80 })
+rig:first_person(ctl:eye(), ctl.yaw, ctl.pitch)        -- no easing
 rig:look(pos, target, dt, fov?)   rig:snap()   rig:shake(strength?)
 ```
 
@@ -129,6 +132,8 @@ uses the whole screen.
 | `ui.clock(seconds, player?)` | 1:05 at the top centre |
 | `ui.scoreboard(rows, { title, player })` | a results table; rows `{ name, score, color }` |
 | `ui.marker(pos, text, { player, color, size, lift })` | a label over a world point |
+| `ui.crosshair(player, { color, size, spread })` | a crosshair in the middle of the view |
+| `ui.flash(player, color)` | tints the view (pass a fading alpha: hit flash) |
 | `ui.hint(text, player?)` | a line of help at the bottom |
 | `ui.text(text, x, y, { size, color, align, width, shadow })`, `ui.panel(x, y, w, h, color?)` | the pieces the others use (pixels) |
 | `ui.scale()`, `ui.area(player?)` | pixels per point; a view's x, y, w, h |
@@ -164,6 +169,7 @@ both.
 | `bot.walk_to(from, to, { view_yaw, slow, skill })` | a walker's stick towards a point |
 | `bot.aim_at(inp, from, to, view_yaw?)` | twin-stick aim at a point |
 | `bot.run_to(body, to, { skill, ctl })` | a platformer's run and jumps towards a point; finds openings under ledges, unsticks itself; pass `ctl` to double-jump |
+| `bot.shoot_at(ctl, target, { skill, range, ignore })` | a first-person bot's input: turns and aims with skill-scaled wobble, keeps range and strafes, fires after a reaction time when the line is clear |
 | `bot.drive_to(from, yaw, to, { skill })` | a kart's steering and throttle towards a point |
 
 ## kit/timer
@@ -179,6 +185,24 @@ local t = timer.tween(from, to, seconds, timer.ease.out_back)   -- :value() :don
 Easing: `linear`, `smooth`, `in_quad`, `out_quad`, `in_out_quad`,
 `in_cubic`, `out_cubic`, `in_out_cubic`, `out_back`, `out_elastic`,
 `out_bounce`, `pulse` (0 to 1 to 0). Everything runs on game time.
+
+## kit/weapon
+
+Hitscan guns and health for shooters. Hits are `world.raycast`, so targets
+must be `solid` bodies (give them a tag and pass `{ tag = ... }`).
+
+```lua
+state.gun = weapon.new({ damage = 25, rate = 8, auto = true, spread = 0.01, pellets = 1, range = 120, ammo = 24, reload = 1.4 })
+local shot = gun:fire(input, ctl:eye(), ctl:aim(), { tag = "fighter", ignore = body })
+-- nil, or { from, dir, hits, ends }: each hit is a world.raycast hit plus damage; west (X) reloads
+gun:tick(dt)   gun:reload()   gun:reloading()   gun:ammo_text()   gun.clip   gun.kick
+weapon.tracer(from, to, color?)   -- a short-lived streak; call weapon.update() once per tick
+weapon.warm()                      -- in init, so the first shot doesn't hitch
+state.hp = weapon.health(100)      -- :hurt(n) true on death, :heal(n), :reset(), :alive(), :frac(), :since_hurt()
+```
+
+`warp new my-game --template fps` is a whole deathmatch with these: first
+person split screen, bots, respawns, spawn protection, a gun in your hands.
 
 ## kit/util
 

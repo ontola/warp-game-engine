@@ -12,6 +12,7 @@ pub const FILES: &[(&str, &str)] = &[
     ("kit/ui", include_str!("../kit/ui.luau")),
     ("kit/round", include_str!("../kit/round.luau")),
     ("kit/bot", include_str!("../kit/bot.luau")),
+    ("kit/weapon", include_str!("../kit/weapon.luau")),
 ];
 
 /// Make the kit `require`-able in `host`.

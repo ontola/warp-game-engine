@@ -1,0 +1,9 @@
+{ "size": [960, 540],
+  "steps": [
+    { "ticks": 240, "note": "countdown, then the bots start hunting" },
+    { "expect": "/errors", "equals": [] },
+    { "expect": "/state/round/phase", "equals": "playing" },
+    { "ticks": 20, "hold": ["RIGHT_TRIGGER"], "note": "fire" },
+    { "expect": "/state/fighters/0/gun/clip", "max": 22 },
+    { "capture": "frag-yard.png", "state": "frag-yard.json" }
+  ] }
