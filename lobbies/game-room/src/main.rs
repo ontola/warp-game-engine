@@ -89,6 +89,7 @@ fn run() -> Result<(), String> {
             let mut party = lobby.host.party.clone();
             let games = [("dead-miles", "Dead Miles", "#b5482f"), ("relay-keepers", "Relay Keepers", "#3fb6a8"), ("neon-siege", "Neon Siege", "#ff3df0"), ("spellstorm", "Spellstorm", "#7c5cff"), ("sideways", "Sideways", "#f2a93b")];
             party["library"] = serde_json::Value::Array(games.iter().map(|(id, title, color)| serde_json::json!({"id": id, "title": title, "color": color})).collect());
+            party["playlist"] = serde_json::json!({"entries": [{"game": "neon-siege", "title": "Neon Siege"}, {"game": "sideways", "title": "Sideways"}, {"game": "spellstorm", "title": "Spellstorm"}], "current": null});
             lobby.set_party(party);
             let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../games");
             for (id, ..) in games {

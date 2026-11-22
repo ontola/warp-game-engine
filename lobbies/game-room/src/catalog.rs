@@ -207,9 +207,12 @@ pub fn catalog_layout(lobby: &Lobby, size: [u32; 2]) -> Layout {
     order.sort_by(|a, b| b.0.abs().total_cmp(&a.0.abs()));
     order.dedup_by_key(|o| o.1);
     for (off, i) in order {
-        let scale = 1.0 - 0.2 * off.abs().min(2.0);
+        let scale = 1.0 - 0.2 * off.abs().min(2.5);
         let (cw, ch) = (card_w * scale, card_h * scale);
-        let x = cx + off * card_w * 0.82 - cw / 2.0;
+        // Each card tucks a little under the one in front of it.
+        let a = off.abs();
+        let along = if a <= 1.0 { 0.74 * a } else { 0.74 + 0.56 * (a - 1.0) };
+        let x = cx + off.signum() * along * card_w - cw / 2.0;
         cards.push((i, [x, cy - ch / 2.0, cw, ch]));
     }
     let bh = (h * 0.06).max(36.0);
@@ -228,6 +231,32 @@ fn fill_uv(size: [u32; 2], r: [f32; 4]) -> [f32; 4] {
     if ia > ra { let uw = ra / ia; [(1.0 - uw) / 2.0, 0.0, uw, 1.0] } else { let vh = ia / ra; [0.0, (1.0 - vh) / 2.0, 1.0, vh] }
 }
 
+/// A game without a cover: its colour, top to bottom darker, and its
+/// title; `k` dims it (cards further back), `fade` fades it in.
+fn title_card(c: &mut Canvas, game: &crate::paint::Game, r: [f32; 4], open: [f32; 4], k: f32, fade: f32) {
+    use crate::godot::Color;
+    let color = Color::from_string(&game.color, crate::lobby::VIOLET);
+    let bands = 32;
+    for b in 0..bands {
+        let (top, bottom) = ((r[3] * b as f32 / bands as f32).round(), (r[3] * (b + 1) as f32 / bands as f32).round());
+        let shade = color.darkened(0.35 + 0.45 * (b as f32 + 0.5) / bands as f32);
+        c.rect([r[0], r[1] + top, r[2], bottom - top], Color { r: shade.r * k, g: shade.g * k, b: shade.b * k, a: fade });
+    }
+    // The title, as big as fits the part that shows.
+    let title = if game.title.is_empty() { "Game" } else { &game.title };
+    let words: Vec<String> = title.split(' ').map(str::to_uppercase).collect();
+    let face = crate::fonts::faces().bold;
+    let widest = words.iter().map(|w| render::hud::measure(w, face, 100.0)[0]).fold(1.0, f32::max);
+    let size = (r[2] * 0.13).min(open[2] * 0.8 * 100.0 / widest).floor().max(8.0);
+    let line = size * 1.1;
+    let top = r[1] + r[3] / 2.0 - (words.len() as f32 - 1.0) * line / 2.0 + size * 0.35;
+    let ink = crate::lobby::TEXT;
+    for (i, word) in words.iter().enumerate() {
+        c.text(face, [open[0], top + i as f32 * line], word, render::hud::TextAlign::Center, open[2], size,
+            Color { r: ink.r * k, g: ink.g * k, b: ink.b * k, a: fade });
+    }
+}
+
 /// The open catalog over the whole screen.
 pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
     use crate::godot::{rgba, Color};
@@ -243,15 +272,15 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
     let faces = crate::fonts::faces();
     c.over();
     // The middle game's cover, dark and big, behind everything.
-    c.rect([0.0, 0.0, w, h], rgba(0.02, 0.02, 0.04, 0.96 * fade));
+    c.rect([0.0, 0.0, w, h], rgba(0.02, 0.02, 0.04, fade));
+    // The middle game's colour as a soft glow from the top (its cover is
+    // already the big card: not again behind it).
     let color = Color::from_string(&shelf[middle].color, VIOLET);
-    match cover(middle) {
-        Some(art) => {
-            let r = [0.0, 0.0, w, h];
-            c.provide(art.image, &art.picture);
-            c.image(r, art.image, fill_uv(art.size, r), rgba(0.3, 0.3, 0.34, fade));
-        }
-        None => c.rect([0.0, 0.0, w, h], color.darkened(0.8).with_alpha(0.9 * fade)),
+    let glow = 24;
+    for k in 0..glow {
+        let (top, bottom) = ((h * 0.7 * k as f32 / glow as f32).round(), (h * 0.7 * (k + 1) as f32 / glow as f32).round());
+        let t = 1.0 - (k as f32 + 0.5) / glow as f32;
+        c.rect([0.0, top, w, bottom - top], color.darkened(0.55).with_alpha(0.45 * t * t * fade));
     }
     // Darker towards the bottom, for the title and buttons.
     let bands = 24;
@@ -277,11 +306,24 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
             let b = 5.0 * scale;
             c.style_box([r[0] - b, r[1] - b, r[2] + 2.0 * b, r[3] + 2.0 * b], [14.0 * scale; 4], if mid { TEXT } else { DIM }.with_alpha(fade), None);
         }
-        match cover(i) {
-            Some(art) => { c.provide(art.image, &art.picture); let k = if mid { 1.0 } else if hover { 0.8 } else { 0.55 }; c.image(r, art.image, fill_uv(art.size, r), rgba(k, k, k, fade)); }
-            None => crate::paint::title_card(c, &shelf[i], r, (r[2] * 0.11).floor()),
+        // Further back is darker (one layer per card: the HUD has few).
+        let far = (1.0 - r[3] / (h * 0.56)) / 0.2;
+        let k = if mid { 1.0 } else if hover { 0.85 } else { (0.68 - 0.18 * far).max(0.3) };
+        // The part no nearer card covers: a card's title sits there, and
+        // nothing of it is drawn under the cards in front.
+        let (mut x0, mut x1) = (r[0], r[0] + r[2]);
+        for &(j, n) in layout.cards.iter().skip_while(|c| c.0 != i).skip(1) {
+            if j == i { continue; }
+            if n[0] > r[0] && n[0] < x1 { x1 = n[0]; }
+            if n[0] + n[2] < r[0] + r[2] && n[0] + n[2] > x0 { x0 = n[0] + n[2]; }
         }
-        if !mid { c.over(); c.rect(r, rgba(0.0, 0.0, 0.0, if hover { 0.2 } else { 0.45 } * fade)); }
+        let open = [x0, r[1], (x1 - x0).max(1.0), r[3]];
+        c.clip_to(Some(open));
+        match cover(i) {
+            Some(art) => { c.provide(art.image, &art.picture); c.image(r, art.image, fill_uv(art.size, r), rgba(k, k, k, fade)); }
+            None => title_card(c, &shelf[i], r, open, k, fade),
+        }
+        c.clip_to(None);
     }
     c.over();
     let station = lobby.host.station_at((game_room_sim::layout::GAME_SHELF.0 + game_room_sim::layout::GAME_SHELF.1) / 2.0, None);
@@ -304,6 +346,28 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
         c.circle(disc, r[3] * 0.32, accent.with_alpha(if live { fade } else { 0.35 * fade }));
         c.text(faces.bold, [disc[0] - r[3], disc[1] + fs * 0.36], key, TextAlign::Center, 2.0 * r[3], (fs * 0.9).floor(), Color::hex("0c0a16").with_alpha(fade));
         c.text(faces.regular, [r[0] + r[3], r[1] + r[3] / 2.0 + fs * 0.36], label, TextAlign::Center, r[2] - r[3] * 1.2, fs, TEXT.with_alpha(if live { fade } else { 0.4 * fade }));
+    }
+    // The queue, small, bottom right.
+    let queue = lobby.host.upcoming();
+    if !queue.is_empty() {
+        let fs = (19.0 * scale).floor();
+        let line = fs * 1.55;
+        let shown = queue.len().min(4);
+        let qw = queue.iter().take(shown).map(|e| render::hud::measure(&e.title, faces.regular, fs)[0]).fold(160.0 * scale, f32::max) + fs * 3.2;
+        let qh = fs * 2.4 + line * shown as f32 + if queue.len() > shown { line * 0.8 } else { 0.0 };
+        let (qx, qy) = (w - qw - 32.0 * scale, h - qh - 72.0 * scale);
+        c.over();
+        c.style_box([qx, qy, qw, qh], [fs * 0.5; 4], rgba(0.03, 0.03, 0.06, 0.78 * fade), None);
+        c.rect([qx, qy + fs * 0.6, 3.0 * scale, fs * 1.2], crate::lobby::GREEN.with_alpha(fade));
+        c.text(faces.bold, [qx + fs, qy + fs * 1.6], "UP NEXT", TextAlign::Left, -1.0, (fs * 0.85).floor(), crate::lobby::GREEN.with_alpha(fade));
+        for (i, e) in queue.iter().take(shown).enumerate() {
+            let y = qy + fs * 2.4 + line * (i as f32 + 0.75);
+            c.text(faces.regular, [qx + fs, y], &format!("{:02}", i + 1), TextAlign::Left, -1.0, (fs * 0.8).floor(), DIM.with_alpha(fade));
+            c.text(faces.regular, [qx + fs * 2.6, y], &e.title, TextAlign::Left, -1.0, fs, TEXT.with_alpha(fade));
+        }
+        if queue.len() > shown {
+            c.text(faces.regular, [qx + fs * 2.6, qy + qh - fs * 0.6], &format!("+{} more", queue.len() - shown), TextAlign::Left, -1.0, (fs * 0.8).floor(), DIM.with_alpha(fade));
+        }
     }
     let hint = "LB / RB browse  ·  click a cover to bring it to the middle  ·  R3 or B: back to the room";
     c.text(faces.regular, [0.0, h - 36.0 * scale], hint, TextAlign::Center, w, (19.0 * scale).floor(), DIM.with_alpha(fade));

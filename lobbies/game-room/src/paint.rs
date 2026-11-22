@@ -76,6 +76,8 @@ pub struct Canvas<'a> {
     origin: [f32; 2],
     pub size: [f32; 2],
     k: f32,
+    /// Drawing stays inside this (screen pixels), when set.
+    clip_to: Option<[f32; 4]>,
 }
 
 fn srgb(c: Color) -> [f32; 4] { [c.r.clamp(0.0, 1.0), c.g.clamp(0.0, 1.0), c.b.clamp(0.0, 1.0), c.a.clamp(0.0, 1.0)] }
@@ -85,10 +87,20 @@ impl<'a> Canvas<'a> {
 
     /// A screen painted at `k` atlas pixels per screen pixel into `rect`.
     pub fn scaled(list: &'a mut HudDrawList, rect: [u32; 4], k: f32) -> Self {
-        Self { list, origin: [rect[0] as f32, rect[1] as f32], size: [rect[2] as f32 / k, rect[3] as f32 / k], k }
+        Self { list, origin: [rect[0] as f32, rect[1] as f32], size: [rect[2] as f32 / k, rect[3] as f32 / k], k, clip_to: None }
     }
 
-    fn clip(&self) -> [f32; 4] { [self.origin[0], self.origin[1], self.size[0] * self.k, self.size[1] * self.k] }
+    fn clip(&self) -> [f32; 4] {
+        let full = [self.origin[0], self.origin[1], self.size[0] * self.k, self.size[1] * self.k];
+        let Some(r) = self.clip_to else { return full };
+        let r = [self.origin[0] + r[0] * self.k, self.origin[1] + r[1] * self.k, r[2] * self.k, r[3] * self.k];
+        let (x0, y0) = (full[0].max(r[0]), full[1].max(r[1]));
+        let (x1, y1) = ((full[0] + full[2]).min(r[0] + r[2]), (full[1] + full[3]).min(r[1] + r[3]));
+        [x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0)]
+    }
+
+    /// Keep later drawing inside `r` (None: the whole canvas again).
+    pub fn clip_to(&mut self, r: Option<[f32; 4]>) { self.clip_to = r; }
     /// Draw `dx` further right (a prompt centred in a wider screen).
     pub fn shift(&mut self, dx: f32) { self.origin[0] += dx * self.k; self.size[0] -= dx; }
 
