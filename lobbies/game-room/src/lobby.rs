@@ -218,6 +218,16 @@ impl Lobby {
             self.world.set_input(id, 0, [0.0; 2]);
             return;
         }
+        // R3, anywhere, switches between the room and the catalog view.
+        if pressed & world::BTN_RS != 0 && !self.host.shelf_games().is_empty() {
+            if self.catalog_open() { self.close_catalog(); } else {
+                if self.station_for(id).is_some_and(|s| s.kind == "shelf") { self.press_prompt("shelf", "R3"); }
+                self.open_catalog();
+                self.catalog.sticks.insert(id.into(), stick);
+            }
+            self.world.set_input(id, 0, [0.0; 2]);
+            return;
+        }
         // The catalog view: buttons browse and play; nobody walks.
         if self.catalog_open() {
             self.catalog_input(Some(id), pressed, stick);
@@ -240,14 +250,6 @@ impl Lobby {
             if pressed & BTN_Y != 0 { self.holds.insert(id.into(), (station.as_ref().unwrap().id.clone(), self.time)); }
         } else if pressed & BTN_Y != 0 { self.use_station(id, false); }
         if station_x && pressed & BTN_X != 0 { self.use_station(id, true); }
-        // R3 at the game shelf opens the big catalog of every game on it.
-        if kind == "shelf" && pressed & world::BTN_RS != 0 {
-            self.press_prompt("shelf", "R3");
-            self.open_catalog();
-            self.catalog.sticks.insert(id.into(), stick);
-            self.world.set_input(id, 0, [0.0; 2]);
-            return;
-        }
         if kind == "shelf" && pressed & (BTN_LB | BTN_RB) != 0 {
             let key = if pressed & BTN_LB != 0 { "LB" } else { "RB" };
             self.press_prompt("shelf", key);
@@ -485,6 +487,9 @@ impl Lobby {
         items.push(MenuItem::new("Close", "close"));
         items
     }
+
+    /// Player `id`'s Start menu opens (screenshots).
+    pub fn open_menu(&mut self, id: &str) { self.menus.insert(id.into(), Menu::default()); self.screens_dirty = true; }
 
     /// The mouse clicked player `id`: its menu opens on that player.
     pub(crate) fn open_player_menu(&mut self, id: &str) {

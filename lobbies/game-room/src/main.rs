@@ -4,7 +4,7 @@
 //!   game-room shot [--dump DIR] --out room.png [--size 1280x720]
 //!   game-room play [--players 1] [--bots 3] [--fullscreen]
 //!   game-room bake-light --out room-light.bin
-//!   game-room live-shot --out room.png [--ticks 180] [--bots 3] [--items] [--fx] [--mouse X,Y] [--mouse-menu] [--pending NAME] [--queue TITLE] [--keys] [--catalog] [--back-menu] [--keyboard]
+//!   game-room live-shot --out room.png [--ticks 180] [--bots 3] [--items] [--fx] [--mouse X,Y] [--mouse-menu] [--pending NAME] [--queue TITLE] [--keys] [--catalog] [--back-menu] [--keyboard] [--shelf]
 //!
 //! For now the room comes from the Godot lobby's export (tools/
 //! warp_export.gd in gamenight/lobbies/game-room), so both engines draw the
@@ -85,7 +85,7 @@ fn run() -> Result<(), String> {
         }
         // `--catalog`: the full-screen catalog over a shelf of games, with the
         // covers games in this repo ship (games/*/assets/gamenight/cover.png).
-        if flag("--catalog") {
+        if flag("--catalog") || flag("--shelf") {
             let mut party = lobby.host.party.clone();
             let games = [("dead-miles", "Dead Miles", "#b5482f"), ("relay-keepers", "Relay Keepers", "#3fb6a8"), ("neon-siege", "Neon Siege", "#ff3df0"), ("spellstorm", "Spellstorm", "#7c5cff"), ("sideways", "Sideways", "#f2a93b")];
             party["library"] = serde_json::Value::Array(games.iter().map(|(id, title, color)| serde_json::json!({"id": id, "title": title, "color": color})).collect());
@@ -98,7 +98,9 @@ fn run() -> Result<(), String> {
                 if let Ok(png) = std::fs::read(root.join(id).join("assets/gamenight/cover.png")) { lobby.set_cover(id, &png); }
             }
             lobby.host.shelf_offset = 1;
-            lobby.open_catalog();
+            if flag("--catalog") { lobby.open_catalog(); }
+            // `--catalog-menu`: a player's Start menu open over it.
+            if flag("--catalog-menu") { if let Some(id) = lobby.world.players.first().map(|p| p.id.clone()) { lobby.open_menu(&id); } }
         }
         // `--back-menu`: the host's Back panel for the first player, leave armed.
         if flag("--back-menu") {
@@ -131,6 +133,14 @@ fn run() -> Result<(), String> {
                 app::Game::pointer(&mut lobby, app::Pointer { position: at, moved: true, ..Default::default() }, [w, h]);
             }
             if flag("--mouse-menu") && t == 0 { app::Game::escape(&mut lobby); }
+            // `--shelf`: the first player stands at the game shelf.
+            if flag("--shelf") && t < 3 {
+                for x in (0..40).map(|k| -10.5 + k as f64 * 0.1) {
+                    if let Some(p) = lobby.world.players.first_mut() { p.x = x; p.y = 0.0; }
+                    let id = lobby.world.players[0].id.clone();
+                    if lobby.station_for(&id).is_some_and(|s| s.kind == "shelf") { break; }
+                }
+            }
             if flag("--keyboard") && t < 3 {
                 if let Some(p) = lobby.world.players.first_mut() { p.x = -9.6; p.y = 0.0; }
             }

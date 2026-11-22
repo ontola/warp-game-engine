@@ -93,6 +93,7 @@ pub fn draw(lobby: &Lobby, size: [u32; 2], _alpha: f32) -> HudDrawList {
         c.over();
     }
 
+    crate::catalog::shelf_sides(lobby, &mut c, view_proj, size);
     item_hints(lobby, &mut c, view_proj, size);
 
     // Only names and open menus follow players; action buttons stay at their objects.
@@ -118,13 +119,25 @@ pub fn draw(lobby: &Lobby, size: [u32; 2], _alpha: f32) -> HudDrawList {
     }
     // The catalog view covers the room; Start menus and the mouse's go over it.
     if lobby.catalog_open() { crate::catalog::draw(lobby, &mut c, size); }
+    let mut corner = 0;
     for p in &lobby.world.players {
         if !lobby.menus.contains_key(&p.id) { continue; }
-        let head = Vec3::new(p.x as f32, p.y as f32 + if p.sleeping { 1.3 } else { 2.25 }, lobby.actor_depth(&p.id));
-        let Some(at) = project(view_proj, size, head) else { continue };
+        let fs = (22.0 * scale).floor();
+        let at = if lobby.catalog_open() {
+            // Over the catalog the players aren't seen: menus go to the
+            // corners, clear of the covers' middle (bottom left first).
+            let mh = menu_layout(lobby, &p.id, [0.0, h], fs, size).map_or(0.0, |(r, _)| r[3]);
+            let (right, top) = [(false, false), (false, true), (true, true), (true, false)][corner % 4];
+            corner += 1;
+            let y = if top { 110.0 * scale + mh } else if right { h * 0.66 } else { h - 24.0 * scale };
+            [if right { w } else { 0.0 }, y]
+        } else {
+            let head = Vec3::new(p.x as f32, p.y as f32 + if p.sleeping { 1.3 } else { 2.25 }, lobby.actor_depth(&p.id));
+            let Some(at) = project(view_proj, size, head) else { continue };
+            [at[0], at[1] - (20.0 * scale).floor() - 10.0 * scale]
+        };
         c.over();
-        let fs = (20.0 * scale).floor();
-        menu(lobby, &mut c, &p.id, [at[0], at[1] - fs - 10.0 * scale], (22.0 * scale).floor());
+        menu(lobby, &mut c, &p.id, at, fs);
     }
     if lobby.menus.contains_key(crate::mouse::MOUSE) {
         c.over();

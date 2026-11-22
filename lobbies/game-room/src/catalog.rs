@@ -93,6 +93,9 @@ impl Lobby {
     /// Decode the covers of the shelf's games, a couple per frame, and ease
     /// the slide. Called every frame.
     pub(crate) fn update_catalog(&mut self, delta: f32) {
+        // Covers decode whether or not the catalog shows: the shelf shows
+        // its neighbours' covers too.
+        self.decode_covers();
         if !self.catalog_open() { return; }
         let n = self.host.shelf_games().len() as f32;
         // Ease towards the shelf offset the short way round.
@@ -100,6 +103,9 @@ impl Lobby {
         let mut d = (target - self.catalog.shown).rem_euclid(n);
         if d > n / 2.0 { d -= n; }
         self.catalog.shown = if d.abs() < 0.002 { target } else { (self.catalog.shown + d * (1.0 - (-delta * 14.0).exp())).rem_euclid(n) };
+    }
+
+    fn decode_covers(&mut self) {
         let wanted: Vec<(String, String)> = self.host.shelf_games().iter()
             .map(|g| (get(g, "id", ""), [get(g, "cover", ""), get(g, "screenshot", "")].into_iter().find(|v| v.starts_with("data:")).unwrap_or_default()))
             .filter(|(id, _)| !self.catalog.covers.contains_key(id))
@@ -119,7 +125,7 @@ impl Lobby {
         let right = pressed & (BTN_RB | BTN_RIGHT) != 0 || (stick[0] > 0.6 && stick_was[0] <= 0.6);
         if left { self.browse(-1); }
         if right { self.browse(1); }
-        if pressed & (BTN_B | BTN_RS) != 0 { self.close_catalog(); return; }
+        if pressed & BTN_B != 0 { self.close_catalog(); return; }
         if pressed & (BTN_A | BTN_Y) != 0 { self.catalog_use(id, false); }
         if pressed & BTN_X != 0 { self.catalog_use(id, true); }
     }
@@ -256,6 +262,32 @@ fn title_card(c: &mut Canvas, game: &crate::paint::Game, r: [f32; 4], open: [f32
         c.text(face, [open[0], top + i as f32 * line], word, render::hud::TextAlign::Center, open[2], size,
             Color { r: ink.r * k, g: ink.g * k, b: ink.b * k, a: fade });
     }
+}
+
+/// At the game shelf, under its LB and RB: the covers of the games they
+/// browse to, small and dimmed, like the catalog's neighbours.
+pub fn shelf_sides(lobby: &Lobby, c: &mut Canvas, view_proj: glam::Mat4, size: [u32; 2]) {
+    use crate::godot::rgba;
+    if !lobby.bumpers_visible { return; }
+    let shelf = &lobby.show.shelf;
+    let n = shelf.len();
+    if n < 2 { return; }
+    let bx = ((game_room_sim::layout::BOOKCASE.0 + game_room_sim::layout::BOOKCASE.1) / 2.0) as f32;
+    let z = game_room_sim::layout::BACK as f32 + 0.7;
+    for side in [-1i64, 1] {
+        let i = (lobby.host.shelf_offset as i64 + side).rem_euclid(n as i64) as usize;
+        let center = glam::Vec3::new(bx + side as f32 * 0.98, 2.95, z);
+        let (Some(a), Some(b)) = (crate::hud::to_screen(view_proj, size, center + glam::Vec3::new(-0.27, 0.36, 0.0)),
+            crate::hud::to_screen(view_proj, size, center + glam::Vec3::new(0.27, -0.36, 0.0))) else { continue };
+        let r = [a[0], a[1], b[0] - a[0], b[1] - a[1]];
+        if r[2] <= 2.0 || r[3] <= 2.0 { continue; }
+        c.rect([r[0] - 2.0, r[1] - 2.0, r[2] + 4.0, r[3] + 4.0], rgba(0.0, 0.0, 0.0, 0.5));
+        match lobby.catalog.covers.get(&shelf[i].id).and_then(|c| c.as_ref()) {
+            Some(art) => { c.provide(art.image, &art.picture); c.image(r, art.image, fill_uv(art.size, r), rgba(0.75, 0.75, 0.75, 1.0)); }
+            None => title_card(c, &shelf[i], r, r, 0.75, 1.0),
+        }
+    }
+    c.over();
 }
 
 /// The open catalog over the whole screen.
