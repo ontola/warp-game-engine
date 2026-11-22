@@ -989,6 +989,30 @@ fn foreground(r: &mut RoomBuild) {
     }
 }
 
+/// A small keyboard on the coffee table, next to the logo pads (Warp only,
+/// so built hidden and shown by the live lobby). Its keys dip when someone
+/// types. Returns (instance, rest position) of the base, then of each key.
+pub fn table_keyboard(r: &mut RoomBuild) -> Vec<(usize, Vec3)> {
+    // As big as the logo pads (they are scaled 1.6), on the table's front edge.
+    let (at, s) = (Vec3::new(-0.5, 0.555, 3.93), 1.6);
+    let mut parts = vec![];
+    let body = glow(Color::hex("2a2440"), 0.5, VIOLET, 0.35);
+    let pos = at + Vec3::new(0.0, 0.0125 * s, 0.0);
+    parts.push((r.box_(Vec3::new(0.62, 0.025, 0.22) * s, pos, &body), pos));
+    let key = glow(Color::hex("e9e6f5"), 0.6, Color::hex("e9e6f5"), 0.25);
+    // Three staggered rows of ten, then a space bar.
+    for row in 0..3 {
+        for col in 0..10 {
+            let pos = at + Vec3::new(-0.255 + col as f32 * 0.054 + row as f32 * 0.012, 0.033, -0.07 + row as f32 * 0.05) * s;
+            parts.push((r.box_(Vec3::new(0.044, 0.016, 0.04) * s, pos, &key), pos));
+        }
+    }
+    let pos = at + Vec3::new(0.0, 0.033, 0.083) * s;
+    parts.push((r.box_(Vec3::new(0.26, 0.016, 0.035) * s, pos, &key), pos));
+    r.hidden.extend(parts.iter().map(|p| p.0));
+    parts
+}
+
 /// The pose of a logo pad: hopping by `k` (0..1) on `side`.
 pub fn pad_xf(pos: Vec3, yaw: f32, k: f32, side: f32) -> Affine3A {
     Affine3A::from_mat3_translation((euler(0.1 * k, yaw, 0.16 * k * side) * Mat3A::from_diagonal(Vec3::splat(1.6))).into(), pos + Vec3::new(0.0, 0.12 * k, 0.0))

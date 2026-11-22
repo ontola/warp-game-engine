@@ -4,7 +4,7 @@
 //!   game-room shot [--dump DIR] --out room.png [--size 1280x720]
 //!   game-room play [--players 1] [--bots 3] [--fullscreen]
 //!   game-room bake-light --out room-light.bin
-//!   game-room live-shot --out room.png [--ticks 180] [--bots 3] [--items] [--fx] [--mouse X,Y] [--mouse-menu] [--pending NAME] [--queue TITLE]
+//!   game-room live-shot --out room.png [--ticks 180] [--bots 3] [--items] [--fx] [--mouse X,Y] [--mouse-menu] [--pending NAME] [--queue TITLE] [--keys]
 //!
 //! For now the room comes from the Godot lobby's export (tools/
 //! warp_export.gd in gamenight/lobbies/game-room), so both engines draw the
@@ -97,6 +97,8 @@ fn run() -> Result<(), String> {
                 app::Game::pointer(&mut lobby, app::Pointer { position: at, moved: true, ..Default::default() }, [w, h]);
             }
             if flag("--mouse-menu") && t == 0 { app::Game::escape(&mut lobby); }
+            // `--keys`: someone typing, caught mid-keystroke.
+            if flag("--keys") && t + 4 == ticks { lobby.key_pressed(t); }
             app::Game::tick(&mut lobby, &vec![app::Controls::default(); local]);
             // A real host answers in real time.
             if flag("--host") { std::thread::sleep(std::time::Duration::from_millis(16)); }

@@ -168,6 +168,13 @@ pub struct Lobby {
     /// Hidden-by-default room parts the lobby shows (featured box, bumpers).
     featured: Vec<usize>,
     bumpers: Vec<usize>,
+    /// The keyboard on the table: base, then keys (instance, rest position),
+    /// and per key how far it is still pressed (1 just pressed).
+    keyboard: Vec<(usize, Vec3)>,
+    key_dips: Vec<f32>,
+    /// Seconds since the last key, for the keyboard's little hop.
+    key_hop: f32,
+    keyboard_shown: bool,
     hud_size: [u32; 2],
     pub(crate) mouse: crate::mouse::Mouse,
     /// Without a host: the commands the lobby would have sent it, for a host
@@ -207,6 +214,19 @@ impl Lobby {
     /// adds one when a pad joins and drops one that left).
     pub fn set_local(&mut self, ids: Vec<String>) { self.local = ids; }
 
+    /// A key was typed: the keyboard on the table hops and a few keys dip,
+    /// as the logo pads do for an unjoined controller. `code` picks which.
+    pub fn key_pressed(&mut self, code: u32) {
+        let keys = self.keyboard.len().saturating_sub(1);
+        if keys == 0 { return; }
+        self.key_hop = 0.0;
+        let mut h = code.wrapping_mul(2654435761);
+        for _ in 0..2 {
+            self.key_dips[1 + (h as usize % keys)] = 1.0;
+            h = h.rotate_left(13).wrapping_mul(40503);
+        }
+    }
+
     /// The room's light bake, for [`crate::stage::Options::light_cache`].
     pub fn light_cache(&self) -> Vec<u8> { self.stage.light_cache() }
 
@@ -223,6 +243,7 @@ impl Lobby {
     fn build(options: Options, client: Option<splitscreen_club::lobby::Lobby>) -> Result<Self, String> {
         let mut build = room::build();
         let kit = crate::kit::add(&mut build);
+        let keyboard = room::table_keyboard(&mut build);
         let animated = build.animated();
         let mut parts = build.clone();
         // Prompts change their buttons at run time: give each a screen wide
@@ -251,7 +272,7 @@ impl Lobby {
             props: props.expect("props"), board: board.expect("board"), events: vec![], controllers: HashMap::new(), held: HashMap::new(), input_blocked: HashSet::new(), menus: HashMap::new(),
             bench: vec![], phones: vec![], lost_since: HashMap::new(), toasts: vec![], unjoined: HashMap::new(), holds: HashMap::new(), station_cooldown: HashMap::new(),
             pickup_cooldown: 0.0, item_presses: HashMap::new(), pressed_flash: HashMap::new(), claims: HashMap::new(), pop_box: None, featured_visible: false,
-            bumpers_visible: false, display_active: None, display_at: web_time::Instant::now(), quit: false, web_tx, web_rx, links_due: 0.0, last_queue: vec![], featured, bumpers, hud_size: [1920, 1080], mouse: Default::default(), outbox: None,
+            bumpers_visible: false, display_active: None, display_at: web_time::Instant::now(), quit: false, web_tx, web_rx, links_due: 0.0, last_queue: vec![], featured, bumpers, key_dips: vec![0.0; keyboard.len()], keyboard, key_hop: 99.0, keyboard_shown: false, hud_size: [1920, 1080], mouse: Default::default(), outbox: None,
         };
         lobby.prompts = lobby.build.prompts.iter().map(|p| (p.name.clone(), Prompt {
             items: p.items.iter().map(|(k, t)| (k.clone(), t.clone(), true)).collect(), enabled: true, ..Default::default() })).collect();
@@ -598,6 +619,22 @@ impl Lobby {
             changed.push((k, self.featured_visible));
         }
         for &k in &self.bumpers { changed.push((k, self.bumpers_visible)); }
+        // The table keyboard: keys dip back up, the board hops after a key.
+        self.key_hop += delta;
+        let hop = (std::f32::consts::PI * (self.key_hop / 0.3).clamp(0.0, 1.0)).sin() * 0.03;
+        let moving = hop > 0.0 || self.key_dips.iter().any(|d| *d > 0.0);
+        if moving || !self.keyboard_shown {
+            for (n, &(k, rest)) in self.keyboard.iter().enumerate() {
+                let dip = self.key_dips[n];
+                self.key_dips[n] = (dip - delta / 0.18).max(0.0);
+                let at = Affine3A::from_mat4(glam::Mat4::from_cols_array(&self.build.dump.instances[k].transform));
+                let (scale, rot, _) = at.to_scale_rotation_translation();
+                let pos = rest + Vec3::new(0.0, hop - dip * 0.012, 0.0);
+                self.stage.room.dump.instances[k].transform = glam::Mat4::from_scale_rotation_translation(scale, rot, pos).to_cols_array();
+                changed.push((k, true));
+            }
+            self.keyboard_shown = true;
+        }
         for (k, visible) in changed {
             if let Some(i) = self.stage.room.sync_instance(&mut self.stage.scene, k, visible) {
                 renderer.update_instances(gpu, i, &self.stage.scene.instances[i..i + 1])?;
