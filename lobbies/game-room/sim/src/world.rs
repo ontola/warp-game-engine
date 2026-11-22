@@ -649,8 +649,9 @@ impl World {
         self.events.push(e);
     }
 
-    /// The player B lifts when no item is in reach: someone close by who is
-    /// not already carrying or being carried.
+    /// The player B lifts when no item is in reach: the nearest one close
+    /// by (up to a metre above or below, so a player on the couch or the TV
+    /// console counts) who is not already carrying or being carried.
     pub fn carry_target(&self, i: usize) -> Option<usize> {
         let p = &self.players[i];
         if p.sleeping
@@ -661,14 +662,19 @@ impl World {
         {
             return None;
         }
-        self.players.iter().enumerate().position(|(j, o)| {
-            j != i
-                && o.carrying.is_none()
-                && o.carried_by.is_none()
-                && o.spawn <= 0.0
-                && (o.x - p.x).abs() < 1.1
-                && (o.y - p.y).abs() < 0.9
-        })
+        self.players
+            .iter()
+            .enumerate()
+            .filter(|&(j, o)| {
+                j != i
+                    && o.carrying.is_none()
+                    && o.carried_by.is_none()
+                    && o.spawn <= 0.0
+                    && (o.x - p.x).abs() < 1.1
+                    && (o.y - p.y).abs() < 1.2
+            })
+            .min_by(|a, b| (a.1.x - p.x).abs().total_cmp(&(b.1.x - p.x).abs()))
+            .map(|(j, _)| j)
     }
 
     fn grab_player(&mut self, i: usize) {

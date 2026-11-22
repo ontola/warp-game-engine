@@ -159,6 +159,18 @@ fn item_hints(lobby: &Lobby, c: &mut Canvas, view_proj: Mat4, size: [u32; 2]) {
         let label = if kind == game_room_sim::world::Kind::Ball { "Kick" } else { "Pick up" };
         badge(c, at, factor, "B", label, Color::hex("e2574c"), pressed, size);
     }
+    // Someone carrying a player: B throws them, out of the party when the
+    // exit door is close in the way they face.
+    for p in &lobby.world.players {
+        if p.carrying.is_none() { continue; }
+        let door = game_room_sim::layout::EXIT_DOOR;
+        let towards = (door - p.x) * p.facing > 0.0 && (p.x - door).abs() < 6.0;
+        let label = if towards { "Throw out of party" } else { "Throw" };
+        let top = Vec3::new(p.x as f32, p.y as f32 + 3.3, lobby.actor_depth(&p.id));
+        let (Some(at), Some(above)) = (project(view_proj, size, top), project(view_proj, size, top + Vec3::new(0.0, 0.4032, 0.0))) else { continue };
+        let factor = ((at[0] - above[0]).powi(2) + (at[1] - above[1]).powi(2)).sqrt() / 96.0;
+        badge(c, at, factor, "B", label, Color::hex("e2574c"), 0.0, size);
+    }
     c.over();
 }
 
