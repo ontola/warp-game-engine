@@ -283,12 +283,27 @@ fn the_catalog_shows_every_game_and_plays_the_middle_one() {
         lobby.input("p0", 0, [0.0; 2]);
         lobby.update(1.0 / 60.0);
     };
-    use game_room_sim::world::{BTN_A, BTN_B, BTN_BACK, BTN_RB};
+    use game_room_sim::world::{BTN_A, BTN_B, BTN_BACK, BTN_RB, BTN_RS};
     // A player that joined holds nothing at first (input waits for a release).
     lobby.input("p0", 0, [0.0; 2]);
     assert_eq!(lobby.host.shelf_games().len(), 3);
     press(&mut lobby, BTN_BACK);
-    assert!(lobby.catalog_open(), "Back opens the catalog");
+    assert!(!lobby.catalog_open(), "Back does nothing in the room");
+    press(&mut lobby, BTN_RS);
+    assert!(!lobby.catalog_open(), "R3 away from the shelf does nothing");
+    // Walk left until the shelf is in front of them.
+    for _ in 0..600 {
+        if lobby.station_for("p0").is_some_and(|s| s.kind == "shelf") { break; }
+        lobby.input("p0", 0, [-1.0, 0.0]);
+        tick(&mut lobby);
+    }
+    lobby.input("p0", 0, [0.0; 2]);
+    for _ in 0..10 { tick(&mut lobby); }
+    lobby.update(1.0 / 60.0);
+    assert_eq!(lobby.station_for("p0").map(|s| s.kind), Some("shelf".into()));
+    assert!(lobby.prompts["shelf"].items.iter().any(|i| i.0 == "R3"), "the shelf offers the big catalog on R3");
+    press(&mut lobby, BTN_RS);
+    assert!(lobby.catalog_open(), "R3 at the shelf opens the catalog");
     for _ in 0..4 { lobby.update(1.0 / 60.0); }
     assert!(lobby.catalog.covers.get("a").is_some_and(|c| c.is_some()), "the data URI cover decodes");
     assert!(lobby.catalog.covers.get("b").is_some_and(|c| c.is_none()), "no cover: a title card");
@@ -315,7 +330,7 @@ fn the_catalog_shows_every_game_and_plays_the_middle_one() {
         assert!(Instant::now() < deadline, "no queue_next sent");
         if let Ok(m) = from_lobby.recv_timeout(Duration::from_millis(50)) && m["type"] == "queue_next" { assert_eq!(m["game"], game.as_str()); break; }
     }
-    press(&mut lobby, BTN_BACK);
+    press(&mut lobby, BTN_RS);
     assert!(lobby.catalog_open());
     press(&mut lobby, BTN_B);
     assert!(!lobby.catalog_open(), "B closes it");

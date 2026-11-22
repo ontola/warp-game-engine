@@ -449,7 +449,7 @@ fn buttons(c: &Controls) -> (u32, [f32; 2]) {
     let pairs = [(Buttons::SOUTH, world::BTN_A), (Buttons::EAST, world::BTN_B), (Buttons::WEST, world::BTN_X), (Buttons::NORTH, world::BTN_Y),
         (Buttons::LEFT_SHOULDER, world::BTN_LB), (Buttons::RIGHT_SHOULDER, world::BTN_RB), (Buttons::SELECT, world::BTN_BACK), (Buttons::START, world::BTN_START),
         (Buttons::UP, world::BTN_UP), (Buttons::DOWN, world::BTN_DOWN), (Buttons::LEFT, world::BTN_LEFT), (Buttons::RIGHT, world::BTN_RIGHT),
-        (Buttons::RIGHT_TRIGGER, world::BTN_RT)];
+        (Buttons::RIGHT_TRIGGER, world::BTN_RT), (Buttons::RIGHT_STICK, world::BTN_RS)];
     let held = pairs.iter().filter(|(b, _)| c.held.0 & b != 0).fold(0, |a, (_, w)| a | w);
     // The world's stick is SDL style: y down.
     (held, [c.mv[0], -c.mv[1]])

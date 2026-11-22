@@ -127,6 +127,7 @@ impl Lobby {
                 }
                 self.screens_dirty = true;
             }
+            ("shelf", "R3") => { self.press_prompt("shelf", "R3"); self.open_catalog(); }
             (_, "X") => self.use_station_as(None, station, true),
             (_, "Y") => self.use_station_as(None, station, false),
             _ => {}

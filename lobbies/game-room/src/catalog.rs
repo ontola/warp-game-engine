@@ -1,6 +1,6 @@
 //! The game catalog: every game on the shelf as big covers over the whole
-//! screen. Back (View) opens it for anyone, as does a mouse click on the
-//! game shelf; LB/RB (or left/right, or the wheel) browse, A or Y plays the
+//! screen. R3 at the game shelf opens it, as does a mouse click on the
+//! shelf or its All games button; LB/RB (or left/right, or the wheel) browse, A or Y plays the
 //! game in the middle now, X queues it, B or Back closes. The mouse clicks a
 //! cover at the side to bring it to the middle, and the middle one or the
 //! buttons under it to play or queue.
@@ -100,7 +100,7 @@ impl Lobby {
         let right = pressed & (BTN_RB | BTN_RIGHT) != 0 || (stick[0] > 0.6 && stick_was[0] <= 0.6);
         if left { self.browse(-1); }
         if right { self.browse(1); }
-        if pressed & (BTN_B | BTN_BACK | BTN_START) != 0 { self.close_catalog(); return; }
+        if pressed & (BTN_B | BTN_BACK | BTN_START | BTN_RS) != 0 { self.close_catalog(); return; }
         if pressed & (BTN_A | BTN_Y) != 0 { self.catalog_use(id, false); }
         if pressed & BTN_X != 0 { self.catalog_use(id, true); }
     }
@@ -262,6 +262,6 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
         c.text(faces.bold, [disc[0] - r[3], disc[1] + fs * 0.36], key, TextAlign::Center, 2.0 * r[3], (fs * 0.9).floor(), Color::hex("0c0a16").with_alpha(fade));
         c.text(faces.regular, [r[0] + r[3], r[1] + r[3] / 2.0 + fs * 0.36], label, TextAlign::Center, r[2] - r[3] * 1.2, fs, TEXT.with_alpha(if live { fade } else { 0.4 * fade }));
     }
-    let hint = "LB / RB browse  ·  click a cover to bring it to the middle  ·  Back or Esc closes";
+    let hint = "LB / RB browse  ·  click a cover to bring it to the middle  ·  B, R3 or Esc closes";
     c.text(faces.regular, [0.0, h - 36.0 * scale], hint, TextAlign::Center, w, (19.0 * scale).floor(), DIM.with_alpha(fade));
 }

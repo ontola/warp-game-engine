@@ -30,6 +30,8 @@ pub const BTN_LB: u32 = 16;
 pub const BTN_RB: u32 = 32;
 pub const BTN_BACK: u32 = 64;
 pub const BTN_START: u32 = 128;
+/// Right stick click (R3), as the host's wire sends it.
+pub const BTN_RS: u32 = 1 << 9;
 pub const BTN_UP: u32 = 1 << 10;
 pub const BTN_DOWN: u32 = 1 << 11;
 pub const BTN_LEFT: u32 = 1 << 12;

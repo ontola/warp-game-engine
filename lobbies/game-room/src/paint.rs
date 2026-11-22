@@ -538,18 +538,25 @@ pub fn prompt_left(name: &str, width: f32, need: f32) -> f32 {
 /// A mouse seen from above, centred at `at`: the left button (or the
 /// wheel) in `lit`.
 fn mouse_icon(c: &mut Canvas, at: [f32; 2], lit: Color, wheel: bool) {
+    // High contrast on the dark pill: a white body with a dark outline,
+    // dark seams, and the lit button a strong amber with its own outline.
     let (w, h) = (40.0, 60.0);
+    let ink = Color::hex("0b0b12");
     let r = [at[0] - w / 2.0, at[1] - h / 2.0, w, h];
-    c.style_box(r, [w / 2.0; 4], Color::hex("e9e6f4"), None);
+    c.style_box([r[0] - 3.0, r[1] - 3.0, w + 6.0, h + 6.0], [w / 2.0 + 3.0; 4], ink, None);
+    c.style_box(r, [w / 2.0; 4], Color::hex("ffffff"), None);
     let split = r[1] + h * 0.42;
-    c.rect([r[0] + 4.0, split, w - 8.0, 3.0], Color::hex("0b0b12"));
+    let lit = if lit == Color::hex("f8cd34") { Color::hex("ffa600") } else { lit };
     if wheel {
-        c.rect([at[0] - 1.5, r[1] + 4.0, 3.0, split - r[1] - 4.0], Color::hex("0b0b12"));
-        c.style_box([at[0] - 5.0, r[1] + 8.0, 10.0, 16.0], [5.0; 4], lit, None);
+        c.style_box([at[0] - 7.0, r[1] + 6.0, 14.0, 20.0], [7.0; 4], ink, None);
+        c.style_box([at[0] - 4.5, r[1] + 8.5, 9.0, 15.0], [4.5; 4], lit, None);
     } else {
-        c.style_box([r[0] + 3.0, r[1] + 3.0, w / 2.0 - 4.5, split - r[1] - 3.0], [w / 2.0 - 3.0, 2.0, 2.0, 2.0], lit, None);
-        c.rect([at[0] - 1.5, r[1] + 4.0, 3.0, split - r[1] - 4.0], Color::hex("0b0b12"));
+        let b = [r[0] + 2.0, r[1] + 2.0, w / 2.0 - 2.0, split - r[1] - 2.0];
+        c.style_box(b, [w / 2.0 - 2.0, 2.0, 2.0, 2.0], ink, None);
+        c.style_box([b[0] + 3.0, b[1] + 3.0, b[2] - 5.0, b[3] - 5.0], [w / 2.0 - 5.0, 2.0, 2.0, 2.0], lit, None);
+        c.rect([at[0] - 2.0, r[1], 4.0, split - r[1]], ink);
     }
+    c.rect([r[0] + 2.0, split - 2.0, w - 4.0, 4.0], ink);
 }
 
 /// room.gd `_draw_music_icon`: previous, play/pause, next on the pads.

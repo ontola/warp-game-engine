@@ -215,13 +215,6 @@ impl Lobby {
             self.world.set_input(id, 0, [0.0; 2]);
             return;
         }
-        // Back opens the catalog of every game on the shelf.
-        if pressed & world::BTN_BACK != 0 && !self.menus.contains_key(id) {
-            self.open_catalog();
-            self.catalog.sticks.insert(id.into(), stick);
-            self.world.set_input(id, 0, [0.0; 2]);
-            return;
-        }
         if pressed & BTN_START != 0 {
             if self.menus.remove(id).is_none() { self.menus.insert(id.into(), Menu::default()); }
         }
@@ -246,6 +239,14 @@ impl Lobby {
             if pressed & BTN_Y != 0 { self.holds.insert(id.into(), (station.as_ref().unwrap().id.clone(), self.time)); }
         } else if pressed & BTN_Y != 0 { self.use_station(id, false); }
         if station_x && pressed & BTN_X != 0 { self.use_station(id, true); }
+        // R3 at the game shelf opens the big catalog of every game on it.
+        if kind == "shelf" && pressed & world::BTN_RS != 0 {
+            self.press_prompt("shelf", "R3");
+            self.open_catalog();
+            self.catalog.sticks.insert(id.into(), stick);
+            self.world.set_input(id, 0, [0.0; 2]);
+            return;
+        }
         if kind == "shelf" && pressed & (BTN_LB | BTN_RB) != 0 {
             let key = if pressed & BTN_LB != 0 { "LB" } else { "RB" };
             self.press_prompt("shelf", key);
@@ -706,7 +707,7 @@ impl Lobby {
         let shelf_live = !self.host.shelf_games().is_empty();
         self.featured_visible = shelf_live && occupied.contains_key("shelf");
         let shelf_enabled = occupied.get("shelf").map_or(shelf_live, |s| s.enabled);
-        self.set_prompt("shelf", &[("Y", "Play now", true), ("X", "Queue", true)], shelf_enabled, occupied.contains_key("shelf"));
+        self.set_prompt("shelf", &[("Y", "Play now", true), ("X", "Queue", true), ("R3", "All games", true)], shelf_enabled, occupied.contains_key("shelf"));
         self.bumpers_visible = occupied.contains_key("shelf") && self.host.shelf_games().len() > 1;
         let playing = self.host.party["now_playing"]["playing"].as_bool().unwrap_or(false);
         let music: Vec<(&str, &str, bool)> = if self.host.has_track() {
