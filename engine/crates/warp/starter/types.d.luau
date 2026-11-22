@@ -221,6 +221,9 @@ declare post: {
 -- spotlights, at most 8 (`spots`). intensity is about
 -- lux at 1 m (a few hundred under the night sky), range in metres.
 declare lights: {
+	-- Opt in with room_lighting = true. Static entities are baked when visited.
+	-- Set up to four rooms. Clear a room with lights.room(id, nil) on leaving.
+	room: (id: number, opts: { min: Vec, max: Vec, entities: {number}, panels: {{pos: Vec, color: Color, intensity: number, range: number, width: number, depth: number}}? }?) -> (),
 	set: (list: { { pos: Vec, color: Color?, intensity: number?, range: number? } }) -> (),
 	-- Spotlights that cast shadows, at most 8 (torches, headlights, a lamp
 	-- over a door): dir is where the beam points, angle the outer half-angle
@@ -233,7 +236,7 @@ declare lights: {
 
 -- Warp Humans from game.toml's [humans.NAME] pools: spawn returns nil when
 -- the pool is full. Set pos (feet) and yaw each tick; the legs follow.
--- pose: walk, idle, crouch, wave, reach, raise, strike, aim, shove, attack, punch, jab,
+-- pose: walk, idle, sit, crouch, wave, reach, raise, strike, aim, shove, attack, punch, jab,
 -- hit, hit_head, cast, roll, dead, down, feed (crouched, bent over something on the
 -- ground), rise (getting up off the ground over t); t is its progress, 0 to 1.
 -- The shared four-wheel vehicle simulation. Reset snapshots solid boxes once.

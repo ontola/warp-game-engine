@@ -188,6 +188,7 @@ impl LuaGame {
             light: Default::default(),
             post: Default::default(),
             lamps: Vec::new(),
+            rooms: crate::room_scene::RoomScene::new(cfg.room_lighting),
             spots: Vec::new(),
             humans: crate::humans::Humans::new(&cfg.humans),
             tick: 0,
@@ -309,6 +310,7 @@ impl LuaGame {
             c.light = Default::default();
             c.post = Default::default();
             c.lamps.clear();
+            c.rooms.clear();
             c.spots.clear();
             c.humans.clear();
             for p in &mut c.roster { p.cam = Cam::default(); }
@@ -465,6 +467,7 @@ impl LuaGame {
                     self.menu = None;
                     let mut c = self.core();
                     c.world.clear();
+                    c.rooms.clear();
                     c.sounds.stop_all();
                 }
             }
@@ -614,6 +617,7 @@ impl LuaGame {
             "title": c.title, "tick": c.tick, "time": c.tick as f64 / c.tick_rate as f64, "players": players, "phase": phase, "menu": menu,
             "sky": c.sky.name(), "entities": c.world.entities.len(), "max_entities": c.world.capacity(), "tags": tags,
             "cameras": cams, "sounds": sounds, "modules": modules, "errors": errors, "state": game,
+            "room_lighting": c.rooms.status(),
         })
     }
 
@@ -1124,7 +1128,9 @@ impl Game for LuaGame {
             c.world.rebuild = true;
             steps.push(format!("people {} ms", t.elapsed().as_millis()));
         }
-        if std::mem::take(&mut c.world.rebuild) || frame.renderer().is_none() {
+        let rebuild = std::mem::take(&mut c.world.rebuild) || frame.renderer().is_none();
+        if rebuild {
+            if c.rooms.enabled { crate::room_scene::prepare(&mut c.world.scene)?; }
             if loading && let Some(p) = self.party.as_mut() { p.loading(93, "building the scene"); }
             let t = web_time::Instant::now();
             // A look first seen after the start stalls the game while the
@@ -1155,6 +1161,10 @@ impl Game for LuaGame {
         let r = frame.renderer().ok_or("no renderer")?;
         c.world.flush_at(frame.gpu, r, frame.alpha)?;
         post(r, &c.post, &c.lamps, &c.spots)?;
+        if c.rooms.enabled {
+            let c = &mut *c;
+            c.rooms.update(&c.world, frame.gpu, r, light.sun_dir, rebuild)?;
+        }
         {
             let c = &mut *c;
             c.humans.draw(frame.gpu, r, &mut c.world.scene, frame.alpha)?;

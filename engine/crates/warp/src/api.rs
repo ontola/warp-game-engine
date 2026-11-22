@@ -179,6 +179,7 @@ pub struct Core {
     pub light: LightOverride,
     pub post: Post,
     pub lamps: Vec<Lamp>,
+    pub(crate) rooms: crate::room_scene::RoomScene,
     pub spots: Vec<Spot>,
     /// Warp Humans (game.toml `[humans.NAME]` pools).
     pub humans: crate::humans::Humans,
@@ -267,6 +268,7 @@ fn options(t: &Table, allowed: &[&str], what: &str) -> mlua::Result<Vec<(String,
 pub fn shape(name: &str) -> mlua::Result<Shape> {
     Ok(match name {
         "cube" | "box" => Shape::Cube,
+        "pane" => Shape::Pane,
         "sphere" | "ball" => Shape::Sphere,
         "capsule" => Shape::Capsule,
         "wire" => Shape::Wire,
@@ -279,11 +281,11 @@ pub fn shape(name: &str) -> mlua::Result<Shape> {
             Shape::Outline { sides, width: (width * 1000.0).round() as u32 }
         }
         p if p.ends_with(".glb") || p.ends_with(".gltf") => Shape::Model(p.to_string()),
-        other => return Err(rt(format!("unknown shape {other:?}: cube, sphere, capsule, outline6 or a model path such as \"assets/crate.glb\""))),
+        other => return Err(rt(format!("unknown shape {other:?}: cube, pane, sphere, capsule, outline6 or a model path such as \"assets/crate.glb\""))),
     })
 }
 
-const ENTITY_KEYS: &[&str] = &["shape", "pos", "rot", "size", "color", "emissive", "roughness", "metal", "surface", "solid", "visible", "shadow_only", "hide_views", "tag", "points", "edges", "width"];
+const ENTITY_KEYS: &[&str] = &["shape", "pos", "rot", "size", "color", "emissive", "roughness", "metal", "surface", "glass", "solid", "visible", "shadow_only", "hide_views", "tag", "points", "edges", "width"];
 
 fn boolean(v: &Value, what: &str) -> mlua::Result<bool> {
     match v { Value::Boolean(b) => Ok(*b), _ => Err(rt(format!("{what}: expected true or false"))) }
@@ -313,7 +315,7 @@ fn apply(opts: &[(String, Value)], shape_: &mut Shape, look: &mut Look, pos: &mu
             "pos" => *pos = vec3(v, "pos")?,
             "rot" => *rot = vec3(v, "rot")?,
             "size" => *sz = size(v, "size")?,
-            "color" | "emissive" | "roughness" | "metal" | "surface" => { look_key(look, k, v)?; }
+            "color" | "emissive" | "roughness" | "metal" | "surface" | "glass" => { look_key(look, k, v)?; }
             "solid" => *solid = boolean(v, "solid")?,
             "visible" => *visible = boolean(v, "visible")?,
             "shadow_only" => *shadow_only = boolean(v, "shadow_only")?,
@@ -369,6 +371,14 @@ fn look_key(look: &mut Look, k: &str, v: &Value) -> mlua::Result<bool> {
         "emissive" => look.emissive = number(v, "emissive")?.max(0.0),
         "roughness" => look.roughness = number(v, "roughness")?,
         "metal" => look.metal = number(v, "metal")?,
+        "glass" => look.glass = match v {
+            Value::Nil | Value::Boolean(false) => None,
+            _ => {
+                let alpha = number(v, "glass")?;
+                if !(0.0..=1.0).contains(&alpha) { return Err(rt("glass: scattering opacity from 0 to 1, or false")); }
+                Some(alpha)
+            }
+        },
         "surface" => look.surface = match v {
             Value::Nil | Value::Boolean(false) => None,
             _ => {
@@ -431,6 +441,7 @@ fn entity_table(lua: &Lua, id: u32, e: &Entity) -> mlua::Result<Table> {
     t.raw_set("emissive", e.look.emissive)?;
     t.raw_set("roughness", e.look.roughness)?;
     t.raw_set("metal", e.look.metal)?;
+    if let Some(alpha) = e.look.glass { t.raw_set("glass", alpha)?; }
     if let Some(k) = e.look.surface { t.raw_set("surface", k)?; }
     t.raw_set("solid", e.solid)?;
     t.raw_set("visible", e.visible)?;
@@ -639,7 +650,7 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             let s = shape(&name)?;
             let mut look = Look::default();
             if let Some(t) = opts {
-                for (k, v) in options(&t, &["color", "emissive", "roughness", "metal", "surface"], "world.warm")? { look_key(&mut look, &k, &v)?; }
+                for (k, v) in options(&t, &["color", "emissive", "roughness", "metal", "surface", "glass"], "world.warm")? { look_key(&mut look, &k, &v)?; }
             }
             lock(&core).world.warm(&s, &look).map_err(rt)
         })),
@@ -651,12 +662,15 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
         ("remove", f!(core, move |_, id: u32| {
             let mut c = lock(&core);
             sim(&c, "world.remove")?;
-            Ok(c.world.remove(id))
+            let removed = c.world.remove(id);
+            if removed { c.rooms.check_geometry = true; }
+            Ok(removed)
         })),
         ("clear", f!(core, move |_, ()| {
             let mut c = lock(&core);
             sim(&c, "world.clear")?;
             c.world.clear();
+            c.rooms.clear();
             Ok(())
         })),
         ("find", f!(core, move |lua, tag: String| lua.create_sequence_from(lock(&core).world.find(&tag)))),
@@ -932,6 +946,35 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
     ])?;
 
     table("lights", vec![
+        ("room", f!(core, move |_, (id, opts): (u32, Option<Table>)| {
+            let mut c = lock(&core);
+            sim(&c, "lights.room")?;
+            if !c.rooms.enabled { return Err(rt("lights.room needs room_lighting = true in game.toml")); }
+            let Some(t) = opts else { c.rooms.remove(id); return Ok(()); };
+            options(&t, &["min", "max", "entities", "panels"], "lights.room")?;
+            let min = vec3(&t.get("min")?, "room min")?;
+            let max = vec3(&t.get("max")?, "room max")?;
+            crate::room_lighting::grid(min, max).map_err(rt)?;
+            let ids = t.get::<Table>("entities")?.sequence_values::<u32>()
+                .take(c.world.capacity() + 1).collect::<mlua::Result<Vec<_>>>()?;
+            if ids.is_empty() || ids.len() > c.world.capacity() || ids.iter().any(|id| c.world.get(*id).is_none()) {
+                return Err(rt("lights.room needs live world entity IDs"));
+            }
+            let mut panels = Vec::new();
+            if let Some(list) = t.get::<Option<Table>>("panels")? {
+                for item in list.sequence_values::<Table>() {
+                    let t = item?;
+                    options(&t, &["pos", "color", "intensity", "range", "width", "depth"], "room panel")?;
+                    let pos = vec3(&t.get("pos")?, "panel pos")?;
+                    let rgb = color(&t.get("color")?, "room panel color")?;
+                    let linear = Vec3::new(rgb[0],rgb[1],rgb[2]).powf(2.2);
+                    let panel = crate::room_scene::panel(pos, linear, t.get("intensity")?, t.get("range")?, t.get("width")?, t.get("depth")?).map_err(rt)?;
+                    panels.push(panel);
+                    if panels.len() > 8 { return Err(rt("lights.room accepts at most eight ceiling panels")); }
+                }
+            }
+            c.rooms.set(id, min, max, ids, panels).map_err(rt)
+        })),
         ("set", f!(core, move |_, list: Table| {
             let mut lamps = Vec::new();
             for item in list.sequence_values::<Table>() {

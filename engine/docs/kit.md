@@ -102,7 +102,7 @@ extra?)`, `kart:speed01()`.
 
 ## kit/crowd
 
-`require("kit/crowd").new(pool, radius)` shares a fitted Warp Humans pool among cameras. Supply candidates as a dense array with stable indices, feet `pos`, human `yaw`, and optional `active` and `pose`. Call `crowd:select(candidates, observerPositions)` periodically to share slots between observers, then `crowd:update(candidates)` each tick to animate the selected people. The game owns the routes and simulation for residents outside the radius.
+`require("kit/crowd").new(pool, radius)` shares a fitted Warp Humans pool among cameras. Give each candidate a stable positive integer ID, feet `pos`, human `yaw`, and optional `active` and `pose`. IDs can have gaps as areas unload. Call `crowd:select(candidates, observerPositions)` periodically to allocate the nearest people in turns across observers. An optional third argument `rank(candidate, observerIndex, squaredDistance)` prioritizes candidates per view. Return a lower number for a higher priority or `nil` to exclude a person from that view’s selection. Call `crowd:update(candidates)` each tick to animate the selected people. The game owns their routes and schedules.
 
 ## kit/daycycle
 

@@ -1,0 +1,55 @@
+{
+  "size": [
+    1920,
+    1080
+  ],
+  "steps": [
+    {
+      "ticks": 30
+    },
+    {
+      "cmd": "lua local p=state.fleet.players[1]; for _,b in state.city.buildings do if b.kind=='office' and b.x==28 then state.showLot=b.id; world.place(p.body,vector.create(b.x+b.w*.26,.85,b.door.z+2)); p.view=0; break end end",
+      "ticks": 24
+    },
+    {
+      "cmd": "lua local b=state.city.buildings[state.showLot]; local x=state.interiors.activities[b.id][1].pos.x+.24; local a,c=state.fleet.players[1],state.fleet.players[2]; world.place(a.body,vector.create(x,.85,b.door.z+1.7)); world.place(c.body,vector.create(x+1.1,.85,b.door.z-3.8)); a.view=-.07; c.view=math.pi-.2",
+      "ticks": 36,
+      "bench": 210,
+      "capture": "office-glass-day.png"
+    },
+    {
+      "expect": "/room_lighting/baked",
+      "equals": 1
+    },
+    {
+      "cmd": "lua local pop=state.population; local free,cap=humans.room('resident'); local inside=0; for id in pop.pedestrians.active do if pop.residents[id].building then inside+=1 end end; assert(inside>=4); return {scheduled=pop.streetCount,capacity=cap,visible=cap-free,indoors=inside}"
+    },
+    {
+      "cmd": "lua state.clock.hour=21",
+      "ticks": 36,
+      "bench": 220,
+      "capture": "office-glass-night.png"
+    },
+    {
+      "expect": "/room_lighting/baked",
+      "equals": 1
+    },
+    {
+      "cmd": "lua for i,p in state.fleet.players do world.place(p.body,vector.create(6.1,.85,11+i*2)) end",
+      "ticks": 36,
+      "bench": 2
+    },
+    {
+      "expect": "/room_lighting/active",
+      "equals": 0
+    },
+    {
+      "expect": "/room_lighting/baked",
+      "equals": 0
+    },
+    {
+      "expect": "/errors",
+      "equals": []
+    }
+  ]
+}

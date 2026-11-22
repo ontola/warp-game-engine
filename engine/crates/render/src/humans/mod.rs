@@ -38,6 +38,24 @@ fn sample(seed: u64, channel: u64) -> f32 {
     ((v ^ (v >> 31)) >> 40) as f32 / 16777216.
 }
 
+// Six independent uniform draws have unit variance after this scaling. Disjoint
+// channels make the body reproducible without perturbing appearance or animation.
+fn body_deviate(seed: u64, first: u64) -> f32 {
+    ((first..first + 6).map(|i| sample(seed, i)).sum::<f32>() - 3.) * std::f32::consts::SQRT_2
+}
+
+/// Adult stature sampled about the midpoint of an authored range (ends at 3σ).
+pub fn seeded_height(seed: u64, [low, high]: [f32; 2]) -> f32 {
+    low + (high - low) * (0.5 + body_deviate(seed, 32).clamp(-3., 3.) / 6.)
+}
+
+// Regional breadth offsets in the low twelve bits of each animation channel.
+// The high twelve keep the original uniform phase and tempo. The GPU instance
+// remains 64 bytes, and the fitted mesh reads the same quantized proportions.
+fn shape_phase(phase: f32, bits: u32) -> f32 {
+    (((phase * 4096.) as u32) * 4096 + (bits & 4095)) as f32 / 16777216.
+}
+
 // A float carries an exact 24-bit RGB value. The instance stays 64 bytes.
 fn pack_color(rgb: [f32; 3]) -> f32 {
     let [r,g,b] = rgb.map(|c| (c.clamp(0.,1.)*255.).round() as u32);
@@ -118,7 +136,22 @@ impl Instance {
     pub fn person(seed: u64, position: Vec3, yaw: f32, rules: &Constraints) -> Self {
         let height = rules
             .height_m
-            .unwrap_or_else(|| 1.53 + 0.47 * sample(seed, 1));
+            .unwrap_or_else(|| seeded_height(seed, [1.53, 2.00]));
+        let frame = body_deviate(seed, 38).clamp(-3., 3.);
+        let fullness = body_deviate(seed, 44).clamp(-3., 3.);
+        let taper = body_deviate(seed, 50).clamp(-3., 3.);
+        // A broader frame carries the whole body. Fullness especially fills
+        // the waist, while taper redistributes some breadth from hips to chest.
+        let breadth = 1. + 0.040 * frame + 0.018 * fullness
+            - 0.20 * ((height - 1.75) / 1.75).clamp(-0.25, 0.25);
+        let regions = [0.014 * fullness + 0.024 * taper,
+                       0.042 * fullness - 0.005 * taper,
+                       0.025 * fullness - 0.019 * taper];
+        let mut packed = 0;
+        for (i, offset) in regions.into_iter().enumerate() {
+            let byte = (128. + offset.clamp(-0.15, 0.15) * (127. / 0.15)).round() as u32;
+            packed |= byte << (i * 8);
+        }
         let palette = [
             [0.65, 0.21, 0.16],
             [0.20, 0.36, 0.56],
@@ -147,10 +180,10 @@ impl Instance {
         let mut person = Self {
             pos_yaw: position.extend(yaw).into(),
             size_phase: [
-                height * (0.84 + 0.31 * sample(seed, 3)),
+                height * breadth,
                 height,
-                sample(seed, 4),
-                sample(seed, 5),
+                shape_phase(sample(seed, 4), packed),
+                shape_phase(sample(seed, 5), packed >> 12),
             ],
             color: [pack_color(shirt), pack_color(trousers[(sample(seed,11)*8.) as usize]),
                 pack_color(shoes[(sample(seed,12)*6.) as usize]), (1+outfit+4*print) as f32],

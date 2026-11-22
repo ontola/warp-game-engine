@@ -6,6 +6,8 @@ local STEP = city.STEP
 local BOUND = city.BOUND
 
 local ASPHALT, OFFICE, HOTEL, WAREHOUSE, LAWN, WATER, PAD, PLAZA, CONTAINER = 0, 1, 2, 3, 4, 5, 6, 7, 8
+local GROUND_HEIGHT = 4.2
+local GROUND_SURFACES = { office=20, hotel=21, warehouse=22 }
 local OFFICE_COLORS = { "#738f96", "#63868b", "#83999d", "#797f8c" }
 local HOTEL_COLORS = { "#d79d81", "#dfc79a", "#bbc3a9", "#c89783", "#dfb5a3" }
 local DOCK_COLORS = { "#97a7a3", "#bf8a71", "#bcb498" }
@@ -23,6 +25,10 @@ end
 -- Index by street block. Clamp includes objects on the outer promenade.
 local function index(x)
     return math.clamp(math.floor(x / STEP) + 4, 1, 6)
+end
+
+function city.block_index(x,z)
+    return (index(x)-1)*6+index(z)
 end
 
 local function obstacle(s,x,y,z,w,h,d,color,surface,extra)
@@ -81,11 +87,13 @@ end
 
 -- A hash per lot keeps the skyline reproducible when another city system
 -- adds a random draw. Inputs and intermediate products fit in 53 bits.
-local function noise(seed,ix,iz,salt)
+local function lotSeed(seed,ix,iz,salt)
     local n = (seed%2147483647 + (ix+8)*7385609 + (iz+8)*1934963 + salt*834927) % 2147483647
     n = (n*48271)%2147483647
-    n = (n*16807)%2147483647
-    return n/2147483647
+    return (n*16807)%2147483647
+end
+local function noise(seed,ix,iz,salt)
+    return lotSeed(seed,ix,iz,salt)/2147483647
 end
 local function sample(colors,f)
     return colors[1+math.floor(f*#colors)]
@@ -96,14 +104,27 @@ local function sign(x,y,z,w,h,color,word,yaw)
     box(x,y,z,w,h,0.28,color,10+word,false,{rot=v(0,yaw or 0,0)})
 end
 
+-- Only this ground-floor box is replaced while an interior is occupied.
+-- The index keeps its footprint for cars, rotorcraft and roof queries.
+local function groundFloor(s,kind,x,z,w,d,color,surface,seed)
+    local front = z+d/2
+    local shell = obstacle(s,x,GROUND_HEIGHT/2,z,w,GROUND_HEIGHT,d,color,GROUND_SURFACES[kind])
+    table.insert(s.buildings,{
+        id=#s.buildings+1, kind=kind, seed=seed, shell=shell, door=v(x,0,front),
+        x=x, z=z, w=w, h=GROUND_HEIGHT, d=d, color=color, surface=surface,
+    })
+    -- A lit transom marks the same opening before and after streaming.
+    box(x,2.59,front+.20,3.10,.18,.48,METAL,23)
+end
+
 local function office(s,x,z,ix,iz,seed)
     local landmark = ix == -1 and iz == -1
     local h = if landmark then 53 else 14 + math.floor(noise(seed,ix,iz,1)*14)*2.9
     local w = 22 + 6*noise(seed,ix,iz,2)
     local d = 22 + 7*noise(seed,ix,iz,3)
     local tone = sample(OFFICE_COLORS,noise(seed,ix,iz,4))
-    obstacle(s,x,2.1,z,w+6,4.2,d+4,LIMESTONE,16)
-    obstacle(s,x,h/2+4.2,z,w,h,d,tone,OFFICE)
+    groundFloor(s,"office",x,z,w+6,d+4,LIMESTONE,29,lotSeed(seed,ix,iz,61))
+    obstacle(s,x,h/2+GROUND_HEIGHT,z,w,h,d,tone,OFFICE)
     obstacle(s,x,h+4.55,z,w+.6,.7,d+.6,LIMESTONE)
     if landmark or noise(seed,ix,iz,5)>.38 then
         local crown = if landmark then 10 else 4.6
@@ -115,7 +136,7 @@ local function office(s,x,z,ix,iz,seed)
             box(x,h+27.1,z,.6,.35,.6,"#ff805c",nil,false,{emissive=1.1})
         end
     end
-    sign(x,3.25,z+d/2+2.16,6.0,1.48,"#24616a",1)
+    sign(x,3.44,z+d/2+2.16,6.0,1.20,"#24616a",1)
 end
 
 local function hotel(s,x,z,ix,iz,seed)
@@ -127,7 +148,8 @@ local function hotel(s,x,z,ix,iz,seed)
         local d = 18+noise(seed,ix,iz,salt+1)*10
         local w = 12+noise(seed,ix,iz,salt+2)*3.5
         local tone = sample(HOTEL_COLORS,noise(seed,ix,iz,salt+3))
-        obstacle(s,u,h/2,z,w,h,d,tone,HOTEL)
+        groundFloor(s,"hotel",u,z,w,d,tone,29,lotSeed(seed,ix,iz,63+side))
+        obstacle(s,u,(h+GROUND_HEIGHT)/2,z,w,h-GROUND_HEIGHT,d,tone,HOTEL)
         obstacle(s,u,h+.2,z,w+.5,.4,d+.55,LIMESTONE)
         box(u,2.78,z+d/2+.56,w*.82,.24,1.35,if side<0 then "#397c7c" else "#bc6149")
         obstacle(s,u,h+.95,z-2,w*.28,1.5,d*.29,"#919e99")
@@ -138,7 +160,8 @@ end
 local function docks(s,x,z,ix,iz,seed)
     local tone = sample(DOCK_COLORS,noise(seed,ix,iz,32))
     local h = 5.5 + 3*noise(seed,ix,iz,31)
-    obstacle(s,x-5,h/2,z-3,22,h,23,tone,WAREHOUSE)
+    groundFloor(s,"warehouse",x-5,z-3,22,23,tone,WAREHOUSE,lotSeed(seed,ix,iz,65))
+    obstacle(s,x-5,(h+GROUND_HEIGHT)/2,z-3,22,h-GROUND_HEIGHT,23,tone,WAREHOUSE)
     obstacle(s,x-5,h+.2,z-3,23,.4,24,METAL)
     sign(x-5,h-.85,z+8.7,8.5,1.4,"#365767",0)
     for i=0,2 do
@@ -304,7 +327,7 @@ end
 
 function city.build(seed)
     seed = math.floor(seed or 1)
-    local s = { seed=seed, blocks={}, parks={}, walkLoops={}, plantSites={}, lamps={}, landmarks={} }
+    local s = { seed=seed, blocks={}, buildings={}, parks={}, walkLoops={}, plantSites={}, lamps={}, landmarks={} }
     for i=1,36 do s.blocks[i]={} end
     box(0,-3.9,0,30000,.8,30000,"#467e84",WATER)
     box(0,-2,0,BOUND*2,4,BOUND*2,"#61666a",ASPHALT,true)
@@ -333,7 +356,11 @@ function city.build(seed)
                 for _,dx in {-13,13} do
                     for _,dz in {-13,13} do table.insert(s.plantSites,v(x+dx,0,z+dz)) end
                 end
-            elseif iz==0 and not pad then table.insert(s.plantSites,v(x,0,z+18)) end
+            elseif iz==0 and not pad then
+                -- Leave the path from the sidewalk to the front lobby clear.
+                local treeX = if ix==-1 or ix==1 then x+5 else x
+                table.insert(s.plantSites,v(treeX,0,z+18))
+            end
             if (ix+iz)%2==0 then streetLamp(s,x-20.9,z+(if plaza then 20 else -15)) end
         end
     end

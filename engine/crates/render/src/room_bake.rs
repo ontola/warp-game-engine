@@ -44,9 +44,16 @@ impl Occluders {
     /// grass, alpha-tested, blended and skinned geometry are left out, as is
     /// any instance `keep` rejects.
     pub fn from_scene(scene: &Scene, keep: impl Fn(&GpuInstance) -> bool) -> Self {
+        let selected = scene.instances.iter().enumerate().filter_map(|(index, inst)| keep(inst).then_some(index));
+        Self::from_instances(scene, selected)
+    }
+
+    /// Only the specified scene instances. A streamed room can bake its own
+    /// meshes without visiting the rest of the city.
+    pub fn from_instances(scene: &Scene, indices: impl IntoIterator<Item = usize>) -> Self {
         let mut tris = Vec::new();
-        for inst in &scene.instances {
-            if keep(inst) { instance_triangles(scene, inst, &mut tris); }
+        for index in indices {
+            instance_triangles(scene, &scene.instances[index], &mut tris);
         }
         Self::from_triangles(tris)
     }
@@ -283,9 +290,30 @@ fn gather(corners: &Corners, probes: &[Probe], n: Vec3) -> Vec3 {
     corners.iter().filter(|c| c.1 > 0.).map(|&(i, w)| probes[i as usize].irradiance(n) * w).sum()
 }
 
+std::thread_local! {
+    static WORKER_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
+}
+
+/// Cap CPU workers for the bakes run by this caller. An offline bake uses
+/// the machine's full cook budget; a live game can reserve cores for frames.
+pub fn with_worker_limit<R>(limit: usize, run: impl FnOnce() -> R) -> R {
+    struct Restore(usize);
+    impl Drop for Restore {
+        fn drop(&mut self) { WORKER_LIMIT.set(self.0); }
+    }
+    let _restore = Restore(WORKER_LIMIT.get());
+    WORKER_LIMIT.set(_restore.0.min(limit.max(1)));
+    run()
+}
+
 /// Run `f(index, item)` over `items` on the cooking threads.
 fn each<T: Send>(items: &mut [T], f: impl Fn(usize, &mut T) + Sync) {
-    let chunk = items.len().div_ceil(crate::par::workers().max(1)).max(1);
+    let workers = crate::par::workers().min(WORKER_LIMIT.get()).max(1);
+    if workers == 1 {
+        for (i, item) in items.iter_mut().enumerate() { f(i, item); }
+        return;
+    }
+    let chunk = items.len().div_ceil(workers).max(1);
     let f = &f;
     crate::par::scope(|scope| {
         for (group, out) in items.chunks_mut(chunk).enumerate() {

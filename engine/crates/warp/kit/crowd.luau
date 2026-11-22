@@ -1,5 +1,6 @@
 -- A bounded set of Warp Humans for an arbitrary population. Candidate array
--- indices are stable identities. A game owns their paths, poses and clock.
+-- indices are stable identities; a streaming game can leave gaps when it
+-- unloads part of the world. A game owns their paths, poses and clock.
 local crowd = {}
 local methods = {}
 methods.__index = methods
@@ -10,8 +11,18 @@ end
 
 -- Call periodically with candidate feet positions and the observers' world
 -- positions. Each observer gets a turn at the nearest unclaimed person.
-function methods:select(candidates, observers)
+-- An optional rank(candidate, observerIndex, squaredDistance) can prioritize
+-- or exclude candidates for each view. Return nil to exclude; lower is closer.
+function methods:select(candidates, observers, rankCandidate)
 	local free, capacity = humans.room(self.pool)
+	-- A device can fit fewer skins than the initially configured CPU pool.
+	-- Reclaim the old slot assignments once so no selected actor is off-budget.
+	if self.capacity and capacity < self.capacity then
+		for _, actor in self.active do humans.remove(actor) end
+		table.clear(self.active)
+		free = humans.room(self.pool)
+	end
+	self.capacity = capacity
 	local owned = 0
 	for _ in self.active do owned += 1 end
 	local limit = math.min(capacity, free + owned)
@@ -25,8 +36,12 @@ function methods:select(candidates, observers)
 			if candidate.active ~= false and distance2 <= radius2 then
 				-- Keep a fitted person at the selection boundary until another
 				-- candidate is clearly closer, to avoid flickering between them.
-				local rank = if self.active[id] then distance2 * 0.8 else distance2
-				table.insert(list, {id = id, rank = rank})
+				local rank = distance2
+				if rankCandidate then rank = rankCandidate(candidate, j, distance2) end
+				if rank ~= nil then
+					if self.active[id] then rank -= math.abs(rank)*0.2 end
+					table.insert(list, {id = id, rank = rank})
+				end
 			end
 		end
 		table.sort(list, function(a, b)
@@ -56,10 +71,16 @@ function methods:select(candidates, observers)
 			self.active[id] = nil
 		end
 	end
-	for id, candidate in ipairs(candidates) do
-		if chosen[id] and not self.active[id] then
-			self.active[id] = humans.spawn(self.pool, {pos = candidate.pos, yaw = candidate.yaw})
-		end
+	-- Stable allocation makes fitted appearances deterministic even when the
+	-- candidate set has holes from unloaded rooms.
+	local arrivals = {}
+	for id in chosen do
+		if not self.active[id] then table.insert(arrivals, id) end
+	end
+	table.sort(arrivals)
+	for _, id in arrivals do
+		local c = candidates[id]
+		self.active[id] = humans.spawn(self.pool, {pos = c.pos, yaw = c.yaw})
 	end
 end
 
@@ -68,7 +89,12 @@ end
 function methods:update(candidates)
 	for id, actor in self.active do
 		local c = candidates[id]
-		humans.set(actor, {pos = c.pos, yaw = c.yaw, pose = c.pose})
+		if c then
+			humans.set(actor, {pos = c.pos, yaw = c.yaw, pose = c.pose})
+		else
+			humans.remove(actor)
+			self.active[id] = nil
+		end
 	end
 end
 

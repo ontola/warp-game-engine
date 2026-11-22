@@ -112,13 +112,14 @@ my-game/
 | `seed` | 1 | Seed of the `random` generator. `--seed` overrides it. |
 | `fresh_seed` | false | A new seed for every round played: `warp run` picks one at launch and New round in the start menu another. `--seed`, scripts and tests keep `seed`. |
 | `sky` | `gradient` | The sky at start. `--sky` overrides it; scripts call `sky.set`. |
+| `room_lighting` | false | Enable shadowed panels and up to four streamed indoor lighting volumes. [Luau room lighting](interior-light.md#streamed-ground-floors-in-luau) |
 | `max_entities` | 1024 | Entities alive at once (render slots reserved up front). |
 | `size` | `[1280, 720]` | Window size in pixels. |
 | `hdr` | unset | `true` asks for HDR output on an HDR screen (highlights brighter than SDR white), `false` refuses it; unset follows `WARP_HDR`. F10 overrides it. See [hdr-and-exposure](hdr-and-exposure.md). |
 | `split_layout` | `"stacked"` | How two views share the screen: `"stacked"` (top and bottom) or `"side"` (left and right). |
 | `steps` | 200000 | Luau step budget per hook call (see [scripting](scripting.md#limits)). |
 | `memory_mb` | 64 | Luau memory cap. |
-| `[humans.NAME]` | none | A pool of Warp Humans: `count` (1 to 256 alive at once), `variety` (different people fitted at load, 1 to 16, default 4), `style` (`"person"` or `"zombie"`), `skin` and `shirt` (`"#rrggbb"`, default seeded), `height` (`[1.6, 1.9]` m), `age` (`[low, high]` in years, 18 to 100; the pool's people are spread over it; default seeded, mostly young adults), `seed`. At most 256 in all. Each one costs about 2 MB of GPU skinning memory, so on a device that binds less than all pools need (128 MB on some), every pool is cut by the same share and a line in the log says so. |
+| `[humans.NAME]` | none | A pool of Warp Humans: `count` (1 to 256 alive at once), `variety` (different people fitted at load, 1 to 16, default 4), `style` (`"person"` or `"zombie"`), `skin` and `shirt` (`"#rrggbb"`, default seeded), `height` (`[1.6, 1.9]` m), `age` (`[low, high]` in years, 18 to 100; the pool's people are spread over it; default seeded, mostly young adults), `seed`. At most 256 in all. Each one costs about 2 MB of GPU skinning memory, so on a device that binds less than all pools need (128 MB on some), the engine keeps each pool’s `reserved` minimum (default 1) and shares the remaining capacity proportionally. A line in the log reports the resulting counts. |
 
 Regular scripts outside `sounds/`, `assets/` and `scripts/` run their hooks
 in path order. Type definitions (`*.d.luau`) are skipped.
@@ -231,7 +232,7 @@ keyboard mapping is in `app::input`.
 | `game` | `tick()`, `time()`, `dt()`, `players()`, `title()`, `finish()`, `log(text)` |
 
 - **Parenting**: pass a parent ID as the third argument of `world.spawn`. Move a subtree with `world.place`, change its parent with `world.set_parent` and read `world.get(id).world_pos`. See [parenting](parenting.md) for coordinates, collisions and lifetime.
-- **Entities**: `world.spawn` takes a shape (`"cube"`, `"sphere"`,
+- **Entities**: `world.spawn` takes a shape (`"cube"`, `"pane"`, `"sphere"`,
   `"capsule"`, an outline such as `"outline6"` or `"outline4:0.05"`, or a
   glTF path inside the game folder such as `"assets/crate.glb"`) and
   options: `pos`, `rot` (pitch, yaw, roll),
@@ -245,6 +246,12 @@ keyboard mapping is in `app::input`.
   outline is a hollow regular polygon lying flat (3 to 64 sides, corners
   on the 1 m box's circle, the first towards +X) whose edge is the given
   share of the box wide (default 0.06): neon line art seen from above.
+- **Window glass** uses a two-sided `"pane"` in local XY. For a 3 m wide,
+  2 m high window, spawn it with `size = vector.create(3, 2, 1)`. Its
+  collider is 4 mm thick at unit depth. Set `glass = 0.045` for lightly
+  scattering window glass, or use any scattering opacity from 0 to 1.
+  `color` sets the tint and `roughness` controls reflection sharpness.
+  `world.warm("pane", look)` prepares the material before streaming windows.
 - **Wires**: `world.spawn("wire", { points = {...}, edges = {...}, width = 0.05 })`
   is a 3D wire frame: glowing edges between points, one entity with one
   transform. `points` are vectors in the entity's own space (scaled by

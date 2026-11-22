@@ -1104,6 +1104,8 @@ pub struct Renderer {
     dents: Option<(usize, usize)>,
     dfao: Option<(usize, crate::dfao::Grid)>,
     irradiance_volume: Option<(usize, crate::irradiance_volume::Grid)>,
+    irradiance_atlas: Option<crate::irradiance_volume::Atlas>,
+    irradiance_slots_live: std::sync::atomic::AtomicU32,
     probe_visibility: Option<usize>,
     visibility_uploaded: std::sync::atomic::AtomicBool,
     sun_diagnostics: std::sync::Mutex<crate::shadow_diagnostics::State>,
@@ -1565,7 +1567,7 @@ pub(crate) fn shade_sampled_textures() -> u32 {
 pub(crate) fn transparency_sampled_textures(refraction: bool) -> u32 {
     let is_texture = |ty: &wgpu::BindingType| matches!(ty, wgpu::BindingType::Texture { .. });
     let scene = layout_entries(&scene_layout_bindings()).iter().filter(|e| e.visibility.contains(wgpu::ShaderStages::FRAGMENT) && is_texture(&e.ty)).count();
-    let view = crate::transparency::view_bindings().iter().filter(|(_, ty)| is_texture(ty)).count();
+    let view = crate::transparency::view_bindings(false).iter().filter(|(_, ty)| is_texture(ty)).count();
     (scene + view) as u32 + if refraction { 3 } else { 0 }
 }
 
@@ -1925,6 +1927,33 @@ impl Renderer {
         Ok(())
     }
 
+    /// Install a world-space room baked with `pack_sky_emission`. Bounds
+    /// restrict its influence to the room, independently of the probe padding.
+    pub fn set_irradiance_slot(&self, gpu: &Gpu, slot: usize, min: Vec3, max: Vec3, packed: &[u32]) -> Result<(), String> {
+        let atlas = self.irradiance_atlas.ok_or("no reserved irradiance atlas")?;
+        let entry = atlas.entry(slot, min, max, packed)?;
+        self.scene_tables.write_aux(gpu, entry[3] as usize, packed)?;
+        self.scene_tables.write_aux(gpu, atlas.directory_entry(slot)?, &entry)?;
+        self.irradiance_slots_live.fetch_or(1 << slot, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Remove a room's lookup while retaining its reservation for the next room.
+    pub fn clear_irradiance_slot(&self, gpu: &Gpu, slot: usize) -> Result<(), String> {
+        let atlas = self.irradiance_atlas.ok_or("no reserved irradiance atlas")?;
+        self.scene_tables.write_aux(gpu, atlas.directory_entry(slot)? + 3, &[0])?;
+        self.irradiance_slots_live.fetch_and(!(1 << slot), std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn irradiance_offset(&self) -> f32 {
+        if let Some((offset, _)) = self.irradiance_volume { return offset as f32; }
+        if self.irradiance_slots_live.load(std::sync::atomic::Ordering::Relaxed) != 0 {
+            return self.irradiance_atlas.map_or(0.0, |atlas| atlas.offset as f32);
+        }
+        0.0
+    }
+
     /// Upload geometry-only ambient visibility into the reserved probe grid.
     pub fn set_sky_occlusion(&self, gpu: &Gpu, probes: &[crate::irradiance_volume::Probe]) -> Result<(), String> {
         let (offset, grid) = self.irradiance_volume.ok_or("no reserved probe volume")?;
@@ -2016,6 +2045,11 @@ impl Renderer {
     /// An empty list turns them off. A moved box is captured anew.
     pub fn set_reflection_probes(&self, boxes: &[crate::reflection_probes::ProbeBox]) -> Result<(), String> { self.probes.set(boxes) }
 
+    /// Refresh at most one populated cubemap per this many render frames
+    /// (default one). New or moved boxes still get their first capture on
+    /// successive frames, including while periodic refreshes are waiting.
+    pub fn set_reflection_probe_interval(&self, frames: u32) { self.probes.set_interval(frames); }
+
     /// Draw one probe's six faces: cull, raster and shade as views, with
     /// view 0's lights, shadow maps and gi, no temporal state; then into
     /// the cubes. All six in one frame, so a moving object (a swinging lamp)
@@ -2045,11 +2079,11 @@ impl Renderer {
         let (rsm_store, rsm_none) = { let r = self.rsm.lock().unwrap(); (r.fallback_storage.clone(), r.fallback.clone()) };
         let fog_none = self.froxels.lock().unwrap().fallback.clone();
         for (face, targets) in all.iter().enumerate() {
-        let mut u = view_uniform(crate::reflection_probes::face_view_proj(job.capture, face), job.capture, f * 0.5,
+        let mut u = view_uniform(crate::reflection_probes::face_view_proj(job.bounds.capture, face), job.bounds.capture, f * 0.5,
             [light.lod_pixels, NEAR, 0.0, CAPACITY as f32], [f, f, 1.0 / f, 1.0 / f], light.alpha_cut);
         u.fog_cull = camera_fog_cull(light);
         u.fog_cull[2] = if self.camera_sun_occlusion && light.sun_lux > 0.0 {
-            crate::terrain_visibility::camera_sun_visibility(&self.hf, job.capture, light.sun_dir) } else { 1.0 };
+            crate::terrain_visibility::camera_sun_visibility(&self.hf, job.bounds.capture, light.sun_dir) } else { 1.0 };
         u.fog_cull[3] = excluded;
         gpu.queue.write_buffer(&targets.uniform, 0, bytemuck::bytes_of(&u));
         self.cull_and_raster(enc, gpu, targets, Some(vis), depth, ts, names, "probe cull", RasterPass::Color);
@@ -2110,7 +2144,7 @@ impl Renderer {
         self.probes.copy_face(enc, job.probe, face);
         }
         let t = self.query.as_ref().map(|(qs, _, _)| { names.push("probe filter"); (qs, timestamp_pair(ts)) });
-        self.probes.finish(gpu, enc, job.probe, t);
+        self.probes.finish(gpu, enc, job, t);
     }
 
     /// Bring the surface voxels reserved with `Scene::reserve_bounce_voxels`
@@ -2876,6 +2910,8 @@ impl Renderer {
             texture_stream,
             live_screens: (!scene.live_screen_feeds.is_empty()).then(|| std::sync::Mutex::new(crate::screen_feed::LiveScreens::new(gpu, &albedo, &scene.live_screen_feeds))),
             irradiance_volume: scene.irradiance_volume,
+            irradiance_atlas: scene.irradiance_atlas,
+            irradiance_slots_live: std::sync::atomic::AtomicU32::new(0),
             probe_visibility: scene.probe_visibility,
             visibility_uploaded: std::sync::atomic::AtomicBool::new(false),
             dents: scene.dents,
@@ -5609,7 +5645,7 @@ impl Renderer {
                 // Reflectance, conditioned on local sun and sky visibility.
                 bounce: [0.12 * 0.85, 0.12, 0.12 * 0.7, light.sky_lux],
                 params: [light.contact_occlusion, light.reflection_occlusion, self.sky_limit,
-                    if light.gi > 0.0 { self.irradiance_volume.map_or(0.0, |(offset, _)| offset as f32) } else { 0.0 }],
+                    if light.gi > 0.0 { self.irradiance_offset() } else { 0.0 }],
                 prev_view_proj: trace_prev.unwrap_or(Mat4::IDENTITY).to_cols_array_2d(),
                 // w: the probe visibility maps' aux offset (0: none).
                 trace: [if trace_prev.is_some() { if sssr_on { 2.0 } else { 1.0 } } else { 0.0 }, TRACE_ROUGHNESS_CUT, TRACE_REACH_M, if self.visibility_uploaded.load(std::sync::atomic::Ordering::Relaxed) { self.probe_visibility.map_or(0.0, |o| o as f32) } else { 0.0 }],
@@ -6316,6 +6352,7 @@ impl Renderer {
                             (13, wgpu::BindingResource::TextureView(&density_view)),
                             (14, wgpu::BindingResource::Sampler(&self.density_sampler)),
                             (15, wgpu::BindingResource::TextureView(&near_view)),
+                            (27, wgpu::BindingResource::TextureView(&self.probes.view)),
                             // The froxel fog (froxel_fog.wgsl), read at each pane's depth.
                             (30, wgpu::BindingResource::TextureView(fog_shade[1])),
                         ], &hdr_v, &depth_v,

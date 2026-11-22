@@ -694,6 +694,8 @@ pub struct Scene {
     /// Indoor irradiance probes in `aux` (`reserve_irradiance_volume`): the
     /// word offset of their header and the grid.
     pub irradiance_volume: Option<(usize, crate::irradiance_volume::Grid)>,
+    /// Spatially separate, streamed room grids in the same aux buffer.
+    pub irradiance_atlas: Option<crate::irradiance_volume::Atlas>,
     /// Per-probe visibility maps in `aux` (`reserve_probe_visibility`): the
     /// offset of `room_bake::VISIBILITY_SIDE`^2 words per probe.
     pub probe_visibility: Option<usize>,
@@ -1018,13 +1020,28 @@ impl Scene {
     /// until `Renderer::set_irradiance_volume`. Call after the game's own
     /// `aux` data is in place; one volume per scene.
     pub fn reserve_irradiance_volume(&mut self, grid: crate::irradiance_volume::Grid) -> Result<(), String> {
-        if self.irradiance_volume.is_some() { return Err("the scene already has an irradiance volume".into()); }
+        if self.irradiance_volume.is_some() || self.irradiance_atlas.is_some() { return Err("the scene already has an irradiance volume".into()); }
         let words = crate::irradiance_volume::pack(&grid, &vec![Default::default(); grid.count()])?;
         // Offset 0 means "no volume" to the shader.
         if self.aux.is_empty() { self.aux.push(0); }
         if self.aux.len() + words.len() >= 1 << 24 { return Err("aux too large for an irradiance volume offset".into()); }
         self.irradiance_volume = Some((self.aux.len(), grid));
         self.aux.extend(words);
+        Ok(())
+    }
+
+    /// Reserve independent room-bake slots sharing one shader spatial
+    /// lookup. Empty slots leave the outdoor lighting untouched.
+    pub fn reserve_irradiance_atlas(&mut self, slots: usize, probes_per_slot: usize) -> Result<(), String> {
+        if self.irradiance_volume.is_some() || self.irradiance_atlas.is_some() {
+            return Err("the scene already has an irradiance volume".into());
+        }
+        let offset = self.aux.len().max(1);
+        let atlas = crate::irradiance_volume::Atlas::new(offset, slots, probes_per_slot)?;
+        if offset + atlas.words() >= 1 << 24 { return Err("aux too large for an irradiance atlas".into()); }
+        self.aux.resize(offset + atlas.words(), 0);
+        self.aux[offset..offset + crate::irradiance_volume::HEADER_WORDS].copy_from_slice(&atlas.header());
+        self.irradiance_atlas = Some(atlas);
         Ok(())
     }
 

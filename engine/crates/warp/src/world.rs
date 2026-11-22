@@ -12,15 +12,17 @@ use kern::collide::{Mover, YawBox};
 use render::primitives;
 use render::scene::{Material, Scene, EMISSIVE, SURFACE};
 use render::slots::{SlotId, Slots};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Component, Path, PathBuf};
 
 /// Emissive 1 means this many nits: a clear glow in daylight.
 pub const EMISSIVE_NITS: f32 = 4000.0;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Shape {
     Cube,
+    /// A single XY quad facing +Z, for two-sided panes.
+    Pane,
     Sphere,
     Capsule,
     /// A hollow regular polygon in the XZ plane (`outline6`, `outline4:0.05`):
@@ -54,7 +56,7 @@ impl Wire {
 
 impl Shape {
     pub fn name(&self) -> String {
-        match self { Shape::Cube => "cube".into(), Shape::Sphere => "sphere".into(), Shape::Capsule => "capsule".into(), Shape::Outline { sides, width } => format!("outline{sides}:{}", *width as f32 / 1000.0), Shape::Model(p) => p.clone(), Shape::Wire => "wire".into() }
+        match self { Shape::Cube => "cube".into(), Shape::Pane => "pane".into(), Shape::Sphere => "sphere".into(), Shape::Capsule => "capsule".into(), Shape::Outline { sides, width } => format!("outline{sides}:{}", *width as f32 / 1000.0), Shape::Model(p) => p.clone(), Shape::Wire => "wire".into() }
     }
 }
 
@@ -68,16 +70,18 @@ pub struct Look {
     pub roughness: f32,
     pub metal: f32,
     pub surface: Option<u8>,
+    /// Scattering opacity of 4 mm architectural glass; None is opaque.
+    pub glass: Option<f32>,
 }
 
 impl Default for Look {
-    fn default() -> Self { Look { color: [0.8, 0.8, 0.8], emissive: 0.0, roughness: 0.7, metal: 0.0, surface: None } }
+    fn default() -> Self { Look { color: [0.8, 0.8, 0.8], emissive: 0.0, roughness: 0.7, metal: 0.0, surface: None, glass: None } }
 }
 
 impl Look {
-    fn key(&self) -> [i32; 7] {
+    fn key(&self) -> [i32; 8] {
         let q = |v: f32| (v.clamp(0.0, 1000.0) * 1000.0).round() as i32;
-        [q(self.color[0]), q(self.color[1]), q(self.color[2]), q(self.emissive), q(self.roughness), q(self.metal), self.surface.map_or(-1, i32::from)]
+        [q(self.color[0]), q(self.color[1]), q(self.color[2]), q(self.emissive), q(self.roughness), q(self.metal), self.surface.map_or(-1, i32::from), self.glass.map_or(-1, q)]
     }
 }
 
@@ -230,9 +234,11 @@ pub struct World {
     next: u32,
     pub scene: Scene,
     slots: Slots,
-    materials: HashMap<[i32; 7], u32>,
+    materials: HashMap<[i32; 8], u32>,
     meshes: HashMap<(usize, u32), usize>,
     models: HashMap<String, ModelInfo>,
+    /// Explicitly preloaded looks survive scene replacement even with no live instances.
+    warmed: BTreeMap<(Shape, [i32; 8]), Look>,
     /// Meshes or materials were added since the renderer was made.
     pub rebuild: bool,
     /// The shapes and looks that caused it (for the log).
@@ -288,7 +294,7 @@ impl World {
         let m = scene.add_material(material(&Look::default()));
         let cube = scene.add_mesh(&primitives::cube(m).mesh());
         let slots = Slots::reserve(&mut scene, max_entities);
-        let mut w = World { fleet: None, entities: BTreeMap::new(), next: 1, scene, slots, materials: HashMap::new(), meshes: HashMap::new(), models: HashMap::new(), rebuild: true, added: Vec::new(), dir: dir.to_path_buf(), fx: Fx::default() };
+        let mut w = World { fleet: None, entities: BTreeMap::new(), next: 1, scene, slots, materials: HashMap::new(), meshes: HashMap::new(), models: HashMap::new(), warmed: BTreeMap::new(), rebuild: true, added: Vec::new(), dir: dir.to_path_buf(), fx: Fx::default() };
         w.materials.insert(Look::default().key(), m);
         w.meshes.insert((0, m), cube);
         w
@@ -299,9 +305,8 @@ impl World {
     /// The game folder.
     pub fn dir(&self) -> &Path { &self.dir }
 
-    /// Build the scene again from the entities alone: what attaching
-    /// vegetation needs (it must come last, and a scene cannot drop it).
-    /// Ids, effects and every entity stay; the renderer is rebuilt.
+    /// Rebuild the scene from live entities and preloaded looks before reattaching
+    /// vegetation, which must be added last. Entity IDs and effects stay live.
     pub fn fresh_scene(&mut self) -> Result<(), String> {
         let mut w = World::new(&self.dir, self.slots.capacity());
         w.scene.style = self.scene.style.clone();
@@ -313,6 +318,9 @@ impl World {
             e.edge_slots.clear();
             show(&mut w.slots, &mut w.scene, &mut e);
             w.entities.insert(id, e);
+        }
+        for ((shape, _), look) in &self.warmed {
+            w.mesh(shape, look)?;
         }
         self.entities = std::mem::take(&mut w.entities);
         self.scene = w.scene;
@@ -327,6 +335,11 @@ impl World {
     fn material(&mut self, look: &Look) -> u32 {
         if let Some(&m) = self.materials.get(&look.key()) { return m; }
         let m = self.scene.add_material(material(look));
+        if let Some(alpha) = look.glass {
+            self.scene.set_material_blend(m, alpha, true);
+            self.scene.set_material_refraction(m, render::scene::Refraction::WINDOW);
+            self.scene.graphics.refraction = true;
+        }
         self.materials.insert(look.key(), m);
         self.rebuild = true;
         m
@@ -339,6 +352,7 @@ impl World {
             Shape::Cube | Shape::Wire => 0,
             Shape::Sphere => 1,
             Shape::Capsule => 2,
+            Shape::Pane => 3,
             Shape::Outline { sides, width } => 3 + (*sides as usize) * 1000 + *width as usize,
             Shape::Model(path) => {
                 if !self.models.contains_key(path) {
@@ -351,7 +365,11 @@ impl World {
                 return Ok((m.mesh, ((m.min + m.max) * 0.5, ((m.max - m.min) * 0.5).max(Vec3::splat(1e-3)))));
             }
         };
-        let local = (Vec3::ZERO, if kind == 2 { Vec3::new(0.5, 1.0, 0.5) } else { half });
+        let local = (Vec3::ZERO, match shape {
+            Shape::Capsule => Vec3::new(0.5, 1.0, 0.5),
+            Shape::Pane => Vec3::new(0.5, 0.5, 0.002),
+            _ => half,
+        });
         let m = self.material(look);
         if let Some(&mesh) = self.meshes.get(&(kind, m)) { return Ok((mesh, local)); }
         let c = look.color.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
@@ -359,6 +377,7 @@ impl World {
         let mut p = match kind {
             0 => primitives::cube(m),
             1 => primitives::sphere(m, 16, 24),
+            3 => primitives::quad(m),
             // Radius 1, 2 m straight middle: halved below to 1 m wide, 2 m tall.
             2 => primitives::capsule(m, 2.0, 12, 20),
             _ => match shape {
@@ -401,6 +420,19 @@ impl World {
     }
 
     pub fn get(&self, id: u32) -> Option<&Entity> { self.entities.get(&id) }
+
+    /// Opaque render geometry for just these entities at their current world
+    /// transforms. Hidden entities have no slots; a wire contributes each edge.
+    pub fn room_occluders(&self, ids: &[u32]) -> Result<render::room_bake::Occluders, String> {
+        let mut instances = BTreeSet::new();
+        for &id in ids {
+            let e = self.get(id).ok_or_else(|| format!("no entity {id} (removed, or never spawned)"))?;
+            for &slot in e.slot.iter().chain(&e.edge_slots) {
+                instances.insert(self.slots.instance(slot));
+            }
+        }
+        Ok(render::room_bake::Occluders::from_instances(&self.scene, instances))
+    }
 
     /// Change an entity; `f` edits it, then its mesh and slot follow.
     pub fn update(&mut self, id: u32, f: impl FnOnce(&mut Entity)) -> Result<(), String> {
@@ -486,7 +518,17 @@ impl World {
 
     /// Add a shape and look's mesh now (in `init`), so spawning it later
     /// never stalls on a new renderer.
-    pub fn warm(&mut self, shape: &Shape, look: &Look) -> Result<(), String> { self.mesh(shape, look).map(|_| ()) }
+    pub fn warm(&mut self, shape: &Shape, look: &Look) -> Result<(), String> {
+        self.mesh(shape, look)?;
+        // Imported models carry their own materials and wire edges use the cube mesh.
+        let (shape, look) = match shape {
+            Shape::Model(_) => (shape.clone(), Look::default()),
+            Shape::Wire => (Shape::Cube, *look),
+            _ => (shape.clone(), *look),
+        };
+        self.warmed.entry((shape, look.key())).or_insert(look);
+        Ok(())
+    }
 
     /// Move an entity without touching anything else (the hot path).
     pub fn place(&mut self, id: u32, pos: Vec3, yaw: Option<f32>) -> Result<(), String> {
@@ -712,6 +754,57 @@ mod tests {
         for _ in 0..14 { w.spawn(Spawn::default()).unwrap(); }
         assert!(w.spawn(Spawn::default()).unwrap_err().contains("max_entities"));
         assert!(w.spawn(Spawn { shape: Shape::Model("../x.glb".into()), ..Default::default() }).is_err());
+    }
+
+    #[test]
+    fn warmed_window_transmits_baked_light_and_keeps_a_thin_solid_pane() {
+        let mut w = World::new(Path::new("."), 8);
+        let look = Look { glass: Some(0.045), roughness: 0.055, ..Look::default() };
+        w.warm(&Shape::Pane, &look).unwrap();
+        w.fresh_scene().unwrap();
+        w.rebuild = false;
+        let id = w.spawn(Spawn { shape: Shape::Pane, look, size: Vec3::new(3.0, 2.0, 1.0), ..Default::default() }).unwrap();
+        assert!(!w.rebuild && w.scene.graphics.refraction);
+        let blend = &w.scene.blended_materials[&w.materials[&look.key()]];
+        assert!(blend.double_sided && blend.refraction == Some(render::scene::Refraction::WINDOW));
+        assert!(w.room_occluders(&[id]).unwrap().hit(Vec3::Z, Vec3::NEG_Z).is_none());
+        assert!(w.raycast(Vec3::Z, Vec3::NEG_Z, 2.0, &Filter::default()).is_some());
+        assert!(w.remove(id));
+    }
+
+    #[test]
+    fn warmed_look_survives_vegetation_scene_refresh_without_an_instance() {
+        let mut w = world();
+        let look = Look { color: [0.4, 0.7, 0.9], surface: Some(24), ..Default::default() };
+        w.warm(&Shape::Cube, &look).unwrap();
+        for _ in 0..2 {
+            w.fresh_scene().unwrap();
+            assert!(w.entities.is_empty());
+            w.rebuild = false;
+            w.added.clear();
+            let id = w.spawn(Spawn { shape: Shape::Cube, look, ..Default::default() }).unwrap();
+            assert!(!w.rebuild && w.added.is_empty(), "first use after refreshing plants must reuse the preloaded mesh");
+            w.remove(id);
+        }
+    }
+
+    #[test]
+    fn room_occluders_use_only_selected_visible_transformed_meshes() {
+        let mut w = world();
+        let root = w.spawn(Spawn { pos: Vec3::X, rot: Vec3::Y * std::f32::consts::FRAC_PI_2, visible: false, ..Default::default() }).unwrap();
+        let ball = w.spawn(Spawn { parent: Some(root), pos: Vec3::Z * 2., shape: Shape::Sphere, ..Default::default() }).unwrap();
+        let wire = Wire { points: vec![Vec3::ZERO, Vec3::X, Vec3::Y], edges: vec![[0,1],[1,2]], width: 0.1 };
+        let frame = w.spawn(Spawn { shape: Shape::Wire, wire: Some(wire), ..Default::default() }).unwrap();
+        let ball_mesh = w.room_occluders(&[root, ball, ball]).unwrap();
+        let center = Vec3::new(3., 0., 0.);
+        assert!(ball_mesh.triangles() > 12);
+        assert!(ball_mesh.hit(center + Vec3::Z * 2., Vec3::NEG_Z).is_some());
+        assert!(ball_mesh.hit(center + Vec3::new(0.45, 0.45, 2.), Vec3::NEG_Z).is_none(), "a sphere leaves the corners of its collision box empty");
+        let meshes = w.room_occluders(&[ball, frame]).unwrap();
+        assert_eq!(meshes.triangles(), ball_mesh.triangles() + 24);
+        assert_eq!(w.room_occluders(&[root]).unwrap().triangles(), 0);
+        w.remove(ball);
+        assert!(w.room_occluders(&[ball]).is_err());
     }
 
     #[test]

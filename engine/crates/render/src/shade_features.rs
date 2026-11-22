@@ -78,7 +78,7 @@ impl ShadeFeatures {
             terrain: any(TERRAIN),
             foliage: any(THIN_FOLIAGE | ALPHA_TEST),
             procedural: any(ROCK | LAVA),
-            irradiance: scene.irradiance_volume.is_some(),
+            irradiance: scene.irradiance_volume.is_some() || scene.irradiance_atlas.is_some(),
             field_regions: field_style_blocks(scene).iter().any(|&b| scene.materials.get(b + REGION_WORD).is_some_and(|m| m.roughness >= 0.5)),
             field_roads: field_style_blocks(scene).iter().any(|&b| scene.materials.get(b + ROAD_WORD).is_some_and(|m| m.metal >= 0.5)),
             skin_hair: any(SKIN | HAIR),

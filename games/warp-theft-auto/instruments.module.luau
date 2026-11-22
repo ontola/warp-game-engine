@@ -40,6 +40,7 @@ local function minimap(fleet, id, goal, x, y, size)
 	dot(nose, d*.52, "#ffffff")
 end
 
+local venue = {office = "Office lobby", hotel = "Hotel lobby", warehouse = "Freight warehouse"}
 local verbs = {recover = "Take marked car ", drive = "Drive to ", fly = "Land at ", walk = "Meet on foot at "}
 function instruments.draw(cityState, fleet, clock, job, player)
 	local id = player.id
@@ -58,7 +59,7 @@ function instruments.draw(cityState, fleet, clock, job, player)
 	text(if job.pause > 0 then "+$750  |  Crew $" .. job.cash else verbs[goal.kind] .. goal.name,left+12*s,top+29*s,19*s,ink)
 	local hour = math.floor(clock.hour)
 	local label = string.format("%02d:%02d", hour, math.floor(clock.hour % 1 * 60))
-	local district = city.district(seat.pos.x,seat.pos.z)
+	local district = if seat.building then venue[cityState.buildings[seat.building].kind] else city.district(seat.pos.x,seat.pos.z)
 	local dw = hud.measure(district,19*s)
 	local tt = x+w-margin
 	hud.box(tt-math.max(dw+22*s,99*s),top,math.max(dw+22*s,99*s),61*s,panel)
@@ -76,7 +77,7 @@ function instruments.draw(cityState, fleet, clock, job, player)
 	local mode
 	if seat.mode == "walk" then
 		mode = "ON FOOT"
-		action = if seat.nearby then "F / Y   Take " .. (if seat.nearby == "car" then "car" else "helicopter") else "WASD / stick   Move"
+		action = if seat.nearby then "F / Y   Take " .. (if seat.nearby == "car" then "car" else "helicopter") elseif seat.doorway then "Walk through the doorway" else "WASD / stick   Move"
 	else
 		mode = if seat.mode == "drive" then string.format("%d km/h", math.floor(math.abs(seat.speed)*3.6+.5)) else string.format("%d m ALT", math.floor(seat.pos.y+.5))
 		action = if seat.mode == "fly" then "Space / A   Rise     Shift / RB   Lower" else "W / RT   Gas     S / LT   Brake"

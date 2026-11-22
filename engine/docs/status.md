@@ -164,6 +164,7 @@ Owned by the foliage work; its working checklist is
   sun and the irradiance volume, temporally filtered, applied in shade. About
   0.6 ms at 4K. Glass reads it at its own depth; reflection probe captures
   march it along their rays.
+- Luau games can opt into four independently streamed room bakes, shadowed ceiling panels and per-room reflections. [Streamed lighting](interior-light.md#streamed-ground-floors-in-luau)
 - Opt-in live reflection probes for rooms ([dynamic-gi.md](dynamic-gi.md#reflection-probes),
   `Renderer::set_reflection_probes`): one box per room, captured by the
   renderer a cube face per frame, box-projected where screen-space
@@ -218,7 +219,7 @@ Luau folder games support local library imports and dependency-aware hot reload 
 Luau entities can follow a parent, and native games can resolve named model sockets ([parenting](parenting.md)).
 
 - **Sideways** (rally): playable; the main performance scene.
-- **[Warp Theft Auto](../../games/warp-theft-auto/README.md)** runs one to four split-screen players in a seeded city with shared cars, helicopters, delivery contracts and a day clock. Its road cars and Sideways use the same native suspension, tyre and drivetrain solver.
+- **[Warp Theft Auto](../../games/warp-theft-auto/README.md)** runs one to four split-screen players in a seeded city with shared cars, helicopters, delivery contracts, a day clock and 52 enterable ground floors. Furnished interiors and their architectural lighting stream around pedestrians. Its road cars and Sideways use the same native suspension, tyre and drivetrain solver.
 - **Growing Guns** (arena shooter): a port of the Godot game; its README's
   status tables say how far the port is. Native Quest build (OpenXR) is
   experimental: about 107 fps average at full eye resolution and 120 Hz, not a

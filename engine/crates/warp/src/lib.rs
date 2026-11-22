@@ -19,6 +19,8 @@ pub mod luajson;
 pub mod party;
 pub mod plants;
 pub mod ragdoll;
+mod room_lighting;
+mod room_scene;
 pub mod samples;
 pub mod sky;
 pub mod sounds;

@@ -152,10 +152,54 @@ struct Capture {
     indirect: wgpu::Buffer,
 }
 
+/// Captures run only on frames where the renderer enables reflections.
+struct CaptureSchedule {
+    boxes: Vec<ProbeBox>,
+    captured: [bool; MAX_PROBES],
+    cursor: usize,
+    interval: u32,
+    elapsed: u32,
+}
+
+impl Default for CaptureSchedule {
+    fn default() -> Self {
+        Self { boxes: Vec::new(), captured: [false; MAX_PROBES], cursor: 0, interval: 1, elapsed: 0 }
+    }
+}
+
+impl CaptureSchedule {
+    fn set(&mut self, boxes: &[ProbeBox]) {
+        if self.boxes == boxes { return; }
+        for (i, b) in boxes.iter().enumerate() {
+            if self.boxes.get(i) != Some(b) { self.captured[i] = false; }
+        }
+        self.boxes.clear();
+        self.boxes.extend_from_slice(boxes);
+    }
+
+    fn next(&mut self) -> Option<Job> {
+        let count = self.boxes.len();
+        if count == 0 { return None; }
+        self.elapsed = self.elapsed.saturating_add(1);
+        let unfilled = (0..count).map(|i| (self.cursor + i) % count).find(|&i| !self.captured[i]);
+        let probe = match unfilled {
+            Some(i) => i,
+            None if self.elapsed >= self.interval => self.cursor % count,
+            None => return None,
+        };
+        self.cursor = probe + 1;
+        self.elapsed = 0;
+        Some(Job { probe, bounds: self.boxes[probe] })
+    }
+
+    fn finish(&mut self, job: &Job) {
+        // The game can move or remove the box before its capture completes.
+        self.captured[job.probe] = self.boxes.get(job.probe) == Some(&job.bounds);
+    }
+}
+
 pub(crate) struct Probes {
-    boxes: std::sync::Mutex<Vec<ProbeBox>>,
-    /// Faces captured per probe (bits), and the next face in turn.
-    captured: std::sync::Mutex<(Vec<u8>, usize)>,
+    schedule: std::sync::Mutex<CaptureSchedule>,
     raw: wgpu::Texture,
     filtered: wgpu::Texture,
     /// All of `filtered`, for shade (binding 27).
@@ -170,8 +214,8 @@ pub(crate) struct Probes {
     capture: std::sync::OnceLock<Capture>,
 }
 
-/// The face to draw this frame.
-pub(crate) struct Job { pub probe: usize, pub capture: Vec3 }
+/// The cubemap to draw this frame.
+pub(crate) struct Job { pub probe: usize, pub bounds: ProbeBox }
 
 impl Probes {
     pub fn new(gpu: &Gpu) -> Self {
@@ -198,7 +242,7 @@ impl Probes {
             mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, mipmap_filter: wgpu::MipmapFilterMode::Linear, ..Default::default() });
         let params = std::array::from_fn(|_| gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("reflection probe face"), size: 16,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }));
-        Self { boxes: Default::default(), captured: Default::default(), view: cube_view(&filtered), raw_view: cube_view(&raw), raw, filtered,
+        Self { schedule: Default::default(), view: cube_view(&filtered), raw_view: cube_view(&raw), raw, filtered,
             down: pipe("down"), prefilter: pipe("prefilter"), layout, sampler, params, capture: std::sync::OnceLock::new() }
     }
 
@@ -207,41 +251,29 @@ impl Probes {
         if boxes.iter().any(|b| !(b.capture.is_finite() && b.min.is_finite() && b.max.is_finite()) || b.min.cmpge(b.max).any()) {
             return Err("a reflection probe box needs finite bounds, min below max".into());
         }
-        let mut current = self.boxes.lock().unwrap();
-        if *current != boxes {
-            // A moved or new probe starts uncaptured.
-            let mut captured = self.captured.lock().unwrap();
-            captured.0.resize(boxes.len(), 0);
-            for (i, b) in boxes.iter().enumerate() { if current.get(i) != Some(b) { captured.0[i] = 0; } }
-            *current = boxes.to_vec();
-        }
+        self.schedule.lock().unwrap().set(boxes);
         Ok(())
     }
 
-    /// The probe to capture this frame (all six faces, so a moving object
-    /// is in one place in all of them), round robin; none without probes.
-    pub fn next(&self) -> Option<Job> {
-        let boxes = self.boxes.lock().unwrap();
-        if boxes.is_empty() { return None; }
-        let mut c = self.captured.lock().unwrap();
-        let probe = c.1 % boxes.len();
-        c.1 = probe + 1;
-        Some(Job { probe, capture: boxes[probe].capture })
+    pub fn set_interval(&self, frames: u32) {
+        self.schedule.lock().unwrap().interval = frames.max(1);
     }
+
+    /// Capture newly placed probes first, then refresh one cubemap per interval.
+    pub fn next(&self) -> Option<Job> { self.schedule.lock().unwrap().next() }
 
     /// Shade's view of the boxes: per probe capture (w 1 once all six faces
     /// are in), min, max; and the count.
     pub fn uniform(&self) -> ([[f32; 4]; 3 * MAX_PROBES], u32) {
-        let boxes = self.boxes.lock().unwrap();
-        let captured = self.captured.lock().unwrap();
+        let state = self.schedule.lock().unwrap();
         let mut out = [[0.0; 4]; 3 * MAX_PROBES];
-        for (i, b) in boxes.iter().enumerate() {
-            let done = captured.0.get(i).is_some_and(|&m| m == 63);
+        for (i, b) in state.boxes.iter().enumerate() {
+            let done = state.captured[i];
             out[3 * i] = b.capture.extend(if done { 1.0 } else { 0.0 }).to_array();
             out[3 * i + 1] = b.min.extend(0.0).to_array();
             out[3 * i + 2] = b.max.extend(0.0).to_array();
         }
-        (out, boxes.len() as u32)
+        (out, state.boxes.len() as u32)
     }
 
     /// The capture's targets: visibility, depth, radiance (shade's
@@ -277,7 +309,8 @@ impl Probes {
     /// After all six faces of `probe` are in: their mips, then their
     /// prefiltered levels (each face's lobe reads its neighbours, captured
     /// in the same frame).
-    pub fn finish(&self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, probe: usize, timestamps: Option<(&wgpu::QuerySet, u32)>) {
+    pub fn finish(&self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, job: &Job, timestamps: Option<(&wgpu::QuerySet, u32)>) {
+        let probe = job.probe;
         let c = self.capture.get().expect("probe targets");
         for face in 0..6 {
             gpu.queue.write_buffer(&self.params[face], 0, bytemuck::cast_slice(&[face as u32, (probe * 6 + face) as u32, LEVELS, SAMPLES]));
@@ -322,14 +355,40 @@ impl Probes {
                 }
             }
         }
-        let mut captured = self.captured.lock().unwrap();
-        if let Some(m) = captured.0.get_mut(probe) { *m = 63; }
+        self.schedule.lock().unwrap().finish(job);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_boxes_preempt_periodic_refreshes_and_keep_round_robin_order() {
+        let room = |x| ProbeBox { min: Vec3::X * x, max: Vec3::X * x + Vec3::ONE, capture: Vec3::X * x + Vec3::splat(0.5) };
+        let tick = |s: &mut CaptureSchedule| {
+            let job = s.next()?;
+            s.finish(&job);
+            Some(job.probe)
+        };
+        let mut s = CaptureSchedule::default();
+        assert!(s.next().is_none());
+        s.set(&[room(0.0), room(20.0)]);
+        assert_eq!([tick(&mut s), tick(&mut s), tick(&mut s)], [Some(0), Some(1), Some(0)]);
+        s.interval = 3;
+        assert_eq!([tick(&mut s), tick(&mut s), tick(&mut s)], [None, None, Some(1)]);
+        s.set(&[room(0.0), room(20.0), room(40.0)]);
+        assert_eq!(tick(&mut s), Some(2));
+        s.set(&[room(0.0), room(21.0), room(40.0)]);
+        let stale = s.next().unwrap();
+        assert_eq!(stale.probe, 1);
+        s.set(&[room(0.0), room(22.0), room(40.0)]);
+        s.finish(&stale);
+        assert_eq!(tick(&mut s), Some(1));
+        assert_eq!([tick(&mut s), tick(&mut s), tick(&mut s)], [None, None, Some(2)]);
+        s.set(&[]);
+        assert!(s.next().is_none());
+    }
 
     #[test]
     fn faces_match_the_cube_layout() {

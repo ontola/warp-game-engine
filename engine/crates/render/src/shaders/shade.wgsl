@@ -1447,7 +1447,27 @@ var<private> irradiance_coverage: f32;
 fn unpack_emission(word: u32) -> vec3<f32> {
     return vec3<f32>(f32(word&511u),f32((word>>9u)&511u),f32((word>>18u)&511u))*exp2(f32(word>>27u)-24.0);
 }
-fn irradiance_sample(p: vec3<f32>, n: vec3<f32>) -> IrradianceSample { return irradiance_sample_at(p, p, n); }
+// Mode 8 contains a directory of separately streamed world-space mode-7
+// grids. The sample, its wall planes and its probes all use the same space.
+fn irradiance_grid_at(p: vec3<f32>) -> u32 {
+    let root=u32(gi.params.w);
+    if !FEATURE_IRRADIANCE || root==0u { return 0u; }
+    if aux_word(root+7u)!=8u { return root; }
+    let rooms=aux_word(root);
+    for (var i=0u; i<rooms; i++) {
+        let at=root+8u+8u*i;
+        let grid=aux_word(at+3u);
+        if grid==0u { continue; }
+        let low=vec3<f32>(aux_f32(at),aux_f32(at+1u),aux_f32(at+2u));
+        let high=vec3<f32>(aux_f32(at+4u),aux_f32(at+5u),aux_f32(at+6u));
+        if all(p>=low) && all(p<=high) { return grid; }
+    }
+    return 0u;
+}
+
+fn irradiance_sample(p: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
+    return irradiance_sample_at(irradiance_grid_at(p),p,p,n);
+}
 // How far open space joins the probe at grid point `at` to `x` within its
 // neighbourhood (room_bake::bake_reach: one bit per voxel of the cells
 // around the grid point, four voxels per cell, stored after the offsets),
@@ -1537,12 +1557,11 @@ fn probe_sees(index: u32, probe: vec3<f32>, x: vec3<f32>) -> f32 {
 // tests (backface, separation planes) at `surface`: a lookup point moved
 // along the surface (jitter) must not validate probes behind a wall the
 // move crossed.
-fn irradiance_sample_at(p: vec3<f32>, surface: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
+fn irradiance_sample_at(o: u32, p: vec3<f32>, surface: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
     // Plane tests blend over 15 cm, but only 2 cm for a moved lookup: its
     // weights reach probes the blend would let through at a corner.
     let soft=select(0.15,0.02,any(p!=surface));
     let ddgi=gi.trace.w>0.5;
-    let o = u32(gi.params.w);
     if !FEATURE_IRRADIANCE || o == 0u { return IrradianceSample(vec4<f32>(0.0),vec3<f32>(0.0)); }
     let transport = aux_word(o + 7u) >= 2u;
     let sun_transport = aux_word(o + 7u) == 3u;
@@ -1700,8 +1719,9 @@ fn jittered_irradiance(p: vec3<f32>, px: vec2<i32>, visibility_n: vec3<f32>, n: 
     // next cell holds the adjoining wall's probes and those beyond it, which
     // showed as a bright dotted line along every edge of a room; in open
     // space the move still blurs the cell steps.
-    var q = p + irradiance_jitter(px, visibility_n);
-    let o = u32(gi.params.w);
+    let o = irradiance_grid_at(p);
+    if o == 0u { return IrradianceSample(vec4<f32>(0.0),vec3<f32>(0.0)); }
+    var q = p + irradiance_jitter(o, px, visibility_n);
     if FEATURE_IRRADIANCE && o != 0u && aux_word(o + 7u) >= 4u && gi.trace.w <= 0.5 {
         let origin = vec3<f32>(aux_f32(o), aux_f32(o + 1u), aux_f32(o + 2u));
         let cell = aux_f32(o + 3u);
@@ -1720,8 +1740,8 @@ fn jittered_irradiance(p: vec3<f32>, px: vec2<i32>, visibility_n: vec3<f32>, n: 
         }
     }
     irradiance_coverage = 1.0;
-    let moved = irradiance_sample_at(q, p, n);
-    if moved.value.w < 0.0 { return irradiance_sample(p, n); }
+    let moved = irradiance_sample_at(o, q, p, n);
+    if moved.value.w < 0.0 { return irradiance_sample_at(o, p, p, n); }
     if gi.trace.w > 0.5 && any(q != p) {
         // DDGI: the moved lookup speaks for p only with the share of its
         // weight whose probes see p; renormalised, a move through a wall
@@ -1730,13 +1750,12 @@ fn jittered_irradiance(p: vec3<f32>, px: vec2<i32>, visibility_n: vec3<f32>, n: 
         // The rest comes from the unmoved lookup, chosen stochastically
         // (TAA averages it). On an open wall the share is 1: the blur stays
         // symmetric and cell boundaries leave no trace.
-        if trace_hash(px, light.fog_sampling.x * 16.0 + 29.0).x >= irradiance_coverage { return irradiance_sample(p, n); }
+        if trace_hash(px, light.fog_sampling.x * 16.0 + 29.0).x >= irradiance_coverage { return irradiance_sample_at(o, p, p, n); }
     }
     return moved;
 }
 
-fn irradiance_jitter(px: vec2<i32>, n: vec3<f32>) -> vec3<f32> {
-    let o = u32(gi.params.w);
+fn irradiance_jitter(o: u32, px: vec2<i32>, n: vec3<f32>) -> vec3<f32> {
     if !FEATURE_IRRADIANCE || o == 0u || light.fog_sampling.y < 0.5 { return vec3<f32>(0.0); }
     let cell = aux_f32(o + 3u);
     let xi = trace_hash(px, light.fog_sampling.x * 16.0 + 11.0) * 2.0 - 1.0;

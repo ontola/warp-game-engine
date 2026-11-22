@@ -90,7 +90,7 @@ same cell as the wall's inner face. Two things keep it out of the room:
   door state. The fallback for a point no probe sees uses only probes that
   reach it.
 
-One volume per scene, up to 65,536 probes.
+A single-grid bake supports up to 65,536 probes. Scenes with separated rooms can reserve independent slots through `Scene::reserve_irradiance_atlas` and upload packed transport for each occupied room.
 
 Lamps: `room_bake::bake_lights` bakes each local light's bounce on its own;
 add the sets of the lit lamps into the emission when a switch flips
@@ -288,6 +288,22 @@ for probes that count (not those behind a wall): shade +1.4 ms at 4K
 (`interior_rooms`, room 2, RTX 5070 Ti: 10.4 against 11.9 ms).
 `KERN_PROBE_GRADIENTS=0` turns it off.
 
+## Streamed ground floors in Luau
+
+Enable `room_lighting = true` in `game.toml`. When the game streams in a room, pass its world-space bounds, static entity IDs and ceiling fixtures to the engine. Remove it on leaving. Up to four separate rooms share the renderer.
+
+```lua
+lights.room(id, {
+    min = lowerCorner, max = upperCorner, entities = pieces,
+    panels = {{pos = ceilingPosition, width = 1.5, depth = .6,
+        color = "#fff0d9", intensity = 1250, range = 18}},
+})
+-- After the last visitor leaves
+lights.room(id, nil)
+```
+
+Panel sizes and range are metres, and intensity is candela along the downward axis. Keep the emitter just below its visible fixture. The room can contain up to eight panels. Warp lights them immediately with clustered shadows and captures a local reflection probe. A native worker uses up to two cooking threads to trace the room's geometry for sky transport, sun bounce, lamp bounce and separation planes. The grid has at most 2,166 probes per room. Each surface samples the volume at its world position, including in split-screen. Enable `light.set({exposure = "auto"})` for eye adaptation.
+
 ## Look scene
 
 ```
@@ -301,7 +317,7 @@ Other variants (`none`, `vis`, `diffuse`, `sun`, `sep`) show the older
 
 ## Not yet
 
-- No Luau call yet: games written in Luau cannot ask for a room bake.
+- Unthreaded browser games currently show the room’s direct lighting. Native games bake the indirect light in the background.
 - The CPU bake (web, baked files) is slower with the direct sky's second
   estimate: 1.3 s -> 5 s for 14,000 probes on this machine.
 - Gradients are uploaded only with probe visibility (DDGI); grids without

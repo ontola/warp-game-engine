@@ -240,7 +240,7 @@ pub const JOINT_NAMES: &[(&str, Bone)] = &[("head", Bone::Head), ("neck", Bone::
     ("hand_l", Bone::HandL), ("hand_r", Bone::HandR), ("knee_l", Bone::CalfL), ("knee_r", Bone::CalfR), ("foot_l", Bone::FootL), ("foot_r", Bone::FootR)];
 
 /// The poses a game can ask for (`humans.set(id, {pose = ...})`).
-pub const POSES: &[&str] = &["walk", "idle", "crouch", "feed", "rise", "wave", "reach", "raise", "strike", "aim", "shove", "attack", "punch", "jab", "hit", "hit_head", "dead", "down", "cast", "roll"];
+pub const POSES: &[&str] = &["walk", "idle", "sit", "crouch", "feed", "rise", "wave", "reach", "raise", "strike", "aim", "shove", "attack", "punch", "jab", "hit", "hit_head", "dead", "down", "cast", "roll"];
 
 /// A person's gait between two ticks.
 #[derive(Clone, Copy, Default, Debug)]
@@ -338,8 +338,7 @@ impl Pool {
     /// The pool's `k`th person, from its seed and name.
     fn person(&self, name: &str, k: usize) -> render::humans::Instance {
         let seed = hash(hash(self.cfg.seed, name.bytes().fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64))), k as u64);
-        let [lo, hi] = self.cfg.height;
-        let height = lo + (hi - lo) * ((seed >> 11) % 1000) as f32 / 1000.0;
+        let height = render::humans::seeded_height(seed, self.cfg.height);
         let shirt = self.cfg.shirt.as_deref().and_then(parse_rgb);
         render::humans::Instance::person(seed, Vec3::ZERO, 0.0, &render::humans::Constraints { height_m: Some(height), shirt })
     }
@@ -498,32 +497,42 @@ impl Humans {
         // What every slot would cost, against what the device holds.
         let bytes = |n: usize| (n * render::skinning::VERTEX_BYTES) as u64;
         let taken: u64 = scene.skinning.actors.iter().map(|a| bytes(a.influences.len())).sum();
-        let per: BTreeMap<String, u64> = self.pools.iter().map(|(name, p)| {
-            let verts: usize = p.models.iter().map(|m| m.vertex_count()).sum::<usize>() / p.models.len().max(1);
-            (name.clone(), bytes(verts))
-        }).collect();
-        let wanted: u64 = self.pools.iter().map(|(name, p)| per[name] * p.cfg.count as u64).sum();
         let room = (budget / 100 * 95).saturating_sub(taken);
-        // The renderer's own limits on skinned actors and vertices count too.
-        let actors_free = render::skinning::MAX_ACTORS.saturating_sub(scene.skinning.actors.len()) as u64;
-        let verts_free = (render::skinning::MAX_VERTICES.saturating_sub(taken as usize / render::skinning::VERTEX_BYTES)) as u64;
-        let slots: u64 = self.pools.values().map(|p| p.cfg.count as u64).sum();
-        // The share of every pool that fits, in thousandths.
-        let mut share = 1000u64;
-        if wanted > room { share = share.min(room * 1000 / wanted.max(1)); }
-        if slots > actors_free { share = share.min(actors_free * 1000 / slots.max(1)); }
-        let wanted_verts = wanted / render::skinning::VERTEX_BYTES as u64;
-        if wanted_verts > verts_free { share = share.min(verts_free * 1000 / wanted_verts.max(1)); }
+        let actors_free = render::skinning::MAX_ACTORS.saturating_sub(scene.skinning.actors.len());
+        let bytes_free = room.min(bytes(render::skinning::MAX_VERTICES).saturating_sub(taken));
+        // Reserve player avatars first, then fit the same share of every pool's
+        // optional slots using the actual vertex count of each fitted identity.
+        let capacity = |cfg: &HumanPool, share: usize| {
+            let floor = cfg.reserved.max(1);
+            floor + (cfg.count - floor) * share / 1000
+        };
+        let fits = |share| {
+            let mut slots = 0;
+            let mut size = 0;
+            for pool in self.pools.values() {
+                let count = capacity(&pool.cfg, share);
+                slots += count;
+                size += (0..count).map(|i| bytes(pool.models[i % pool.models.len()].vertex_count())).sum::<u64>();
+            }
+            slots <= actors_free && size <= bytes_free
+        };
+        if !fits(0) { return Err("the device cannot fit the reserved Warp Human slots".into()); }
+        let mut share = 1000;
+        if !fits(share) {
+            let (mut lo, mut hi) = (0, share);
+            while hi - lo > 1 {
+                let mid = (lo + hi) / 2;
+                if fits(mid) { lo = mid; } else { hi = mid; }
+            }
+            share = lo;
+        }
         let mut note = None;
-        let mut total = 0u64;
         for (name, pool) in &mut self.pools {
-            pool.cap = if share >= 1000 { pool.cfg.count } else { ((pool.cfg.count as u64 * share / 1000) as usize).max(1) };
-            total += pool.cap as u64;
+            pool.cap = capacity(&pool.cfg, share);
             if pool.cap < pool.cfg.count {
-                note = Some(format!("humans: this device or renderer holds fewer skinned people than the pools ask ({} MB, {} actors), so every pool is cut to fit (e.g. {name}: {} of {})", room >> 20, actors_free, pool.cap, pool.cfg.count));
+                note = Some(format!("humans: {name} cut to {} of {} slots to fit {} MB and {actors_free} actors", pool.cap, pool.cfg.count, room >> 20));
             }
         }
-        if total > actors_free { return Err(format!("{total} people do not fit in the renderer's {actors_free} free skinned actors")); }
         for pool in self.pools.values_mut() {
             pool.actors.clear();
             for k in 0..pool.cap {
@@ -660,10 +669,34 @@ fn turn(palette: &mut [Mat4], joints: &[usize], at: Vec3, q: Quat) {
     for &j in joints { palette[j] = m * palette[j]; }
 }
 
+/// Seat the fitted skeleton on a chair. Each knee follows its own thigh
+/// length, with the shoes level and supported by the floor under the chair.
+fn sit(rig: &Rig, body: &Skeleton, palette: &mut [Mat4]) {
+    let mut lower_body = 0.0;
+    for [hip, knee, ankle, toe] in [
+        [Bone::ThighL, Bone::CalfL, Bone::FootL, Bone::BallL],
+        [Bone::ThighR, Bone::CalfR, Bone::FootR, Bone::BallR],
+    ] {
+        let joints = [hip, knee, ankle, toe].map(|bone| rig.joint[bone as usize]);
+        let at = |bone: Bone, p: &[Mat4]| p[rig.joint[bone as usize]].transform_point3(body.rest(bone));
+        let foot_height = at(ankle, palette).y;
+        let thigh = (at(knee, palette) - at(hip, palette)).normalize();
+        let forward = Quat::from_rotation_arc(thigh, Vec3::new(0.0, -0.22, 0.98).normalize());
+        turn(palette, &joints, at(hip, palette), forward);
+        let shin = (at(ankle, palette) - at(knee, palette)).normalize();
+        let down = Quat::from_rotation_arc(shin, Vec3::new(0.0, -0.99, 0.10).normalize());
+        turn(palette, &joints[1..], at(knee, palette), down);
+        turn(palette, &joints[2..], at(ankle, palette), (down * forward).inverse());
+        lower_body += (foot_height - at(ankle, palette).y) * 0.5;
+    }
+    let drop = Mat4::from_translation(Vec3::Y * lower_body);
+    for &joint in &rig.joint { palette[joint] = drop * palette[joint]; }
+}
+
 fn pose(rig: &Rig, body: &Skeleton, p: &Person, zombie: bool, alpha: f32, palette: &mut [Mat4]) {
     let g = Gait { phase: p.from.phase + (p.to.phase - p.from.phase) * alpha, speed: p.from.speed + (p.to.speed - p.from.speed) * alpha };
     let t = (p.prev_t + (p.t - p.prev_t) * alpha).clamp(0.0, 1.0);
-    let moving = (g.speed / 0.6).clamp(0.0, 1.0);
+    let moving = if p.pose == "sit" { 0.0 } else { (g.speed / 0.6).clamp(0.0, 1.0) };
     let [w, j, r] = blend(g.speed);
     let mut layers = if matches!(p.pose.as_str(), "crouch" | "feed") {
         vec![Layer { clip: rig.crouch_idle, t: p.age, looped: true, w: 1.0 - moving }, rig.crouch.layer(g.phase, moving)]
@@ -699,7 +732,7 @@ fn pose(rig: &Rig, body: &Skeleton, p: &Person, zombie: bool, alpha: f32, palett
     let pose = body.bound.pose(&rig.lib, &layers);
     for (bone, _) in JOINTS { palette[rig.joint[bone as usize]] = pose[bone as usize] * body.to_rest[bone as usize]; }
     let legs = p.prev_legs + (p.legs - p.prev_legs) * alpha;
-    if legs.abs() > 0.01 && !matches!(p.pose.as_str(), "dead" | "down") {
+    if legs.abs() > 0.01 && !matches!(p.pose.as_str(), "dead" | "down" | "sit") {
         // Strafing: the hips and legs turn towards the walk, the waist
         // takes part of the twist, the chest keeps facing ahead.
         let hips = palette[rig.joint[Bone::Pelvis as usize]].transform_point3(body.rest(Bone::Pelvis));
@@ -734,6 +767,12 @@ fn pose(rig: &Rig, body: &Skeleton, p: &Person, zombie: bool, alpha: f32, palett
         for left in [true, false] {
             let side = if left { 1.0 } else { -1.0 };
             let [upper, fore, hand] = arm(left);
+            // Let the shoulder girdle settle from the mesh's half-raised bind
+            // pose. Rotate about the sternum end of each collarbone so the
+            // shoulder and the hanging arm follow together at any stature.
+            let clavicle = if left { Bone::ClavicleL } else { Bone::ClavicleR };
+            let collar = rig.joint[clavicle as usize];
+            turn(palette, &[collar, upper, fore, hand], at(clavicle, palette), Quat::from_rotation_z(-side * still * 0.10));
             let shoulder = at(if left { Bone::UpperArmL } else { Bone::UpperArmR }, palette);
             // The capture's rest holds the arms a hand away from the hips.
             turn(palette, &[upper, fore, hand], shoulder, Quat::from_rotation_z(-side * still * 0.10) * Quat::from_rotation_x(still * 0.04));
@@ -815,6 +854,15 @@ fn pose(rig: &Rig, body: &Skeleton, p: &Person, zombie: bool, alpha: f32, palett
         // The blow: from high to low ahead over t.
         "strike" => { let a = 2.5 - 1.9 * t; raise(palette, true, a, 0.05); raise(palette, false, a, 0.05); }
         "reach" => { raise(palette, true, 1.35, 0.05); raise(palette, false, 1.35, 0.05); }
+        "sit" => {
+            for left in [true, false] {
+                let [_, elbow, hand] = arm(left);
+                raise(palette, left, 0.40, 0.05);
+                let pivot = at(if left { Bone::LowerArmL } else { Bone::LowerArmR }, palette);
+                turn(palette, &[elbow, hand], pivot, Quat::from_rotation_x(-0.75));
+            }
+            sit(rig, body, palette);
+        }
         "shove" => { let a = 1.2 + 0.3 * (t * PI).sin(); raise(palette, true, a, -0.1); raise(palette, false, a, -0.1); }
         "aim" => raise(palette, false, 1.45, -0.05),
         // Over here: the right hand high, waving side to side.
@@ -851,7 +899,8 @@ mod tests {
             assert_eq!(face.rgba.dimensions(), (64, 64));
             assert_eq!(face.normal.as_ref().unwrap().dimensions(), (64, 64));
         }
-        // A small device cuts every pool instead of failing.
+        // Player slots survive while the larger ambient pool shrinks.
+        cfg.get_mut("b").unwrap().reserved = 16;
         let mut h = Humans::new(&cfg);
         let mut scene = render::Scene::default();
         let note = h.attach(&mut scene, 64 << 20).unwrap().expect("a note that pools were cut");
@@ -859,6 +908,7 @@ mod tests {
         let (free, total) = h.room("a").unwrap();
         assert!(total < 50 && free == total, "{free} of {total}");
         assert!(scene.skinning.actors.len() < 66);
+        assert_eq!(h.room("b"), Some((16, 16)));
     }
 
     #[test]
@@ -914,6 +964,24 @@ mod tests {
         // Standing still: the legs come back under the body.
         walk(&mut h, Vec3::ZERO);
         assert!(h.people[&a].legs.abs() < 0.05);
+    }
+
+    #[test]
+    fn seated_people_rest_their_feet_on_the_floor_in_front_of_the_chair() {
+        let cfg = BTreeMap::from([("guest".into(), HumanPool::default())]);
+        let mut people = Humans::new(&cfg);
+        let feet = Vec3::new(4.0, 2.0, -3.0);
+        let id = people.spawn("guest", feet, 0.0).unwrap().unwrap();
+        let standing_ankle = people.joint(id, "foot_l").unwrap().y;
+        people.people.get_mut(&id).unwrap().pose = "sit".into();
+        let hip = people.joint(id, "hips").unwrap();
+        for (knee, foot) in [("knee_l", "foot_l"), ("knee_r", "foot_r")] {
+            let knee = people.joint(id, knee).unwrap();
+            let foot = people.joint(id, foot).unwrap();
+            assert!(knee.z > hip.z + 0.25 && foot.y < knee.y - 0.25);
+            assert!((foot.y - standing_ankle).abs() < 0.035);
+            assert!((0.45..0.85).contains(&(hip.y - feet.y)));
+        }
     }
 
     #[test]

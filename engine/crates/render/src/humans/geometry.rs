@@ -218,15 +218,20 @@ impl super::Instance {
         w.map(|x| x / sum)
     }
 
-    // Shoulder breadth, waist and hips vary independently of overall height.
-    fn width_at(&self, y: f32) -> f32 {
+    // XY cross-sections use the same shape as the instanced crowd shader.
+    fn regional_breadths(&self) -> [f32; 3] {
+        let bits = |value: f32| (value * 16777216.) as u32 & 4095;
+        let packed = bits(self.size_phase[2]) | (bits(self.size_phase[3]) << 12);
+        [0, 8, 16].map(|shift| (((packed >> shift) & 255u32) as f32 - 128.) * (0.15 / 127.))
+    }
+
+    fn width_at(regions: [f32; 3], y: f32) -> f32 {
         let zone = |center: f32, span: f32| {
             let t = (1. - (y - center).abs() / span).clamp(0., 1.);
             t * t * (3. - 2. * t)
         };
-        1. + 0.13 * (2. * self.size_phase[2] - 1.) * zone(0.78, 0.12)
-            + 0.12 * (2. * self.size_phase[3] - 1.) * zone(0.57, 0.13)
-            + 0.10 * (2. * self.identity[0] - 1.) * zone(0.48, 0.11)
+        1. + regions[0] * zone(0.78, 0.12) + regions[1] * zone(0.57, 0.13)
+            + regions[2] * zone(0.48, 0.11)
     }
     pub fn body_mesh(&self) -> (Vec<BodyVertex>, Vec<u32>) {
         self.fitted_mesh(false)
@@ -238,6 +243,7 @@ impl super::Instance {
         let mesh = BODY.get_or_init(Mesh::anatomical);
         let hair = 20 + (self.identity[2] * 3.0) as u32;
         let weights = self.head_weights();
+        let regions = self.regional_breadths();
         let mut vertices = Vec::new();
         let mut remap = vec![u32::MAX; mesh.vertices.len()];
         for (i, v) in mesh.vertices.iter().enumerate() {
@@ -265,7 +271,7 @@ impl super::Instance {
             }
             let head = v.morphs[3][3] as f32 / 127.;
             let skull = 1. + head * (self.size_phase[1] / self.size_phase[0] - 1.);
-            let width = 1. + (1. - head) * (self.width_at(v.pos[1]) - 1.);
+            let width = 1. + (1. - head) * (Self::width_at(regions, v.pos[1]) - 1.);
             p.x *= width * skull;
             p.z *= skull;
             n.x /= width * skull;
@@ -375,6 +381,60 @@ pub(super) fn person(bin: u32, far: Far, detailed: bool) -> Mesh {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn heights_and_body_sections_cluster_and_vary_together() {
+        use super::super::{Constraints, Instance, seeded_height};
+        let samples = 16384;
+        let mut central = 0;
+        let mut short = 0;
+        let mut tall = 0;
+        let mut sum = [0.; 3];
+        let mut squares = [0.; 3];
+        let mut products = [0.; 3];
+        let mut bodies = Vec::new();
+        for seed in 0..samples {
+            let height = seeded_height(seed, [1.60, 1.90]);
+            assert!((1.60..=1.90).contains(&height));
+            assert_eq!(seeded_height(seed, [1.77, 1.77]), 1.77);
+            central += usize::from((height - 1.75).abs() <= 0.05);
+            short += usize::from(height < 1.65);
+            tall += usize::from(height > 1.85);
+            let person = Instance::person(seed, Vec3::ZERO, 0., &Constraints {
+                height_m: Some(1.75), shirt: None,
+            });
+            let factors = [0.78, 0.57, 0.48].map(|y| {
+                (Instance::width_at(person.regional_breadths(), y) * person.body_scale().x / 1.75) as f64
+            });
+            for i in 0..3 {
+                assert!((0.68..1.38).contains(&factors[i]));
+                sum[i] += factors[i];
+                squares[i] += factors[i] * factors[i];
+                products[i] += factors[i] * factors[(i + 1) % 3];
+            }
+            bodies.push(factors);
+        }
+        let n = samples as f64;
+        let mean = sum.map(|x| x / n);
+        let std: [f64; 3] = std::array::from_fn(|i| (squares[i] / n - mean[i].powi(2)).sqrt());
+        let correlation: [f64; 3] = std::array::from_fn(|i| {
+            let j = (i + 1) % 3;
+            (products[i] / n - mean[i] * mean[j]) / (std[i] * std[j])
+        });
+        assert!((0.65..0.70).contains(&(central as f64 / n)));
+        for tail in [short, tall] {
+            assert!((0.012..0.030).contains(&(tail as f64 / n)));
+        }
+        assert!(mean.iter().all(|x| (0.99..1.01).contains(x)));
+        assert!(std.iter().all(|x| (0.035..0.10).contains(x)));
+        assert!(correlation.iter().all(|x| (0.55..0.995).contains(x)));
+        let beyond_two: [f64; 3] = std::array::from_fn(|i| {
+            bodies.iter().filter(|b| (b[i] - mean[i]).abs() > 2. * std[i]).count() as f64 / n
+        });
+        assert!(beyond_two.iter().all(|x| (0.025..0.06).contains(x)));
+        println!("Chest/waist/hip fractions outside ±2σ {beyond_two:.3?}");
+        println!("{samples} seeds: middle ±1σ {central}, lower/upper >2σ {short}/{tall}, chest/waist/hip correlations {correlation:.3?}");
+    }
 
     #[test]
     fn head_blend_is_bounded_and_independent_of_build() {

@@ -50,6 +50,20 @@ const ARM_POINTS: [[f32; 3]; 4] = [
     [0.259, 0.637, 0.084],
     [0.295, 0.565, 0.14],
 ];
+const LEG_NAMES: [&str; 3] = ["UpLeg", "Leg", "Foot"];
+const LEG_POINTS: [[f32; 3]; 4] = [
+    [0.0662, 0.5192, -0.0136],
+    [0.0949, 0.2683, -0.0018],
+    [0.1318, 0.0431, -0.0215],
+    [0.1319, 0.0039, 0.0515], // ball of the foot
+];
+// Lowest vertex of the common hm08 shoe (material 3) in person.bin.
+// Its outsole extends below the anatomical model's zero plane.
+const SOLE_Y: f32 = -0.01146275;
+fn standing_body(person: &Instance) -> Affine3A {
+    let scale = person.body_scale();
+    Affine3A::from_scale_rotation_translation(scale, Quat::IDENTITY, Vec3::Y * (-SOLE_Y * scale.y))
+}
 const SIDES: [(&str, f32); 2] = [("Right", -1.), ("Left", 1.)];
 
 impl Character {
@@ -96,9 +110,9 @@ impl Character {
         self.fit_human(person, skin, None, true, true)
     }
 
-    /// A person with their own anatomy: the spine, neck, head and arm joints
-    /// move to where the hm08 body has them (`warp_human_joints`), so the
-    /// shoulders keep their width and height and the skin binds undeformed.
+    /// A person with their own anatomy: the full resting skeleton uses hm08
+    /// landmarks scaled to the sampled height and breadth, from sole to crown.
+    /// The mesh and the capture retargeter share those same bind coordinates.
     /// Open hands, blinking eyes and close-up hair strands. The caller poses
     /// the joints this returns, not the donor's.
     /// `age` in years; the seed chooses one when it is `None`.
@@ -111,25 +125,35 @@ impl Character {
         self.fit_human(person, skin, age, true, false)
     }
 
-    /// Where `warp_human_person` and `warp_human_player` put this rig's
-    /// joints for `person`, without fitting a mesh (no GPU, cheap).
+    /// Rest joints for `warp_human_person`, without fitting a mesh.
+    /// The combat-specific `warp_human_player` keeps its authored lower rig.
     pub fn warp_human_joints(&self, person: &Instance) -> Result<Vec<(String, Mat4)>, String> {
         let mut joints = self.joints.clone();
-        let upper_body = self.upper_body(person)?;
+        let standing = standing_body(person);
         let mut place = |name: &str, point: Vec3| -> Result<(), String> {
             let joint = joints
                 .iter_mut()
                 .find(|(n, _)| n == name)
                 .ok_or_else(|| format!("Warp Human rig missing {name}"))?;
-            joint.1.w_axis = upper_body.transform_point3(point).extend(1.);
+            joint.1.w_axis = standing.transform_point3(point).extend(1.);
             Ok(())
         };
         for (name, point) in CORE_NAMES.iter().zip(CORE_POINTS) {
             place(name, Vec3::from_array(point))?;
         }
         for (side, sign) in SIDES {
-            for (name, [x, y, z]) in ARM_NAMES.iter().zip(ARM_POINTS) {
-                place(&format!("{side}{name}"), Vec3::new(x * sign, y, z))?;
+            for (names, points) in [(&ARM_NAMES, &ARM_POINTS), (&LEG_NAMES, &LEG_POINTS)] {
+                for (name, &[x, y, z]) in names.iter().zip(points) {
+                    place(&format!("{side}{name}"), Vec3::new(x * sign, y, z))?;
+                }
+            }
+            // These landmarks anchor the capture's collarbone and foot roll.
+            // Some donor rigs supply neither auxiliary joint.
+            for (name, [x, y, z]) in [("Shoulder", [0.037, 0.815, -0.016]), ("ToeBase", LEG_POINTS[3])] {
+                let name = format!("{side}{name}");
+                if self.joints.iter().any(|(n, _)| *n == name) {
+                    place(&name, Vec3::new(x * sign, y, z))?;
+                }
             }
         }
         Ok(joints)
@@ -166,9 +190,11 @@ impl Character {
         // A person's limbs are turned from this rig's bind onto the captures
         // (the `warp` crate's humans); a player's legs play the rig's own clips.
         let retargeted = native && !gripping;
-        let mut fitted_joints = self.joints.clone();
         let scale = person.body_scale();
-        let upper_body = self.upper_body(person)?;
+        let mut fitted_joints = if retargeted { self.warp_human_joints(person)? } else { self.joints.clone() };
+        // Ground standing people at the shoe sole. Combat and donor
+        // clips still require the pelvis of their original bind as the anchor.
+        let upper_body = if retargeted { standing_body(person) } else { self.upper_body(person)? };
         // Normalized hm08 joint positions, in the same space as the crowd rig.
         let mut chain =
             |names: &[&str], points: &[Vec3], keep_upper: bool| -> Result<Vec<Bone>, String> {
@@ -183,7 +209,7 @@ impl Character {
                             .ok_or_else(|| format!("Warp Human rig missing {name}"))
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                if native && keep_upper {
+                if retargeted || (native && keep_upper) {
                     let normal = Mat3::from(upper_body.matrix3).inverse().transpose();
                     return Ok(joints
                         .iter()
@@ -210,19 +236,6 @@ impl Character {
                         stretch = at.distance(end) / (points[i].distance(points[i + 1]) * scale.y);
                     } else if names[i].ends_with("Hand") {
                         rotation = previous_rotation;
-                    } else if retargeted && names[i].ends_with("Foot") {
-                        // The rig's feet splay outward with its legs. Turn the
-                        // shoe the same way, so that whoever turns the rig's
-                        // foot straight ahead takes the shoe with it (left
-                        // facing ahead, it ended up pigeon-toed).
-                        let toe = names[i].replace("Foot", "ToeBase");
-                        if let Some((_, bind)) = self.joints.iter().find(|(n, _)| *n == toe) {
-                            let flat = |v: Vec3| Vec3::new(v.x, 0., v.z).normalize_or_zero();
-                            let (from, to) = (flat(source), flat(bind.w_axis.truncate() - at));
-                            if from != Vec3::ZERO && to != Vec3::ZERO {
-                                rotation = Quat::from_rotation_arc(from, to);
-                            }
-                        }
                     }
                     previous_rotation = rotation;
                     let along =
@@ -255,16 +268,7 @@ impl Character {
                 )
             };
             let arm = limb(&ARM_NAMES, &ARM_POINTS, true)?;
-            let leg = limb(
-                &["UpLeg", "Leg", "Foot"],
-                &[
-                    [0.0662, 0.5192, -0.0136],
-                    [0.0949, 0.2683, -0.0018],
-                    [0.1318, 0.0431, -0.0215],
-                    [0.1319, 0.0039, 0.0515],
-                ],
-                false,
-            )?;
+            let leg = limb(&LEG_NAMES, &LEG_POINTS, false)?;
             limbs.push((arm, leg));
         }
         let skin_color = skin.map(Vec3::from).unwrap_or_else(|| person.skin_color());
@@ -695,4 +699,42 @@ fn shared_tiles() -> &'static [std::sync::Arc<image::RgbaImage>; 12] {
             image.into()
         })
     })
+}
+
+#[cfg(test)]
+mod fit_tests {
+    use super::*;
+    use render::humans::Constraints;
+
+    #[test]
+    fn fitted_stature_reaches_the_soles_and_matches_retarget_joints() {
+        let rig = Character::animation_rig_from_bytes(
+            include_bytes!("../../../../assets/humans/rig/player-rig.json"),
+            include_bytes!("../../../../assets/humans/rig/player.anim.bin")).unwrap();
+        let at = |c: &Character, name: &str| c.joints.iter().find(|(n, _)| n == name).unwrap().1.w_axis.truncate();
+        let mut legs = Vec::new();
+        for height in [1.53, 1.75, 1.98] {
+            let person = Instance::person(91, Vec3::ZERO, 0.0, &Constraints { height_m: Some(height), ..Default::default() });
+            let binds = rig.warp_human_joints(&person).unwrap();
+            let fitted = rig.warp_human_person(&person, None, Some(34.)).unwrap();
+            for ((name, m), (fit_name, fit)) in binds.iter().zip(&fitted.joints) {
+                assert_eq!(name, fit_name);
+                assert!(m.w_axis.distance(fit.w_axis) < 1e-5, "{name} at {height}");
+            }
+            let points = fitted.surfaces.iter().flat_map(|s| s.vertices.iter().map(|v| v.pos[1]));
+            let (sole, crown) = points.fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), y| (lo.min(y), hi.max(y)));
+            assert!(sole.abs() < 0.001 && (crown - height).abs() < 0.045, "height {height}, sole {sole}, crown {crown}");
+            let knee = at(&fitted, "LeftLeg");
+            legs.push((knee.distance(at(&fitted, "LeftUpLeg")), knee.distance(at(&fitted, "LeftFoot"))));
+            assert!((at(&fitted, "Hips").y - height * (CORE_POINTS[0][1] - SOLE_Y)).abs() < 1e-5);
+            assert!((at(&fitted, "LeftToeBase").y - height * (LEG_POINTS[3][1] - SOLE_Y)).abs() < 1e-5);
+        }
+        assert!(legs.windows(2).all(|p| p[1].0 > p[0].0 + 0.04 && p[1].1 > p[0].1 + 0.035));
+
+        let person = Instance::person(91, Vec3::ZERO, 0.0, &Constraints { height_m: Some(1.53), ..Default::default() });
+        let combat = rig.warp_human_player(&person, None).unwrap();
+        for name in ["Hips", "LeftUpLeg", "LeftLeg", "LeftFoot", "LeftToeBase"] {
+            assert!(at(&combat, name).distance(at(&rig, name)) < 1e-5, "{name} no longer matches the authored clip");
+        }
+    }
 }
