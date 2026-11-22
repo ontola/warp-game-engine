@@ -74,6 +74,21 @@ player who joined then leaves the table; one of the `?players=` seats (or
 a joined one between others) stays as a free seat in its own look. The
 same pad coming back in time wakes its player.
 
+Pads (`app/src/web_pads.rs`): Chrome reports most pads with the
+`standard` mapping. Others, like an 8BitDo Ultimate over Bluetooth
+(`2dc8:3012`: 16 buttons, 10 axes, the d-pad as a hat on axis 9), report
+none, and `layout` maps their buttons, sticks and hat by vendor id. Every
+connected pad counts.
+
+In a game: a game's own menu (Start, Esc) offers "Back to lobby" in place
+of Quit when the page hosts it (`app::host_takes_back`, `Game::take_back`);
+the room's menus offer no Quit there. The first game shows a note for 7 s
+that Back or Select (Tab) goes back to the room (`html[data-back-hint]`).
+A game is not started while nobody is seated: the room shows its notice
+again. The page says what is missing when the browser has no WebGPU (with
+Android's own advice: Chrome, or the Splitscreen Club app) or no adapter for
+the GPU.
+
 The cloud room (`examples/browser/cloud.rs`) does what the native host's
 cloud bridge (gamenight `crates/gamenight-local-web/src/cloud.rs`) does:
 it registers a room with a device id the page keeps in localStorage
@@ -205,7 +220,9 @@ How the build differs from native:
   each spawned job at once in a browser. `terrain_fly` builds scenes,
   forests and sun bakes inline there (`background`), which stalls the page
   while it works; `app::web::yield_to_browser` lets the progress bar paint
-  before each long step.
+  before each long step. Warp games' own background work (skin maps, plant cooks)
+  runs inline there too, and recorded samples are not fetched (the synth
+  sounds play).
 - Time comes from `web_time::Instant` (`std::time::Instant` natively).
 - Files: the page fetches the textures first and hands them to
   `render::files::preload`; `render::files::read` and `open_image` find them

@@ -200,6 +200,13 @@ mod page {
         let _ = if empty { root.set_attribute("data-empty", "") } else { root.remove_attribute("data-empty") };
     }
 
+    /// The first game this page starts: the page shows for a few seconds how
+    /// to get back to the room (`<html data-back-hint>`, see index.html).
+    fn back_hint() {
+        let Some(root) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.document_element()) else { return };
+        if !root.has_attribute("data-back-hint") { let _ = root.set_attribute("data-back-hint", ""); }
+    }
+
     /// The room on screen: its lobby, and the page's host answering it.
     struct Room { lobby: Lobby }
 
@@ -274,6 +281,11 @@ mod page {
             (h.on_screen.is_none() && h.paused.as_ref().is_some_and(|(p, _)| *p == id)).then_some(())
         });
         if paused.is_some() { return resume(); }
+        // A game needs a player: nobody here yet, so the room asks for one.
+        if with(|h| h.players == 0) {
+            app::web::log(&format!("{game}: nobody to play it yet"));
+            return empty_room(true);
+        }
         let found = with(|h| {
             let meta = game_meta(&h.party, &game)?;
             let (id, folder) = (meta["id"].as_str()?.to_string(), meta["folder"].as_str()?.to_string());
@@ -304,6 +316,7 @@ mod page {
                 h.on_screen = Some(game.clone());
                 set_session(h, Some(&game), "running");
                 empty_room(false);
+                back_hint();
             });
         });
     }

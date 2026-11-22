@@ -38,6 +38,15 @@ pub mod profile;
 pub mod frame_rate;
 #[cfg(target_arch = "wasm32")]
 pub mod web;
+
+/// A host in this program takes the game back to its lobby (a browser page
+/// with its room, [`web::on_exit`]): games offer "Back to lobby" then.
+pub fn host_takes_back() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    { web::takes_back() }
+    #[cfg(not(target_arch = "wasm32"))]
+    { false }
+}
 #[cfg(target_arch = "wasm32")]
 mod web_pads;
 pub use frame_rate::FrameRate;
@@ -188,6 +197,10 @@ pub trait Game {
     fn debug_stats(&self) -> Vec<(String, String)> { Vec::new() }
     /// The game asks the shell to close (an Exit menu item).
     fn quit(&self) -> bool { false }
+    /// The game's own menu asked to go back to the host's lobby, with the
+    /// game kept paused (as Back does); true once per request. Only offered
+    /// when [`host_takes_back`] holds.
+    fn take_back(&mut self) -> bool { false }
     /// Extra menus and controls for the F2 debug menu, with ids from
     /// [`debug::GAME_IDS`] up (a control's `menu` may name an engine menu).
     fn debug(&self) -> (Vec<render::debug_ui::DebugMenu>, Vec<render::debug_ui::DebugControl>) { Default::default() }

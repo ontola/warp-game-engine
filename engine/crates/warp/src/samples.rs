@@ -188,9 +188,14 @@ pub fn fetch_later(game: &Path) {
     let game = game.to_path_buf();
     let Ok(Some(lock)) = read(&game) else { return };
     if lock.file.values().all(|f| find(&game, &f.sha256).is_some()) { return; }
-    std::thread::spawn(move || {
+    let work = move || {
         if let Err(e) = fetch(&game, None, &mut |l| eprintln!("{l}")) { eprintln!("{e} (the synth versions play instead)"); }
-    });
+    };
+    // No threads in a browser (and no files to fetch to): the synth plays.
+    #[cfg(target_arch = "wasm32")]
+    drop(work);
+    #[cfg(not(target_arch = "wasm32"))]
+    std::thread::spawn(work);
 }
 
 /// A CREDITS text for the files (CC0 needs none, but it is kind and lets a

@@ -577,9 +577,8 @@ pub(super) fn face(
     let lid_travel = texels.iter().flatten().map(|t| t.lid).fold(1e-6f32, f32::max);
     let mut height = vec![0f32; size * size];
     let mut albedo = vec![[0u8; 4]; size * size];
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
-    let rows = size.div_ceil(threads);
-    std::thread::scope(|scope| {
+    let rows = size.div_ceil(render::par::workers());
+    render::par::scope(|scope| {
         for ((k, heights), colors) in height
             .chunks_mut(rows * size)
             .enumerate()

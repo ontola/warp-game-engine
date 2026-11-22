@@ -64,6 +64,7 @@ fn wanted() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
     WANTED.get_or_init(Default::default)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn full_worker() -> &'static std::sync::Mutex<std::sync::mpsc::Sender<FullJob>> {
     static WORKER: OnceLock<std::sync::Mutex<std::sync::mpsc::Sender<FullJob>>> = OnceLock::new();
     WORKER.get_or_init(|| {
@@ -175,7 +176,11 @@ impl Plants {
         if !self.cooked.contains_key(&key) && !self.pending.contains_key(&key) && !self.failed.contains_key(&key) {
             let (tx, rx) = channel();
             let (species, look, age, seed) = (p.species, p.look, p.age, p.seed);
-            std::thread::spawn(move || { let _ = tx.send(cook(species, look, age, seed, false)); });
+            let work = move || { let _ = tx.send(cook(species, look, age, seed, false)); };
+            #[cfg(target_arch = "wasm32")]
+            work();
+            #[cfg(not(target_arch = "wasm32"))]
+            std::thread::spawn(work);
             self.pending.insert(key, rx);
         }
         if p.full {
@@ -184,6 +189,10 @@ impl Plants {
             if !self.cooked.contains_key(&key) && !self.pending.contains_key(&key) && !self.failed.contains_key(&key) {
                 let (tx, rx) = channel();
                 let job = FullJob { key: key.clone(), species: p.species, look: p.look, age: p.age, seed: p.seed, done: tx };
+                // No threads in a browser: the full cook runs here and now.
+                #[cfg(target_arch = "wasm32")]
+                { let _ = job.done.send(cook(job.species, job.look, job.age, job.seed, true)); }
+                #[cfg(not(target_arch = "wasm32"))]
                 let _ = full_worker().lock().unwrap_or_else(|e| e.into_inner()).send(job);
                 self.pending.insert(key, rx);
             }

@@ -410,7 +410,8 @@ impl Lobby {
         if self.host.is_linked(id) { items.insert(1, MenuItem::new("Unlink my phone profile", "unlink")); }
         if self.profiles.len() > 1 { items.push(MenuItem::new("Remove a player", "remove_page")); }
         if self.host.party["lobbies"].as_array().is_some_and(|l| l.len() > 1) { items.push(MenuItem::new("Switch lobby", "lobbies")); }
-        items.push(MenuItem::new("Quit Splitscreen Club", "quit"));
+        // A browser page (a host in the page, `outbox`) is closed with its tab.
+        if self.outbox.is_none() { items.push(MenuItem::new("Quit Splitscreen Club", "quit")); }
         items
     }
 
@@ -432,7 +433,8 @@ impl Lobby {
         let mut items = vec![MenuItem::new("Close menu", "close")];
         if !self.host.update_ready().is_empty() { items.push(MenuItem::new("Update Splitscreen Club now", "update")); }
         if self.host.party["lobbies"].as_array().is_some_and(|l| l.len() > 1) { items.push(MenuItem::new("Switch lobby", "lobbies")); }
-        items.push(MenuItem::new("Quit Splitscreen Club", "quit"));
+        // A browser page (a host in the page, `outbox`) is closed with its tab.
+        if self.outbox.is_none() { items.push(MenuItem::new("Quit Splitscreen Club", "quit")); }
         items
     }
 

@@ -245,6 +245,9 @@ pub enum Exit {
 /// a quit game keeps running.
 pub fn on_exit(f: impl FnMut(Exit) -> bool + 'static) { EXIT.with(|e| *e.borrow_mut() = Some(Box::new(f))); }
 
+/// [`on_exit`] was called: the page has a lobby to go back to.
+pub fn takes_back() -> bool { EXIT.with(|e| e.borrow().is_some()) }
+
 fn exit(why: Exit) -> bool {
     EXIT.with(|e| match e.borrow_mut().as_mut() { Some(f) => f(why), None => false })
 }
@@ -368,6 +371,7 @@ impl Shell {
             let seats = self.game.seats().or(page);
             let controls = crate::input::route(&devices, seats.as_deref(), self.game.local_players());
             self.game.tick(&controls);
+            if !self.exited && self.game.take_back() { self.exited = exit(Exit::Back); }
             if !self.exited && self.game.quit() { self.exited = exit(Exit::Quit); }
         }
         if steps == 6 { self.acc = 0.0; }

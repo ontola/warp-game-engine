@@ -113,6 +113,8 @@ pub struct LuaGame {
     /// The next player id: ids are never reused in a session.
     next_id: u32,
     quit: bool,
+    /// "Back to lobby" was chosen ([`app::Game::take_back`]).
+    back: bool,
     /// The game's own surface shader (surface.wgsl).
     surface: GameSurface,
     /// main.luau as it runs after temporary knob changes (not saved yet).
@@ -123,10 +125,10 @@ pub struct LuaGame {
 /// The start menu's items: Joep's convention for every Splitscreen Club game
 /// (the title on top, Resume, then New round; no button hints).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MenuItem { Resume, NewRound, Quit }
+pub enum MenuItem { Resume, NewRound, BackToLobby, Quit }
 
 impl MenuItem {
-    pub fn label(self) -> &'static str { match self { MenuItem::Resume => "Resume", MenuItem::NewRound => "New round", MenuItem::Quit => "Quit" } }
+    pub fn label(self) -> &'static str { match self { MenuItem::Resume => "Resume", MenuItem::NewRound => "New round", MenuItem::BackToLobby => "Back to lobby", MenuItem::Quit => "Quit" } }
 }
 
 const LOG_KEEP: usize = 200;
@@ -193,7 +195,7 @@ impl LuaGame {
         host.ignore(NOT_MODULES);
         if single.is_none() { host.enable_libraries(); }
         let mut g = LuaGame { dir: dir.to_path_buf(), single: single.clone(), seed: cfg.seed, fresh, cfg, host, core, inited: BTreeSet::new(), light: Lighting::default(), applied_sky: None, sky_upload: None,
-            log: VecDeque::new(), live: None, live_logs: None, default_sky, echo: true, party: None, menu: None, menu_stick: 0.0, running_for: 0, ready_due: false, windowed: false, polls: 0, next_id: 1, quit: false, surface: GameSurface::new(dir), trial: None, editor_pages: Default::default() };
+            log: VecDeque::new(), live: None, live_logs: None, default_sky, echo: true, party: None, menu: None, menu_stick: 0.0, running_for: 0, ready_due: false, windowed: false, polls: 0, next_id: 1, quit: false, back: false, surface: GameSurface::new(dir), trial: None, editor_pages: Default::default() };
         g.surface.install();
         let people: Vec<SeatInfo> = (0..g.cfg.players).map(|i| SeatInfo { seat: i, name: format!("Player {}", i + 1), color: None, bot: false, couch: None, skin: String::new(), avatar: String::new() })
             .chain((0..g.cfg.bots).map(|i| SeatInfo { seat: 100 + i, name: format!("Bot {}", i + 1), color: None, bot: true, couch: None, skin: String::new(), avatar: String::new() })).collect();
@@ -443,8 +445,10 @@ impl LuaGame {
 
     pub fn menu_items(&self) -> Vec<MenuItem> {
         let mut items = vec![MenuItem::Resume, MenuItem::NewRound];
-        // Under Splitscreen Club the host's overlay (Back) leaves the game.
-        if self.party.is_none() { items.push(MenuItem::Quit); }
+        // A page with a lobby (the browser host) goes back to it, the game
+        // paused. Under a Splitscreen Club host its overlay (Back) does.
+        if app::host_takes_back() { items.push(MenuItem::BackToLobby); }
+        else if self.party.is_none() { items.push(MenuItem::Quit); }
         items
     }
 
@@ -472,6 +476,7 @@ impl LuaGame {
                 if self.fresh { self.seed = fresh_seed(self.seed); }
                 self.restart()
             }
+            MenuItem::BackToLobby => self.back = true,
             MenuItem::Quit => self.quit = true,
         }
     }
@@ -1035,6 +1040,7 @@ impl Game for LuaGame {
     }
 
     fn quit(&self) -> bool { self.quit }
+    fn take_back(&mut self) -> bool { std::mem::take(&mut self.back) }
 
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
         let views = frame.rects(self.views());
