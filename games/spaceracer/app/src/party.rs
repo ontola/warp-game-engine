@@ -20,6 +20,10 @@ impl Party {
             declarations,
         }))
     }
+    /// Back to the room: the host pauses the race and shows its overlay.
+    pub fn overlay(&self) {
+        if let Err(e) = self.host.client.request_overlay() { eprintln!("splitscreen-club: {e}"); }
+    }
     pub fn running(&self) -> bool {
         self.host.running()
     }

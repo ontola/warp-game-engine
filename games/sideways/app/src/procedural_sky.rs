@@ -74,24 +74,37 @@ fn apply(config: Config, cache: &mut AtmosphereCache, quality: BakeQuality, scen
 #[derive(Default)]
 pub struct PauseMenu {pub selected:usize,axis:[i8;2],next_repeat:Option<Instant>,confirm_held:bool}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum MenuAction {Resume,NewStage,Time(i8),Atmosphere(i8)}
+pub enum MenuAction {Resume,NewStage,Lobby,Time(i8),Atmosphere(i8)}
+/// The pause menu's rows: Resume, then a new stage right under it, then
+/// Back to lobby under a Splitscreen Club host, then the sky settings.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum MenuRow {Resume,NewStage,Lobby,Time,Atmosphere}
+pub fn menu_rows(lobby:bool)->Vec<MenuRow> {
+    let mut rows=vec![MenuRow::Resume,MenuRow::NewStage];
+    if lobby {rows.push(MenuRow::Lobby);}
+    rows.extend([MenuRow::Time,MenuRow::Atmosphere]);rows
+}
 impl PauseMenu {
     pub fn opened(&mut self,axis:[i8;2],confirm:bool) {self.selected=0;self.axis=axis;self.confirm_held=confirm;self.next_repeat=None;}
     /// Consume held input while an overlay owns focus, retaining selection.
     pub fn suspend(&mut self,axis:[i8;2],confirm:bool) {self.axis=axis;self.confirm_held=confirm;self.next_repeat=None;}
-    pub fn navigate(&mut self,axis:[i8;2],confirm:bool,now:Instant)->Option<MenuAction> {
+    /// `lobby`: a Splitscreen Club host can take the party back to its room.
+    pub fn navigate(&mut self,axis:[i8;2],confirm:bool,now:Instant,lobby:bool)->Option<MenuAction> {
+        let rows=menu_rows(lobby);
         let fire=axis!=[0,0]&&(axis!=self.axis||self.next_repeat.is_some_and(|time|now>=time));
         let confirm_edge=confirm&&!self.confirm_held;self.confirm_held=confirm;
         if fire {
             self.next_repeat=Some(now+Duration::from_millis(if axis==self.axis {200}else{380}));
-            if axis[1]!=0 {self.selected=(self.selected as i32+axis[1] as i32).rem_euclid(4) as usize;}
+            if axis[1]!=0 {self.selected=(self.selected as i32+axis[1] as i32).rem_euclid(rows.len() as i32) as usize;}
         } else if axis==[0,0] {self.next_repeat=None;}
-        self.axis=axis;
+        self.axis=axis;self.selected=self.selected.min(rows.len()-1);
         let delta=if fire {axis[0]}else{0};
-        match self.selected {
-            0 if confirm_edge=>Some(MenuAction::Resume),3 if confirm_edge=>Some(MenuAction::NewStage),
-            1 if delta!=0||confirm_edge=>Some(MenuAction::Time(if delta!=0 {delta}else{1})),
-            2 if delta!=0||confirm_edge=>Some(MenuAction::Atmosphere(if delta!=0 {delta}else{1})),_=>None
+        match rows[self.selected] {
+            MenuRow::Resume if confirm_edge=>Some(MenuAction::Resume),
+            MenuRow::NewStage if confirm_edge=>Some(MenuAction::NewStage),
+            MenuRow::Lobby if confirm_edge=>Some(MenuAction::Lobby),
+            MenuRow::Time if delta!=0||confirm_edge=>Some(MenuAction::Time(if delta!=0 {delta}else{1})),
+            MenuRow::Atmosphere if delta!=0||confirm_edge=>Some(MenuAction::Atmosphere(if delta!=0 {delta}else{1})),_=>None
         }
     }
 }
@@ -102,13 +115,24 @@ mod tests {
 
     #[test]
     fn overlay_suspension_preserves_menu_selection_and_consumes_held_input() {
-        let now=Instant::now();let mut menu=PauseMenu::default();menu.selected=1;
-        assert_eq!(menu.navigate([1,0],false,now),Some(MenuAction::Time(1)));
+        let now=Instant::now();let mut menu=PauseMenu::default();menu.selected=2;
+        assert_eq!(menu.navigate([1,0],false,now,false),Some(MenuAction::Time(1)));
         menu.suspend([1,0],true);
-        assert_eq!(menu.navigate([1,0],true,now+Duration::from_secs(5)),None);
-        assert_eq!(menu.selected,1);
-        assert_eq!(menu.navigate([0,0],false,now+Duration::from_secs(6)),None);
-        assert_eq!(menu.navigate([0,0],true,now+Duration::from_secs(7)),Some(MenuAction::Time(1)));
+        assert_eq!(menu.navigate([1,0],true,now+Duration::from_secs(5),false),None);
+        assert_eq!(menu.selected,2);
+        assert_eq!(menu.navigate([0,0],false,now+Duration::from_secs(6),false),None);
+        assert_eq!(menu.navigate([0,0],true,now+Duration::from_secs(7),false),Some(MenuAction::Time(1)));
+    }
+
+    #[test]
+    fn new_stage_sits_under_resume_and_a_host_adds_back_to_lobby() {
+        assert_eq!(menu_rows(false),[MenuRow::Resume,MenuRow::NewStage,MenuRow::Time,MenuRow::Atmosphere]);
+        assert_eq!(menu_rows(true)[..3],[MenuRow::Resume,MenuRow::NewStage,MenuRow::Lobby]);
+        let now=Instant::now();let mut menu=PauseMenu::default();menu.opened([0,0],false);
+        assert_eq!(menu.navigate([0,1],false,now,true),None);
+        assert_eq!(menu.navigate([0,0],false,now,true),None);
+        assert_eq!(menu.navigate([0,1],false,now,true),None);
+        assert_eq!(menu.navigate([0,0],true,now,true),Some(MenuAction::Lobby));
     }
 
     fn config(entries: &[(&str, &str)]) -> Result<Option<Config>, String> {
@@ -162,14 +186,16 @@ mod tests {
     #[test]
     fn pause_menu_edges_repeat_and_start_release_are_bounded() {
         let now=Instant::now();let mut menu=PauseMenu::default();
-        menu.opened([0,0],true);assert_eq!(menu.navigate([0,0],true,now),None,"held handbrake must not instantly resume");
-        menu.navigate([0,0],false,now);
-        assert_eq!(menu.navigate([0,1],false,now),None);assert_eq!(menu.selected,1);
-        assert_eq!(menu.navigate([1,0],false,now),Some(MenuAction::Time(1)));
-        assert_eq!(menu.navigate([1,0],false,now+Duration::from_millis(100)),None);
-        assert_eq!(menu.navigate([1,0],false,now+Duration::from_millis(380)),Some(MenuAction::Time(1)));
-        menu.navigate([0,1],false,now+Duration::from_secs(1));assert_eq!(menu.selected,2);
-        assert_eq!(menu.navigate([-1,0],false,now+Duration::from_secs(1)),Some(MenuAction::Atmosphere(-1)));
+        menu.opened([0,0],true);assert_eq!(menu.navigate([0,0],true,now,false),None,"held handbrake must not instantly resume");
+        menu.navigate([0,0],false,now,false);
+        assert_eq!(menu.navigate([0,1],false,now,false),None);assert_eq!(menu.selected,1);
+        menu.navigate([0,0],false,now,false);
+        assert_eq!(menu.navigate([0,1],false,now,false),None);assert_eq!(menu.selected,2);
+        assert_eq!(menu.navigate([1,0],false,now,false),Some(MenuAction::Time(1)));
+        assert_eq!(menu.navigate([1,0],false,now+Duration::from_millis(100),false),None);
+        assert_eq!(menu.navigate([1,0],false,now+Duration::from_millis(380),false),Some(MenuAction::Time(1)));
+        menu.navigate([0,1],false,now+Duration::from_secs(1),false);assert_eq!(menu.selected,3);
+        assert_eq!(menu.navigate([-1,0],false,now+Duration::from_secs(1),false),Some(MenuAction::Atmosphere(-1)));
         assert_eq!(DayTime::Sunrise.step(-1),DayTime::Night);assert_eq!(WeatherLook::Clear.step(-1),WeatherLook::Mist);
     }
 }

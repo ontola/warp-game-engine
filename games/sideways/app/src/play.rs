@@ -681,14 +681,25 @@ impl App {
         }
     }
 
-    fn standalone_menu(&mut self,now:Instant)->Result<(),String> {
-        if !self.paused || self.host.is_some(){return Ok(());}
+    /// Local keys and pads, else the host's controllers.
+    fn menu_input(&self,remote:([i8;2],bool))->([i8;2],bool) {
         let (axis,confirm)=self.input.menu_state(self.focused);
+        (if axis==[0,0] {remote.0}else{axis},confirm||remote.1)
+    }
+
+    fn pause_menu_tick(&mut self,now:Instant,remote:([i8;2],bool))->Result<(),String> {
+        if !self.paused {return Ok(());}
+        let (axis,confirm)=self.menu_input(remote);
         if self.debug.ui.open {self.pause_menu.suspend(axis,confirm);return Ok(());}
         use crate::procedural_sky::MenuAction;
-        match self.pause_menu.navigate(axis,confirm,now) {
+        let action=self.pause_menu.navigate(axis,confirm,now,self.host.is_some());
+        // The press that closes the menu does not reach the cars.
+        if matches!(action,Some(MenuAction::Resume|MenuAction::NewStage|MenuAction::Lobby)) {if let Some(host)=&mut self.host{host.state.suppress_buttons();}}
+        match action {
             Some(MenuAction::Resume)=>self.paused=false,
             Some(MenuAction::NewStage)=>{self.next_stage()?;self.paused=false;},
+            // The host pauses the game and shows its room; back from it, play goes on.
+            Some(MenuAction::Lobby)=>{self.paused=false;if let Some(host)=&self.host{host.request_overlay()?;}},
             Some(MenuAction::Time(delta))=>{
                 let time=self.sky_controls.desired().time.step(delta);
                 if let Err(error)=self.request_sky_setting("sky_time",&time.key().into(),now) {self.sky_controls.failed(error);}
@@ -1256,11 +1267,16 @@ impl App {
         }
         self.input.poll();
         let mut inputs: Vec<SeatInput> = (0..self.args.views).map(|i|self.input.seat(i, self.focused)).collect();
+        // The host's controllers drive the pause menu too (D-pad or stick, A).
+        let mut remote_menu=([0i8,0i8],false);
         if let Some(host)=&mut self.host {
             for (i,input) in inputs.iter_mut().enumerate(){
                 let seat=self.seats.get(i);
                 let remote=seat.filter(|s|!s.ai&&!s.controller.is_empty()).map(|s|host.state.controls_for_seat(s.index,now,true)).unwrap_or_default();
                 *input=SeatInput{control:remote.control,look:[remote.look[0] as f32,remote.look[1] as f32],camera_pressed:remote.camera_pressed,pause_pressed:remote.start_pressed};
+                let b=remote.buttons;let bit=|n:u16|b&(1<<n)!=0;
+                let axis=[i8::from(bit(13)||remote.control.steer>0.55)-i8::from(bit(12)||remote.control.steer< -0.55),i8::from(bit(11))-i8::from(bit(10))];
+                if remote_menu.0==[0,0] {remote_menu.0=axis;}remote_menu.1|=bit(0);
             }
         }
         let debug_owned_input=self.debug.ui.open;
@@ -1269,10 +1285,12 @@ impl App {
             let (axis,confirm)=self.input.menu_state(self.focused);self.pause_menu.suspend(axis,confirm);
             self.input.clear_keys();if let Some(host)=&mut self.host{host.state.suppress_buttons();}
         } else if self.scenario.is_none() && inputs.iter().any(|i|i.pause_pressed) {
-            self.paused = !self.paused;if let Some(host)=&mut self.host{host.state.suppress_buttons();if self.paused{host.request_overlay()?;}}self.trace(true);
-            if self.paused && self.host.is_none(){let (axis,confirm)=self.input.menu_state(self.focused);self.pause_menu.opened(axis,confirm);}
+            // Start opens the game's own menu, under a host too; Back (the
+            // host) or "Back to lobby" in the menu goes to the room.
+            self.paused = !self.paused;if let Some(host)=&mut self.host{host.state.suppress_buttons();}self.trace(true);
+            if self.paused {let (axis,confirm)=self.menu_input(remote_menu);self.pause_menu.opened(axis,confirm);}
         }
-        if self.scenario.is_none() && !debug_owned_input {self.standalone_menu(now)?;}
+        if self.scenario.is_none() && !debug_owned_input {self.pause_menu_tick(now,remote_menu)?;}
         else if debug_owned_input {let (axis,confirm)=self.input.menu_state(self.focused);self.pause_menu.suspend(axis,confirm);}
         if self.loading.is_some(){frame_profile::phase(trace,"stage_loading");frame_profile::section(trace,"stage_loading");return self.loading_frame();}
         self.poll_sky_update(now);
@@ -1375,10 +1393,10 @@ impl App {
         frame_profile::section(trace,"hud_layout");
         let layout_started=Instant::now();
         if self.screenshot_toast.as_ref().is_some_and(|(_,until)|now>=*until){self.screenshot_toast=None;}
-        let mut draw_list=if self.paused && self.host.is_none() {
+        let mut draw_list=if self.paused {
             let settings=self.sky_controls.desired();
             Some(crate::hud::live_pause_menu([size.width,size.height],self.pause_menu.selected,
-                settings.time_label(),settings.atmosphere.label(),self.sky_controls.status()))
+                settings.time_label(),settings.atmosphere.label(),self.sky_controls.status(),self.host.is_some()))
         } else if self.args.hud {
             Some(crate::hud::build(&self.race,&self.view_order,&render::split_rects(self.args.views,size.width,size.height).into_iter().map(|(x,y,w,h)|[x,y,w,h]).collect::<Vec<_>>(),
                 &self.race.players.iter().map(|p|p.name.clone()).collect::<Vec<_>>(),self.paused,[size.width,size.height]))

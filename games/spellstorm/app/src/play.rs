@@ -176,6 +176,11 @@ impl Spellstorm {
         match self.menu.update(&mut self.world, controls, spellstorm::world::DT as f32) {
             crate::menu::Action::StartAt(b) => self.world.start_at(b),
             crate::menu::Action::Quit => self.quit = true,
+            crate::menu::Action::Lobby => {
+                if let Some(p) = &self.party {
+                    p.overlay();
+                }
+            }
             _ => {}
         }
         // The game stands still under the menu; the press that closed it

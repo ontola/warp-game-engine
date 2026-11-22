@@ -25,6 +25,8 @@ pub enum Screen { Play, Start, Pause, Settings { from_start: bool }, Advanced }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action { None, Resume, Versus, Wave, Settings, Back, Host, Copy, Quit, Rematch, Extend, AddBot, RemoveBot, Advanced,
+    /// Back to the Splitscreen Club room (the host's overlay).
+    Lobby,
     /// Join the match in the join field (`Menus::join_ticket`).
     Join,
     /// Host on the local network, announced so nobody types a ticket.
@@ -165,6 +167,7 @@ fn items(screen: Screen, ctx: &Ctx) -> Vec<Item> {
         ],
         Screen::Pause if ctx.party.is_some() => vec![
             Item::Button("RESUME", Action::Resume, true), Item::Button("RESTART MATCH", Action::Rematch, !ctx.client),
+            Item::Button("BACK TO LOBBY", Action::Lobby, true),
             if ctx.coop { Item::Button("SWITCH TO VERSUS", Action::Versus, !ctx.client) } else { Item::Button("SWITCH TO WAVE SURVIVAL", Action::Wave, !ctx.client) },
             Item::Bots("AI PLAYERS"), Item::Button("ADVANCED", Action::Advanced, true), Item::Button("SETTINGS", Action::Settings, true),
         ],

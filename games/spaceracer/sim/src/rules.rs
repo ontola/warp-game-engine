@@ -292,6 +292,14 @@ mod tests {
         let out:serde_json::Value=rules.call("menu",adjust.clone()).unwrap();assert_eq!(out["seed"],1);
         adjust["seed"]=1.into();adjust["horizontal"]=(-1).into();
         let out:serde_json::Value=rules.call("menu",adjust).unwrap();assert_eq!(out["seed"],0);
+        // Under a host Back to lobby (6) sits right under Start new race.
+        let lobby=serde_json::json!({"players":2,"biome":-1,"difficulty":-1,"seed":0,
+            "row":1,"vertical":1,"horizontal":0,"accept":false,"start":false,"can_resume":true,"lobby":true});
+        let out:serde_json::Value=rules.call("menu",lobby.clone()).unwrap();assert_eq!(out["row"],6);assert_eq!(out["action"],"none");
+        let mut pick=lobby.clone();pick["row"]=6.into();pick["vertical"]=0.into();pick["accept"]=true.into();
+        let out:serde_json::Value=rules.call("menu",pick).unwrap();assert_eq!(out["action"],"lobby");
+        let mut on=lobby;on["row"]=6.into();on["vertical"]=1.into();
+        let out:serde_json::Value=rules.call("menu",on).unwrap();assert_eq!(out["row"],2);
         let mut worlds=std::collections::HashSet::new();let mut difficulties=std::collections::HashSet::new();
         for entropy in (0u32..15).map(|i|i*99999+34567).chain([u32::MAX]) {
             let out:serde_json::Value=rules.call("menu_defaults",serde_json::json!({"entropy":entropy})).unwrap();

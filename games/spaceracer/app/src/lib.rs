@@ -387,7 +387,7 @@ impl Racer {
     fn menu_pointer(&mut self, at: [f32; 2], size: [u32; 2], click: bool) -> bool {
         if self.menu.is_none() { return false; }
         let ui_scale = (size[1] as f32 / 900.).max(1.);
-        let Some((row, side)) = menu_view::hit(size.map(|x| x as f32 / ui_scale), self.race_started, at.map(|v| v / ui_scale)) else { return false };
+        let Some((row, side)) = menu_view::hit(size.map(|x| x as f32 / ui_scale), self.race_started, self.party.is_some(), at.map(|v| v / ui_scale)) else { return false };
         self.menu = Some(row);
         if click { self.menu_click = Some(side); }
         true
@@ -410,7 +410,7 @@ impl Racer {
         ];
         let click = self.menu_click.take();
         let horizontal = c.pressed.has(Buttons::RIGHT) as i32 - c.pressed.has(Buttons::LEFT) as i32
-            + if row >= 2 { click.unwrap_or(0) } else { 0 }
+            + if (2..menu_view::LOBBY).contains(&row) { click.unwrap_or(0) } else { 0 }
             + if axis[0] != self.menu_axis[0] {
                 axis[0]
             } else {
@@ -423,7 +423,7 @@ impl Racer {
                 0
             };
         self.menu_axis = axis;
-        let out=self.race.rules.call::<serde_json::Value>("menu",json!({"players":self.players,"biome":if self.random_biome {-1}else{self.biome as i64},"difficulty":if self.random_difficulty {-1}else{self.difficulty as i64},"seed":if self.random_seed {0}else{self.seed},"can_resume":self.race_started,"row":row,"vertical":vertical,"horizontal":horizontal,"accept":c.pressed.has(Buttons::SOUTH) || (row < 2 && click.is_some()),"start":c.pressed.has(Buttons::START)}));
+        let out=self.race.rules.call::<serde_json::Value>("menu",json!({"players":self.players,"biome":if self.random_biome {-1}else{self.biome as i64},"difficulty":if self.random_difficulty {-1}else{self.difficulty as i64},"seed":if self.random_seed {0}else{self.seed},"can_resume":self.race_started,"row":row,"vertical":vertical,"horizontal":horizontal,"accept":c.pressed.has(Buttons::SOUTH) || ((row < 2 || row == menu_view::LOBBY) && click.is_some()),"start":c.pressed.has(Buttons::START),"lobby":self.party.is_some()}));
         let result = (|| -> Result<(), String> {
             let out = out?;
             let row = out["row"].as_u64().ok_or("menu row")? as usize;
@@ -446,6 +446,11 @@ impl Racer {
                 "play" => {
                     if self.race.over || self.settings_dirty {self.start_new_race()?;}
                     else {self.menu=None; self.race_started=true;}
+                }
+                // The host pauses the race and shows its room.
+                "lobby" => {
+                    self.menu=None;
+                    if let Some(p)=&self.party {p.overlay();}
                 }
                 _=>{}
             }

@@ -784,6 +784,10 @@ impl Gg {
                 self.act(a);
             }
             Action::Quit => self.quit = true,
+            Action::Lobby => {
+                self.ui.open(Screen::Play);
+                if let Some(p) = &self.party { p.overlay(); }
+            }
             Action::Versus | Action::Wave if host => {
                 for s in std::mem::take(&mut self.start_seats) { self.world.set_bot(s, false); }
                 self.world.coop = a == Action::Wave;

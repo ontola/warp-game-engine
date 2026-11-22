@@ -31,6 +31,7 @@ enum Row {
     Start,
     Resume,
     Restart,
+    Lobby,
     Level,
     FriendlyFire,
     Difficulty,
@@ -44,6 +45,8 @@ pub enum Action {
     None,
     Close,
     StartAt(i32),
+    /// Back to the Splitscreen Club room (the host's overlay).
+    Lobby,
     Quit,
 }
 
@@ -115,6 +118,9 @@ impl Menu {
         self.biome = if title { -1 } else { w.run.biome_index as i32 };
         // A new run sits right under Resume, as every Splitscreen Club game has it.
         self.rows = if title { vec![Row::Start] } else { vec![Row::Resume, Row::Restart] };
+        if !self.standalone {
+            self.rows.push(Row::Lobby);
+        }
         self.rows.extend([Row::Level, Row::FriendlyFire, Row::Difficulty, Row::Unlocks]);
         if self.standalone {
             self.rows.push(Row::Quit);
@@ -227,6 +233,10 @@ impl Menu {
                 self.change(w, row, 1);
                 Action::None
             }
+            Row::Lobby => {
+                self.open = false;
+                Action::Lobby
+            }
             Row::Quit => Action::Quit,
         }
     }
@@ -240,6 +250,7 @@ impl Menu {
             Row::FriendlyFire => ("Friendly fire", cap(ff_name(w))),
             Row::Difficulty => ("Difficulty", cap(difficulty_name(w))),
             Row::Unlocks => ("Unlocks", if w.settings.unlock_all { "All".into() } else { "Earned".into() }),
+            Row::Lobby => ("Back to lobby", String::new()),
             Row::Quit => ("Quit", String::new()),
         }
     }

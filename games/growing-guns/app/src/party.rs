@@ -138,6 +138,11 @@ pub struct Party {
 }
 
 impl Party {
+    /// Back to the room: the host pauses the game and shows its overlay.
+    pub fn overlay(&self) {
+        if let Err(e) = self.host.client.request_overlay() { eprintln!("splitscreen-club: {e}"); }
+    }
+
     /// When launched by a party host (GAMENIGHT=1) or pointed at one (GAMENIGHT_ADDR).
     pub fn connect() -> Option<Party> {
         splitscreen_club::party::Party::connect("growing-guns").map(Party::new)

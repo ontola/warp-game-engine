@@ -107,22 +107,33 @@ local function menu_defaults(c)
     return {seed=c.entropy%99999+1,biome=math.floor(c.entropy/99999)%5,
         difficulty=math.floor(c.entropy/499995)%3}
 end
-local rows={"RESUME RACE","START NEW RACE","PLAYERS","WORLD","DIFFICULTY","TRACK SEED"}
+local rows={"RESUME RACE","START NEW RACE","PLAYERS","WORLD","DIFFICULTY","TRACK SEED","BACK TO LOBBY"}
+-- Rows keep their numbers; under a Splitscreen Club host (c.lobby) Back to
+-- lobby (6) shows right under Start new race. app/src/menu_view.rs `order`
+-- lays them out the same way.
+local function menu_order(c)
+    local order=c.lobby and {0,1,6,2,3,4,5} or {0,1,2,3,4,5}
+    if not c.can_resume then table.remove(order,1) end
+    return order
+end
 local function menu(c)
-    local first=c.can_resume and 0 or 1
-    local row=first+(math.max(first,c.row)-first+c.vertical)%(#rows-first)
+    local order=menu_order(c)
+    local at=1
+    for i,r in ipairs(order) do if r==c.row then at=i end end
+    local row=order[(at-1+c.vertical)%#order+1]
     local action="none"
     if c.start then action=c.can_resume and row~=1 and "play" or "new"
-    elseif c.accept and row<2 then action=row==0 and "play" or "new" end
+    elseif c.accept and row<2 then action=row==0 and "play" or "new"
+    elseif c.accept and row==6 then action="lobby" end
     local players,biome,difficulty,seed=c.players,c.biome,c.difficulty,c.seed
-    if c.horizontal~=0 then
+    if c.horizontal~=0 and row<6 then
         if row==2 then players=(players-1+c.horizontal)%4+1
         elseif row==3 then biome=(biome+1+c.horizontal)%6-1
         elseif row==4 then difficulty=(difficulty+1+c.horizontal)%4-1
         elseif row==5 then seed=(seed+c.horizontal)%100000 end
     end
     return {row=row,action=action,label=rows[row+1],players=players,biome=biome,difficulty=difficulty,seed=seed,
-        rebuild=c.horizontal~=0 and row>=2}
+        rebuild=c.horizontal~=0 and row>=2 and row<6}
 end
 -- Weapon activation policy runs only on a trigger edge. Rust performs the
 -- ray/sweep queries and integrates the resulting bodies at 120 Hz.
