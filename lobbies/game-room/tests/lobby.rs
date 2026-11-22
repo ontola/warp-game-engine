@@ -218,3 +218,45 @@ fn new_rooms_show_where_to_start_and_where_scanned_profiles_wait() {
     lobby.update(1.0 / 60.0);
     assert!(!lobby.nudges.contains("tv"));
 }
+
+#[test]
+fn the_mouse_clicks_a_player_to_remove_them() {
+    let party = json!({
+        "players": [{"id": "p0", "name": "Sanne", "color": "#e36c76", "couch": 0}],
+        "seats": [{"index": 0, "occupant": {"kind": "local", "player_id": "p0"}, "controller": "pad-a"}],
+        "library": [], "playlist": {"entries": [], "current": null},
+    });
+    let (url, _to_lobby, from_lobby) = fake_host(party);
+    let config = splitscreen_club::lobby::Config { url, lobby_id: "game-room".into(), token: "secret".into(), links_base: String::new() };
+    let mut lobby = Lobby::connect_with(options(), config).unwrap();
+    run_until(&mut lobby, |l| l.accepts_input() && l.world.player("p0").is_some());
+    lobby.world.player_mut("p0").unwrap().x = -4.0;
+    for _ in 0..30 { tick(&mut lobby); }
+    let size = [1920, 1080];
+    let p = lobby.world.player("p0").unwrap();
+    let body = lobby.screen_point(glam::Vec3::new(p.x as f32, p.y as f32 + 1.0, lobby.actor_depth("p0")), size).unwrap();
+    assert_eq!(lobby.player_at(body, size).as_deref(), Some("p0"));
+    let click = |lobby: &mut Lobby, at: [f32; 2]| {
+        app::Game::pointer(lobby, app::Pointer { position: Some(at), moved: true, pressed: true, ..Default::default() }, size);
+        lobby.update(1.0 / 60.0);
+    };
+    click(&mut lobby, body);
+    assert!(lobby.mouse_menu_open(), "a click on a player opens their menu");
+    let items = lobby.menu_items(game_room::mouse::MOUSE);
+    let remove = items.iter().position(|i| i.action == "remove").unwrap();
+    assert!(items[remove].label.contains("Sanne"));
+    let (_, rows) = game_room::hud::mouse_menu_rows(&lobby, size).unwrap();
+    let row = rows[remove];
+    let at = [row[0] + row[2] / 2.0, row[1] + row[3] / 2.0];
+    click(&mut lobby, at);
+    click(&mut lobby, at);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if let Ok(m) = from_lobby.recv_timeout(Duration::from_millis(50)) && m["type"] == "leave_party" {
+            assert_eq!(m["player_id"], "p0");
+            assert!(!lobby.mouse_menu_open());
+            return;
+        }
+    }
+    panic!("no leave_party sent");
+}

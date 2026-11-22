@@ -12,6 +12,7 @@ pub mod config;
 pub mod face;
 pub mod game;
 pub mod humans;
+pub mod kit;
 mod editor_menus;
 pub use live::knobs;
 pub mod luajson;

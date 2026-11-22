@@ -62,6 +62,7 @@ impl Lobby {
     /// Escape: the mouse's Start menu opens, or closes (a page goes back).
     pub fn mouse_escape(&mut self) {
         match self.menus.get(MOUSE) {
+            Some(m) if m.page.starts_with("player:") => { self.menus.remove(MOUSE); }
             Some(m) if !m.page.is_empty() => self.menu_page(MOUSE, ""),
             Some(_) => { self.menus.remove(MOUSE); }
             None => { self.menus.insert(MOUSE.into(), Menu::default()); }
@@ -85,6 +86,10 @@ impl Lobby {
             return;
         }
         let Some(at) = p.position else { self.mouse.hover = None; return };
+        // A click on a player opens what the room can do with them.
+        if p.pressed {
+            if let Some(id) = self.player_at(at, size) { self.open_player_menu(&id); return; }
+        }
         if used { self.mouse.hover = self.pointed(at, size); }
         let Some((station, key)) = self.mouse.hover.clone() else { return };
         if p.pressed { self.mouse_press(station.clone(), key.as_deref().unwrap_or("Y")); }
@@ -133,6 +138,24 @@ impl Lobby {
         if !p.pressed { return; }
         if row.is_some() { self.menu_input(MOUSE, BTN_A, [0.0; 2]); }
         else if !inside(frame, at) { self.menus.remove(MOUSE); }
+    }
+
+    /// The player under the cursor at `at`: the front-most whose body
+    /// (feet to head) is there.
+    pub fn player_at(&self, at: [f32; 2], size: [u32; 2]) -> Option<String> {
+        let view_proj = crate::hud::view_proj(&self.stage.room.camera, size);
+        let mut best: Option<(f32, String)> = None;
+        for p in &self.world.players {
+            let depth = self.actor_depth(&p.id);
+            let tall = if p.sleeping { 1.2 } else { 2.1 };
+            let feet = crate::hud::to_screen(view_proj, size, Vec3::new(p.x as f32, p.y as f32, depth));
+            let head = crate::hud::to_screen(view_proj, size, Vec3::new(p.x as f32, p.y as f32 + tall, depth));
+            let (Some(feet), Some(head)) = (feet, head) else { continue };
+            let half = (feet[1] - head[1]).abs() * 0.28;
+            let hit = at[0] >= feet[0] - half && at[0] <= feet[0] + half && at[1] >= head[1] && at[1] <= feet[1];
+            if hit && best.as_ref().is_none_or(|b| depth > b.0) { best = Some((depth, p.id.clone())); }
+        }
+        best.map(|b| b.1)
     }
 
     /// The station, and the button of it, under the cursor at `at`.

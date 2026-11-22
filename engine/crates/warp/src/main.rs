@@ -46,8 +46,11 @@ const USAGE: &str = "warp: run a game made of Luau scripts, synth patches and as
   warp samples DIR [--bundle] [--credits]
       fetch the recordings samples.lock lists into the cache (--bundle: into DIR/samples for a package;
       --credits: print who made them). `warp run` fetches missing ones in the background.
-  warp new DIR [--title TITLE]
-      write a starter game (warp new GAME.luau: the same game in one file)
+  warp new DIR [--title TITLE] [--template NAME]
+      write a starter game (warp new GAME.luau: the same game in one file);
+      --template platformer starts from a game on the kit (warp templates lists them)
+  warp templates
+      list the templates
 
 SKY: gradient | sunrise | morning | noon | afternoon | sunset | night, optionally :clear | :haze | :mist";
 
@@ -106,6 +109,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         Some("check") => check(&args),
         Some("audio") => audio::cli::run(args[1..].to_vec()).map_err(|e| match e.strip_prefix("usage: ") { Some(u) => format!("usage: warp audio {u}"), None => e }),
         Some("new") => new(&args),
+        Some("templates") => { for t in warp::starter::TEMPLATES { println!("{:<12} {}", t.name, t.about); } Ok(()) }
         Some("samples") => samples(&args),
         None => match bundled() {
             Some(game) => play(&["run".to_string(), game.display().to_string()]),
@@ -242,7 +246,10 @@ fn new(args: &[String]) -> Result<(), String> {
         println!("check it: warp check {}  (no GPU)", dir.display());
         return Ok(());
     }
-    let files = warp::starter::write(&dir, &title)?;
+    let files = match value(args, "--template") {
+        Some(name) => warp::starter::write_template(&dir, &title, warp::starter::template(&name)?)?,
+        None => warp::starter::write(&dir, &title)?,
+    };
     println!("wrote {} ({}): {}", dir.display(), title, files.join(", "));
     println!("play it:  warp run {}", dir.display());
     println!("check it: warp check {}  (no GPU)", dir.display());

@@ -402,6 +402,7 @@ impl Lobby {
         let page = self.menus.get(id).map(|m| m.page.as_str()).unwrap_or("");
         if page == "lobbies" { return self.lobby_items(); }
         if page == "remove" { return self.remove_items(id); }
+        if let Some(player) = page.strip_prefix("player:") { return self.player_items(player); }
         if id == crate::mouse::MOUSE { return self.mouse_items(); }
         let mut items = vec![MenuItem::new("Close menu", "close"), MenuItem::new("Leave the party", "leave")];
         // Hosts that predate couch positions don't send them.
@@ -436,6 +437,30 @@ impl Lobby {
         // A browser page (a host in the page, `outbox`) is closed with its tab.
         if self.outbox.is_none() { items.push(MenuItem::new("Quit Splitscreen Club", "quit")); }
         items
+    }
+
+    /// What the mouse can do with a player it clicked: nobody's own menu,
+    /// so only what the room may do to anyone.
+    fn player_items(&self, player: &str) -> Vec<MenuItem> {
+        let name = self.name(player);
+        let with = |label: &str, action: &str| MenuItem { player: player.into(), name: name.clone(), ..MenuItem::new(label, action) };
+        let mut items = vec![];
+        if self.profile(player).is_some_and(|p| p.couch.is_some()) && self.profiles.len() > 1 {
+            let place = self.couch_place(player);
+            if place > 0 { items.push(with("Move left on the couch", "couch_left")); }
+            if place + 1 < self.profiles.len() as i64 { items.push(with("Move right on the couch", "couch_right")); }
+        }
+        if self.host.is_linked(player) && self.client.is_some() { items.push(with("Unlink their phone profile", "unlink_player")); }
+        items.push(with(&format!("Remove {} from the party", short(&name, 14)), "remove"));
+        items.push(MenuItem::new("Close", "close"));
+        items
+    }
+
+    /// The mouse clicked player `id`: its menu opens on that player.
+    pub(crate) fn open_player_menu(&mut self, id: &str) {
+        self.menus.insert(crate::mouse::MOUSE.into(), Menu::default());
+        self.menu_page(crate::mouse::MOUSE, &format!("player:{id}"));
+        self.screens_dirty = true;
     }
 
     fn remove_items(&self, id: &str) -> Vec<MenuItem> {
@@ -501,11 +526,21 @@ impl Lobby {
             "lobbies" => self.menu_page(id, "lobbies"),
             "remove_page" => self.menu_page(id, "remove"),
             "remove" => if confirm {
-                self.menu_page(id, "");
+                if page.starts_with("player:") { self.menus.remove(id); } else { self.menu_page(id, ""); }
                 self.toast(format!("{} left the party.", item.name), DIM);
                 self.command(json!({"type": "leave_party", "player_id": item.player}));
             } else { set_confirm(self) },
             "back" => self.menu_page(id, ""),
+            "couch_left" | "couch_right" => self.move_on_couch(&item.player, if item.action == "couch_left" { -1 } else { 1 }),
+            "unlink_player" => {
+                self.menus.remove(id);
+                let base = self.client.as_ref().map(|c| c.config.links_base.clone()).unwrap_or_default();
+                if !base.is_empty() {
+                    let path = format!("/api/player-links/{}/unlink", path_part(&item.player));
+                    std::thread::spawn(move || { let _ = splitscreen_club::lobby::http(&base, "POST", &path, &["X-GameNight-Local-Pickup: 1"]); });
+                }
+                self.toast(format!("{} is a guest again.", item.name), DIM);
+            }
             "lobby" => if item.current {
                 self.toast(format!("You're already in the {}.", item.title), DIM);
             } else {
