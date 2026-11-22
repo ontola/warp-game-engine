@@ -19,6 +19,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
   the guide or [status](../status.md) instead.
 - When a change alters how something works, update the guide for that part
   in the same commit. The log is not a substitute for that.
+- [Port Meridian interiors, residents and four-player frame times](2026-11-22-warp-theft-auto-interiors.md)
 - [Warp Theft Auto in four views at 1080p and 4K](2026-11-22-warp-theft-auto.md)
 - [Warp Human face texture memory](2026-11-22-warp-human-skin-memory.md)
 - [Terrain Fly patch selection, forest streaming and sun shadows](2026-11-21-terrain-fly-performance.md)
