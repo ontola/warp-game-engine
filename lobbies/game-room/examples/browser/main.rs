@@ -227,8 +227,15 @@ mod page {
     }
 
     /// Load `game` (its store id or folder; fetching its files the first
-    /// time) and switch to it; the room waits behind it, a paused game is dropped.
+    /// time) and switch to it; the room waits behind it. A paused game is
+    /// dropped, unless it is `game`: that one resumes.
     pub(crate) fn start(game: String) {
+        // The paused game itself (the page's button, a phone's pick): resume it.
+        let paused = with(|h| {
+            let id = game_meta(&h.party, &game).and_then(|m| m["id"].as_str()).map(String::from)?;
+            (h.on_screen.is_none() && h.paused.as_ref().is_some_and(|(p, _)| *p == id)).then_some(())
+        });
+        if paused.is_some() { return resume(); }
         let found = with(|h| {
             let meta = game_meta(&h.party, &game)?;
             let (id, folder) = (meta["id"].as_str()?.to_string(), meta["folder"].as_str()?.to_string());
