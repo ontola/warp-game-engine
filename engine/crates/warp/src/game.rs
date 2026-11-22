@@ -62,6 +62,10 @@ pub struct Overrides {
     pub sky: Option<String>,
     /// Played for real (not a script or test): `fresh_seed` applies.
     pub fresh: bool,
+    /// The people and their seats, when a page host seats them (the
+    /// browser): names, colours and faces, and later joins and leaves
+    /// follow ([`crate::web::set_seats`]). Overrides `players`.
+    pub seats: Option<Vec<SeatInfo>>,
 }
 
 /// A seed nobody chose: the clock, mixed with the last one.
@@ -115,6 +119,9 @@ pub struct LuaGame {
     quit: bool,
     /// "Back to lobby" was chosen ([`app::Game::take_back`]).
     back: bool,
+    /// The last page host seats this game followed ([`crate::web::set_seats`]).
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    page_seats: u64,
     /// The game's own surface shader (surface.wgsl).
     surface: GameSurface,
     /// main.luau as it runs after temporary knob changes (not saved yet).
@@ -195,11 +202,16 @@ impl LuaGame {
         host.ignore(NOT_MODULES);
         if single.is_none() { host.enable_libraries(); }
         let mut g = LuaGame { dir: dir.to_path_buf(), single: single.clone(), seed: cfg.seed, fresh, cfg, host, core, inited: BTreeSet::new(), light: Lighting::default(), applied_sky: None, sky_upload: None,
-            log: VecDeque::new(), live: None, live_logs: None, default_sky, echo: true, party: None, menu: None, menu_stick: 0.0, running_for: 0, ready_due: false, windowed: false, polls: 0, next_id: 1, quit: false, back: false, surface: GameSurface::new(dir), trial: None, editor_pages: Default::default() };
+            log: VecDeque::new(), live: None, live_logs: None, default_sky, echo: true, party: None, menu: None, menu_stick: 0.0, running_for: 0, ready_due: false, windowed: false, polls: 0, next_id: 1, quit: false, back: false, page_seats: 0, surface: GameSurface::new(dir), trial: None, editor_pages: Default::default() };
         g.surface.install();
-        let people: Vec<SeatInfo> = (0..g.cfg.players).map(|i| SeatInfo { seat: i, name: format!("Player {}", i + 1), color: None, bot: false, couch: None, skin: String::new(), avatar: String::new() })
-            .chain((0..g.cfg.bots).map(|i| SeatInfo { seat: 100 + i, name: format!("Bot {}", i + 1), color: None, bot: true, couch: None, skin: String::new(), avatar: String::new() })).collect();
-        g.seat_all(&people, false);
+        match &over.seats {
+            Some(seats) => { let seats = g.with_bots(seats); g.seat_all(&seats, true); }
+            None => {
+                let people: Vec<SeatInfo> = (0..g.cfg.players).map(|i| SeatInfo { seat: i, name: format!("Player {}", i + 1), color: None, bot: false, couch: None, skin: String::new(), avatar: String::new() }).collect();
+                let people = g.with_bots(&people);
+                g.seat_all(&people, false);
+            }
+        }
         for l in lines { g.say(l); }
         if let Some(name) = &single { g.host.only(name); }
         g.host.watch(dir.to_path_buf());
@@ -316,6 +328,25 @@ impl LuaGame {
         self.party = Party::connect(&self.game_id());
         if self.party.is_some() { self.say(format!("splitscreen-club: waiting for the party host ({})", self.game_id())); }
         self.party.is_some()
+    }
+
+    /// `people` and the game's own bots (`bots` in game.toml), on seats 100 and up.
+    fn with_bots(&self, people: &[SeatInfo]) -> Vec<SeatInfo> {
+        people.iter().filter(|s| !s.bot).cloned()
+            .chain((0..self.cfg.bots).map(|i| SeatInfo { seat: 100 + i, name: format!("Bot {}", i + 1), color: None, bot: true, couch: None, skin: String::new(), avatar: String::new() })).collect()
+    }
+
+    /// The page host's seats changed ([`crate::web::set_seats`]): follow
+    /// them as a party's mid-session change does. Once per change; a game
+    /// paused meanwhile follows when it ticks again.
+    #[cfg(target_arch = "wasm32")]
+    fn page_seats(&mut self) {
+        let Some((version, seats)) = crate::web::seats_after(self.page_seats) else { return };
+        self.page_seats = version;
+        let seats = self.with_bots(&seats);
+        self.reseat(&seats);
+        let people = self.core().roster.iter().filter(|p| !p.bot).count();
+        app::web::log(&format!("{}: {people} people after the seats changed", self.cfg.title));
     }
 
     /// Players for these seats (people first, then bots), filled up with
@@ -445,10 +476,10 @@ impl LuaGame {
 
     pub fn menu_items(&self) -> Vec<MenuItem> {
         let mut items = vec![MenuItem::Resume, MenuItem::NewRound];
-        // A page with a lobby (the browser host) goes back to it, the game
-        // paused. Under a Splitscreen Club host its overlay (Back) does.
-        if app::host_takes_back() { items.push(MenuItem::BackToLobby); }
-        else if self.party.is_none() { items.push(MenuItem::Quit); }
+        // A page with a lobby (the browser host) or a Splitscreen Club host
+        // goes back to it, the game paused. Alone the game quits.
+        if app::host_takes_back() || self.party.is_some() { items.push(MenuItem::BackToLobby); }
+        else { items.push(MenuItem::Quit); }
         items
     }
 
@@ -476,7 +507,10 @@ impl LuaGame {
                 if self.fresh { self.seed = fresh_seed(self.seed); }
                 self.restart()
             }
-            MenuItem::BackToLobby => self.back = true,
+            MenuItem::BackToLobby => match self.party.as_ref() {
+                Some(party) => party.to_lobby(),
+                None => self.back = true,
+            },
             MenuItem::Quit => self.quit = true,
         }
     }
@@ -1004,6 +1038,8 @@ impl Game for LuaGame {
         if self.polls % POLL_TICKS == 0 && self.polls > 0 { self.reload(); }
         self.polls += 1;
         let dt = 1.0 / self.cfg.tick_rate;
+        #[cfg(target_arch = "wasm32")]
+        self.page_seats();
         // Under Splitscreen Club the party's controllers drive the seats; the game
         // only runs while the host says so.
         let controls = match self.party_tick(dt) {

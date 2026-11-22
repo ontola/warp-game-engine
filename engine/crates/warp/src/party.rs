@@ -7,7 +7,8 @@
 //! (`players_updated`); a seat that joins or leaves mid-session joins or
 //! leaves the game without a restart.
 use app::{Buttons, Controls};
-use splitscreen_club::party::hex;
+/// `#rrggbb` as a colour (None for anything else).
+pub use splitscreen_club::party::hex;
 use splitscreen_club::{button, Command, Pad, Seat};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -113,6 +114,10 @@ impl Party {
         let Some((description, file)) = &self.live else { return };
         if let Err(e) = self.host.client.declare_commands(description, &[], Some(file)) { eprintln!("splitscreen-club: {e}"); }
     }
+
+    /// "Back to lobby" from the start menu: the host pauses this session
+    /// and gives the room the screen, as its Back button does.
+    pub fn to_lobby(&self) { if let Err(e) = self.host.client.request_overlay() { eprintln!("splitscreen-club: {e}"); } }
 
     pub fn room_log(&self, text: &str) { let _ = self.host.client.room_log(text); }
 

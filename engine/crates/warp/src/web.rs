@@ -5,12 +5,30 @@
 //! pages themselves are examples/warp_web.rs (games only) and the Game
 //! Room's examples/browser/main.rs (lobby first). See engine/docs/browser.md.
 
+use crate::party::SeatInfo;
 use std::path::{Path, PathBuf};
 
 thread_local! {
     /// The speakers and the synth mixer playing on them, opened once and
     /// shared by every game the page switches to.
     static SOUND: std::cell::RefCell<Option<(app::sound::Speaker, audio::synth::SoundSender)>> = const { std::cell::RefCell::new(None) };
+    /// The page host's seats and how often they changed ([`set_seats`]).
+    static SEATS: std::cell::RefCell<(u64, Vec<SeatInfo>)> = const { std::cell::RefCell::new((0, Vec::new())) };
+}
+
+/// The page host's people now, on their seats: a running game follows at
+/// its next tick (joins, leaves, names, colours), a paused one when it
+/// resumes, and [`load`] seats a new game with them.
+pub fn set_seats(seats: Vec<SeatInfo>) {
+    SEATS.with(|s| {
+        let mut s = s.borrow_mut();
+        if s.1 != seats { s.0 += 1; s.1 = seats; }
+    });
+}
+
+/// The seats, when they changed after `version`.
+pub(crate) fn seats_after(version: u64) -> Option<(u64, Vec<SeatInfo>)> {
+    SEATS.with(|s| { let s = s.borrow(); (s.0 > version).then(|| s.clone()) })
 }
 
 /// A sender into the page's one synth mixer, opening WebAudio the first time.
@@ -67,11 +85,13 @@ pub async fn fetch_game(name: &str) -> Result<PathBuf, String> {
 
 /// Fetch game `name` ([`fetch_game`]), load its scripts and run `init`,
 /// for `players` local players (keyboard, then pads in the order they wake
-/// up; None: the game's own count).
+/// up; None: the game's own count). A page that seats its people
+/// ([`set_seats`]) gets them in the game, with their names and colours.
 pub async fn load(name: &str, players: Option<usize>) -> Result<(app::Config, crate::LuaGame), String> {
     let dir = fetch_game(name).await?;
     let t1 = web_time::Instant::now();
-    let over = crate::Overrides { fresh: true, players, ..Default::default() };
+    let seats = SEATS.with(|s| { let s = s.borrow(); (s.0 > 0).then(|| s.1.clone()) });
+    let over = crate::Overrides { fresh: true, players, seats, ..Default::default() };
     let game = crate::LuaGame::load_with_storage(&dir, &over, sound(), crate::storage::Location::Memory)?;
     app::web::log(&format!("{name}: scripts loaded and init ran in {:.0} ms", t1.elapsed().as_secs_f32() * 1000.0));
     let cfg = app::Config { title: game.cfg.title.clone(), size: game.cfg.size, tick_hz: game.cfg.tick_rate, keyboard: true, pointer: false, ..Default::default() };

@@ -28,7 +28,14 @@ thread_local! {
     /// otherwise push out of the box.
     static PINNED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static TAIL: RefCell<std::collections::VecDeque<String>> = const { RefCell::new(std::collections::VecDeque::new()) };
+    /// Whether the page shows later loading itself ([`quiet_progress`]),
+    /// and whether that is in effect (from the first frame on).
+    static QUIET: std::cell::Cell<(bool, bool)> = const { std::cell::Cell::new((false, false)) };
 }
+
+/// Once the first frame is drawn, [`progress`] only logs: the page shows
+/// later loading its own way (the Game Room on its TV). A stop still shows.
+pub fn quiet_progress() { QUIET.with(|q| q.set((true, q.get().1))); }
 
 /// Write a line to the browser console and to the page's log element
 /// (`#warp-log`, when the page has one), which shows the pinned lines
@@ -62,6 +69,17 @@ fn show_log() {
 /// `None` hides the box. Also logged to the console.
 pub fn progress(fraction: Option<f32>, step: &str) {
     web_sys::console::log_1(&format!("loading: {step}").into());
+    if fraction.is_some() && QUIET.with(|q| q.get().1) { return; }
+    show_progress(fraction, step);
+}
+
+/// The game stopped with an error: shown in the box even when quiet.
+fn stopped(step: &str) {
+    web_sys::console::log_1(&step.into());
+    show_progress(Some(1.0), step);
+}
+
+fn show_progress(fraction: Option<f32>, step: &str) {
     let Some(document) = web_sys::window().and_then(|w| w.document()) else { return };
     if let Some(el) = document.get_element_by_id("warp-progress") {
         let _ = if fraction.is_some() { el.remove_attribute("hidden") } else { el.set_attribute("hidden", "") };
@@ -425,7 +443,7 @@ impl Shell {
             }
         }
         if self.switched.is_none() { stats(&mut self.times, &self.cfg.title, [dt * 1000.0, tick_ms, draw_ms, ms(t_out)]); }
-        if self.frames == 1 { progress(None, "Ready"); }
+        if self.frames == 1 { progress(None, "Ready"); QUIET.with(|q| q.set((q.get().0, q.get().0))); }
         if let Some(at) = self.switched.take() { progress(None, "Ready"); log(&format!("{}: first frame {:.0} ms after the switch", self.cfg.title, at.elapsed().as_secs_f32() * 1000.0)); }
         if self.frames <= 4 || self.frames.is_power_of_two() && self.frames >= 64 {
             log(&format!("frame {} after {:.1} s, wasm memory {} MB", self.frames, self.started.elapsed().as_secs_f32(), memory_mb()));
@@ -561,7 +579,7 @@ impl ApplicationHandler for Shell {
                 if self.failed { return; }
                 if self.game.screen() == Screen::Hidden { return; }
                 if let Err(e) = self.frame() {
-                    progress(Some(1.0), &format!("Stopped: {e}"));
+                    stopped(&format!("Stopped: {e}"));
                     log(&format!("frame error: {e}"));
                     self.failed = true;
                     return;

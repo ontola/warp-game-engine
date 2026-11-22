@@ -83,7 +83,7 @@ fn size(args: &[String], default: [u32; 2]) -> Result<[u32; 2], String> {
 }
 
 fn overrides(args: &[String]) -> Result<Overrides, String> {
-    Ok(Overrides { players: parse(args, "--players")?, bots: parse(args, "--bots")?, seed: parse(args, "--seed")?, sky: value(args, "--sky"), fresh: false })
+    Ok(Overrides { players: parse(args, "--players")?, bots: parse(args, "--bots")?, seed: parse(args, "--seed")?, sky: value(args, "--sky"), fresh: false, seats: None })
 }
 
 /// The game folder or one-file game: the first argument after the command.

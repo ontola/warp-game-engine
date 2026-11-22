@@ -21,7 +21,7 @@ mod cloud;
 
 #[cfg(target_arch = "wasm32")]
 mod page {
-    use app::{Config, Controls, Device, Draw, Frame, Game};
+    use app::{Buttons, Config, Controls, Device, Draw, Frame, Game};
     use game_room::live::Lobby;
     use serde_json::{json, Value};
     use std::cell::RefCell;
@@ -78,6 +78,13 @@ mod page {
         party["library"].as_array()?.iter().find(|g| g["id"] == game || g["folder"] == game)
     }
 
+    fn min_players(party: &Value, game: &str) -> usize {
+        game_meta(party, game).and_then(|g| g["min_players"].as_u64()).unwrap_or(1) as usize
+    }
+
+    /// Whether `players` people are enough for `game`.
+    pub(crate) fn fits(party: &Value, game: &str, players: usize) -> bool { players >= min_players(party, game) }
+
     fn title(party: &Value, game: &str) -> String {
         game_meta(party, game).and_then(|g| g["title"].as_str()).unwrap_or(game).to_string()
     }
@@ -101,14 +108,19 @@ mod page {
     }
 
     /// Every device's input before each tick, in the room and in games. A
-    /// device that presses something and drives nobody takes the first free
+    /// device that presses something (the keyboard: Enter) and drives nobody takes the first free
     /// seat, or joins as a new player. A seat whose pad disconnects loses its
     /// controller in the party: the room puts that player to sleep and after
     /// its usual 30 s sends `leave_party` (see [`leave_party`]). The same pad
     /// coming back wakes its player. Returns the devices of each seat.
     fn devices(h: &mut Host, devices: &[(Device, Controls)]) -> Option<Vec<Vec<Device>>> {
         for (dev, c) in devices {
-            let active = c.pressed.0 != 0 || c.mv[0].abs().max(c.mv[1].abs()) > 0.6;
+            // A pad joins with any button or its stick; the keyboard only
+            // with Enter, so typing or a stray key adds nobody.
+            let active = match dev {
+                Device::Keyboard => c.pressed.has(Buttons::START),
+                Device::Pad(_) => c.pressed.0 != 0 || c.mv[0].abs().max(c.mv[1].abs()) > 0.6,
+            };
             if !active || h.bound.contains(&Some(*dev)) { continue; }
             let seat = match (0..h.bound.len()).find(|&i| h.bound[i].is_none() && !h.phone[i]) {
                 Some(i) => i,
@@ -131,7 +143,19 @@ mod page {
                 h.dirty = true;
             }
         }
+        warp::web::set_seats(seats(h));
         Some(h.bound.iter().map(|b| b.iter().copied().collect()).collect())
+    }
+
+    /// The people on the seats, as a game sees them: a running game takes
+    /// in a player who joins (a pad that wakes up) and drops one who
+    /// leaves; a paused game does when it resumes.
+    fn seats(h: &Host) -> Vec<warp::party::SeatInfo> {
+        (0..h.bound.len()).map(|i| {
+            let p = &h.party["players"][i];
+            let text = |k: &str| p[k].as_str().unwrap_or_default().to_string();
+            warp::party::SeatInfo { seat: i, name: p["name"].as_str().map_or_else(|| format!("Player {}", i + 1), String::from), color: warp::party::hex(&text("color")), bot: false, couch: p["couch"].as_i64(), skin: text("skin_color"), avatar: text("avatar") }
+        }).collect()
     }
 
     /// The seat of player `id`.
@@ -224,10 +248,18 @@ mod page {
                     h.dirty = true;
                 }),
                 "next" => {
+                    // The first game in the queue these players can play;
+                    // the ones before it wait at the back.
                     let first = with(|h| {
+                        let players = h.players;
+                        let fits: Vec<bool> = h.party["playlist"]["entries"].as_array()?.iter().map(|e| e["game"].as_str().is_some_and(|g| fits(&h.party, g, players))).collect();
+                        let at = fits.iter().position(|f| *f);
                         let entries = h.party["playlist"]["entries"].as_array_mut()?;
-                        if entries.is_empty() { return None; }
-                        let e = entries.remove(0);
+                        let Some(at) = at else {
+                            app::web::log(&format!("nothing in the queue for {players} player(s)"));
+                            return None;
+                        };
+                        let e = entries.remove(at);
                         entries.push(e.clone());
                         h.dirty = true;
                         e["game"].as_str().map(String::from)
@@ -285,6 +317,11 @@ mod page {
         if with(|h| h.players == 0) {
             app::web::log(&format!("{game}: nobody to play it yet"));
             return empty_room(true);
+        }
+        // Not a game for fewer people than it needs (Relay Keepers with one).
+        if let Some(need) = with(|h| (!fits(&h.party, &game, h.players)).then(|| min_players(&h.party, &game))) {
+            app::web::log(&format!("{game}: needs {need} players; press a button on another controller to join"));
+            return;
         }
         let found = with(|h| {
             let meta = game_meta(&h.party, &game)?;
@@ -353,6 +390,8 @@ mod page {
     pub fn main() {
         script::web::init();
         app::web::install_panic_hook();
+        // After the room is up, loading a game shows on its TV only.
+        app::web::quiet_progress();
         wasm_bindgen_futures::spawn_local(async {
             if let Err(e) = run().await { app::web::progress(Some(0.3), &format!("Could not start: {e}")); app::web::log(&e); }
         });
