@@ -2,6 +2,7 @@
 //! Spellstorm on Warp.
 //!
 //!   spellstorm play [--players 1] [--bots 0] [--seed 7] [--fullscreen]
+//!   spellstorm shot --out-dir DIR [--from T] [--every N] [--count C]   (a PNG sequence; SPELLSTORM_NO_HUD=1 hides the HUD)
 //!   spellstorm shot --out frame.png [--seed 7] [--bots 3] [--ticks 240] [--size 1920x1080] [--menu]
 //!                   [--cast fire,fire [--cast-at T]] [--bolts frost] [--lua CODE [--lua-at TICK]]
 //!
@@ -39,7 +40,7 @@ fn run() -> Result<(), String> {
             app::run(cfg, &mut game)
         }
         "shot" => {
-            let out = arg("--out").ok_or("--out FILE required")?;
+            let out = arg("--out").or_else(|| arg("--out-dir").map(|_| String::new())).ok_or("--out FILE (or --out-dir DIR) required")?;
             let (w, h) = arg("--size").and_then(|s| s.split_once('x').map(|(a, b)| (a.parse().unwrap_or(1920), b.parse().unwrap_or(1080)))).unwrap_or((1920u32, 1080u32));
             // --humans N: seats nobody drives (they stand where they start).
             let mut game = play::Spellstorm::new(kits::Kits::load(None)?, numf("--humans", 0.0) as usize, numf("--bots", 3.0) as usize, seed);
@@ -146,6 +147,18 @@ fn run() -> Result<(), String> {
             // --lua CODE [--lua-at TICK]: a Luau line against the world, at
             // that tick or else just before the picture.
             let lua_at = arg("--lua-at").and_then(|v| v.parse::<u32>().ok());
+            // --out-dir D [--from T] [--every N] [--count C]: a sequence, one
+            // PNG (D/00000.png, ...) every N ticks from tick T, C of them, in
+            // one run (the scene is built once). --ticks is raised to fit.
+            let out_dir = arg("--out-dir");
+            let seq_from = numf("--from", 0.0) as u32;
+            let seq_every = (numf("--every", 2.0) as u32).max(1);
+            let seq_count = numf("--count", 300.0) as u32;
+            let ticks = if out_dir.is_some() { ticks.max(seq_from + seq_every * seq_count) } else { ticks };
+            if let Some(d) = &out_dir {
+                std::fs::create_dir_all(d).map_err(|e| format!("{d}: {e}"))?;
+            }
+            let mut seq_n = 0u32;
             for t in 0..ticks * if until_swing { 20 } else { 1 } {
                 if cast_at == Some(t) && let Some(list) = arg("--cast") {
                     cast(&mut game, &list);
@@ -187,6 +200,26 @@ fn run() -> Result<(), String> {
                         let d = format!("{e:?}");
                         *counts.entry(d.split([' ', '(', '{']).next().unwrap_or("").to_string()).or_insert(0u32) += 1;
                     }
+                }
+                if let Some(d) = &out_dir {
+                    if t >= seq_from && (t - seq_from) % seq_every == 0 && seq_n < seq_count {
+                        let rgba = shot.frame(&mut game)?;
+                        let path = format!("{d}/{seq_n:05}.png");
+                        image::save_buffer(&path, &rgba, w, h, image::ColorType::Rgba8).map_err(|e| e.to_string())?;
+                        seq_n += 1;
+                        if seq_n == seq_count {
+                            eprintln!("sequence: {seq_n} frames in {d} ({:.1}s)", started.elapsed().as_secs_f32());
+                            return Ok(());
+                        }
+                    } else if game.view.stale(&game.world) {
+                        shot.frame(&mut game)?;
+                    } else {
+                        // Every tick moves the bodies one tick on; a captured
+                        // frame poses its own.
+                        let r = shot.renderer().ok_or("no renderer")?;
+                        game.view.pose(&gpu, r, &game.world, 1.0 / 60.0)?;
+                    }
+                    continue;
                 }
                 if t % 4 == 0 && (until_swing || t + 1 < ticks) {
                     if game.view.stale(&game.world) {

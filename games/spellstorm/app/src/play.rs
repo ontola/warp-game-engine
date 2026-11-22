@@ -299,7 +299,11 @@ impl app::Game for Spellstorm {
         let dt = if self.world.paused { 0.0 } else { frame.dt };
         let posed = self.view.pose(frame.gpu, r, &self.world, dt);
         let mut hud = HudDrawList::new(frame.size);
-        self.hud.draw(&mut hud, &self.world, &self.view.camera, frame.size);
+        // SPELLSTORM_NO_HUD=1: the picture alone (store videos), no HUD,
+        // names, hints, banners or level cards.
+        if std::env::var_os("SPELLSTORM_NO_HUD").is_none() {
+            self.hud.draw(&mut hud, &self.world, &self.view.camera, frame.size);
+        }
         self.interp.restore(&mut self.world);
         posed?;
         self.menu.draw(&mut hud, &self.world, frame.size);
