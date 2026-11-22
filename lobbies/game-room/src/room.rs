@@ -408,7 +408,8 @@ impl RoomBuild {
 pub fn prompt_size(items: &[(String, String)]) -> [u32; 2] {
     let mut width = 40.0;
     for (key, text) in items {
-        width += if key == "LB" || key == "RB" { 150.0 } else { 96.0 } + crate::fonts::measure_bold(text, 44.0) + 36.0;
+        let keys = crate::paint::key_cap(key).map_or(0.0, |cap| crate::paint::key_cap_width(cap) + 24.0);
+        width += if key == "LB" || key == "RB" { 150.0f32 } else { 96.0 }.max(keys) + crate::fonts::measure_bold(text, 44.0) + 36.0;
     }
     [(width as f32).ceil() as u32, 96]
 }

@@ -292,11 +292,15 @@ fn back_panel(lobby: &Lobby, c: &mut Canvas, view_proj: Mat4, size: [u32; 2], sc
     let name = player.as_deref().map(|id| lobby.name(id)).unwrap_or_default();
     let title = if name.is_empty() { "BACK".to_string() } else { format!("BACK  ·  {}", short(&name, 14).to_uppercase()) };
     c.text(bold(), [x + pad, y + pad + fs * 0.9], &title, TextAlign::Left, -1.0, fs, TEXT);
-    c.text(regular(), [x + pad, y + pad + fs * 1.75], "Hold Back and press", TextAlign::Left, -1.0, (fs * 0.8).floor(), DIM);
+    let keyboard = player.as_deref().is_some_and(|id| lobby.on_keyboard(id));
+    let hold = if keyboard { "Hold Tab and press" } else { "Hold Back and press" };
+    c.text(regular(), [x + pad, y + pad + fs * 1.75], hold, TextAlign::Left, -1.0, (fs * 0.8).floor(), DIM);
     for (i, (button, label, waiting)) in rows.iter().enumerate() {
         let top = y + pad + head + line * i as f32 + fs * 0.25;
         let r = [x + pad, top, key_w, line - fs * 0.5];
-        if button == "B" {
+        if let Some(cap) = keyboard.then(|| crate::paint::key_cap(button)).flatten() {
+            crate::paint::keycap(c, r, cap, 0.0, true);
+        } else if button == "B" {
             let center = [r[0] + r[2] / 2.0, r[1] + r[3] / 2.0];
             c.circle(center, r[3] / 2.0, Color::hex("e2574c"));
             c.text(bold(), [r[0], center[1] + fs * 0.36], "B", TextAlign::Center, r[2], fs, Color::hex("0b0b12"));
@@ -327,8 +331,9 @@ fn menu(lobby: &Lobby, c: &mut Canvas, id: &str, at: [f32; 2], fs: f32) {
         let selected = i == state.index;
         let couch = item.action == "couch";
         let mut label = item.label.clone();
-        if item.action == "quit" && state.confirm && selected { label = if mouse { "Click again to quit" } else { "Press A again to quit" }.into(); }
-        if item.action == "remove" && state.confirm && selected { label = format!("Press A again to remove {}", short(&item.name, 14)); }
+        let a = lobby.button_name(id, "A");
+        if item.action == "quit" && state.confirm && selected { label = if mouse { "Click again to quit".into() } else { format!("Press {a} again to quit") }; }
+        if item.action == "remove" && state.confirm && selected { label = if mouse { format!("Click again to remove {}", short(&item.name, 14)) } else { format!("Press {a} again to remove {}", short(&item.name, 14)) }; }
         if selected { c.rect([x + 12.0, y, mw - 24.0, line - 4.0 + if couch { row } else { 0.0 }], VIOLET.with_alpha(0.35)); }
         text(c, &label, [x + 32.0, y + fs], fs, if selected { TEXT } else { DIM });
         if couch {
