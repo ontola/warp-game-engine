@@ -599,6 +599,8 @@ mod page {
     async fn run() -> Result<(), String> {
         let library: Vec<Value> = serde_json::from_slice(&app::web::fetch("games/library.json").await?).map_err(|e| format!("games/library.json: {e}"))?;
         let players = warp::web::param("players").and_then(|p| p.parse().ok()).unwrap_or(0usize).min(MAX_SEATS);
+        // The room's QR code on the loading screen while the room is built.
+        crate::cloud::register_early();
         app::web::progress(Some(0.2), "Building the Game Room");
         let t0 = web_time::Instant::now();
         let mut options = game_room::stage::Options::default();

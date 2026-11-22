@@ -254,6 +254,8 @@ if not args.no_build:
         for name in ('bungee-regular.ttf', 'outfit-600.ttf', 'outfit-800.ttf', 'bungee-LICENSE.txt', 'outfit-LICENSE.txt'):
             shutil.copy(ROOT / 'lobbies/game-room/assets/fonts' / name, OUT / 'fonts')
         shutil.copy(ROOT / 'lobbies/game-room/assets/splitscreen-club-icon.png', OUT)
+        # qrcode-generator 1.4.4 (MIT, Kazuhiko Arase): the loading screen's QR code.
+        shutil.copy(ROOT / 'lobbies/game-room/examples/browser/qrcode.js', OUT)
     (OUT / 'assets').mkdir(exist_ok=True)
     if args.example == 'terrain_fly':
         for name in TEXTURES:

@@ -26,6 +26,8 @@ pub(crate) struct Cloud {
     acknowledged: Option<String>,
     /// Poll now instead of waiting.
     pub(crate) refresh: bool,
+    /// The early registration (`register_early`) is under way.
+    registering: bool,
     /// Seats a profile holds, with its account and profile revision.
     applied: Vec<Option<(String, u64)>>,
     /// Phones that asked to play on the phone alone, by their waiting id:
@@ -59,13 +61,79 @@ impl Cloud {
     }
 }
 
+/// Where the cloud room lives: this page's origin, `?cloud=URL`, or
+/// none with `?cloud=off`.
+fn cloud_origin() -> Option<String> {
+    match warp::web::param("cloud") {
+        Some(o) if o == "off" => None,
+        Some(o) => Some(o.trim_end_matches('/').to_string()),
+        None => Some(app::web::origin()),
+    }
+}
+
+/// Register the room at once, while the Game Room is still being built, so
+/// the loading screen shows its QR code (`show_join`); the poll loop
+/// (`start`) goes on with the same token.
+pub(crate) fn register_early() {
+    let Some(origin) = cloud_origin() else { return };
+    with(|h| h.cloud.registering = true);
+    wasm_bindgen_futures::spawn_local(async move {
+        let registered = match page_room(&origin).await { Some(r) => Ok(r), None => register(&origin).await };
+        match registered {
+            Ok((token, code)) => {
+                with(|h| { h.cloud.token = Some(token); h.cloud.acknowledged = None; });
+                show_join(&origin, &code);
+            }
+            Err(e) => app::web::log(&format!("cloud room: {e}")),
+        }
+        with(|h| h.cloud.registering = false);
+    });
+}
+
+/// The room the loading page registered while the engine downloaded
+/// (index.html `window.splitscreenRoom`, a promise), when it is for this origin.
+async fn page_room(origin: &str) -> Option<(String, String)> {
+    use wasm_bindgen::JsCast;
+    let window = web_sys::window()?;
+    let promise = js_sys::Reflect::get(&window, &"splitscreenRoom".into()).ok()?.dyn_into::<js_sys::Promise>().ok()?;
+    let room = wasm_bindgen_futures::JsFuture::from(promise).await.ok()?;
+    let text = |k: &str| js_sys::Reflect::get(&room, &k.into()).ok()?.as_string();
+    if text("origin")? != origin { return None; }
+    Some((text("token")?, text("room_code")?))
+}
+
+/// A new room for this device (its id kept in the browser): the token and room code.
+async fn register(origin: &str) -> Result<(String, String), String> {
+    let device = app::web::stored("splitscreen-club-device").filter(|d| d.len() == 64).unwrap_or_else(|| {
+        let d = random_hex(32);
+        app::web::store("splitscreen-club-device", &d);
+        d
+    });
+    let (status, body) = app::web::request("POST", &format!("{origin}/v1/lobbies/register"), &[], Some(&json!({"device": device}).to_string())).await?;
+    if !(200..300).contains(&status) { return Err(format!("register: HTTP {status}")); }
+    let reply: Value = serde_json::from_slice(&body).map_err(|e| format!("register: {e}"))?;
+    let token = reply["token"].as_str().ok_or("register: no token")?.to_string();
+    let code = reply["room_code"].as_str().unwrap_or_default().to_string();
+    app::web::log(&format!("cloud room {} at {origin}", if code.is_empty() { "?" } else { &code }));
+    Ok((token, code))
+}
+
+/// The loading screen's "Join with your phone": the room's QR code and code
+/// (index.html `#warp-join`).
+fn show_join(origin: &str, code: &str) {
+    if code.is_empty() { return; }
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else { return };
+    if let Some(e) = doc.get_element_by_id("warp-qr") { e.set_inner_html(&qr_svg(&format!("{origin}/?r={code}"))); }
+    if let Some(e) = doc.get_element_by_id("warp-code") { e.set_text_content(Some(code)); }
+    let host = origin.split("://").nth(1).unwrap_or(origin);
+    if let Some(e) = doc.get_element_by_id("warp-host") { e.set_text_content(Some(host)); }
+    if let Some(e) = doc.get_element_by_id("warp-join") { let _ = e.remove_attribute("hidden"); }
+    if let Some(root) = doc.document_element() { let _ = root.set_attribute("data-qr", ""); }
+}
+
 /// Start the room's poll loop for `players` seats.
 pub(crate) fn start(players: usize) {
-    let origin = match warp::web::param("cloud") {
-        Some(o) if o == "off" => return,
-        Some(o) => o.trim_end_matches('/').to_string(),
-        None => app::web::origin(),
-    };
+    let Some(origin) = cloud_origin() else { return };
     with(|h| {
         h.cloud.origin = origin;
         h.cloud.seats = (0..players).map(|i| json!({"index": i, "player": random_hex(16), "revision": 1})).collect();
@@ -110,18 +178,12 @@ async fn poll() -> Result<(), String> {
     let origin = with(|h| h.cloud.origin.clone());
     let token = match with(|h| h.cloud.token.clone()) {
         Some(t) => t,
+        // The early registration has not answered yet: next round.
+        None if with(|h| h.cloud.registering) => return Ok(()),
         None => {
-            let device = app::web::stored("splitscreen-club-device").filter(|d| d.len() == 64).unwrap_or_else(|| {
-                let d = random_hex(32);
-                app::web::store("splitscreen-club-device", &d);
-                d
-            });
-            let (status, body) = app::web::request("POST", &format!("{origin}/v1/lobbies/register"), &[], Some(&json!({"device": device}).to_string())).await?;
-            if !(200..300).contains(&status) { return Err(format!("register: HTTP {status}")); }
-            let reply: Value = serde_json::from_slice(&body).map_err(|e| format!("register: {e}"))?;
-            let token = reply["token"].as_str().ok_or("register: no token")?.to_string();
-            app::web::log(&format!("cloud room {} at {origin}", reply["room_code"].as_str().unwrap_or("?")));
+            let (token, code) = register(&origin).await?;
             with(|h| { h.cloud.token = Some(token.clone()); h.cloud.acknowledged = None; });
+            show_join(&origin, &code);
             token
         }
     };
@@ -168,6 +230,7 @@ fn apply(h: &mut Host, reply: &Value) -> Option<(String, bool)> {
         room["room_code"] = json!(code);
         room["qr_svg"] = json!(qr_svg(&url));
         room["join_url"] = json!(url);
+        show_join(&h.cloud.origin, &code);
     }
     room["pending"] = reply["pending"].clone();
     if room != h.links["room"] {

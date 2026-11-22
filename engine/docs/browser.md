@@ -245,6 +245,13 @@ How the build differs from native:
   up to four people through the page's seats and their `player_joined`
   hook; Spellstorm adds a wizard with random tomes; other Rust games keep
   the player for the next game.
+- Loading screen: no tagline; with `?game=NAME` it names the game and shows
+  its cover (from games/library.json) while everything loads. The page
+  registers the cloud room itself while the engine downloads
+  (`window.splitscreenRoom`, POST /v1/lobbies/register with the device id
+  in localStorage) and shows the phone QR code and room code at once
+  (qrcode.js, qrcode-generator 1.4.4, MIT); the engine takes that token over
+  (cloud.rs `register_early`) instead of registering again.
 - Time comes from `web_time::Instant` (`std::time::Instant` natively).
 - Files: the page fetches the textures first and hands them to
   `render::files::preload`; `render::files::read` and `open_image` find them
