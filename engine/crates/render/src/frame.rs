@@ -45,9 +45,7 @@ pub(crate) mod texture_mips;
 pub const MAX_VISIBLE: u32 = 4 << 20;
 /// Albedo array resolution: the Poly Haven sets are 2K.
 /// Side of every albedo array layer; `screen::Screen` draws layers at this size.
-// A browser holds the whole array in its one memory and builds skin maps at
-// this size on the page thread: 1024 there.
-pub const TEXTURE_SIZE: u32 = if cfg!(target_os = "android") { 512 } else if cfg!(target_arch = "wasm32") { 1024 } else { 2048 };
+pub const TEXTURE_SIZE: u32 = if cfg!(target_os = "android") { 512 } else { 2048 };
 /// Normal map array resolution.
 const NORMAL_SIZE: u32 = if cfg!(target_os = "android") { 512 } else { 1024 };
 pub(crate) const SHADOW_SIZE: u32 = if cfg!(target_os = "android") { 2048 } else { 4096 };

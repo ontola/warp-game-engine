@@ -140,7 +140,9 @@ def copy_games(names):
         if not (src / 'main.luau').exists():
             sys.exit(f'games/{name}: not a Luau game (no main.luau)')
         files = sorted(str(p.relative_to(src)).replace(os.sep, '/') for p in src.rglob('*')
-                       if p.is_file() and p.relative_to(src).parts[0] not in SKIP and p.suffix not in ('.md',))
+                       if p.is_file() and p.relative_to(src).parts[0] not in SKIP and p.suffix not in ('.md',)
+                       # Store media (clip, cover, screenshots) and editor types: not played.
+                       and p.relative_to(src).parts[:2] != ('assets', 'gamenight') and not p.name.endswith('.d.luau'))
         for rel in files:
             (out / name / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(src / rel, out / name / rel)

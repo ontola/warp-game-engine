@@ -471,7 +471,9 @@ impl Character {
                         (lo, hi)
                     }),
                 },
-                render::frame::TEXTURE_SIZE as usize,
+                // A browser bakes these on its one page thread before the
+                // first frame: half the size there (the array scales it up).
+                if cfg!(target_arch = "wasm32") { 1024 } else { render::frame::TEXTURE_SIZE as usize },
             );
             (
                 format!("warp-human-skin-{tile}-{seed:06x}"),

@@ -32,16 +32,40 @@ struct Layout { buttons: [Option<u32>; 12], sticks: [u32; 4], hat: Option<u32> }
 
 /// Chrome on macOS shows some pads as plain HID devices, `mapping` "":
 /// 8BitDo pads over Bluetooth (D-input) have gaps in their button numbers
-/// and their d-pad on a hat axis. Others get the standard order.
+/// and their d-pad on a hat axis. Measured on an 8BitDo Ultimate wireless
+/// (2dc8:3012) in Chrome 157 on macOS: A B X Y = 0 1 3 4, LB RB LT RT = 6 7
+/// 8 9 (the triggers also on axes 4 and 3), Select Start Home = 10 11 12,
+/// L3 R3 = 13 14, sticks on axes 0 1 2 5, the hat on axis 9 (3.29 at rest).
+/// SDL's GameControllerDB numbers the same pad differently (right stick y
+/// on 3, triggers on 4 and 5), so it cannot be used for the browser's
+/// numbers. Firefox on macOS (measured in Zen) numbers the axes otherwise
+/// again, see below. Others get the standard order.
 fn layout(pad: &web_sys::Gamepad) -> Layout {
     let id = pad.id().to_ascii_lowercase();
     let axes = pad.axes().length();
     if id.contains("2dc8") || id.contains("8bitdo") {
-        // A B _ X Y _ LB RB LT RT Select Start Home L3 R3.
-        return Layout { buttons: [Some(0), Some(1), Some(3), Some(4), Some(6), Some(7), Some(8), Some(9), Some(10), Some(11), Some(13), Some(14)],
-            sticks: [0, 1, 2, 5], hat: (axes > 9).then_some(9) };
+        // A B _ X Y _ LB RB LT RT Select Start Home L3 R3, in both browsers.
+        let buttons = [Some(0), Some(1), Some(3), Some(4), Some(6), Some(7), Some(8), Some(9), Some(10), Some(11), Some(13), Some(14)];
+        // Firefox (and Zen) name it "2dc8-3012-…" and put the hat first:
+        // hat on axis 0, sticks on 1 2 3 4 (7 axes). Chrome names it
+        // "… (Vendor: 2dc8 Product: 3012)": sticks on 0 1 2 5, hat on 9.
+        if id.starts_with("2dc8-") {
+            return Layout { buttons, sticks: [1, 2, 3, 4], hat: Some(0) };
+        }
+        return Layout { buttons, sticks: [0, 1, 2, 5], hat: (axes > 9).then_some(9) };
     }
     Layout { buttons: std::array::from_fn(|i| Some(i as u32)), sticks: [0, 1, 2, 3], hat: (axes > 9).then_some(9) }
+}
+
+/// Logs a pad without the standard mapping once, with the layout it gets,
+/// so a wrong layout can be told from the log (`?debug` shows it).
+fn seen(pad: &web_sys::Gamepad, l: &Layout) {
+    thread_local! { static SEEN: std::cell::RefCell<std::collections::HashSet<String>> = Default::default(); }
+    let id = pad.id();
+    if SEEN.with(|s| s.borrow_mut().insert(id.clone())) {
+        crate::web::log(&format!("pad {id}: no standard mapping, {} buttons, {} axes; buttons {:?}, sticks {:?}, hat {:?}",
+            pad.buttons().length(), pad.axes().length(), l.buttons, l.sticks, l.hat));
+    }
 }
 
 /// A hat axis as d-pad buttons: Chrome reports -1 (up) to 1 (up-left) in
@@ -73,6 +97,7 @@ pub fn read() -> Vec<Reading> {
             return Reading { index: p.index(), held, sticks: [axis(0), -axis(1), axis(2), -axis(3)], triggers: [value(6), value(7)] };
         }
         let l = layout(&p);
+        seen(&p, &l);
         let mut held = 0;
         for (k, b) in l.buttons.iter().enumerate() { if b.is_some_and(down) { held |= BUTTONS[k]; } }
         if let Some(h) = l.hat { held |= hat(axes.get(h).as_f64().unwrap_or(9.0)); }
