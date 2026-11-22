@@ -321,17 +321,15 @@ fn the_catalog_shows_every_game_and_plays_the_middle_one() {
     lobby.update(1.0 / 60.0);
     assert_eq!(lobby.host.shelf_offset, side, "a click on a side cover brings it to the middle");
 
-    // A plays it now and closes the catalog.
+    // A plays it now; the room stays in the catalog view for after the game.
     let game = lobby.show.shelf[side].id.clone();
     press(&mut lobby, BTN_A);
-    assert!(!lobby.catalog_open());
+    assert!(lobby.catalog_open());
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         assert!(Instant::now() < deadline, "no queue_next sent");
         if let Ok(m) = from_lobby.recv_timeout(Duration::from_millis(50)) && m["type"] == "queue_next" { assert_eq!(m["game"], game.as_str()); break; }
     }
-    press(&mut lobby, BTN_RS);
-    assert!(lobby.catalog_open());
     press(&mut lobby, BTN_B);
-    assert!(!lobby.catalog_open(), "B closes it");
+    assert!(!lobby.catalog_open(), "B goes back to the room view");
 }

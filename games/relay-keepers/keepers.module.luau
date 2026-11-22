@@ -42,8 +42,14 @@ function K.draw(rect,x,feet,i,r,s)
     local pal=colors[i]
     local dir=r.face or 1
     local stride=if r.on then math.sin(r.stride or 0)*math.min(1,(r.speed or 0)/4) else 0
-    local tuck=if r.on then 0 elseif (r.vy or 0)>0 then 4 else 2
-    local y=feet-67+math.abs(stride)*2+(r.impact or 0)*3
+    local vy=r.vy or 0
+    local launch=if r.on then 0 else math.clamp(vy/10.5,0,1)
+    local tuck=if r.on then 0 else 1-math.clamp(math.abs(vy)/7,0,1)
+    local impact=if r.on then r.impact or 0 else 0
+    -- Work up from the foot contact, leaving both boots planted during the squash.
+    local pixelY=3.5*(1+0.045*launch-0.085*impact)
+    local pixelX=3.5*(1-0.025*launch+0.045*impact)
+    local y=feet-11-16*pixelY+math.abs(stride)*2
     local function localRect(dx,dy,w,h,c)
         rect(x+(if dir<0 then -dx-w else dx),dy,w,h,c)
     end
@@ -69,15 +75,16 @@ function K.draw(rect,x,feet,i,r,s)
         end
     end
     for _,d in {-1,1} do
-        local lift=math.max(0,d*stride)*5+tuck*(if d<0 then 0.5 else 1)
-        local leg=d*7-4+stride*d*4+(if r.on then 0 else d*2)
+        local lift=math.max(0,d*stride)*5+tuck*(if d<0 then 8 else 10)
+        if d>0 then lift+=launch*4 end
+        local leg=d*7-4+stride*d*4+d*(2*launch+3*tuck)
         localRect(leg,feet-15-lift,9,12,pal.k)
         localRect(leg+2,feet-12-lift,5,7,pal.s)
         localRect(leg-1,feet-6-lift,14,6,pal.k)
         localRect(leg+3,feet-5-lift,8,2,pal.l)
     end
     for _,p in prints[i] do
-        localRect((p[1]-7.5)*3.5,y+p[2]*3.5,p[3]*3.5,3.5,pal[p[4]])
+        localRect((p[1]-7.5)*pixelX,y+p[2]*pixelY,p[3]*pixelX,pixelY,pal[p[4]])
     end
 end
 
@@ -129,16 +136,41 @@ function K.demonstrate(rect,xy,l,s)
     rect(x+141,lipY-15,11,3,ink)
     rect(x+148,lipY-13,3,5,ink)
 
-    local t=(s.time-4)%5
-    if rider then t=2.05+(s.time%2.75) end
-    local gx,gy=x+28,baseY
-    if t>=0.55 then
-        local k=math.clamp((t-0.55)/0.85,0,1)
-        gx,gy=gx+(baseX-gx)*k,baseY-25*k-17*4*k*(1-k)
+    local t=(s.time-4)%3.65
+    if rider then t=1.45+(s.time%2.15) end
+    local launch=0.48
+    local fromX,fromY,toX,toY=x+28,baseY,baseX,baseY-25
+    if t>=1.68 then
+        launch=1.68
+        fromX,fromY,toX,toY=baseX,baseY-25,lipX+14,lipY
     end
-    if t>=2.2 then
-        local k=math.clamp((t-2.2)/0.85,0,1)
-        gx,gy=baseX+(lipX+14-baseX)*k,baseY-25+(lipY-baseY+25)*k-16*4*k*(1-k)
+    local elapsed=t-launch
+    local rise=0.32
+    local flight=0.50
+    local apex=fromY-35
+    local progress=math.clamp(elapsed/flight,0,1)
+    local gx=fromX+(toX-fromX)*progress
+    local gy=if elapsed<rise then apex+35*(1-math.clamp(elapsed/rise,0,1))^2
+        else apex+(toY-apex)*math.clamp((elapsed-rise)/(flight-rise),0,1)^2
+
+    -- The bottom face button stays depressed through the climb. Its ink trail
+    -- fills while it is held and clears when the keeper reaches the landing.
+    local px,py=x+15,y+13
+    rect(px+3,py+2,28,13,ink)
+    rect(px,py+8,8,12,ink)
+    rect(px+26,py+8,8,12,ink)
+    rect(px+5,py+4,24,9,board)
+    rect(px+9,py+5,3,8,ink)
+    rect(px+6,py+8,9,3,ink)
+    rect(px+24,py+3,3,3,ink)
+    rect(px+20,py+7,3,3,ink)
+    rect(px+28,py+7,3,3,ink)
+    local held=elapsed>=0 and elapsed<rise
+    rect(px+23,py+(if held then 12 else 10),6,5,if held then colors[2].l else ink)
+    if elapsed>=0 and elapsed<flight then
+        local fill=math.clamp(elapsed/rise,0,1)
+        rect(px+4,py+23,26,3,ink)
+        rect(px+4,py+23,math.max(2,26*fill),3,colors[2].m)
     end
     signKeeper(rect,baseX,baseY,1)
     signKeeper(rect,gx,gy,2)

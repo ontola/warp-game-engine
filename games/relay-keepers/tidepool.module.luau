@@ -28,6 +28,10 @@ local function inside(spec,x)
     return spec and x>=spec.left and x<=spec.right
 end
 
+function M.immersed(spec,water,x,y)
+    return water and inside(spec,x) and y<=water.y+0.11 and y>=-1.95
+end
+
 function M.drift(spec,water,r,dt)
     if water and inside(spec,r.x) and r.y<=water.y+0.04 and r.y>=-1.95 then
         return (spec.current or 0)*dt
@@ -37,7 +41,7 @@ end
 
 function M.float(spec,water,r,x,dt,pad)
     r.diving=false
-    if not water or not inside(spec,x) or r.y>water.y+0.11 or r.y< -1.95 then return end
+    if not M.immersed(spec,water,x,r.y) then return end
     r.diving=pad and (pad.held.down or (pad.move_y or 0)<-0.55) or false
     if r.diving then
         r.vy+=math.clamp(-2.65-r.vy,-13*dt,18*dt)

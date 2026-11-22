@@ -94,6 +94,8 @@ pub fn draw(lobby: &Lobby, size: [u32; 2], _alpha: f32) -> HudDrawList {
             text(&mut c, &lost, [at[0] - lw / 2.0, y], small, AMBER);
         }
     }
+    // The catalog view covers the room; Start menus and the mouse's go over it.
+    if lobby.catalog_open() { crate::catalog::draw(lobby, &mut c, size); }
     for p in &lobby.world.players {
         if !lobby.menus.contains_key(&p.id) { continue; }
         let head = Vec3::new(p.x as f32, p.y as f32 + if p.sleeping { 1.3 } else { 2.25 }, lobby.actor_depth(&p.id));
@@ -109,7 +111,6 @@ pub fn draw(lobby: &Lobby, size: [u32; 2], _alpha: f32) -> HudDrawList {
     }
     c.over();
     bench(lobby, &mut c, scale);
-    if lobby.catalog.open { crate::catalog::draw(lobby, &mut c, size); }
 
     // Toasts, bottom centre.
     let mut y = h - 40.0 * scale;

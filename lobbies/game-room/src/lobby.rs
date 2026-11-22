@@ -210,16 +210,17 @@ impl Lobby {
             p.last_input = time;
             p.sleeping = false;
         }
-        if self.catalog.open {
-            self.catalog_input(Some(id), pressed, stick);
-            self.world.set_input(id, 0, [0.0; 2]);
-            return;
-        }
         if pressed & BTN_START != 0 {
             if self.menus.remove(id).is_none() { self.menus.insert(id.into(), Menu::default()); }
         }
         if self.menus.contains_key(id) {
             self.menu_input(id, pressed, stick);
+            self.world.set_input(id, 0, [0.0; 2]);
+            return;
+        }
+        // The catalog view: buttons browse and play; nobody walks.
+        if self.catalog_open() {
+            self.catalog_input(Some(id), pressed, stick);
             self.world.set_input(id, 0, [0.0; 2]);
             return;
         }
@@ -418,6 +419,8 @@ impl Lobby {
         if let Some(player) = page.strip_prefix("player:") { return self.player_items(player); }
         if id == crate::mouse::MOUSE { return self.mouse_items(); }
         let mut items = vec![MenuItem::new("Close menu", "close"), MenuItem::new("Leave the party", "leave")];
+        if self.catalog_open() { items.insert(1, MenuItem::new("Show the room", "room")); }
+        else if !self.host.shelf_games().is_empty() { items.insert(1, MenuItem::new("Show all games", "catalog")); }
         // Hosts that predate couch positions don't send them.
         if self.profile(id).is_some_and(|p| p.couch.is_some()) { items.insert(1, MenuItem::new("Couch position", "couch")); }
         if !self.host.update_ready().is_empty() { items.insert(0, MenuItem::new("Update Splitscreen Club now", "update")); }
@@ -445,7 +448,8 @@ impl Lobby {
     /// The mouse's menu: nobody's, so only what the room itself can do.
     fn mouse_items(&self) -> Vec<MenuItem> {
         let mut items = vec![MenuItem::new("Close menu", "close")];
-        if !self.host.shelf_games().is_empty() { items.push(MenuItem::new("Browse all games", "catalog")); }
+        if self.catalog_open() { items.push(MenuItem::new("Show the room", "room")); }
+        else if !self.host.shelf_games().is_empty() { items.push(MenuItem::new("Show all games", "catalog")); }
         if !self.host.update_ready().is_empty() { items.push(MenuItem::new("Update Splitscreen Club now", "update")); }
         if self.host.party["lobbies"].as_array().is_some_and(|l| l.len() > 1) { items.push(MenuItem::new("Switch lobby", "lobbies")); }
         // A browser page (a host in the page, `outbox`) is closed with its tab.
@@ -538,6 +542,7 @@ impl Lobby {
         match item.action.as_str() {
             "close" => { self.menus.remove(id); }
             "catalog" => { self.menus.remove(id); self.open_catalog(); }
+            "room" => { self.menus.remove(id); self.close_catalog(); }
             "lobbies" => self.menu_page(id, "lobbies"),
             "remove_page" => self.menu_page(id, "remove"),
             "remove" => if confirm {

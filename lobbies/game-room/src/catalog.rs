@@ -1,6 +1,8 @@
-//! The game catalog: every game on the shelf as big covers over the whole
-//! screen. R3 at the game shelf opens it, as does a mouse click on the
-//! shelf or its All games button; LB/RB (or left/right, or the wheel) browse, A or Y plays the
+//! The catalog view of the Game Room: every game on the shelf as big covers
+//! over the whole screen. It is a view of the room, not a menu: R3 at the
+//! game shelf (or a click on the shelf or its All games button) switches to
+//! it, R3, B or the Room button back, and each device remembers the view it
+//! was left in and starts in it. LB/RB (or left/right, or the wheel) browse, A or Y plays the
 //! game in the middle now, X queues it, B or Back closes. The mouse clicks a
 //! cover at the side to bring it to the middle, and the middle one or the
 //! buttons under it to play or queue.
@@ -35,6 +37,8 @@ pub struct Catalog {
     /// Each player's stick last frame, so a push browses once.
     pub sticks: std::collections::HashMap<String, [f32; 2]>,
     next_image: u64,
+    /// Remember the view on this device (real runs, not tests or shots).
+    pub remember: bool,
 }
 
 /// What the catalog draws where: per visible game, its shelf index and
@@ -42,19 +46,35 @@ pub struct Catalog {
 pub struct Layout { pub cards: Vec<(usize, [f32; 4])>, pub buttons: Vec<(&'static str, [f32; 4])> }
 
 impl Lobby {
-    pub fn catalog_open(&self) -> bool { self.catalog.open }
+    /// The catalog view is showing (chosen, and there are games for it).
+    pub fn catalog_open(&self) -> bool { self.catalog.open && !self.host.shelf_games().is_empty() }
 
     pub fn open_catalog(&mut self) {
         if self.host.shelf_games().is_empty() { self.toast("No games on the shelf yet.", crate::lobby::DIM); return; }
-        self.catalog.open = true;
-        self.catalog.opened_at = self.time;
-        self.catalog.shown = self.host.shelf_offset as f32;
-        self.catalog.sticks.clear();
-        self.menus.remove(crate::mouse::MOUSE);
-        self.screens_dirty = true;
+        self.show_catalog(true);
     }
 
-    pub fn close_catalog(&mut self) { self.catalog.open = false; }
+    /// Back to the room view.
+    pub fn close_catalog(&mut self) { self.show_catalog(false); }
+
+    fn show_catalog(&mut self, open: bool) {
+        if open && !self.catalog.open {
+            self.catalog.opened_at = self.time;
+            self.catalog.shown = self.host.shelf_offset as f32;
+            self.catalog.sticks.clear();
+            self.menus.remove(crate::mouse::MOUSE);
+        }
+        self.catalog.open = open;
+        self.screens_dirty = true;
+        if self.catalog.remember { store_view(open); }
+    }
+
+    /// Remember the view on this device from now on, and start in the one
+    /// it was left in.
+    pub fn remember_view(&mut self) {
+        self.catalog.remember = true;
+        if stored_view() { self.catalog.open = true; self.catalog.opened_at = self.time; }
+    }
 
     /// A host that has covers as files or URLs hands them over here.
     pub fn set_cover(&mut self, game: &str, png: &[u8]) {
@@ -73,8 +93,7 @@ impl Lobby {
     /// Decode the covers of the shelf's games, a couple per frame, and ease
     /// the slide. Called every frame.
     pub(crate) fn update_catalog(&mut self, delta: f32) {
-        if !self.catalog.open { return; }
-        if self.host.shelf_games().is_empty() { self.catalog.open = false; return; }
+        if !self.catalog_open() { return; }
         let n = self.host.shelf_games().len() as f32;
         // Ease towards the shelf offset the short way round.
         let target = self.host.shelf_offset as f32;
@@ -100,18 +119,18 @@ impl Lobby {
         let right = pressed & (BTN_RB | BTN_RIGHT) != 0 || (stick[0] > 0.6 && stick_was[0] <= 0.6);
         if left { self.browse(-1); }
         if right { self.browse(1); }
-        if pressed & (BTN_B | BTN_BACK | BTN_START | BTN_RS) != 0 { self.close_catalog(); return; }
+        if pressed & (BTN_B | BTN_RS) != 0 { self.close_catalog(); return; }
         if pressed & (BTN_A | BTN_Y) != 0 { self.catalog_use(id, false); }
         if pressed & BTN_X != 0 { self.catalog_use(id, true); }
     }
 
     /// Play the middle game now, or queue it, as the shelf's Y and X do.
+    /// The view stays: the room comes back to it after the game.
     fn catalog_use(&mut self, id: Option<&str>, queue: bool) {
         let x = (game_room_sim::layout::GAME_SHELF.0 + game_room_sim::layout::GAME_SHELF.1) / 2.0;
         let Some(station) = self.host.station_at(x, None) else { return };
         if !station.enabled { self.toast(station.label.clone(), crate::lobby::DIM); return; }
         self.use_station_as(id, station, queue);
-        if !queue { self.close_catalog(); }
     }
 
     /// The mouse in the open catalog: the wheel browses, a click on a side
@@ -136,6 +155,30 @@ impl Lobby {
             None => {}
         }
     }
+}
+
+const VIEW_KEY: &str = "splitscreen-club.game-room-view";
+
+#[cfg(target_arch = "wasm32")]
+fn stored_view() -> bool { app::web::stored(VIEW_KEY).as_deref() == Some("catalog") }
+#[cfg(target_arch = "wasm32")]
+fn store_view(catalog: bool) { app::web::store(VIEW_KEY, if catalog { "catalog" } else { "room" }); }
+
+/// Where this machine keeps the view: the per-user app data folder.
+#[cfg(not(target_arch = "wasm32"))]
+fn view_file() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from))
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))?;
+    Some(base.join("Splitscreen Club").join(VIEW_KEY))
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn stored_view() -> bool { view_file().and_then(|f| std::fs::read_to_string(f).ok()).is_some_and(|v| v.trim() == "catalog") }
+#[cfg(not(target_arch = "wasm32"))]
+fn store_view(catalog: bool) {
+    let Some(file) = view_file() else { return };
+    if let Some(dir) = file.parent() { let _ = std::fs::create_dir_all(dir); }
+    let _ = std::fs::write(file, if catalog { "catalog" } else { "room" });
 }
 
 fn inside(r: [f32; 4], p: [f32; 2]) -> bool { p[0] >= r[0] && p[0] <= r[0] + r[2] && p[1] >= r[1] && p[1] <= r[1] + r[3] }
@@ -251,7 +294,7 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
     let enabled = station.as_ref().is_some_and(|s| s.enabled);
     for &(name, r) in &layout.buttons {
         let hover = mouse.is_some_and(|m| inside(r, m));
-        let (label, key, accent) = match name { "play" => ("Play now", "A", crate::lobby::GREEN), "queue" => ("Queue", "X", Color::hex("4a8fe7")), _ => ("Close", "B", Color::hex("e2574c")) };
+        let (label, key, accent) = match name { "play" => ("Play now", "A", crate::lobby::GREEN), "queue" => ("Queue", "X", Color::hex("4a8fe7")), _ => ("Room", "B", Color::hex("e2574c")) };
         let live = enabled || name == "close";
         let bg = if hover && live { accent.darkened(0.2) } else { rgba(0.06, 0.06, 0.1, 0.92) };
         c.style_box(r, [r[3] / 2.0; 4], bg.with_alpha(bg.a * fade), Some((2.0 * scale, accent.with_alpha(if live { fade } else { 0.35 * fade }))));
@@ -262,6 +305,6 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
         c.text(faces.bold, [disc[0] - r[3], disc[1] + fs * 0.36], key, TextAlign::Center, 2.0 * r[3], (fs * 0.9).floor(), Color::hex("0c0a16").with_alpha(fade));
         c.text(faces.regular, [r[0] + r[3], r[1] + r[3] / 2.0 + fs * 0.36], label, TextAlign::Center, r[2] - r[3] * 1.2, fs, TEXT.with_alpha(if live { fade } else { 0.4 * fade }));
     }
-    let hint = "LB / RB browse  ·  click a cover to bring it to the middle  ·  B, R3 or Esc closes";
+    let hint = "LB / RB browse  ·  click a cover to bring it to the middle  ·  R3 or B: back to the room";
     c.text(faces.regular, [0.0, h - 36.0 * scale], hint, TextAlign::Center, w, (19.0 * scale).floor(), DIM.with_alpha(fade));
 }
