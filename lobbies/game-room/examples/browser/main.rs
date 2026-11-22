@@ -68,6 +68,8 @@ mod page {
         /// The next new player's id number (ids stay when others leave).
         next_id: usize,
         pub(crate) cloud: crate::cloud::Cloud,
+        /// A key pressed since the room last ticked (its buttons).
+        key: Option<u32>,
     }
 
     thread_local! { static HOST: RefCell<Host> = RefCell::new(Host::default()); }
@@ -115,6 +117,8 @@ mod page {
     /// coming back wakes its player. Returns the devices of each seat.
     fn devices(h: &mut Host, devices: &[(Device, Controls)]) -> Option<Vec<Vec<Device>>> {
         for (dev, c) in devices {
+            // Any key on the keyboard: the keyboard on the room's table hops.
+            if *dev == Device::Keyboard && c.pressed.0 != 0 { h.key = Some(c.pressed.0); }
             // A pad joins with any button or its stick; the keyboard only
             // with Enter, so typing or a stray key adds nobody.
             let active = match dev {
@@ -296,6 +300,7 @@ mod page {
             }
             if let Some(links) = with(|h| std::mem::take(&mut h.links_dirty).then(|| h.links.clone())) { self.lobby.set_links(links); }
             empty_room(with(|h| h.players == 0 && h.on_screen.is_none()));
+            if let Some(code) = with(|h| h.key.take()) { self.lobby.key_pressed(code); }
             self.lobby.tick(controls);
             for msg in self.lobby.outbox.as_mut().map(std::mem::take).unwrap_or_default() { self.command(&msg); }
         }
