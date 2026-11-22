@@ -31,13 +31,23 @@ fn project(view_proj: Mat4, size: [u32; 2], p: Vec3) -> Option<[f32; 2]> {
 }
 
 /// The room camera for a screen of `size`: on screens narrower than 16:9
-/// the field of view grows upwards and downwards, so the room keeps its
-/// 16:9 width and the door and the QR code at the sides stay in view.
+/// the field of view grows, so the room keeps its 16:9 width and the door
+/// and the QR code at the sides stay in view. It grows mostly upwards: the
+/// camera tilts up, so the room sits low with more ceiling above it and
+/// only a little more floor below.
 pub fn fitted(camera: &render::Camera, size: [u32; 2]) -> render::Camera {
     let aspect = size[0] as f32 / size[1].max(1) as f32;
     let wide = 16.0 / 9.0;
     let mut camera = *camera;
-    if aspect < wide { camera.fov_y = 2.0 * ((camera.fov_y / 2.0).tan() * wide / aspect).atan(); }
+    if aspect < wide {
+        let fov = 2.0 * ((camera.fov_y / 2.0).tan() * wide / aspect).atan();
+        // Most of the new room goes above: a little floor stays in front.
+        let tilt = (fov - camera.fov_y) / 2.0 * 0.6;
+        let forward = camera.target - camera.pos;
+        let right = forward.cross(Vec3::Y).normalize_or_zero();
+        camera.target = camera.pos + glam::Quat::from_axis_angle(right, tilt) * forward;
+        camera.fov_y = fov;
+    }
     camera
 }
 

@@ -175,6 +175,8 @@ pub struct Lobby {
     /// Seconds since the last key, for the keyboard's little hop.
     key_hop: f32,
     keyboard_shown: bool,
+    /// More floor and ceiling towards the camera (tall screens), shown once.
+    deeper: Vec<usize>,
     /// The full-screen game catalog (catalog.rs).
     pub catalog: crate::catalog::Catalog,
     hud_size: [u32; 2],
@@ -252,6 +254,7 @@ impl Lobby {
         let mut build = room::build();
         let kit = crate::kit::add(&mut build);
         let keyboard = room::table_keyboard(&mut build);
+        let deeper = room::deeper_room(&mut build);
         let animated = build.animated();
         let mut parts = build.clone();
         // Prompts change their buttons at run time: give each a screen wide
@@ -280,7 +283,7 @@ impl Lobby {
             props: props.expect("props"), board: board.expect("board"), events: vec![], controllers: HashMap::new(), held: HashMap::new(), input_blocked: HashSet::new(), menus: HashMap::new(),
             bench: vec![], phones: vec![], lost_since: HashMap::new(), toasts: vec![], unjoined: HashMap::new(), holds: HashMap::new(), station_cooldown: HashMap::new(),
             pickup_cooldown: 0.0, item_presses: HashMap::new(), pressed_flash: HashMap::new(), claims: HashMap::new(), pop_box: None, featured_visible: false,
-            bumpers_visible: false, display_active: None, display_at: web_time::Instant::now(), quit: false, web_tx, web_rx, links_due: 0.0, last_queue: vec![], featured, bumpers, key_dips: vec![0.0; keyboard.len()], keyboard, key_hop: 99.0, keyboard_shown: false, catalog: Default::default(), hud_size: [1920, 1080], mouse: Default::default(), outbox: None,
+            bumpers_visible: false, display_active: None, display_at: web_time::Instant::now(), quit: false, web_tx, web_rx, links_due: 0.0, last_queue: vec![], featured, bumpers, key_dips: vec![0.0; keyboard.len()], keyboard, key_hop: 99.0, keyboard_shown: false, deeper, catalog: Default::default(), hud_size: [1920, 1080], mouse: Default::default(), outbox: None,
         };
         lobby.prompts = lobby.build.prompts.iter().map(|p| (p.name.clone(), Prompt {
             items: p.items.iter().map(|(k, t)| (k.clone(), t.clone(), true)).collect(), enabled: true, ..Default::default() })).collect();
@@ -642,6 +645,7 @@ impl Lobby {
                 changed.push((k, true));
             }
             self.keyboard_shown = true;
+            changed.extend(self.deeper.iter().map(|&k| (k, true)));
         }
         for (k, visible) in changed {
             if let Some(i) = self.stage.room.sync_instance(&mut self.stage.scene, k, visible) {

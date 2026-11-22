@@ -993,6 +993,24 @@ fn foreground(r: &mut RoomBuild) {
 /// A small keyboard on the coffee table, next to the logo pads (Warp only,
 /// so built hidden and shown by the live lobby). Its keys dip when someone
 /// types. Returns (instance, rest position) of the base, then of each key.
+/// The room deeper towards the camera: more floor and ceiling, for screens
+/// taller than 16:9 that see below the table and above the beams (the view
+/// grows up and down there). Hidden parts (not in the Godot room), shown by
+/// the live lobby.
+pub fn deeper_room(r: &mut RoomBuild) -> Vec<usize> {
+    let planks = plank_texture();
+    let planks = r.image(planks);
+    let depth = 16.0;
+    let floor = Mat { texture: planks, uv_scale: [5.0, 2.4 * depth / 9.6], ..m(Color::WHITE, 0.32) };
+    let front = BACK + 9.6;
+    let mut parts = vec![r.put(Shape::Plane(Vec2::new(40.0, depth)), &floor, Affine3A::from_translation(Vec3::new(0.0, 0.0, front + depth / 2.0)), true)];
+    let ceiling = r.quad(Vec2::new(40.0, depth), Vec3::new(0.0, 10.9, BACK + 10.0 + depth / 2.0), &m(Color::hex("0f0c1e"), 0.9));
+    r.rotate(ceiling, euler(PI / 2.0, 0.0, 0.0));
+    parts.push(ceiling);
+    r.hidden.extend(parts.iter().copied());
+    parts
+}
+
 pub fn table_keyboard(r: &mut RoomBuild) -> Vec<(usize, Vec3)> {
     // As big as the logo pads (they are scaled 1.6), on the table's front edge.
     let (at, s) = (Vec3::new(-0.5, 0.555, 3.93), 1.6);
