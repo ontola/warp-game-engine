@@ -259,16 +259,23 @@ impl Menu {
         if !self.open {
             return;
         }
-        let s = size[1] as f32 / 1080.0;
+        // Laid out for 16:9: controls, menu and tomes side by side. A squarer
+        // window (a browser tab, a portrait screen) stacks the controls and
+        // tomes under the menu; either way it scales to fit and centres, or
+        // the side panels squeeze and their words pile up (Joep).
+        let stacked = (size[0] as f32) < size[1] as f32 * 1.45;
+        let (dw, dh) = if stacked { (1240.0, 1260.0) } else { (1920.0, 1080.0) };
+        let s = (size[1] as f32 / dh).min(size[0] as f32 / dw);
         let vw = size[0] as f32 / s;
-        let vh = 1080.0;
+        let vh = size[1] as f32 / s;
+        let oy = (vh - dh) * 0.5;
         d.begin_overlay();
         let mut p = P { d, s };
         p.rect([0.0, 0.0, vw, vh], [0.0, 0.0, 0.0, if self.title_mode { 0.8 } else { 0.66 }]);
-        let top = vh * 0.15;
+        let top = oy + 1080.0 * 0.15;
         if let Some(logo) = &self.logo {
             p.d.provide_image(LOGO, logo, ImageFilter::Linear);
-            let (bx, by, bw, bh) = (vw * 0.2, vh * 0.025, vw * 0.6, vh * 0.15);
+            let (bx, by, bw, bh) = (vw * 0.2, oy + 1080.0 * 0.025, vw * 0.6, 1080.0 * 0.15);
             let k = (bw / logo.width as f32).min(bh / logo.height as f32);
             let (fw, fh) = (logo.width as f32 * k, logo.height as f32 * k);
             let r = [(bx + (bw - fw) * 0.5) * s, (by + (bh - fh) * 0.5) * s, fw * s, fh * s];
@@ -287,6 +294,16 @@ impl Menu {
         let pw = 560.0;
         let cx = vw * 0.5;
         let side = (cx - pw * 0.5 - 60.0).min(620.0);
+        // Stacked: the controls (wide enough for two columns) and the tomes
+        // share a row under the menu.
+        let below = y - 50.0 + self.rows.len() as f32 * 64.0 + 40.0 + 24.0;
+        let (side, kx, ky, tomes_at) = if stacked {
+            let (kw, tw) = (740.0, 420.0);
+            let x0 = cx - (kw + 30.0 + tw) * 0.5;
+            (kw, x0, below, [x0 + kw + 30.0, below, tw, vh - below - 10.0])
+        } else {
+            (side, cx - pw * 0.5 - 30.0 - side, y - 50.0, [cx + pw * 0.5 + 30.0, y - 50.0, side, vh - y - 10.0])
+        };
         p.frame([cx - pw * 0.5, y - 50.0, pw, self.rows.len() as f32 * 64.0 + 40.0]);
         for (i, &row) in self.rows.iter().enumerate() {
             let (name, value) = self.label(w, row);
@@ -306,11 +323,9 @@ impl Menu {
             }
         }
         if !w.wizards.is_empty() {
-            self.tomes(&mut p, w, [cx + pw * 0.5 + 30.0, y - 50.0, side, vh - y - 10.0]);
+            self.tomes(&mut p, w, tomes_at);
         }
         // The controls, two columns, each by a drawing of its part of the pad.
-        let kx = cx - pw * 0.5 - 30.0 - side;
-        let ky = y - 50.0;
         let row_h = 56.0;
         let controls = controls(w);
         let per = controls.len().div_ceil(2);

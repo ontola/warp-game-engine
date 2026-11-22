@@ -574,8 +574,9 @@ impl Hud {
             let a = if *t < 4.0 { 1.0 } else { 1.0 - (t - 4.0) };
             p.text(text, sw * 0.5, 20.0 + 18.0 + k as f32 * 34.0, body(), 26.0, alpha(*c, a), TextAlign::Center, 8.0);
         }
-        // Close-up shots (SPELLSTORM_ZOOM) leave the middle of the screen free.
-        if let Some(u) = self.unlocks.first().filter(|_| std::env::var_os("SPELLSTORM_ZOOM").is_none()) {
+        // Close-up shots (SPELLSTORM_ZOOM) leave the middle of the screen free,
+        // and the pause menu covers it (the card showed through the menu).
+        if let Some(u) = self.unlocks.first().filter(|_| std::env::var_os("SPELLSTORM_ZOOM").is_none() && !w.paused) {
             unlock_card(&mut p, u, self.unlock_t, sw);
         }
         // Banner.
