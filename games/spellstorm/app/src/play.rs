@@ -144,18 +144,28 @@ impl Spellstorm {
     /// the run in progress, driven by the next controls. Without a party
     /// host only; under one the host seats people.
     pub fn join_player(&mut self, name: Option<&str>, color: Option<[f32; 3]>) -> bool {
-        if self.party.is_some() || self.drive.len() >= 4 {
+        if self.party.is_some() {
             return false;
+        }
+        self.add_wizard(name, color, "").is_some()
+    }
+
+    /// A wizard for someone new in the run in progress (random tomes equal
+    /// to the others'), driven by the next controls; None when four play.
+    fn add_wizard(&mut self, name: Option<&str>, color: Option<[f32; 3]>, player_id: &str) -> Option<usize> {
+        if self.drive.len() >= 4 {
+            return None;
         }
         let k = self.drive.len();
         let mut seat = Seat::player(k, name.filter(|n| !n.is_empty()).unwrap_or(NAMES[k % NAMES.len()]));
         if let Some(c) = color {
             seat.robe = [c[0], c[1], c[2], 1.0];
         }
+        seat.player_id = player_id.to_string();
         let i = self.world.join(&seat);
         self.drive.push(i);
         self.humans = self.drive.len();
-        true
+        Some(i)
     }
 
     /// The party's news, then its controllers for this tick.
@@ -175,12 +185,26 @@ impl Spellstorm {
                         }
                     }
                 }
+                // Someone picked up a spare controller and pressed A (a
+                // desktop host): their wizard joins the run in progress.
+                PartyEv::Seats(list) => {
+                    for s in list.iter().filter(|s| !s.bot) {
+                        if self.party_seats.contains(&s.seat) {
+                            continue;
+                        }
+                        if self.add_wizard(Some(&s.name), s.color, &s.player_id).is_some() {
+                            self.party_seats.push(s.seat);
+                        }
+                    }
+                }
                 PartyEv::Setting(k, v) => self.world.set_option(&k, &v),
                 PartyEv::NewRun => self.world.new_run(),
                 PartyEv::Dispose => self.menu.open = false,
             }
         }
+        let takes = self.drive.len() < 4;
         let p = self.party.as_mut()?;
+        p.watch_joins(takes);
         Some(p.controls(&self.party_seats, spellstorm::world::DT as f32, self.menu.open))
     }
 
@@ -232,6 +256,7 @@ impl Spellstorm {
 
 impl app::Game for Spellstorm {
     fn takes_joins(&self) -> bool { self.party.is_none() && self.drive.len() < 4 }
+    fn notice(&mut self) -> Option<String> { self.party.as_mut()?.take_notice() }
     fn player_joins(&mut self, name: Option<&str>, color: Option<[f32; 3]>) -> bool {
         self.join_player(name, color)
     }

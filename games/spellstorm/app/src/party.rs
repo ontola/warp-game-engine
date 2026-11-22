@@ -20,6 +20,8 @@ pub enum Ev {
     Prepare(Vec<Seated>),
     /// Names picked up in the lobby: player id and name.
     Names(Vec<(String, String)>),
+    /// The seats mid-run (`party_updated`): a new person joins the run.
+    Seats(Vec<Seated>),
     Setting(String, String),
     NewRun,
     Dispose,
@@ -50,7 +52,9 @@ impl Party {
         splitscreen_club::party::Party::connect(GAME_ID).map(Party::new)
     }
 
-    pub fn new(host: splitscreen_club::party::Party) -> Party {
+    pub fn new(mut host: splitscreen_club::party::Party) -> Party {
+        // Someone who picks up a controller mid-run joins it (Joep).
+        host.offer_joins(true);
         Party { host, triggers: vec![] }
     }
 
@@ -95,6 +99,7 @@ impl Party {
                 break;
             }
             for c in cmds {
+                let roster = matches!(c, Command::Roster { .. });
                 match c {
                     Command::Connected => self.declare(),
                     Command::Prepare { session, seats } => {
@@ -126,6 +131,10 @@ impl Party {
                     }
                     Command::PlayersUpdated { seats } | Command::Roster { seats } if !self.host.session.is_empty() => {
                         out.push(Ev::Names(seats.iter().filter(|s| !s.player_id.is_empty()).map(|s| (s.player_id.clone(), s.name.clone())).collect()));
+                        if roster {
+                            self.host.seats_changed(&seats);
+                            out.push(Ev::Seats(seated(&seats)));
+                        }
                     }
                     Command::Setting { key, value } => {
                         if let Some(v) = value.as_str() {
@@ -158,6 +167,12 @@ impl Party {
     pub fn room_log(&self, text: &str) {
         self.host.room_log(text);
     }
+
+    /// Once per tick: a spare controller touched shows "Press A to join".
+    pub fn watch_joins(&mut self, takes: bool) { self.host.watch_joins(takes); }
+
+    /// The join hint or "<name> joined the game", once.
+    pub fn take_notice(&mut self) -> Option<String> { self.host.take_notice() }
 
     /// Esc: the host's overlay.
     pub fn overlay(&self) {

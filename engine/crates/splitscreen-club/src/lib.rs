@@ -196,6 +196,17 @@ impl State {
         due
     }
 
+    /// Fresh host input from controllers no person of this session plays
+    /// with (token, buttons, axes -1..1): a spare pad someone picked up.
+    pub fn unseated(&self, now: Instant) -> Vec<(String, u16, [f64; 6])> {
+        if !self.frame_at.is_some_and(|at| now.saturating_duration_since(at) < STALE) { return vec![]; }
+        let seated: Vec<String> = self.party["seats"].as_array().into_iter().flatten()
+            .filter(|s| s["occupant"]["kind"].as_str() == Some("local")).map(|s| text(s, "controller")).collect();
+        self.frames.iter().filter(|(token, _)| !seated.contains(token))
+            .map(|(token, f)| (token.clone(), (f["buttons"].as_u64().unwrap_or(0) as u16) & BUTTON_MASK & !button::BACK, std::array::from_fn(|i| axis(f, i))))
+            .collect()
+    }
+
     /// Called once per human seat per simulation tick (or menu input tick).
     /// Stale, disconnected or missing-controller input is neutral. `any_phase`
     /// permits the game's menu while paused, but never an inactive session.

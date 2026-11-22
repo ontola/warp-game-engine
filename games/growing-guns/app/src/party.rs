@@ -284,10 +284,15 @@ impl Party {
     /// The match is over (once per session).
     pub fn finished(&mut self) { self.host.finished(); }
 
+    /// "Press A to join; you play from the next game", once ([`app::Game::notice`]).
+    pub fn take_notice(&mut self) -> Option<String> { self.host.take_notice() }
+
     /// Controls for each seated player this tick, from the party's controllers.
     pub fn controls(&mut self, players: usize, dt: f32) -> Vec<Controls> {
         let now = Instant::now();
         let _ = self.host.client.report_activity();
+        // A spare controller touched: A joins the party for the next game.
+        self.host.watch_joins(false);
         self.triggers.resize(players, 0);
         (0..players).map(|k| {
             let Some(seat) = self.seats.get(k) else { return Controls::default() };

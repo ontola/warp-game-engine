@@ -474,7 +474,9 @@ impl LuaGame {
             }
         }
         let seats: Vec<usize> = self.core().roster.iter().filter(|p| !p.bot).map(|p| p.seat.unwrap_or(usize::MAX)).collect();
+        let takes = self.takes_joins();
         let party = self.party.as_mut()?;
+        party.watch_joins(takes);
         self.running_for = if party.running() { self.running_for.saturating_add(1) } else { 0 };
         Some(party.running().then(|| party.controls(&seats, dt, false)))
     }
@@ -1034,6 +1036,8 @@ impl Game for LuaGame {
     // then its `player_joined` hook), up to four people.
     fn takes_joins(&self) -> bool { self.core().roster.iter().filter(|p| !p.bot).count() < 4 }
     fn player_joins(&mut self, _name: Option<&str>, _color: Option<[f32; 3]>) -> bool { self.takes_joins() }
+    // Under a desktop party host: the join hint and "<name> joined the game".
+    fn notice(&mut self) -> Option<String> { self.party.as_mut()?.take_notice() }
 
     /// Under Splitscreen Club the party's controllers play: never grab the mouse
     /// (and so no click-to-capture hint on the TV).

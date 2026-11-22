@@ -511,6 +511,7 @@ impl Racer {
     fn lobby(&self) -> bool { self.party.is_some() || app::host_takes_back() }
 }
 impl Game for Racer {
+    fn notice(&mut self) -> Option<String> { self.party.as_mut()?.take_notice() }
     fn take_back(&mut self) -> bool { std::mem::take(&mut self.back) }
     fn target_fps(&self) -> Option<f32> { self.target_fps }
     fn scene_tuning(&self)->Option<&app::editor::SceneTuning>{Some(&self.handling)}

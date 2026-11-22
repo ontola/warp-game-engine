@@ -971,6 +971,7 @@ impl Gg {
 }
 
 impl app::Game for Gg {
+    fn notice(&mut self) -> Option<String> { self.party.as_mut()?.take_notice() }
     fn adaptive_resolution_only(&self) -> bool { true }
     fn fixed_quality(&self) -> bool { self.replay.as_ref().is_some_and(|r| app::Game::fixed_quality(&**r)) || self.recorder.disabled }
     /// A severe, sustained fall at the lowest resolution: step the graphics

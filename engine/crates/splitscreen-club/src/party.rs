@@ -32,10 +32,19 @@ pub struct Party {
     pub phase: Phase,
     /// Set by [`Party::finished`] once per session; `prepare` clears it.
     pub finished: bool,
+    /// Declared as `participation` for every prepared session
+    /// ([`Party::offer_joins`]).
+    joins: Option<bool>,
+    /// Spare controllers' last buttons and whether a stick was pushed.
+    spare: std::collections::BTreeMap<String, (u16, bool)>,
+    hint_at: Option<std::time::Instant>,
+    /// The people seated, by player id: a new one gets "joined the game".
+    people: Vec<String>,
+    notice: Option<String>,
 }
 
 impl Party {
-    pub fn new(client: Client) -> Party { Party { client, session: String::new(), phase: Phase::Idle, finished: false } }
+    pub fn new(client: Client) -> Party { Party { client, session: String::new(), phase: Phase::Idle, finished: false, joins: None, spare: Default::default(), hint_at: None, people: Vec::new(), notice: None } }
 
     /// When launched by a party host (GAMENIGHT=1) or pointed at one (GAMENIGHT_ADDR).
     pub fn connect(game_id: &str) -> Option<Party> {
@@ -57,10 +66,58 @@ impl Party {
 
     /// A new session is prepared: warm, not finished.
     pub fn prepare(&mut self, session: String) {
+        if let Some(live) = self.joins { let _ = self.client.notify_participation(&session, live); }
+        self.people = self.client.state.seats().iter().filter(|s| !s.ai && !s.player_id.is_empty()).map(|s| s.player_id.clone()).collect();
+        self.spare.clear();
         self.session = session;
         self.phase = Phase::Warm;
         self.finished = false;
     }
+
+    /// Mid-game joins (call before the first `prepare`): `live` takes
+    /// people into the match in progress (the host sends their seat as
+    /// `party_updated`, a [`crate::Command::Roster`]); false keeps the
+    /// roster and they play from the next game. Either way the host seats
+    /// a spare controller in the party when it presses A.
+    pub fn offer_joins(&mut self, live: bool) { self.joins = Some(live); }
+
+    /// Once per tick while a match runs: a controller nobody plays with that
+    /// is touched shows how to join (`takes`: whether the game takes them
+    /// now, else from the next game), as the browser host does. Only A
+    /// joins, and the host does that (Joep: anything else only jiggles).
+    pub fn watch_joins(&mut self, takes: bool) {
+        let now = std::time::Instant::now();
+        let spare = self.client.state.unseated(now);
+        self.spare.retain(|token, _| spare.iter().any(|(t, _, _)| t == token));
+        let running = self.running();
+        for (token, buttons, axes) in spare {
+            let pushed = (0..2).any(|k| axes[k * 2].hypot(axes[k * 2 + 1]) > 0.6);
+            let (before, was) = self.spare.insert(token, (buttons, pushed)).unwrap_or((0, false));
+            let pressed = buttons & !before;
+            if !running || (pressed == 0 && !(pushed && !was)) { continue; }
+            if pressed & crate::button::A != 0 {
+                if !takes { self.notice = Some("You play from the next game".into()); }
+                continue;
+            }
+            if self.hint_at.is_some_and(|t| now.duration_since(t).as_secs_f32() < 4.0) { continue; }
+            self.hint_at = Some(now);
+            self.notice = Some(if takes { "Press A to join this game".into() } else { "Press A to join; you play from the next game".into() });
+        }
+    }
+
+    /// The seats after a `party_updated` ([`crate::Command::Roster`]):
+    /// says "<name> joined the game" for someone new.
+    pub fn seats_changed(&mut self, seats: &[crate::Seat]) {
+        for s in seats.iter().filter(|s| !s.ai && !s.player_id.is_empty()) {
+            if !self.people.contains(&s.player_id) {
+                self.people.push(s.player_id.clone());
+                if self.running() { self.notice = Some(format!("{} joined the game", s.name)); }
+            }
+        }
+    }
+
+    /// The line to show now, once ([`Party::watch_joins`], [`Party::seats_changed`]).
+    pub fn take_notice(&mut self) -> Option<String> { self.notice.take() }
 
     /// Each of these applies only to the current session and says whether it did.
     pub fn start(&mut self, session: &str) -> bool { self.to(session, Phase::Running) }
@@ -207,6 +264,87 @@ mod tests {
         assert!(!party.finished, "a new session starts unfinished");
         party.disconnected();
         assert_eq!(party.phase, Phase::Idle);
+        host.join().unwrap();
+    }
+
+    /// A spare controller in a running match: a touch shows how to join
+    /// (A, never another button, is the join, which the host does), and
+    /// the seat the host then sends says who joined.
+    #[test]
+    fn a_spare_controller_is_told_how_to_join_and_the_joiner_is_named() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        let host = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut ws = tungstenite::accept(stream).unwrap();
+            let read = |ws: &mut tungstenite::WebSocket<std::net::TcpStream>| -> Value { loop { if let Message::Text(t) = ws.read().unwrap() { return serde_json::from_str(t.as_str()).unwrap(); } } };
+            let send = |ws: &mut tungstenite::WebSocket<std::net::TcpStream>, v: Value| ws.send(Message::Text(v.to_string().into())).unwrap();
+            assert_eq!(read(&mut ws)["type"], "hello");
+            send(&mut ws, json!({"type":"welcome","protocol_version":1,"godot_sdk":6,"party":{}}));
+            send(&mut ws, json!({"type":"prepare","game":"t","session":"s1",
+                "seats":[{"index":0,"controller":"pad-a","occupant":{"kind":"local","player_id":"p1"}}],"players":[{"id":"p1","name":"Joep"}]}));
+            let p = read(&mut ws);
+            assert_eq!((p["type"].as_str(), p["session"].as_str(), p["instant_join"].as_bool()), (Some("participation"), Some("s1"), Some(true)));
+            while read(&mut ws)["type"] != "ready" {}
+            send(&mut ws, json!({"type":"start","session":"s1"}));
+            go_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let frame = |b: u16| json!({"type":"controller_frame","controllers":[{"controller":"pad-a","buttons":1,"axes":[0,0,0,0,0,0]},{"controller":"pad-b","buttons":b,"axes":[0,0,0,0,0,0]}]});
+            for b in [2, 0, 1] {
+                send(&mut ws, frame(b));
+                go_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+            send(&mut ws, json!({"type":"party_updated","session":"s1",
+                "seats":[{"index":0,"controller":"pad-a","occupant":{"kind":"local","player_id":"p1"}},{"index":1,"controller":"pad-b","occupant":{"kind":"local","player_id":"p2"}}],
+                "players":[{"id":"p1","name":"Joep"},{"id":"p2","name":"Nora"}]}));
+            go_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        });
+        let client = Client::connect(Config { url: format!("ws://{address}"), game_id: "t".into(), token: String::new(), launched_by_daemon: true }).unwrap();
+        let mut party = Party::new(client);
+        party.offer_joins(true);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut notices = vec![];
+        let mut wanted = 0;
+        let mut step = |party: &mut Party, want: fn(&Command) -> bool| {
+            while Instant::now() < deadline {
+                let mut hit = false;
+                for c in party.client.poll() {
+                    match &c {
+                        Command::Prepare { session, .. } => { party.prepare(session.clone()); party.ready(); }
+                        Command::Start { session } => { party.start(session); }
+                        Command::Roster { seats } => party.seats_changed(seats),
+                        _ => {}
+                    }
+                    hit |= want(&c);
+                }
+                if hit { return; }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            panic!("timed out");
+        };
+        step(&mut party, |c| matches!(c, Command::Start { .. }));
+        go_tx.send(()).unwrap();
+        for _ in 0..3 {
+            // Frames make no command: wait until this frame is in.
+            let before = party.client.state.unseated(Instant::now());
+            let t = Instant::now();
+            while Instant::now() < deadline && t.elapsed() < Duration::from_millis(100) {
+                party.client.poll();
+                if party.client.state.unseated(Instant::now()) != before { break; }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            party.watch_joins(true);
+            notices.push(party.take_notice());
+            wanted += 1;
+            go_tx.send(()).unwrap();
+        }
+        assert_eq!(wanted, 3);
+        step(&mut party, |c| matches!(c, Command::Roster { .. }));
+        notices.push(party.take_notice());
+        go_tx.send(()).unwrap();
+        assert_eq!(notices, [Some("Press A to join this game".to_string()), None, None, Some("Nora joined the game".to_string())],
+            "B shows the hint, A says nothing until the seat comes, then the joiner is named");
         host.join().unwrap();
     }
 }

@@ -225,6 +225,10 @@ pub trait Game {
     /// ([`Game::player_joins`]); the host then shows "Press A to join"
     /// instead of "you join from the next game".
     fn takes_joins(&self) -> bool { false }
+    /// A line to show along the bottom of the screen for a few seconds,
+    /// asked for after every frame's ticks: under a desktop party host,
+    /// "Press A to join this game" when a spare controller is touched.
+    fn notice(&mut self) -> Option<String> { None }
     /// The devices bound to each local seat (one list per seat, in seat
     /// order); devices in no list drive nobody. None: devices drive seats in
     /// order and a single seat takes every device.
@@ -999,6 +1003,7 @@ impl Shell<'_> {
             self.game.tick(&controls);
             self.sync_capture();
         }
+        if let Some(line) = self.game.notice() { self.toast = Some((line, Instant::now() + std::time::Duration::from_secs(4))); }
         let tick_ms=tick_started.elapsed().as_secs_f64()*1000.0;
         if steps == 6 { self.acc = 0.0; }
         let wants_text = self.game.text_input();

@@ -244,7 +244,13 @@ How the build differs from native:
   player drives the game's next player in controls order. Luau games take
   up to four people through the page's seats and their `player_joined`
   hook; Spellstorm adds a wizard with random tomes; other Rust games keep
-  the player for the next game.
+  the player for the next game. Under the desktop host (the daemon) the
+  same happens without the page: the daemon seats a spare controller that
+  presses A, and the game shows the hint itself as a toast
+  (`splitscreen_club::party::Party::watch_joins`, `app::Game::notice`).
+  Luau games and Spellstorm declare `participation` with `instant_join`
+  (`Party::offer_joins(true)`) and take the new seat from `party_updated`;
+  Space Racer and Growing Guns say "you play from the next game".
 - Loading screen: no tagline; with `?game=NAME` it names the game and shows
   its cover (from games/library.json) while everything loads. The page
   registers the cloud room itself while the engine downloads

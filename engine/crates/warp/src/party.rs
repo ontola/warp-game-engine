@@ -49,7 +49,12 @@ impl Party {
 
     pub fn new(client: splitscreen_club::Client) -> Party { Party::from_host(splitscreen_club::party::Party::new(client)) }
 
-    fn from_host(host: splitscreen_club::party::Party) -> Party { Party { host, triggers: Vec::new(), live: None } }
+    fn from_host(mut host: splitscreen_club::party::Party) -> Party {
+        // A Luau game takes people mid-match: their seat arrives as
+        // `party_updated` and joins through `player_joined`.
+        host.offer_joins(true);
+        Party { host, triggers: Vec::new(), live: None }
+    }
 
     pub fn phase(&self) -> Phase { self.host.phase }
 
@@ -87,7 +92,11 @@ impl Party {
                         println!("{} [splitscreen-club] dispose", app::manners::stamp());
                         out.push(Ev::Dispose);
                     },
-                    Command::Roster { seats } | Command::PlayersUpdated { seats } if !self.host.session.is_empty() => out.push(Ev::Seats(Self::seats(&seats))),
+                    Command::Roster { seats } if !self.host.session.is_empty() => {
+                        self.host.seats_changed(&seats);
+                        out.push(Ev::Seats(Self::seats(&seats)));
+                    }
+                    Command::PlayersUpdated { seats } if !self.host.session.is_empty() => out.push(Ev::Seats(Self::seats(&seats))),
                     Command::Connected => self.declare_live(),
                     Command::Disconnected(e) => { eprintln!("splitscreen-club: {e}"); self.host.disconnected(); }
                     Command::Error(e) => eprintln!("splitscreen-club: {e}"),
@@ -120,6 +129,13 @@ impl Party {
     pub fn to_lobby(&self) { if let Err(e) = self.host.client.request_overlay() { eprintln!("splitscreen-club: {e}"); } }
 
     pub fn room_log(&self, text: &str) { let _ = self.host.client.room_log(text); }
+
+    /// Once per tick: a spare controller touched shows "Press A to join"
+    /// (`takes`: into this match, else from the next game).
+    pub fn watch_joins(&mut self, takes: bool) { self.host.watch_joins(takes); }
+
+    /// The join hint or "<name> joined the game", once ([`app::Game::notice`]).
+    pub fn take_notice(&mut self) -> Option<String> { self.host.take_notice() }
 
     pub fn rumble(&mut self, seat: usize, weak: f64, strong: f64, seconds: f64) { let _ = self.host.client.rumble(seat, weak, strong, seconds); }
 

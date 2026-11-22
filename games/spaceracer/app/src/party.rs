@@ -119,11 +119,16 @@ impl Party {
             self.host.finished = true;
         }
     }
+    /// "Press A to join; you play from the next game", once ([`app::Game::notice`]).
+    pub fn take_notice(&mut self) -> Option<String> { self.host.take_notice() }
+
     /// Driving input per seat, plus every human seat's pad merged into one
     /// menu pad. Start opens the in-game race menu; Back never reaches the
     /// game (the host keeps it for the lobby).
     pub fn controls(&mut self) -> (Vec<Controls>, app::Controls) {
         let _ = self.host.client.report_activity();
+        // A spare controller touched: A joins the party for the next game.
+        self.host.watch_joins(false);
         let now = std::time::Instant::now();
         let mut menu = app::Controls::default();
         let drive = self
