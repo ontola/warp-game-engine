@@ -1,4 +1,5 @@
 -- Littoral hermit crabs. Their spiral shells act as live springboards.
+local jump=require("jump")
 local M={}
 function M.start(specs)
     if not specs then return nil end
@@ -33,7 +34,8 @@ function M.touch(s,r,prev)
         if math.abs(r.x-c.x)<0.61 then
             local crown=c.y+0.62
             if prev>=crown-0.001 and r.y<=crown and r.vy<=0 then
-                r.y,r.vy,r.on,r.deck,r.ride,r.coyote=crown,10.9,false,false,false,0
+                r.y=crown
+                jump.launch(r,jump.shell,false)
                 sound.play("jump",{pitch=0.68,db=-5})
                 return
             elseif not s.hush and r.y<crown-0.07 and r.y+1>c.y+0.12 and (r.spawnGlow or 0)<=0 then

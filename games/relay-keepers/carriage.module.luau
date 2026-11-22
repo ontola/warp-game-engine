@@ -1,3 +1,4 @@
+local jump=require("jump")
 local M = {}
 
 function M.start(spec)
@@ -52,7 +53,7 @@ function M.step(spec,f,crew,input,dt)
     f.flash=math.max(0,f.flash-dt)
     if f.taps[1]>0 and f.taps[2]>0 then
         for i,r in crew do
-            r.vy,r.on,r.coyote,r.buffer,r.deck,r.ride=12.8,false,0,0,false,false
+            jump.launch(r,jump.coil,false)
             r.springImpulse=true
             f.taps[i]=-1
             players.rumble(r.id,0.35,0.13)

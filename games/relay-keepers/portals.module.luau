@@ -18,7 +18,7 @@ function M.step(l,s)
                     r.x,r.y,r.vy=dest[1],dest[2],0
                     r.foldLock=2*n+3-side
                     r.on,r.ride,r.deck=true,false,false
-                    r.buffer,r.coyote,r.springImpulse=0,0,false
+                    r.buffer,r.coyote,r.springImpulse,r.cuttable=0,0,false,false
                     r.extra=s.owner==i
                     r.spawnGlow=1
                     sound.play("fold",{pitch=0.77+n*0.15+(side-1)*0.08,db=-5})

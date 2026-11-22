@@ -4,7 +4,8 @@ local shells = require("shells")
 local tidepool = require("tidepool")
 local portals = require("portals")
 local view = require("view")
-local HEIGHT, SPEED, GRAVITY, JUMP = 1.20, 4.2, 18, 7.9
+local jump = require("jump")
+local HEIGHT, SPEED, SWIM_SPEED = 1.20, 5.55, 4.2
 
 local function roster()
     local present = {}
@@ -23,7 +24,7 @@ end
 
 local function resetRunner(r,spawn)
     r.x,r.y,r.vy,r.on,r.face = spawn[1],spawn[2],0,true,1
-    r.deck,r.springImpulse=false,false
+    r.deck,r.springImpulse,r.cuttable=false,false,false
     r.foldLock=0
     r.stride,r.speed,r.impact,r.spawnGlow=0,0,0,0
     r.buffer,r.coyote,r.extra,r.ride = 0,0,false,false
@@ -117,12 +118,16 @@ local function gateLimit(x,desired,bar,y,height)
     return math.max(desired,bar+0.32)
 end
 
+local function moveSpeed(l,r)
+    return if tidepool.immersed(l.water,state.water,r.x,r.y) then SWIM_SPEED else SPEED
+end
+
 local function move(l,i,r,other,pad,dt)
     local dx=pad.move_x
     if pad.held.left then dx=-1 elseif pad.held.right then dx=1 end
     if math.abs(dx)<0.15 then dx=0 end
     if dx~=0 then r.face=math.sign(dx) end
-    local x=math.clamp(r.x+dx*SPEED*dt+tidepool.drift(l.water,state.water,r,dt),0.3,19.7)
+    local x=math.clamp(r.x+dx*moveSpeed(l,r)*dt+tidepool.drift(l.water,state.water,r,dt),0.3,19.7)
     if not state.open then x=gateLimit(r.x,x,l.gate,r.y,l.gateHeight or 6.9) end
     if not state.key then x=gateLimit(r.x,x,l.lock,r.y,6.9) end
     if state.crate and r.y<0.85 and r.y>-0.2 then
@@ -141,13 +146,16 @@ local function move(l,i,r,other,pad,dt)
     r.buffer=if pad.pressed.south and not r.springImpulse then 0.13 else math.max(0,r.buffer-dt)
     r.springImpulse=false
     r.coyote=if r.on then 0.075 else math.max(0,r.coyote-dt)
-    if r.buffer>0 and (r.coyote>0 or r.extra) then
+    local takeoff=r.buffer>0 and (r.coyote>0 or r.extra)
+    if takeoff then
         if r.coyote==0 then r.extra=false end
-        r.vy,r.coyote,r.buffer,r.ride=JUMP,0,0,false
+        jump.launch(r,jump.normal,true)
         sound.play("jump",{pitch=0.85+0.15*i,db=-9})
     end
     local prev=r.y
-    r.vy-=GRAVITY*dt
+    local wet=tidepool.immersed(l.water,state.water,x,prev)
+    local buoyant=wet and (prev<state.water.y-0.035 or r.vy<=0)
+    jump.step(r,dt,pad.held.south,takeoff,buoyant)
     tidepool.float(l.water,state.water,r,x,dt,pad)
     r.y+=r.vy*dt
     local top,source=-100,""
@@ -177,14 +185,14 @@ local function move(l,i,r,other,pad,dt)
     r.on=source~=""
     r.ride=source=="head"
     if r.on then
-        r.y,r.vy=top,0
+        r.y,r.vy,r.cuttable=top,0,false
         r.extra=state.owner==i
         if type(source)=="number" and l.land[source][4]=="glass" then
             local k=tostring(source)
             if not state.glass[k] then state.glass[k]=0 end
         end
         if near(r,l.spring,0.57) then
-            r.vy,r.on=12.6,false
+            jump.launch(r,jump.spring,false)
             sound.play("jump",{pitch=1.5,db=-6})
         end
     end

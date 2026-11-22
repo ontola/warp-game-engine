@@ -240,7 +240,7 @@ ROUTES = [
     # Glassblower
     [
         w(2,2.4), w(1,1.65), j(1,2.4,1.2), j(1,2.6,2.65), w(2,4.7),
-        j(2,6.8), j(2,9.4,1.2), w(2,10.5,1.2), w(1,4.7), j(1,6.8),
+        j(2,6.8), j(2,9.4,1.2), w(2,10.5,1.2), w(1,4.05,2.65),
         j(1,9.4,1.2), w(1,10,1.2), w(2,11.2,1.2), w(1,10.45,1.2), j(1,11.2,2.4),
         j(1,12,3.8), w(2,12.7), w(2,12.8), j(2,14.7), j(2,17.5),
         w(2,18), w(1,13.8,3.8), j(1,18.7), w(1,19),
@@ -526,19 +526,24 @@ tick=function(dt)
             arrived=if a[2]>0 and a[2]<1 then state.ferry.t>=a[2] and state.ferry.direction==1
                 else math.abs(state.ferry.t-a[2])<0.0001
         else
-            p.move_x=math.clamp(delta/(4.2*dt),-1,1)
+            p.move_x=math.clamp(delta/(moveSpeed(rooms[state.room],r)*dt),-1,1)
         end
         if a[4]==9 then
             arrived=r.on and math.abs(r.x-a[5])<0.03 and math.abs(r.y-a[6])<0.03
             if arrived then p.move_x=0 end
         end
         p.held.down=a[4]==15
-        p.pressed.south=(elapsed==0 and (a[4]==1 or a[4]==2 or a[4]==4)) or (elapsed==22 and a[4]==2)
+        -- Hold through takeoff, then release before another jump can be pressed.
+        local first=a[4]==1 or a[4]==2 or a[4]==4
+        local wing=a[4]==2 and elapsed>=18
+        p.pressed.south=(first and elapsed==0) or (wing and elapsed==18)
+        p.held.south=(first and elapsed<16) or (wing and elapsed<34)
         if a[4]==4 then
             local mate=state.crew[2]
             local partner=input[mate.id]
             partner.pressed.south=elapsed==a[7]
-            partner.move_x=if elapsed>=a[7] then math.clamp((a[5]-mate.x)/(4.2*dt),-1,1) else 0
+            partner.held.south=elapsed>=a[7] and elapsed<a[7]+16
+            partner.move_x=if elapsed>=a[7] then math.clamp((a[5]-mate.x)/(moveSpeed(rooms[state.room],mate)*dt),-1,1) else 0
             arrived=arrived and mate.on and math.abs(mate.x-a[5])<0.015 and math.abs(mate.y-a[6])<0.03
         end
         if elapsed>0 and arrived then

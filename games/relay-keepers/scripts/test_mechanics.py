@@ -30,7 +30,8 @@ class Sample(NamedTuple):
 
 
 # Each fixture has one unreachable exit. Only the tick's controller inputs change.
-# An action is {seat, start seconds, end seconds, horizontal axis, button}.
+# An optional target X releases the stick on arrival, using the same inputs as a player.
+# Actions are {seat, start seconds, end seconds, horizontal axis, button, target X}.
 DRIVER = """
 local elapsed=0
 local function observedTick(dt)
@@ -38,9 +39,14 @@ local function observedTick(dt)
     for _,r in state.crew do input[r.id]={move_x=0,held={},pressed={}} end
     for _,a in actions do
         if elapsed>=a[2] and elapsed<a[3] then
-            local p=input[state.crew[a[1]].id]
+            local r=state.crew[a[1]]
+            local p=input[r.id]
             p.move_x=a[4]
-            if a[5]=="jump" and elapsed-dt<a[2] then p.pressed.south=true end
+            if a[6] and (a[6]-r.x)*a[4]<=0 then p.move_x=0 end
+            if a[5]=="jump" or a[5]=="tap" then
+                p.held.south=a[5]=="jump"
+                p.pressed.south=elapsed-dt<a[2]
+            end
             if a[5]=="dive" then p.held.down=true end
         end
     end
@@ -90,7 +96,7 @@ CRAB = 'crabs={{from=6,to=7,y=0,speed=0.65}},'
 
 def active_claws(run):
     rows = run(FLOOR + CRAB + 'start={{2,0},{16,0}}',
-               '{{2,0,0.4,-1},{1,0.5,1.8,1}}', 3)
+               '{{2,0,0.4,-1,nil,14.35},{1,0.5,1.8,1}}', 3)
     impact = next(s for s in rows if s.falls > 0)
     assert impact.ax == 2 and impact.ay == 0, "Claw hit did not respawn the walker"
     assert rows[-1].falls == 1, "One collision must count as exactly one fall"
@@ -113,13 +119,13 @@ def check_bell(rows):
 
 def player_bell(run):
     rows = run(FLOOR + CRAB + 'start={{4.9,0},{1.5,0}},bell={3.6,0}',
-               '{{2,0,0.5,1},{1,1.05,2.3,1},{2,3,3.55,-1}}', 5)
+               '{{2,0,0.5,1,nil,3.6},{1,1.05,2.3,1},{2,3,3.55,-1}}', 5)
     check_bell(rows)
 
 
 def crate_bell(run):
     rows = run(FLOOR + CRAB + 'start={{4.9,0},{1,0}},bell={3.7,0},crate={2.1,0}',
-               '{{2,0,0.47,1},{2,0.51,0.84,-1},{1,1.05,2.3,1},{2,3,3.95,1}}', 5)
+               '{{2,0,0.47,1,nil,2.95},{2,0.51,0.84,-1},{1,1.05,2.3,1},{2,3,3.95,1,nil,5.3}}', 5)
     held = during(rows, 1.0, 2.8)
     assert all(abs(s.crate - 3.7) < 0.35 and abs(s.bx - 3.7) > 1 for s in held), (
         "Crate must hold the bell without a player on it")
@@ -129,7 +135,7 @@ def crate_bell(run):
 def balance_grace(run):
     rows = run('start={{2,1.2},{2,0}},land={{0,3.5,0},{3.5,12,0,"balance"},'
                '{3.5,12,-1.15},{7.5,9.5,1.35}}',
-               '{{2,0.1,1.3,1},{1,1.45,1.8,1,"jump"}}', 4)
+               '{{2,0.1,1.3,1,nil,7.0},{1,1.45,1.8,1,"jump",8.6}}', 4)
     before = during(rows, 1.32, 1.43)
     assert all(s.riding and s.bx > 6.8 and abs(s.ax - s.bx) < 0.1 for s in before), (
         "Carrier did not carry the rider across the bridge")
@@ -144,7 +150,7 @@ def balance_grace(run):
 
 def portal_return(run):
     rows = run(FLOOR + 'start={{2,0},{17,0}},portals={{{4,0},{12,0}}}',
-               '{{1,0,0.44,1},{1,1.5,1.9,1},{1,2.0,2.49,-1}}', 4)
+               '{{1,0,0.44,1,nil,12},{1,1.5,1.9,1,nil,13.6},{1,2.0,2.49,-1,nil,4}}', 4)
     jumps = [(a, b) for a, b in zip(rows, rows[1:]) if abs(b.ax - a.ax) > 5]
     assert len(jumps) == 2, f"Expected one outward and one return teleport, got {len(jumps)}"
     outbound, inbound = jumps
@@ -157,7 +163,7 @@ def portal_return(run):
 def dive_release(run):
     rows = run('start={{8,0},{17,0}},land={{0,4,0},{4,14,-1.7},{14,20,0}},'
                'water={left=4,right=14,low=0,high=1.35,control={15,0}}',
-               '{{1,0.2,0.9,0,"dive"},{2,2.7,3.17,-1},{2,4.55,5.04,1}}', 7)
+               '{{1,0.2,0.9,0,"dive"},{2,2.7,3.17,-1,nil,15},{2,4.55,5.04,1,nil,17}}', 7)
     assert min(s.ay for s in during(rows, 0.2, 1.3)) < -1.2, "Down did not submerge the runner"
     assert all(s.a_on and s.ay == 0 for s in during(rows, 2.25, 2.65)), "Did not resurface"
     assert all(s.a_on and s.ay == s.water == 1.35 for s in during(rows, 4.21, 4.5)), (
