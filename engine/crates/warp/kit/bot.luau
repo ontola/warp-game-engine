@@ -121,6 +121,47 @@ function bot.run_to(body: number, to: vector, opts: { skill: number?, ctl: any? 
 	return inp
 end
 
+-- A first-person shooter bot (kit/controller first_person): turns and
+-- tilts towards `target` at a human-ish rate, walks to keep `range`
+-- metres away while strafing, and holds fire once lined up with a clear
+-- line of sight for a reaction time. opts: skill (0..1, 0.6: turn rate,
+-- aim wobble and reaction), range (12),
+-- ignore (ids the sight line passes through, such as its own body).
+function bot.shoot_at(ctl, target: vector, opts: { skill: number?, range: number?, ignore: any? }?)
+	opts = opts or {}
+	local inp = bot.input()
+	local skill = opts.skill or 0.6
+	local eye = ctl:eye()
+	-- Aim wobbles around the target, more for a weaker bot.
+	local t = game.time()
+	local k = ctl.body or 0
+	local wobble = (1 - skill) * 0.9
+	target += vector.create(math.sin(t * 1.3 + k) * wobble, math.sin(t * 0.9 + k * 2) * wobble * 0.5, math.cos(t * 1.1 + k) * wobble)
+	local d = target - eye
+	local flat = vector.magnitude(util.flat(d))
+	local want_yaw = util.yaw_to(d)
+	local want_pitch = math.atan2(d.y, math.max(flat, 0.01))
+	local turn = 0.03 + 0.09 * skill
+	local dy = util.angle_diff(want_yaw, ctl.yaw)
+	inp.look_x = -math.clamp(dy, -turn, turn)
+	inp.look_y = math.clamp(want_pitch - ctl.pitch, -turn, turn)
+	local range = opts.range or 12
+	inp.move_y = if flat > range + 2 then 1 elseif flat < range - 4 then -0.6 else 0
+	-- Strafe one way, then the other, every couple of seconds.
+	inp.move_x = if math.floor(game.time() / 1.7) % 2 == 0 then 0.6 else -0.6
+	local lined_up = math.abs(dy) < 0.06 + (1 - skill) * 0.08 and math.abs(want_pitch - ctl.pitch) < 0.1
+	local clear = lined_up and world.raycast(eye, vector.normalize(d), vector.magnitude(d) - 0.6, { ignore = opts.ignore }) == nil
+	-- A reaction time before the first shot at a target in sight.
+	if not clear then ctl.bot_sighted = nil elseif not ctl.bot_sighted then ctl.bot_sighted = t end
+	if clear and t - ctl.bot_sighted >= 0.3 + (1 - skill) * 0.6 then
+		do
+			inp.held.fire, inp.held.right_trigger = true, true
+			inp.pressed.fire, inp.pressed.right_trigger = true, true
+		end
+	end
+	return inp
+end
+
 -- Drive (kit/controller kart) towards a point: steer and throttle.
 -- `yaw` is the kart's yaw.
 function bot.drive_to(from: vector, yaw: number, to: vector, opts: { skill: number? }?)

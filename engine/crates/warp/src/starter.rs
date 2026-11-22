@@ -33,6 +33,16 @@ pub const TEMPLATES: &[Template] = &[
             ("scripts/smoke.json", include_str!("../templates/platformer/scripts/smoke.json")),
         ],
     },
+    Template {
+        name: "fps",
+        about: "Frag Yard: first-person arena deathmatch, 1-4 players in split screen with bots",
+        files: &[
+            ("game.toml", include_str!("../templates/fps/game.toml")),
+            ("main.luau", include_str!("../templates/fps/main.luau")),
+            ("README.md", include_str!("../templates/fps/README.md")),
+            ("scripts/smoke.json", include_str!("../templates/fps/scripts/smoke.json")),
+        ],
+    },
 ];
 
 pub fn template(name: &str) -> Result<&'static Template, String> {

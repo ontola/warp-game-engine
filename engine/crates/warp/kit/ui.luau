@@ -10,6 +10,8 @@
 --   ui.scoreboard(rows, { title = "Results" })     -- rows: { name, score, color }
 --   ui.marker(pos, "Flag", { player = p.id })      -- a label over a world point
 --   ui.hint("Hold A to jump higher")
+--   ui.crosshair(p.id)                             -- first-person games
+--   ui.flash(p.id, { 1, 0, 0, 0.3 })               -- a hit
 
 local util = require("kit/util")
 
@@ -132,6 +134,27 @@ function ui.marker(pos: vector, text: string, opts: { player: number?, color: an
 	local size = opts.size or 20
 	local tw = hud.measure(text, size * s)
 	ui.text(text, px - tw / 2, py - size * s, { size = size, color = opts.color })
+end
+
+-- A crosshair in the middle of a view; opts: color, size (points, 10),
+-- spread (points, widens it after a shot).
+function ui.crosshair(player: number?, opts: { color: any?, size: number?, spread: number? }?)
+	opts = opts or {}
+	local x, y, w, h = ui.area(player)
+	local s = ui.scale()
+	local cx, cy = x + w / 2, y + h / 2
+	local len, gap, t = (opts.size or 10) * s, (4 + (opts.spread or 0)) * s, 2 * s
+	local c = opts.color or { 1, 1, 1, 0.9 }
+	hud.box(cx - t / 2, cy - gap - len, t, len, c)
+	hud.box(cx - t / 2, cy + gap, t, len, c)
+	hud.box(cx - gap - len, cy - t / 2, len, t, c)
+	hud.box(cx + gap, cy - t / 2, len, t, c)
+end
+
+-- Tint a whole view (a hit flash, low health): color with its alpha.
+function ui.flash(player: number?, color: any)
+	local x, y, w, h = ui.area(player)
+	hud.box(x, y, w, h, color)
 end
 
 -- Seconds as a big centred count ("3", "2", "1", "GO!").
