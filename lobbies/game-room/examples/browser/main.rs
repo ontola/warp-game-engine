@@ -268,6 +268,15 @@ mod page {
                 }
                 "close_overlay" => resume(),
                 "leave_party" => with(|h| leave_party(h, msg["player_id"].as_str().unwrap_or_default())),
+                // Moved on the couch (the room's mouse menu): whoever sat there swaps.
+                "set_couch_position" => with(|h| {
+                    let Some(i) = msg["player_id"].as_str().and_then(|p| seat_of(h, p)) else { return };
+                    let (from, to) = (h.party["players"][i]["couch"].clone(), msg["position"].clone());
+                    let Some(list) = h.party["players"].as_array_mut() else { return };
+                    for p in list.iter_mut() { if p["couch"] == to { p["couch"] = from.clone(); } }
+                    list[i]["couch"] = to;
+                    h.dirty = true;
+                }),
                 "room_pickup" => {
                     let seat = msg["player_id"].as_str().and_then(|p| with(|h| seat_of(h, p)));
                     if let (Some(pending), Some(seat)) = (msg["pending"].as_str(), seat) { crate::cloud::pickup(pending.to_string(), seat); }
