@@ -82,6 +82,8 @@ mod page {
         /// heard since the room last ticked (the table's pads jiggle).
         pushed: Vec<Device>,
         pad_heard: bool,
+        /// Pads this page has heard from: a new one in a game gets the join hint.
+        seen: Vec<Device>,
         /// Enter held on the keyboard while nobody plays on it.
         kb_enter: bool,
         /// A chord to run when the room ticks.
@@ -178,6 +180,12 @@ mod page {
                 // As at home: A joins; anything else only jiggles the pads on the table.
                 Device::Pad(_) => c.pressed.has(Buttons::SOUTH),
             };
+            // A pad first heard during a game (the browser shows a pad only
+            // once a button is pressed): how to join, unless it pressed A.
+            if let Device::Pad(_) = dev && !h.seen.contains(dev) {
+                h.seen.push(*dev);
+                if h.on_screen.is_some() && !active && !h.bound.contains(&Some(*dev)) { join_hint(false); }
+            }
             if let Device::Pad(_) = dev && !active && !h.bound.contains(&Some(*dev)) {
                 let pushed = c.mv[0].abs().max(c.mv[1].abs()) > 0.6;
                 let was = h.pushed.contains(dev);
@@ -199,7 +207,7 @@ mod page {
             // (app::Game::player_joins); else from the next one.
             if h.on_screen.is_some() {
                 let info = &seats(h)[seat];
-                if !app::web::game_takes_joins() { next_game_hint(&info.name); }
+                if app::web::game_takes_joins() { show_hint("✓", &format!("{} joined the game", info.name)); } else { next_game_hint(&info.name); }
                 app::web::player_joins(&info.name, info.color);
             }
             let text = format!("{} joined with {}", name(h, seat), if *dev == Device::Keyboard { "the keyboard" } else { "a controller" });
