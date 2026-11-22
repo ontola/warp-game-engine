@@ -235,6 +235,16 @@ How the build differs from native:
   plain 2x2 averages (`texture_mips::resize`), without the linear-RGB
   cutout pass, and the arrays stay RGBA8 (no BC7 encoding): each took
   seconds a layer on the page thread.
+- Joining mid-game: a controller nobody plays with that is touched in a
+  game shows "Press A to join this game" (the keyboard: Enter), or, when
+  the game's `app::Game::takes_joins` is false, that A joins from the next
+  game. A then seats them in the party and the page calls
+  `app::web::player_joins`, which hands the running game
+  `app::Game::player_joins(name, color)` before its next tick; the new
+  player drives the game's next player in controls order. Luau games take
+  up to four people through the page's seats and their `player_joined`
+  hook; Spellstorm adds a wizard with random tomes; other Rust games keep
+  the player for the next game.
 - Time comes from `web_time::Instant` (`std::time::Instant` natively).
 - Files: the page fetches the textures first and hands them to
   `render::files::preload`; `render::files::read` and `open_image` find them

@@ -47,19 +47,20 @@ html[data-empty] #club-notice{opacity:1;visibility:visible;transform:translate(-
 #club-notice strong{display:block;position:relative;font-weight:800;font-size:clamp(17px,2vw,22px)}
 #club-notice span{color:var(--muted);font-size:clamp(14px,1.6vw,17px)}
 /* The first game: how to get back to the room, for a few seconds. */
-#back-hint,#key-hint{position:fixed;top:28px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:14px;padding:14px 22px;border-radius:18px;
+#back-hint,#key-hint,#join-hint{position:fixed;top:28px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:14px;padding:14px 22px;border-radius:18px;
   background:rgba(13,16,32,.86);border:1px solid rgba(255,255,255,.1);box-shadow:0 12px 36px rgba(0,0,0,.45);backdrop-filter:blur(8px);
   opacity:0;visibility:hidden;z-index:1;max-width:calc(100vw - 32px);box-sizing:border-box;font-size:clamp(15px,1.8vw,19px)}
 html[data-back-hint] #back-hint{animation:back-hint 7s ease forwards}
 /* A key pressed with nobody on the keyboard yet: how to join with it. */
 html[data-key-hint] #key-hint{animation:back-hint 4s ease forwards}
+html[data-join-hint] #join-hint{animation:back-hint 4s ease forwards}
 /* The empty-room card already says it: no second card over it, it nods instead. */
 html[data-empty] #key-hint{display:none}
 html[data-empty][data-key-hint] #club-notice strong{animation:nod .9s ease}
 @keyframes nod{30%{color:var(--violet);transform:translateX(-4px)}60%{transform:translateX(4px)}}
 @keyframes back-hint{0%{opacity:0;visibility:visible;transform:translate(-50%,-12px)}8%,85%{opacity:1;visibility:visible;transform:translate(-50%,0)}100%{opacity:0;visibility:hidden}}
-#back-hint kbd,#key-hint kbd{font:800 .85em Outfit,system-ui;padding:4px 10px;border-radius:8px;background:var(--violet);color:#0d1020;white-space:nowrap}
-#back-hint span,#key-hint span{color:var(--muted)}
+#back-hint kbd,#key-hint kbd,#join-hint kbd{font:800 .85em Outfit,system-ui;padding:4px 10px;border-radius:8px;background:var(--violet);color:#0d1020;white-space:nowrap}
+#back-hint span,#key-hint span,#join-hint span{color:var(--muted)}
 #warp-log{display:none;position:fixed;left:8px;bottom:8px;white-space:pre-wrap;max-width:90vw;max-height:40vh;overflow:hidden;pointer-events:none;font:12px monospace;color:#ddd;text-shadow:0 0 3px #000;z-index:3}
 #warp-games{display:none!important}
 body.debug #warp-log{display:block}
@@ -87,6 +88,7 @@ body.debug #warp-games{display:flex!important}
   <div><strong>Connect a controller and press A</strong><span>press Enter on the keyboard, or scan the QR code on the wall with your phone</span></div>
 </div>
 <div id="back-hint" role="status"><kbd>Back</kbd><div>Back or Select takes you back to the room <span>(Tab on a keyboard)</span></div></div>
+<div id="join-hint" role="status"><kbd id="join-key">A</kbd><div id="join-text">Press A to join this game</div></div>
 <div id="key-hint" role="status"><kbd>Enter</kbd><div>Press Enter to play with the keyboard</div></div>
 <div id="warp-log"></div>
 <script type="module">

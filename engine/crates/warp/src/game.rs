@@ -1030,6 +1030,10 @@ impl Game for LuaGame {
 
     /// The people; bots need no controls.
     fn local_players(&self) -> usize { self.core().roster.iter().filter(|p| !p.bot).count().max(1) }
+    // A new seat reaches a Luau game through the page's seats (`page_seats`,
+    // then its `player_joined` hook), up to four people.
+    fn takes_joins(&self) -> bool { self.core().roster.iter().filter(|p| !p.bot).count() < 4 }
+    fn player_joins(&mut self, _name: Option<&str>, _color: Option<[f32; 3]>) -> bool { self.takes_joins() }
 
     /// Under Splitscreen Club the party's controllers play: never grab the mouse
     /// (and so no click-to-capture hint on the TV).

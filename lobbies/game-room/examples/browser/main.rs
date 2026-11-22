@@ -162,7 +162,9 @@ mod page {
             // (WASD and the arrows move: they count as keys too.)
             if *dev == Device::Keyboard && (c.pressed.0 != 0 || c.mv[0].abs().max(c.mv[1].abs()) > 0.5) {
                 h.key = Some(c.pressed.0 | ((c.mv[0] > 0.0) as u32) << 30 | ((c.mv[1] > 0.0) as u32) << 31);
-                if !c.pressed.has(Buttons::START) && !h.bound.contains(&Some(Device::Keyboard)) { key_hint(); }
+                if !c.pressed.has(Buttons::START) && !h.bound.contains(&Some(Device::Keyboard)) {
+                    if h.on_screen.is_some() { join_hint(true) } else { key_hint() }
+                }
             }
             // A pad joins with A; the keyboard only
             // with Enter, so typing or a stray key adds nobody.
@@ -180,7 +182,11 @@ mod page {
                 let pushed = c.mv[0].abs().max(c.mv[1].abs()) > 0.6;
                 let was = h.pushed.contains(dev);
                 if pushed && !was { h.pushed.push(*dev); } else if !pushed { h.pushed.retain(|d| d != dev); }
-                if c.pressed.0 != 0 || (pushed && !was) { h.pad_heard = true; }
+                if c.pressed.0 != 0 || (pushed && !was) {
+                    h.pad_heard = true;
+                    // In a game nobody sees the table: say how to join.
+                    if h.on_screen.is_some() { join_hint(false); }
+                }
             }
             if !active || h.bound.contains(&Some(*dev)) { continue; }
             let seat = match (0..h.bound.len()).find(|&i| h.bound[i].is_none() && !h.phone[i]) {
@@ -189,6 +195,13 @@ mod page {
                 None => continue,
             };
             h.bound[seat] = Some(*dev);
+            // Into the running game, when it takes players
+            // (app::Game::player_joins); else from the next one.
+            if h.on_screen.is_some() {
+                let info = &seats(h)[seat];
+                if !app::web::game_takes_joins() { next_game_hint(&info.name); }
+                app::web::player_joins(&info.name, info.color);
+            }
             let text = format!("{} joined with {}", name(h, seat), if *dev == Device::Keyboard { "the keyboard" } else { "a controller" });
             note(h, "joined", &text, None);
             app::web::log(&format!("{dev} plays as {}", h.party["players"][seat]["name"].as_str().unwrap_or("?")));
@@ -365,6 +378,33 @@ mod page {
         let _ = root.remove_attribute("data-key-hint");
         let _ = root.get_bounding_client_rect();
         let _ = root.set_attribute("data-key-hint", "");
+    }
+
+    /// In a game, a controller (or the keyboard: `keyboard`) nobody plays
+    /// with was touched: "Press A to join", or, when the game takes no
+    /// one mid-game, that A joins from the next game
+    /// (`<html data-join-hint>`, see index.html).
+    fn join_hint(keyboard: bool) {
+        thread_local! { static LAST: std::cell::Cell<Option<web_time::Instant>> = const { std::cell::Cell::new(None) }; }
+        if LAST.with(|l| l.get().is_some_and(|t| t.elapsed().as_secs_f32() < 4.0)) { return; }
+        LAST.with(|l| l.set(Some(web_time::Instant::now())));
+        let (key, now) = (if keyboard { "Enter" } else { "A" }, app::web::game_takes_joins());
+        let text = if now { format!("Press {key} to join this game") } else { format!("Press {key} to join; you play from the next game") };
+        show_hint(key, &text);
+    }
+
+    /// Someone joined a game that takes no one mid-game.
+    fn next_game_hint(name: &str) { show_hint("✓", &format!("{name} plays from the next game")); }
+
+    fn show_hint(key: &str, text: &str) {
+        app::web::log(&format!("hint: {text}"));
+        let Some(doc) = web_sys::window().and_then(|w| w.document()) else { return };
+        if let Some(e) = doc.get_element_by_id("join-key") { e.set_text_content(Some(key)); }
+        if let Some(e) = doc.get_element_by_id("join-text") { e.set_text_content(Some(text)); }
+        let Some(root) = doc.document_element() else { return };
+        let _ = root.remove_attribute("data-join-hint");
+        let _ = root.get_bounding_client_rect();
+        let _ = root.set_attribute("data-join-hint", "");
     }
 
     /// The first game this page starts: the page shows for a few seconds how

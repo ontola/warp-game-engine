@@ -21,6 +21,10 @@ thread_local! {
     static NEXT: RefCell<Option<(Parked, Option<Keep>)>> = const { RefCell::new(None) };
     /// What the page does when the game quits or someone presses Back ([`on_exit`]).
     static EXIT: RefCell<Option<Box<dyn FnMut(Exit) -> bool>>> = const { RefCell::new(None) };
+    /// Players who joined since the last tick ([`player_joins`]).
+    static JOINS: RefCell<Vec<(String, Option<[f32; 3]>)>> = const { RefCell::new(Vec::new()) };
+    /// The running game's [`crate::Game::takes_joins`], each frame.
+    static TAKES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The page's seats for games without their own ([`on_devices`]).
     static SEATS: RefCell<Option<Box<dyn FnMut(&[(crate::Device, crate::Controls)]) -> Option<Vec<Vec<crate::Device>>>>>> = const { RefCell::new(None) };
     /// Lines the log box always shows above the rolling tail: the start-up
@@ -318,6 +322,14 @@ fn exit(why: Exit) -> bool {
 /// running game binds none itself ([`Game::seats`]). A browser host joins a
 /// pad that wakes up as a player there, and keeps each player on the same
 /// pad from the room into the games.
+/// Someone joined the party while a game runs: the game gets
+/// [`crate::Game::player_joins`] before its next tick, and their device
+/// must then drive the game's next player in controls order.
+pub fn player_joins(name: &str, color: Option<[f32; 3]>) { JOINS.with(|j| j.borrow_mut().push((name.to_string(), color))); }
+
+/// Whether the running game takes a player who joins now.
+pub fn game_takes_joins() -> bool { TAKES.with(|t| t.get()) }
+
 pub fn on_devices(f: impl FnMut(&[(crate::Device, crate::Controls)]) -> Option<Vec<Vec<crate::Device>>> + 'static) {
     SEATS.with(|s| *s.borrow_mut() = Some(Box::new(f)));
 }
@@ -430,6 +442,10 @@ impl Shell {
             }
             self.game.devices(&devices);
             let page = SEATS.with(|s| s.borrow_mut().as_mut().and_then(|f| f(&devices)));
+            for (name, color) in JOINS.with(|j| std::mem::take(&mut *j.borrow_mut())) {
+                let now = self.game.player_joins(Some(&name), color);
+                log(&format!("{}: {name} {}", self.cfg.title, if now { "joined the game" } else { "joins from the next game" }));
+            }
             let seats = self.game.seats().or(page);
             let controls = crate::input::route(&devices, seats.as_deref(), self.game.local_players());
             self.game.tick(&controls);
@@ -437,6 +453,7 @@ impl Shell {
             if !self.exited && self.game.quit() { self.exited = exit(Exit::Quit); }
         }
         if steps == 6 { self.acc = 0.0; }
+        TAKES.with(|t| t.set(self.game.takes_joins()));
         let tick_ms = ms(t_tick);
         let alpha = (self.acc / step).clamp(0.0, 1.0);
         let split = self.game.split();

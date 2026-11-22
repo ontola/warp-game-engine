@@ -221,6 +221,10 @@ pub trait Game {
     /// routed to seats: a spare pad's buttons (press X to join), which
     /// device was used last. Called just before each tick.
     fn devices(&mut self, _devices: &[(Device, Controls)]) {}
+    /// Whether someone picking up a controller now can join this game
+    /// ([`Game::player_joins`]); the host then shows "Press A to join"
+    /// instead of "you join from the next game".
+    fn takes_joins(&self) -> bool { false }
     /// The devices bound to each local seat (one list per seat, in seat
     /// order); devices in no list drive nobody. None: devices drive seats in
     /// order and a single seat takes every device.

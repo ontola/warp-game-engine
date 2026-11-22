@@ -231,6 +231,7 @@ impl Spellstorm {
 }
 
 impl app::Game for Spellstorm {
+    fn takes_joins(&self) -> bool { self.party.is_none() && self.drive.len() < 4 }
     fn player_joins(&mut self, name: Option<&str>, color: Option<[f32; 3]>) -> bool {
         self.join_player(name, color)
     }
