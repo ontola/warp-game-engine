@@ -121,6 +121,20 @@ fn previous_source_point(owner:u32,world:vec3<f32>,cluster:u32,tri:u32)->vec4<f3
     return vec4<f32>(deform(transform(old,local),old.r1.w,bitcast<vec4<f32>>(previous_wind[slot]).xy),1.0);
 }
 
+// Previous-frame clip position of the second visible surface under a mixed
+// transparent pixel. Both surfaces lie on the same current ray, so their
+// previous screen separation is exactly their relative motion in pixels.
+fn second_layer_clip(ndc:vec2<f32>,depth:f32,owner:u32,cluster:u32,tri:u32,voxel:bool)->vec4<f32> {
+    let point=motion.inverse_current*vec4<f32>(ndc,depth,1.0);
+    if depth==0.0 {return motion.previous*vec4<f32>(point.xyz,0.0);}
+    if !finite4(point) || abs(point.w)<1e-10 {return vec4<f32>(0.0);}
+    let world=point.xyz/point.w;
+    if voxel {return motion.previous*vec4<f32>(world,1.0);}
+    let old=previous_source_point(owner,world,cluster,tri);
+    if old.w==0.0 {return vec4<f32>(0.0);}
+    return motion.previous*old;
+}
+
 @fragment fn motion_fs(@builtin(position) position:vec4<f32>)->MotionOut {
     let pixel=vec2<i32>(position.xy);
     let ndc=vec2<f32>(position.x*motion.size.z*2.0-1.0,1.0-position.y*motion.size.w*2.0);
@@ -151,9 +165,11 @@ fn previous_source_point(owner:u32,world:vec3<f32>,cluster:u32,tri:u32)->vec4<f3
     if motion.grass.w>0.5 {meadow_alpha=clamp(textureLoad(meadow_color,pixel,0).a,0.0,1.0);}
     let underlying_transmission=(1.0-meadow_alpha)*(1.0-glass_alpha);
     let opaque=out.depth;
+    let opaque_owner=owner;let opaque_cluster=cluster;let opaque_voxel=voxel;
+    var mixed_background=grass_alpha>0.0 || meadow_alpha>0.0;
     // Production order: voxel, old grass, meadow, glass. Later layers attenuate
     // earlier contributions; a faint front layer must not take motion ownership.
-    out.bias=max(4.0*grass_alpha*(1.0-grass_alpha)*(1.0-meadow_alpha),4.0*glass_alpha*(1.0-glass_alpha));
+    out.bias=4.0*grass_alpha*(1.0-grass_alpha)*(1.0-meadow_alpha);
     if grass_alpha*underlying_transmission>=0.5 {
         let d=bitcast<f32>(grass.y);
         if d>=opaque && d<=1.0 {owner=(grass.x>>8u)-1u;cluster=0xffffffffu;voxel=false;out.depth=d;}
@@ -172,6 +188,7 @@ fn previous_source_point(owner:u32,world:vec3<f32>,cluster:u32,tri:u32)->vec4<f3
         let far=textureLoad(far_color,q,0);let horizontal_distance=textureLoad(far_distance,q,0).r;
         let near_weight=select(grass_distance_opacity(horizontal_distance,motion.grass.xy),grass_alpha,grass_alpha>0.0);
         let contribution=far.a*(1.0-near_weight)*underlying_transmission;
+        mixed_background=mixed_background || contribution>0.0;
         grass_coverage=clamp(grass_alpha+far.a*(1.0-near_weight),0.0,1.0);
         if contribution>0.0 && horizontal_distance>0.0 {
             out.bias=max(out.bias,contribution);
@@ -197,6 +214,7 @@ fn previous_source_point(owner:u32,world:vec3<f32>,cluster:u32,tri:u32)->vec4<f3
     if motion.grass.z>0.5 {
         let alpha=textureLoad(voxel_color,pixel,0).a;
         let contribution=clamp(alpha,0.0,1.0)*(1.0-grass_coverage)*underlying_transmission;
+        mixed_background=mixed_background || contribution>0.0;
         out.bias=max(out.bias,4.0*contribution*(1.0-contribution));
         if contribution>0.0 {
             let reprojection=textureLoad(voxel_reprojection,pixel,0);
@@ -255,6 +273,27 @@ fn previous_source_point(owner:u32,world:vec3<f32>,cluster:u32,tri:u32)->vec4<f3
     let prev_ndc=b.xy/b.w;
     let vector=(prev_ndc-a.xy/a.w)*vec2<f32>(0.5,-0.5)*motion.size.xy;
     if !all(abs(vector)<vec2<f32>(32752.0)) {out.bias=1.0;return out;}
+    if glass_alpha>0.0 && glass_alpha<1.0 {
+        let ambiguity=4.0*glass_alpha*(1.0-glass_alpha);
+        // A single motion vector can represent glass and scenery when they
+        // reproject to the same pixel, including a cabin moving with its car.
+        // Separate moving layers, unknown history, and mixed foliage retain
+        // the conventional coverage-based rejection.
+        var disagreement=1.0;
+        if !mixed_background {
+            var second:vec4<f32>;
+            if glass_alpha>=0.5 {
+                second=second_layer_clip(ndc,opaque,opaque_owner,opaque_cluster,tri,opaque_voxel);
+            } else {
+                second=second_layer_clip(ndc,bitcast<f32>(glass.y),(glass.x>>8u)-1u,0xffffffffu,0u,false);
+            }
+            if finite4(second) && second.w>1e-7 {
+                let separation=length((second.xy/second.w-prev_ndc)*0.5*motion.size.xy);
+                disagreement=smoothstep(0.25,1.25,separation);
+            }
+        }
+        out.bias=max(out.bias,ambiguity*disagreement);
+    }
     out.vector=vector;
     if any(abs(prev_ndc)>vec2<f32>(1.0)) {out.bias=1.0;}
     return out;

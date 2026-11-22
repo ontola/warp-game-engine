@@ -379,6 +379,34 @@ fn run()->Result<(),String> {
         let bias=grass.into_iter().chain(glass).map(|(_,a,_)|{let a=a as f32/255.;4.*a*(1.-a)}).fold(0.,f32::max);
         records.push(check(&gpu,name,&frame[0],|x,y|(expected(camera,camera,poses[owner],base[owner],x,y,depth),depth),Some(bias),false));
     }
+    // A parked car window and the opaque seat behind it reproject together.
+    // Camera jitter cannot separate them. Moving traffic behind stationary
+    // glass does separate, whichever layer supplies the output motion.
+    for (name,alpha,window_x,background_x,camera_x,separate) in [
+        ("stationary_window",82_u8,0.0,0.0,0.0,false),
+        ("stationary_dominant_window",179,0.0,0.0,0.0,false),
+        ("window_and_cabin_follow_camera",82,0.7,0.7,0.7,false),
+        ("moving_window_over_street",82,0.7,0.0,0.0,true),
+        ("moving_traffic_behind_window",179,0.0,0.7,0.0,true),
+        ("static_layers_camera_parallax",179,0.0,0.0,0.7,true),
+    ] {
+        let f=Fixture::new(&gpu)?;
+        let layers=Layers {glass:Some((2,alpha,0.03)),..Layers::default()};
+        let inputs=Inputs::new(&gpu,layers);
+        f.poses(&gpu,base);
+        f.frame(&gpu,&inputs,&[camera])?;
+        let mut poses=base;
+        poses[0].transform=Affine3A::from_translation(Vec3::X*background_x);
+        poses[2].transform=Affine3A::from_translation(Vec3::X*window_x);
+        let current=Camera {position:Vec3::X*camera_x,jitter:Vec2::new(0.35,-0.25),..camera};
+        f.poses(&gpu,poses);
+        let frame=f.frame(&gpu,&inputs,&[current])?;
+        let (owner,depth)=if alpha>=128 {(2,0.03)} else {(0,layers.depth)};
+        let a=f32::from(alpha)/255.0;
+        let bias=if separate {4.0*a*(1.0-a)} else {0.0};
+        records.push(check(&gpu,name,&frame[0],|x,y|
+            (expected(current,camera,poses[owner],base[owner],x,y,depth),depth),Some(bias),false));
+    }
     // Identical layer inputs, different source/volume distance policy. With no
     // near metadata, Extended still weights the source representation here,
     // while Default has already reached pure far grass. The resulting motion

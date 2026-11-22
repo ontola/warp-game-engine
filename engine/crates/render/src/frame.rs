@@ -140,6 +140,34 @@ fn close_level_centre(centre: Vec3, cam: &Camera, extent: f32, ahead: bool) -> V
 /// The doubling ladder's level that a half extent stands for (levels finer
 /// than its first count as the first): what near_level_voxel_m takes.
 fn extent_level(extent: f32) -> usize { (extent / NEAR_SHADOW_EXTENT).log2().round().max(0.0) as usize }
+// The separate near maps can update only whole layers. Track the bounds of
+// changed casters so a moving car cannot shade itself with its previous pose
+// in the 12 m close level. Uploads can span many untouched static instances.
+struct CloseCasterChanges {
+    previous: Vec<crate::scene::GpuInstance>,
+    changed: Vec<[f32; 4]>,
+}
+impl CloseCasterChanges {
+    fn update(&mut self, first: usize, instances: &[crate::scene::GpuInstance]) {
+        for (old,new) in self.previous[first..first+instances.len()].iter_mut().zip(instances) {
+            if bytemuck::bytes_of(old)==bytemuck::bytes_of(new) { continue; }
+            for source in [&*old,new] {
+                if source.cluster_count>0 && source.flags & crate::scene::NO_SHADOW==0 {
+                    self.changed.push(source.sphere);
+                }
+            }
+            *old=*new;
+        }
+    }
+    // An orthographic sunlight map sees a sphere's full silhouette along the
+    // sun axis. Check the old and new bounds, including a disappearing caster.
+    fn touches(&self, projection: Mat4, extent: f32) -> bool {
+        self.changed.iter().any(|&[x,y,z,r]| {
+            let p=projection*Vec4::new(x,y,z,1.0);
+            p.x.abs().max(p.y.abs()) <= 1.0+r/extent
+        })
+    }
+}
 /// Finest voxel cell level `k` splats: half a pixel's growth per level.
 /// Level 0 redraws every frame, level 1 every other frame, level 2 every
 /// fourth and level 3 every eighth (on different frames): at most two levels
@@ -1242,6 +1270,7 @@ pub struct Renderer {
     raster_cached_sun:Option<wgpu::RenderPipeline>,
     shadow_damage:std::sync::Mutex<Option<crate::shadow_damage::Damage>>,
     legacy_shadow_wind:bool,
+    close_caster_changes: Option<std::sync::Mutex<CloseCasterChanges>>,
     /// KERN_SUN_CLIPMAP in a scene that supports it (sun_clipmap_requested).
     sun_clipmap:bool,
     /// Alpha cut and LOD the cached clipmap levels were drawn with.
@@ -3049,6 +3078,9 @@ impl Renderer {
             raster_depth, broadcast_raster, broadcast_view: std::sync::OnceLock::new(),
             raster_opaque,
             raster_sun_depth,
+            close_caster_changes: (shade_features.skin_hair && !crate::switches::SUN_CLOSE.off()
+                && !(sun_clipmap_requested() && shadow_damage.is_some() && static_sun.is_none()))
+                .then(||std::sync::Mutex::new(CloseCasterChanges {previous:scene.instances.clone(),changed:Vec::new()})),
             raster_cached_sun,sun_clipmap:sun_clipmap_requested() && shadow_damage.is_some() && static_sun.is_none(),clipmap_policy:std::sync::Mutex::new(None),clipmap_log:Default::default(),clipmap_bases:std::sync::Mutex::new(Vec::new()),shadow_damage:std::sync::Mutex::new(shadow_damage),legacy_shadow_wind,
             raster_far_sun_depth,
             raster_rsm,
@@ -4731,6 +4763,7 @@ impl Renderer {
         if let Some(portable)=&self.portable {portable.lock().unwrap().update(first,instances);}
         if let Some(cache) = &self.static_sun { cache.lock().unwrap().update_instances(gpu,first,instances)?; }
         if !instances.is_empty() {
+            if let Some(changes)=&self.close_caster_changes { changes.lock().unwrap().update(first,instances); }
             // Canopy density only changes with foliage. Moving cars and the
             // streamed grass pool must not rebuild the static forest volumes.
             let mut flags = self.instance_flags.lock().unwrap();
@@ -5511,6 +5544,16 @@ impl Renderer {
             let centre = if !diagnostic_sun.is_empty() {anchors[vi]} else if self.legacy_light_lookahead {view.cam.target} else {focus[vi]};
             std::array::from_fn(|k| {let e=clipmap_extent(k, clipmap_bases[vi], clipmap_close);sun_projection(close_level_centre(centre,&view.cam,e,close_ahead), e, clipmap_level_grid(clipmap_frame, k))})
         }).collect();
+        // Refresh only views whose close map contains a changed caster. The
+        // forest clipmap already tracks individual dirty tiles on the GPU.
+        let mut close_dirty=vec![false; views.len()];
+        if let Some(changes)=&self.close_caster_changes {
+            let mut changes=changes.lock().unwrap();
+            for (vi,vps) in near_vps.iter().enumerate() {
+                close_dirty[vi]=changes.touches(vps[1],CLOSE_LADDER[1]);
+            }
+            changes.changed.clear();
+        }
         let near_cached = clipmap_frame;
         // Clipmap levels that redraw their damaged tiles this frame.
         let mut level_drawn = vec![[false; NEAR_LEVELS_MAX]; views.len()];
@@ -5536,7 +5579,7 @@ impl Renderer {
                     // Outer levels collect damage every frame and redraw it on
                     // a stagger, or as soon as they move.
                     maps.push(crate::shadow_damage::MapRequest {slot:clipmap_slot(vi,k),vp:vps[k],size:NEAR_SHADOW_SIZE,depth:Some((&near_shadows[vi].tex,k as u32)),
-                        defer:k>0 && !clipmap_level_due(k,render_sequence)});
+                        defer:k>0 && !(k==1 && clipmap_close && clipmap_bases[vi]==0) && !clipmap_level_due(k,render_sequence)});
                 }}
             }
             if draw_main_sun {maps[0].defer=false;}
@@ -5746,7 +5789,7 @@ impl Renderer {
                         view_light.near_levels_view_proj[k - 1] = near_vps[vi][k].to_cols_array_2d();
                         continue;
                     }
-                    if let Some(vp) = near.drawn[k].get().filter(|_| !near_cached && !near_level_due(k, render_sequence)) {
+                    if let Some(vp) = near.drawn[k].get().filter(|_| !near_cached && !(k==1 && close_dirty[vi]) && !near_level_due(k, render_sequence)) {
                         view_light.near_levels_view_proj[k - 1] = vp.to_cols_array_2d();
                         continue;
                     }
@@ -7471,6 +7514,45 @@ mod layout_tests {
     fn timestamp_overflow_fails_before_encoding_an_invalid_gpu_query() {
         let mut next = TIMESTAMP_CAPACITY;
         timestamp_pair(&mut next);
+    }
+
+    #[test]
+    fn close_caster_changes_cover_old_and_new_silhouettes_per_view() {
+        use super::CloseCasterChanges;
+        use crate::scene::{GpuInstance, NO_SHADOW};
+        use bytemuck::Zeroable;
+        use glam::{Mat4, Vec3};
+
+        let mut car = GpuInstance::zeroed();
+        car.cluster_count = 1;
+        car.sphere = [2.0, 0.0, 0.0, 0.5];
+        let near = Mat4::from_scale(Vec3::splat(1.0 / 12.0));
+        let far = near * Mat4::from_translation(Vec3::new(-100.0, 0.0, 0.0));
+        let mut changes = CloseCasterChanges { previous: vec![car, car], changed: vec![] };
+        changes.update(0, &[car, car]);
+        assert!(changes.changed.is_empty());
+
+        // Rotation can change a silhouette even when its bounding sphere stays put.
+        car.rows[0][0] = -1.0;
+        changes.update(1, &[car]);
+        assert!(changes.touches(near, 12.0));
+        assert!(!changes.touches(far, 12.0));
+
+        changes.changed.clear();
+        car.sphere[0] = 112.4; // edge of the far map overlaps the caster's radius
+        changes.update(1, &[car]);
+        assert!(changes.touches(near, 12.0));
+        assert!(changes.touches(far, 12.0));
+
+        changes.changed.clear();
+        car.flags |= NO_SHADOW;
+        changes.update(1, &[car]);
+        assert!(!changes.touches(near, 12.0));
+        assert!(changes.touches(far, 12.0));
+        changes.changed.clear();
+        car.sphere[0] = 2.0;
+        changes.update(1, &[car]);
+        assert!(changes.changed.is_empty());
     }
 
     #[test]
