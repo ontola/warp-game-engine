@@ -171,7 +171,7 @@ local function updateAvatars(pop, seats)
 			pop.avatars[id] = model
 		end
 		if model and not seat.impact then
-			local aim=seat.mode=="walk" and seat.storyAim
+			local aim=seat.mode=="walk" and seat.aiming
 			humans.set(model,{pos=seat.seatedPos or seat.pos,yaw=seat.seatedYaw or (if aim then seat.view else seat.yaw)+math.pi,
 				pose=if seat.seatedPos then "sit" elseif aim then "aim" else "walk",visible=seat.mode=="walk" or seat.seatedPos~=nil})
 		end

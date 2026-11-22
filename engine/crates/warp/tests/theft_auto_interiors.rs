@@ -7,6 +7,26 @@ fn eval(game: &mut LuaGame, code: &str) -> String {
     game.luau(code).unwrap_or_else(|err| panic!("{code}\n{err}"))
 }
 
+// Keep an exact count for the city and its rooms while separately accounting
+// for the currently owned rival bodies, their markers and the six-piece pistols.
+fn eval_entities(game: &mut LuaGame, code: &str) -> String {
+    let counts = r#"
+        local extras = 0
+        for _, actor in state.combat.cast.people do
+            assert(world.exists(actor.body))
+            extras += 1
+        end
+        for _, enemy in state.combat.enemies do
+            if enemy.marker then assert(world.exists(enemy.marker)); extras += 1 end
+        end
+        for _, gear in state.combat.players do
+            if gear.prop then assert(world.exists(gear.prop)); extras += 6 end
+        end
+        local base = (state.baseCount or 0) + extras
+    "#;
+    eval(game, &format!("{counts}\n{code}"))
+}
+
 fn run(game: &mut LuaGame, ticks: usize, inputs: &[Controls]) {
     for _ in 0..ticks {
         game.tick(inputs);
@@ -23,7 +43,7 @@ fn start(players: usize, seed: u64) -> LuaGame {
     ).unwrap();
     game.echo = false;
     run(&mut game, 12, &vec![Controls::default(); players]);
-    eval(&mut game, r#"
+    eval_entities(&mut game, r#"
         assert(state.interiors.count == 0 and next(state.interiors.active) == nil)
         state.testLots = {}
         for _, b in state.city.buildings do
@@ -34,7 +54,7 @@ fn start(players: usize, seed: u64) -> LuaGame {
             local shell = world.get(b.shell)
             assert(shell.solid and shell.visible)
         end
-        state.baseCount = world.count()
+        state.baseCount = world.count() - extras
     "#);
     game
 }
@@ -95,15 +115,15 @@ fn each_door_can_be_walked_through_and_regenerates_the_same_furnishings() {
         eval(&mut game, &format!("state.lot = state.testLots.{kind}"));
         stage(&mut game, 1, kind, 0., 5.65);
         run(&mut game, 12, &[still]);
-        eval(&mut game, "assert(state.interiors.count == 0 and world.count() == state.baseCount)");
+        eval_entities(&mut game, "assert(state.interiors.count == 0 and world.count() == base)");
 
         walk_to(&mut game, enter, 3.8);
-        eval(&mut game, r#"
+        eval_entities(&mut game, r#"
             local b, p = state.lot, state.fleet.players[1]
             assert(p.pos.z > b.door.z and p.pos.z < b.door.z + 4.5)
             assert(state.interiors.count == 1 and p.building == nil)
             state.roomIds = state.interiors.active[b.id]
-            assert(world.count() == state.baseCount + #state.roomIds)
+            assert(world.count() == base + #state.roomIds)
             local shell = world.get(b.shell)
             assert(not shell.visible and not shell.solid)
             local ray = vector.create(0, 0, -1)
@@ -129,10 +149,10 @@ fn each_door_can_be_walked_through_and_regenerates_the_same_furnishings() {
             assert(p.building == nil and state.interiors.active[b.id] == state.roomIds)
         "#);
         walk_to(&mut game, leave, 8.5);
-        eval(&mut game, r#"
+        eval_entities(&mut game, r#"
             local b = state.lot
             assert(state.interiors.count == 0 and not state.interiors.active[b.id])
-            assert(world.count() == state.baseCount)
+            assert(world.count() == base)
             for _, id in state.roomIds do assert(not world.exists(id)) end
             local shell = world.get(b.shell)
             assert(shell.solid and shell.visible)
@@ -158,10 +178,10 @@ fn multiplayer_visitors_share_rooms_and_release_them_on_departure() {
     stage(&mut game, 1, "hotel", -0.5, 3.);
     stage(&mut game, 2, "hotel", 0.5, 3.);
     run(&mut game, 12, &still);
-    eval(&mut game, r#"
+    eval_entities(&mut game, r#"
         state.hotelRoom = state.interiors.active[state.testLots.hotel.id]
         assert(state.interiors.count == 1)
-        assert(world.count() == state.baseCount + #state.hotelRoom)
+        assert(world.count() == base + #state.hotelRoom)
     "#);
 
     let mut walk = still;
@@ -175,8 +195,8 @@ fn multiplayer_visitors_share_rooms_and_release_them_on_departure() {
     stage(&mut game, 3, "warehouse", 0., 3.);
     stage(&mut game, 4, "other", 0., 3.);
     run(&mut game, 12, &still);
-    let peak = eval(&mut game, r#"
-        local total = state.baseCount
+    let peak = eval_entities(&mut game, r#"
+        local total = base
         assert(state.interiors.count == 4)
         assert(state.interiors.active[state.testLots.hotel.id] == state.hotelRoom)
         for _, b in state.testLots do
@@ -198,10 +218,10 @@ fn multiplayer_visitors_share_rooms_and_release_them_on_departure() {
         for _, i in {1, 3, 4} do player_left(players.get(i)) end
     "#);
     run(&mut game, 12, &still);
-    eval(&mut game, r#"
+    eval_entities(&mut game, r#"
         assert(state.interiors.count == 0 and next(state.interiors.active) == nil)
         for _, b in state.testLots do assert(world.get(b.shell).solid) end
-        assert(world.count() == state.baseCount - 4)
+        assert(world.count() == base - 4)
     "#);
     assert_eq!(game.state_json()["room_lighting"]["active"], 0);
 }

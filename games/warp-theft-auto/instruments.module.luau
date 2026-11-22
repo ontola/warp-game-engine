@@ -80,19 +80,10 @@ local function objective(story, left, top, width, s)
 	for i, part in lines do text(part,left+11*s,top+(8+i*20)*s,17*s,ink) end
 end
 
-local function marker(story, id, x, y, w, h, s)
-	if not story.target or story.status~="active" then return end
-	local px,py=hud.project(story.target+vector.create(0,1.8,0), id)
-	if not px or px<x+12*s or px>x+w-12*s or py<y+15*s or py>y+h-12*s then return end
-	hud.box(px-9*s,py-8*s,18*s,3*s,gold)
-	hud.box(px-5*s,py-5*s,10*s,3*s,gold)
-	hud.box(px-2*s,py-2*s,4*s,3*s,gold)
-end
-
-local function reticle(story,x,y,w,h,s)
+local function reticle(gun,x,y,w,h,s)
 	local cx,cy=x+w*.5,y+h*.5
-	if story.aiming then
-		local c = if story.onTarget then "#ff9774" else ink
+	if gun.aiming then
+		local c = if gun.onTarget then "#ff9774" else ink
 		for _,d in {-1,1} do
 			hud.box(cx+d*8*s-1*s,cy-1*s,3*s,2*s,c)
 			hud.box(cx-s,cy+d*8*s-s,2*s,3*s,c)
@@ -100,11 +91,11 @@ local function reticle(story,x,y,w,h,s)
 	end
 end
 
-function instruments.draw(cityState, fleet, clock, job, player, story, menu, titles)
+function instruments.draw(cityState, fleet, clock, job, player, story, menu, titles, weapon)
 	local id = player.id
 	local seat = fleet.players[id]
 	if not seat then return end
-	local goal = if story then (if story.target then {pos=story.target} else nil) else dispatch.stop(job, fleet)
+	local goal = if story then (if story.target then {pos=story.target} else nil) elseif job.pause == 0 then dispatch.stop(job, fleet) else nil
 	local x,y,w,h = ui.area(id)
 	-- Fit labels to the individual viewport, including vertically stacked splits.
 	local s = math.max(.49, math.min(h / 610, w / 810, 1.7))
@@ -113,7 +104,6 @@ function instruments.draw(cityState, fleet, clock, job, player, story, menu, tit
 	local width = math.min(w*0.61, 318*s)
 	if story then
 		objective(story,left,top,math.min(w*.61,420*s),s)
-		marker(story,id,x,y,w,h,s)
 	else
 		hud.box(left,top,width,63*s,panel)
 		hud.box(left,top,3*s,63*s,gold)
@@ -145,16 +135,18 @@ function instruments.draw(cityState, fleet, clock, job, player, story, menu, tit
 		action = if seat.mode == "fly" then "Space / A   Rise     Shift / RB   Lower" else "W / RT   Gas     S / LT   Brake"
 		if seat.mode == "drive" and math.abs(seat.speed) < 2 then action = "W / RT   Gas     F / Y   Exit" end
 	end
-	if story and story.owner == id and seat.mode=="walk" and story.weapon=="Arcade pistol" then
-		reticle(story,x,y,w,h,s)
-		action = "RMB / LT   Aim     LMB / RT   Fire"
-	end
+	local gun = if story and story.owner == id and story.weapon == "Arcade pistol" then story else weapon
+	local armed = seat.mode == "walk" and gun ~= nil
+	local gunHint = "RMB / LT   Aim     LMB / RT   Fire"
+	if armed then reticle(gun,x,y,w,h,s) end
 	text("R / X   Stories",mx+2*s,my-39*s,14*s,ink)
-	local aw = math.max(hud.measure(action,16*s), hud.measure(mode,23*s)) + 24*s
-	local ax, ay = tt-aw, y+h-margin-58*s
-	hud.box(ax,ay,aw,58*s,panel)
+	local aw = math.max(hud.measure(action,16*s), hud.measure(mode,23*s), if armed then hud.measure(gunHint,15*s) else 0) + 24*s
+	local height = (if armed then 80 else 58)*s
+	local ax, ay = tt-aw, y+h-margin-height
+	hud.box(ax,ay,aw,height,panel)
 	text(mode,ax+12*s,ay+3*s,23*s,ink)
 	text(action,ax+12*s,ay+34*s,16*s,muted)
+	if armed then text(gunHint,ax+12*s,ay+55*s,15*s,muted) end
 	if menu.owner==id then drawStories(menu,titles,x,y,w,h,s) end
 end
 

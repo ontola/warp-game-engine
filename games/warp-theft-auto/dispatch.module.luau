@@ -26,6 +26,10 @@ function dispatch.title(job)
 	return titles[job.completed % #titles + 1]
 end
 
+function dispatch.radius(kind)
+	return if kind == "walk" then 3.5 else 9
+end
+
 function dispatch.tick(job, fleet, dt)
 	if job.pause > 0 then job.pause = math.max(0, job.pause - dt); return end
 	local goal = dispatch.stop(job, fleet)
@@ -33,7 +37,7 @@ function dispatch.tick(job, fleet, dt)
 		if seat.mode ~= goal.kind then continue end
 		if job.leg == 1 and job.recovery and seat.vehicle ~= job.recovery then continue end
 		local dist = vector.magnitude(seat.pos - goal.pos)
-		local radius = if goal.kind == "walk" then 3.5 else 9
+		local radius = dispatch.radius(goal.kind)
 		if dist > radius or (goal.kind ~= "walk" and math.abs(seat.speed) > 3) then continue end
 		if goal.kind == "fly" and (not fleet.vehicles[seat.vehicle].grounded or seat.pos.y > goal.pos.y + 1.2) then continue end
 		job.lastDriver = id

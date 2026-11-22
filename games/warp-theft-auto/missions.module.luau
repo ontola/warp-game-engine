@@ -3,16 +3,14 @@
 local missions={validate=require("story_schema").validate}
 local util=require("kit/util")
 local sidearm=require("sidearm")
+local fx=require("combat_fx")
 missions.warm=sidearm.warm
 local v=vector.create
 local live=setmetatable({},{__mode="k"})
-local serial=0
 
 local function unequip(m)
 	local ctx=live[m]
 	if ctx then sidearm.remove(ctx) end
-	local seat=ctx and ctx.fleet.players[m.owner]
-	if seat and seat.storyPistol==ctx.serial then seat.storyPistol,seat.storyAim=nil,nil end
 	m.weapon,m.aiming,m.onTarget=nil,false,false
 end
 
@@ -26,13 +24,12 @@ local function enterStep(m,cast)
 	local ctx=live[m]
 	local a=ctx.definition.steps[m.step]
 	ctx.entered,ctx.boardCar,ctx.boardAt,ctx.previous,ctx.armed=false,nil,nil,nil,false
-	m.objective,m.radius=a.text,a.radius
+	m.objective,m.action=a.text,a.op
+	m.radius=a.radius or (if a.op=="checkpoint" then 6 elseif a.op=="dropoff" then 7 else nil)
 	if a.op=="checkpoint" and m.raceTime==nil then m.raceTime=0 end
 	m.target=a.pos or (a.person and cast:position(a.person)) or (a.car and cast:position(a.car))
 	if a.op=="contract" then
 		m.weapon="Arcade pistol"
-		local seat=ctx.fleet.players[m.owner]
-		if seat then seat.storyPistol=ctx.serial end
 	else
 		unequip(m)
 	end
@@ -49,8 +46,7 @@ function missions.start(definition,fleet,cast,ownerId,avatars)
 	end
 	local m={id=definition.id,title=definition.title,owner=ownerId,step=1,total=#definition.steps,
 		status="active",aiming=false,onTarget=false,shotFlash=0}
-	serial+=1
-	live[m]={definition=definition,fleet=fleet,avatars=avatars,serial=serial}
+	live[m]={definition=definition,fleet=fleet,avatars=avatars,effects=fx.new()}
 	enterStep(m,cast)
 	return m
 end
@@ -59,7 +55,7 @@ function missions.stop(m,cast)
 	if m then
 		local ctx=live[m]
 		unequip(m)
-		if ctx then sidearm.clearFlash(ctx) end
+		if ctx then sidearm.clearFlash(ctx); fx.clear(ctx.effects) end
 		live[m]=nil
 	end
 	cast:clear()
@@ -90,9 +86,9 @@ local function pickup(m,ctx,a,seat,cast)
 	return cast:ride(a.person,seat.vehicle,"passenger")
 end
 
-local function checkpoint(ctx,a,seat,cast)
+local function checkpoint(ctx,a,seat,cast,radius)
 	if not carFor(a,seat,cast) then ctx.previous,ctx.armed=nil,false; return false end
-	local pos,r=seat.pos,a.radius or 6
+	local pos,r=seat.pos,radius
 	local previous=ctx.previous
 	ctx.previous=pos
 	if not previous then ctx.armed=distance(pos,a.pos)>r; return false end
@@ -108,36 +104,26 @@ end
 local function contract(m,ctx,a,seat,cast,inp)
 	local pos=cast:position(a.person)
 	m.target=pos
-	m.aiming=seat.mode=="walk" and not seat.impact and inp.held~=nil and inp.held.aim==true
+	m.aiming=seat.aiming==true and not seat.impact
 	m.onTarget=false
-	local cam=if m.aiming then camera.get(m.owner) else nil
-	local axis=cam and cam.target-cam.pos
-	local ray=if axis and vector.magnitude(axis)>.01 then vector.normalize(axis) else nil
+	local origin,ray
+	if m.aiming then origin,ray=sidearm.ray(m.owner) end
 	sidearm.follow(ctx,ctx.avatars and ctx.avatars[m.owner],seat,ray)
 	if not ray or not pos then return false end
-	local along=vector.dot(pos+v(0,1.05,0)-cam.pos,ray)
-	local inRange=along>0 and distance(seat.pos,pos)<=(a.range or 30)
-	if inRange then
-		local point=cam.pos+ray*along
-		local nearest=pos+v(0,math.clamp(point.y-pos.y,.36,1.53),0)
-		if distance(point,nearest)<.48 then
-			local wall=world.raycast(cam.pos,ray,math.max(.02,along-.37),{tag="city"})
-			m.onTarget=wall==nil
-		end
-	end
-	if not (inp.pressed and inp.pressed.fire) or ctx.cooldown>0 then return false end
-	m.shotFlash,ctx.cooldown=.10,.28
-	sidearm.fire(ctx)
-	sound.play("arcade_pistol",{at=seat.pos,db=-7})
-	return m.onTarget and cast:hit(a.person,ray*2+v(0,.3,0))
+	local along,point=sidearm.contact(origin,ray,seat.pos,pos,a.range or 30)
+	m.onTarget=along~=nil
+	if not sidearm.discharge(ctx,m,seat,inp) or not along then return false end
+	if not cast:hit(a.person,ray*2+v(0,.3,0)) then return false end
+	fx.hit(ctx.effects,point,ray,true,game.tick()+m.owner)
+	return true
 end
 
 function missions.tick(m,fleet,cast,dt,input)
 	if not m then return end
 	local ctx=live[m]
 	if not ctx then return end
-	m.shotFlash=math.max(0,(m.shotFlash or 0)-dt)
-	if m.shotFlash<=0 then sidearm.clearFlash(ctx) end
+	sidearm.tickFlash(ctx,m,dt)
+	fx.tick(ctx.effects,dt)
 	if m.status~="active" then return end
 	if m.raceTime~=nil then m.raceTime+=dt end
 	local seat=fleet.players[m.owner]
@@ -146,10 +132,7 @@ function missions.tick(m,fleet,cast,dt,input)
 		for id,p in fleet.players do if not p.bot and (not replacement or id<replacement) then replacement=id end end
 		if not replacement then sidearm.remove(ctx); sidearm.clearFlash(ctx); m.aiming,m.onTarget=false,false; return end
 		m.owner,seat=replacement,fleet.players[replacement]
-		if m.weapon then seat.storyPistol=ctx.serial end
 	end
-	if m.weapon then seat.storyPistol=ctx.serial end
-	ctx.cooldown=math.max(0,(ctx.cooldown or 0)-dt)
 	local a=ctx.definition.steps[m.step]
 	local done=false
 	if a.op=="walk" or a.op=="drive" then
@@ -162,8 +145,10 @@ function missions.tick(m,fleet,cast,dt,input)
 		m.target=cast:position(key)
 		done=a.wait==false or cast:arrived(key)
 	elseif a.op=="ride" then
+		m.target=cast:position(a.person)
 		done=cast:ride(a.person,a.car,a.seat or "passenger")
 	elseif a.op=="dismount" then
+		m.target=cast:position(a.person)
 		done=cast:dismount(a.person)
 	elseif a.op=="enter" then
 		m.target=cast:position(a.car)
@@ -173,9 +158,9 @@ function missions.tick(m,fleet,cast,dt,input)
 	elseif a.op=="dropoff" then
 		local rider=cast.people[a.person]
 		local car=rider.rideId and fleet.vehicles[rider.rideId]
-		done=car~=nil and math.abs(car.speed)<1.4 and distance(car.pos,a.pos)<=(a.radius or 7) and cast:dismount(a.person)
+		done=car~=nil and math.abs(car.speed)<1.4 and distance(car.pos,a.pos)<=m.radius and cast:dismount(a.person)
 	elseif a.op=="checkpoint" then
-		done=checkpoint(ctx,a,seat,cast)
+		done=checkpoint(ctx,a,seat,cast,m.radius)
 	elseif a.op=="contract" then
 		done=contract(m,ctx,a,seat,cast,input[m.owner] or {})
 	end

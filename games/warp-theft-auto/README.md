@@ -23,7 +23,7 @@ A new round generates a new city seed. Pass `--seed 1948` to replay a layout. Th
 | Sprint | Shift | RB or LB |
 | Stories | R, arrows and Space | X, D-pad and A |
 | Edit a Luau story in the browser | F2 | |
-| Aim and fire the arcade pistol during a contract | Right and left mouse | LT and RT |
+| Aim and fire the arcade pistol on foot | Right and left mouse | LT and RT |
 | Take a vehicle or get out | F | Y / North |
 | Accelerate or brake and reverse | W / S | RT / LT or left stick |
 | Steer and handbrake | A / D, Space | Left stick, A |
@@ -34,11 +34,15 @@ Walk through the double doors under the lit strip to enter any office, hotel or 
 
 Take a parked car or wait alongside a traffic car at a stop. Slow down to get out. A helicopter must land first. On the map, white marks your position and heading, coral marks other players, teal marks available helicopters, and gold marks the current job.
 
+Every on-foot player carries a pistol. From the starting car, look across the first intersection for Rook and Vex, the two red chevrons on the sidewalk. Click or tap RT to fire. Hold the right mouse button or LT for the shoulder view. The crosshair turns coral over a rival in range with a clear line of sight. Two hits knock a rival down. Shots from different seats count toward the same rival’s defeat. The rivals return after 12 seconds.
+
+Gold diamonds follow the current person or car in the world. At a destination, a gold ring shows where to stop or land. Race checkpoints add four tall posts around the crossing area. Every seat sees the same objective, including when a custom Luau story moves its target.
+
 The first **Harbor Transfer** takes a car to the Ferry Terminal, a helicopter to West Field, and a player on foot to Lido Gardens. Any crew member can handle the next leg. Stop at a driving destination and set the skids down at a landing point. A handoff pays the crew $750. Later contracts mark a specific car for recovery wherever the last driver left it. Free roam stays available throughout.
 
 ## Write and play a story
 
-Press **R** or controller **X** to choose a shared mission. **Last Ferry** has Mara walk to the curb, ride in your car and walk to the ferry after you drop her off. **Exchange Street Sprint** seats you in a designated pearl sedan and times five checkpoint crossings. **The Silver Jack Contract** follows a named NPC on foot and equips the mission owner with an arcade pistol. Choose **Harbor dispatch** to return to the original delivery jobs.
+Press **R** or controller **X** to choose a shared mission. **Last Ferry** has Mara walk to the curb, ride in your car and walk to the ferry after you drop her off. **Exchange Street Sprint** seats you in a designated pearl sedan and times five checkpoint crossings. **The Silver Jack Contract** gives the mission owner a named target to track and shoot. Choose **Harbor dispatch** to return to the original delivery jobs.
 
 In the browser, click **Luau stories** or press **F2**. Pick a template, edit its Luau source and choose **Run story**. The city and the other players keep their positions. A successful edit begins the new story at its first step. Each template stores its draft in this browser. **Save .luau** downloads a script you can share, and **Open file** loads one from your device. **Restore template** brings back the shipped source.
 
@@ -78,7 +82,7 @@ The seed controls lot dimensions, building heights, facade palettes, rooflines a
 The harbor scenario exercises boarding, braking, flying, acceleration audio and the switch to night. It stages the walker at the heliport between the ground and air checks. The relay scenario stages two players near successive stops, then uses normal controls to complete and credit the job. The four-seat scenario benchmarks a warmed, fixed scene with two walkers, a driver and a pilot. The interior tour walks through the three building types and photographs a warehouse at night. Each scenario runs headlessly.
 
 ```sh
-cargo test --locked -p warp --test theft_auto --test theft_auto_interiors --test theft_auto_population
+cargo test --locked -p warp --test theft_auto --test theft_auto_interiors --test theft_auto_population --test theft_auto_objectives --test theft_auto_combat
 warp script games/warp-theft-auto games/warp-theft-auto/scripts/harbor-run.json --out build/theft-harbor
 warp script games/warp-theft-auto games/warp-theft-auto/scripts/crew-relay.json --players 2 --out build/theft-relay
 warp script games/warp-theft-auto games/warp-theft-auto/scripts/four-seats.json --players 4 --out build/theft-four

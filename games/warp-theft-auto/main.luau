@@ -9,6 +9,8 @@ local ambience = require("ambience")
 local dispatch = require("dispatch")
 local instruments = require("instruments")
 local stories = require("story_board")
+local waypoint = require("waypoint")
+local combat = require("combat")
 
 local function join(player)
 	mobility.join(state.fleet, player.id)
@@ -23,6 +25,7 @@ local function init()
 	traffic.add(state.fleet)
 	for _, player in players.list() do join(player) end
 	state.population = population.new(state.city, state.seed)
+	state.combat = combat.new(state.fleet, state.population)
 	state.clock = daycycle.new(16, 480, "clear")
 	daycycle.tick(state.clock, 0)
 	-- A maritime cumulus layer shared by the streets, parks and flight views.
@@ -35,8 +38,10 @@ local function init()
 	})
 	city.set_clock(state.city, state.clock.hour)
 	stories.warm()
+	waypoint.warm()
 	state.storyBoard = {choice = 1}
 	state.job = dispatch.new(state.city)
+	waypoint.update(state)
 	light.set({exposure = "auto", exposure_min = 3, exposure_max = 16, adapt_speed = 6})
 	post.set({bloom=0.1, saturation=1.04})
 end
@@ -49,7 +54,9 @@ local function tick(dt, input)
 	population.tick(state.population, state.city, state.fleet.players, dt, state.clock.hour, state.interiors)
 	if state.storyCast then state.storyCast:tick(dt) end
 	impacts.tick(state.population, state.fleet, dt)
+	combat.tick(state.combat, state.story, dt, input)
 	if state.story then stories.tick(state, dt, input) else dispatch.tick(state.job, state.fleet, dt) end
+	waypoint.update(state)
 	ambience.headlights(state.fleet.players, state.clock)
 	if game.tick() % 4 == 0 then ambience.tick(state.fleet) end
 	if game.tick() % 15 == 0 then
@@ -60,12 +67,16 @@ end
 
 local function draw()
 	for _, player in players.list() do
-		if not player.bot then instruments.draw(state.city, state.fleet, state.clock, state.job, player, state.story, state.storyBoard, stories.titles) end
+		if not player.bot then instruments.draw(state.city, state.fleet, state.clock, state.job, player, state.story, state.storyBoard, stories.titles, state.combat.players[player.id]) end
 	end
 end
 
 return {
 	init = init, tick = tick, draw = draw, player_joined = join,
-	apply_story = function(definition) return stories.start(state, definition) end,
+	apply_story = function(definition)
+		local title, err = stories.start(state, definition)
+		if title then waypoint.update(state) end
+		return title, err
+	end,
 	player_left = function(player) mobility.leave(state.fleet, player.id) end,
 }

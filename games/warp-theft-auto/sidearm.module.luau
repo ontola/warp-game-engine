@@ -1,6 +1,7 @@
--- A shared world prop for the arcade contract. A unit-scale frame follows the
+-- The arcade pistol is shared by free-roam players and scripted contracts. A frame follows the
 -- animated wrist; its children keep the authored offsets under pitch and yaw.
 local sidearm={}
+local util=require("kit/util")
 local v=vector.create
 local SCALE=.68
 local dark={color="#34414a",roughness=.74}
@@ -62,6 +63,45 @@ function sidearm.fire(ctx)
 	local o=table.clone(glow)
 	o.tag,o.pos,o.rot,o.size,o.solid="sidearm-flash",ctx.tip,ctx.turn,v(.085,.085,.153)*SCALE,false
 	ctx.flash=world.spawn("sphere",o)
+end
+
+-- Both modes use the same seat camera, capsule and city visibility query.
+function sidearm.ray(id)
+	local cam=camera.get(id)
+	local axis=cam and cam.target-cam.pos
+	if not axis or vector.magnitude(axis)<.01 then return nil,nil end
+	return cam.pos,vector.normalize(axis)
+end
+
+function sidearm.hipRay(seat)
+	-- The idle camera looks down at its own avatar. Fire along the view heading
+	-- from shoulder height so an ordinary click can reach someone across a street.
+	local ray=util.forward(seat.view)*math.cos(seat.pitch)+v(0,math.sin(seat.pitch),0)
+	return seat.pos+v(0,1.25,0),ray
+end
+
+function sidearm.contact(origin,ray,feet,pos,range)
+	if not ray or not pos or vector.magnitude(feet-pos)>range then return nil end
+	local along=vector.dot(pos+v(0,1.05,0)-origin,ray)
+	if along<=0 then return nil end
+	local point=origin+ray*along
+	local nearest=pos+v(0,math.clamp(point.y-pos.y,.36,1.53),0)
+	if vector.magnitude(point-nearest)>=.48 then return nil end
+	if world.raycast(origin,ray,math.max(.02,along-.37),{tag="city"}) then return nil end
+	return along,point
+end
+
+function sidearm.discharge(ctx,display,seat,input)
+	if not (input.pressed and input.pressed.fire) or (seat.pistolCooldown or 0)>0 then return false end
+	display.shotFlash,seat.pistolCooldown=.10,.28
+	sidearm.fire(ctx)
+	sound.play("arcade_pistol",{at=seat.pos,db=-7})
+	return true
+end
+
+function sidearm.tickFlash(ctx,display,dt)
+	display.shotFlash=math.max(0,display.shotFlash-dt)
+	if display.shotFlash==0 then sidearm.clearFlash(ctx) end
 end
 
 return sidearm

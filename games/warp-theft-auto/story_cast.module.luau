@@ -11,9 +11,9 @@ Cast.__index=Cast
 -- Keep the cast's serialized state compact; the city already owns these systems.
 local worlds=setmetatable({},{__mode="k"})
 
-function Cast.new(fleet,population)
+function Cast.new(fleet,population,fitter)
 	local self=setmetatable({people={},cars={}},Cast)
-	worlds[self]={fleet=fleet,population=population}
+	worlds[self]={fleet=fleet,population=population,fitter=fitter or population.pedestrians}
 	fleet.storyPeople=fleet.storyPeople or {}
 	return self
 end
@@ -28,7 +28,7 @@ function Cast:person(key,opts)
 	local pop=systems.population
 	local observers={}
 	for _,seat in systems.fleet.players do if not seat.bot then table.insert(observers,seat.pos) end end
-	local _,_,bodies,looks=humans.room("resident")
+	local _,_,bodies,looks=humans.room(systems.fitter.pool)
 	local look=opts.look
 	if look==nil then
 		look=0
@@ -37,7 +37,7 @@ function Cast:person(key,opts)
 	local actor
 	for offset=0,if opts.look~=nil then 0 else bodies-1 do
 		local candidate=(look+offset)%looks
-		actor=pop.pedestrians:allocate({pos=opts.pos,yaw=opts.yaw or 0,look=candidate},pop.residents,observers)
+		actor=systems.fitter:allocate({pos=opts.pos,yaw=opts.yaw or 0,look=candidate},pop.residents,observers)
 		if actor then look=candidate; break end
 	end
 	if not actor then return nil,"no fitted slot available for this look" end

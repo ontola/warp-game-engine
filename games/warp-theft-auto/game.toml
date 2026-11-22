@@ -24,3 +24,10 @@ distant = 768
 variety = 9
 age = [22, 77]
 seed = 51
+
+[humans.rival]
+count = 2
+variety = 2
+age = [24, 50]
+shirt = "#9b3043"
+seed = 347

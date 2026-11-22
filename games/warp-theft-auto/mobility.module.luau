@@ -108,8 +108,8 @@ end
 
 local function cameraFor(p, inp, dt)
 	if p.bot then return end
-	p.storyAim=p.storyPistol~=nil and p.mode=="walk" and not p.impact and inp.held and inp.held.aim
-	if p.storyAim then
+	p.aiming=p.mode=="walk" and not p.impact and inp.held~=nil and inp.held.aim==true
+	if p.aiming then
 		local focus=p.pos+v(0,1.42,0)
 		local forward=util.forward(p.view)
 		local offset=-forward*1.45+util.right(p.view)*.46+v(0,.15,0)
@@ -155,6 +155,7 @@ function mobility.tick(m,dt,input)
 	-- A simultaneous request for the last seat is resolved by stable player ID.
 	for _,id in ids do
 		local p, inp = m.players[id], input[id] or {}
+		p.pistolCooldown=math.max(0,(p.pistolCooldown or 0)-dt)
 		if not p.impact then
 			if inp.pressed and inp.pressed.north then interact(m,p) end
 			if not p.vehicle then walk(p,inp,dt) end

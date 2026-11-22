@@ -19,6 +19,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
   the guide or [status](../status.md) instead.
 - When a change alters how something works, update the guide for that part
   in the same commit. The log is not a substitute for that.
+- [Port Meridian objective markers and street combat](2026-11-22-port-meridian-combat.md)
 - [Port Meridian crowds, daylight and Luau stories](2026-11-22-port-meridian-stories.md)
 - [Port Meridian lawns, cloud shadows and four-player frame times](2026-11-22-warp-theft-auto-lawns-weather.md)
 - [Port Meridian interiors, residents and four-player frame times](2026-11-22-warp-theft-auto-interiors.md)
