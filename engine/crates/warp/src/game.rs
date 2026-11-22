@@ -1161,6 +1161,8 @@ impl Game for LuaGame {
                 if let Some(r) = frame.renderer_mut() && let Err(e) = r.update_sky(gpu, &p.sky, &mut l) { eprintln!("sky unchanged on the GPU: {e}"); }
             }
         }
+        #[cfg(target_arch = "wasm32")]
+        for line in render::slow_texture_lines() { app::web::log(&line); }
         let r = frame.renderer().ok_or("no renderer")?;
         c.world.flush_at(frame.gpu, r, frame.alpha)?;
         post(r, &c.post, &c.lamps, &c.spots)?;

@@ -472,8 +472,9 @@ impl Character {
                 let (mut body, indices) = person.fitted_mesh(gripping);
                 let rest_eyes = eye_midpoint(&body);
                 warp_skin::settle(&mut body, &indices, rest_eyes, traits.age);
-                // A browser bakes on one thread: a quarter of the texels.
-                let size = if cfg!(target_arch = "wasm32") { 512 } else { render::frame::TEXTURE_SIZE };
+                // A browser bakes on the page's one thread, a face a frame: at 128
+                // texels each takes ~0.1 s there (512 took ~1.8 s on an M5 Pro).
+                let size = if cfg!(target_arch = "wasm32") { 128 } else { render::frame::TEXTURE_SIZE };
                 let maps = bake(&body, &indices, size as usize);
                 (maps.albedo, maps.normal)
             });

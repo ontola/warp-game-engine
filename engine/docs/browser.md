@@ -227,9 +227,11 @@ How the build differs from native:
   renderer starts with each layer's small mips and `Stream::pump` bakes one
   layer a frame, so a scene is up in well under a second instead of the
   20+ s it took to bake every layer and Warp Human face at once. Faces bake
-  at 512 texels and once per page: a renderer rebuilt mid-game (a new look
+  at 128 texels (about 0.1 s each) and once per page: a renderer rebuilt mid-game (a new look
   when a player joins) reuses them. Every renderer build of 500 ms or more
-  logs its slowest steps (`renderer built in ...`).
+  logs its slowest steps (`renderer built in ...`), and every layer that
+  took 50 ms or more logs `texture layer N baked in ...`. Mips there are
+  plain 2x2 averages (`texture_mips::resize`).
 - Time comes from `web_time::Instant` (`std::time::Instant` natively).
 - Files: the page fetches the textures first and hands them to
   `render::files::preload`; `render::files::read` and `open_image` find them

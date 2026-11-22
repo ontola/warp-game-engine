@@ -34,6 +34,8 @@ pub mod geometry_diagnostics;
 pub mod startup_profile;
 mod texture_cache;
 mod texture_stream;
+#[cfg(target_arch = "wasm32")]
+pub use texture_stream::take_slow_lines as slow_texture_lines;
 mod pipeline_cache;
 pub mod grass;
 pub mod meadow;

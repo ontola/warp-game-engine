@@ -175,6 +175,12 @@ impl Ready {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+thread_local! { static SLOW: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) }; }
+/// Lines about layers that took 50 ms or more to bake on the page thread.
+#[cfg(target_arch = "wasm32")]
+pub fn take_slow_lines() -> Vec<String> { SLOW.with(|l| std::mem::take(&mut *l.borrow_mut())) }
+
 /// A browser bakes a generated layer (a Warp Human's face) once per page:
 /// a renderer rebuilt for a new look mid-game reuses it.
 #[cfg(target_arch = "wasm32")]
@@ -262,7 +268,11 @@ impl Stream {
             // One layer a frame, so the page keeps drawing; all of them for a capture.
             let Ok(mut todo) = self.todo.try_lock() else { return };
             while let Some(job) = todo.pop_front() {
+                let t = web_time::Instant::now();
+                let generated = job.generate.is_some();
                 let layer = generated_memo(job, self.encoding);
+                let ms = t.elapsed().as_millis();
+                if ms >= 50 { SLOW.with(|l| l.borrow_mut().push(format!("texture layer {} {}baked in {ms} ms ({} left)", layer.layer, if generated { "(generated) " } else { "" }, todo.len()))); }
                 layer.upload(gpu, albedo, normals, self.encoding);
                 tables.write_layer_map(gpu, layer.layer as usize, crate::material_maps::layer_word(self.material_maps.get(layer.layer as usize).copied().flatten(), 0.0, 0.0));
                 self.remaining.fetch_sub(1, Relaxed);
