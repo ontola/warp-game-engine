@@ -193,6 +193,38 @@ impl Instance {
         person.color[3] = ((person.color[3] as u32) | (palette.0 << 9)) as f32;
         person
     }
+    /// Cycle the three authored tops and three groom meshes across shared
+    /// street bodies. Keep the sampled face, stature, print and build.
+    pub fn street_body(mut self, index: usize) -> Self {
+        let bits = self.color[3] as u32;
+        self.color[3] = (bits - self.outfit() as u32 + (index % 3) as u32) as f32;
+        self.identity[2] = ((index / 3 % 3) as f32 + (self.identity[2] * 3.).fract()) / 3.;
+        self
+    }
+
+    /// Dye the same geometry, preserving the authored garment and hair cut.
+    pub fn street_palette(mut self, dyes: &Self, shirt_dye: Option<usize>) -> Self {
+        // Common cotton, denim and jacket dyes. Ordered to separate nearby
+        // residents in both lightness and hue when assigning a city roster.
+        const SHIRTS: [[u8; 3]; 24] = [
+            [43,65,92], [181,139,61], [131,54,65], [220,218,203],
+            [48,104,91], [160,100,73], [91,109,144], [113,81,118],
+            [181,172,143], [51,59,67], [124,146,122], [168,81,61],
+            [74,112,147], [188,142,152], [96,94,55], [210,185,124],
+            [73,68,92], [126,147,155], [138,70,43], [73,85,74],
+            [160,155,171], [63,105,113], [182,186,178], [91,55,65],
+        ];
+        self.color[..3].copy_from_slice(&dyes.color[..3]);
+        if let Some(k) = shirt_dye {
+            self.color[0] = pack_color(SHIRTS[k % SHIRTS.len()].map(|c| c as f32 / 255.));
+        }
+        self.identity[0] = dyes.identity[0];
+        self.identity[1] = dyes.identity[1];
+        let hair = dyes.hair_palette(self.skin_color());
+        self.color[3] = ((self.color[3] as u32 & 511) | (hair.0 << 9)) as f32;
+        self
+    }
+
     pub fn spectator(seed: u64, seat_index: usize, seat: &crate::crowd::Seat) -> Self {
         Self::person(
             seed.wrapping_mul(0x9e3779b97f4a7c15) ^ seat_index as u64,

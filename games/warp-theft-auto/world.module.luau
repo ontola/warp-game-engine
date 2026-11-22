@@ -68,14 +68,35 @@ function city.spawn(id)
     return v(6.1, 0, 11 + (id-1)%4*10)
 end
 
-function city.vehicle_spawns()
+function city.vehicle_spawns(seed)
     local spawns = {}
     for i=0,3 do table.insert(spawns,{ kind="car", pos=v(3.7,0,11+i*10), yaw=0 }) end
-    for _,p in { v(-59.7,0,-89), v(115.7,0,77), v(-81,0,115.7) } do
-        table.insert(spawns,{ kind="car", pos=p, yaw=if p.Z>100 then math.pi/2 else math.pi })
-    end
+    table.insert(spawns,{kind="car", pos=v(-60.85,0,-89), yaw=math.pi})
+    table.insert(spawns,{kind="car", pos=v(116.85,0,77), yaw=0})
+    table.insert(spawns,{kind="car", pos=v(-81,0,116.85), yaw=-math.pi/2})
     table.insert(spawns,{ kind="helicopter", pos=v(154,0,26), yaw=0 })
     table.insert(spawns,{ kind="helicopter", pos=v(-154,0,-86), yaw=math.pi/2 })
+    -- Park in marked curb lanes, well clear of intersections and both heliports.
+    -- Keep the starter cars and aircraft at their stable fleet indices.
+    for row=-2,2 do
+        for col=-3,2 do
+            if (row-col)%5==0 then continue end
+            local variant=((seed or 0)+row*127+col*179)%13
+            local along=(col+.5)*STEP+variant-6
+            local side=if (row+col)%3==0 then -1 else 1
+            local curb=row*STEP+side*4.85
+            local vertical=(row+col)%2==0
+            local pos=if vertical then v(curb,0,along) else v(along,0,curb)
+            local free=true
+            for _,other in spawns do
+                if vector.magnitude(other.pos-pos)<7 then free=false; break end
+            end
+            if free then
+                local yaw=if vertical then (if side>0 then 0 else math.pi) else -side*math.pi*.5
+                table.insert(spawns,{kind="car",pos=pos,yaw=yaw})
+            end
+        end
+    end
     return spawns
 end
 

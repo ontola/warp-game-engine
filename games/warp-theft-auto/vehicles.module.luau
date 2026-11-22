@@ -5,16 +5,23 @@ local PAINT = { "sedan-ochre", "sedan", "sedan-pearl", "sedan-vermilion" }
 local BASE = "assets/cars/"
 local OFFSET = { v(-.759,0,-1.262), v(.759,0,-1.262), v(-.759,0,1.262), v(.759,0,1.262) }
 
-function models.car(pos, yaw, index)
-	local model = BASE .. PAINT[(index-1)%#PAINT+1] .. ".gltf"
+local paints={ochre=PAINT[1],teal=PAINT[2],pearl=PAINT[3],vermilion=PAINT[4]}
+
+function models.car(pos, yaw, index, paint)
+	local model = BASE .. (paints[paint] or PAINT[(index-1)%#PAINT+1]) .. ".gltf"
 	local body = world.spawn(model, {pos=pos+v(0,.33,0), rot=v(0,yaw,0), tag="vehicle"})
 	local wheels = {}
 	for i, offset in OFFSET do
 		local name = if offset.x < 0 then "wheel-left" else "wheel-right"
 		wheels[i] = world.spawn(BASE .. name .. ".gltf", {pos=offset, solid=false, tag="wheel"}, body)
 	end
-	return {kind="car", pos=pos, yaw=yaw, speed=0, body=body, wheels=wheels,
+	return {kind="car", index=index, paint=paint, pos=pos, yaw=yaw, speed=0, body=body, wheels=wheels,
 		native=vehicles.spawn(pos,yaw), rpm=950, gear=1, load=0, slip=0, contact=0, loose=0, soft=0, throttle=0}
+end
+
+-- Warp Humans' seated pose uses a floor anchor and faces +Z; sedans face -Z.
+function models.seat(car,side)
+	return car.pos+util.right(car.yaw)*(.44*side)+util.forward(car.yaw)*.04+v(0,.02,0),car.yaw+math.pi
 end
 
 function models.drive(input)

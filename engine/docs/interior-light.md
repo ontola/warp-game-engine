@@ -302,7 +302,15 @@ lights.room(id, {
 lights.room(id, nil)
 ```
 
-Panel sizes and range are metres, and intensity is candela along the downward axis. Keep the emitter just below its visible fixture. The room can contain up to eight panels. Warp lights them immediately with clustered shadows and captures a local reflection probe. A native worker uses up to two cooking threads to trace the room's geometry for sky transport, sun bounce, lamp bounce and separation planes. The grid has at most 2,166 probes per room. Each surface samples the volume at its world position, including in split-screen. Enable `light.set({exposure = "auto"})` for eye adaptation.
+Panel sizes and range are metres. Intensity is candela along the downward axis. Place each emitter just below its visible fixture. A room supports up to eight panels. Enable `light.set({exposure = "auto"})` for eye adaptation.
+
+On entry, Warp traces 64 paths from the room centre through the actual windows, doorway and furnishings. Their sky, sun and fixture contributions reach up to two diffuse bounces. This first sample lights the room immediately while its spatial grid is built. All split-screen views share that grid.
+
+- Native games bake one room at a time on a background worker with up to two cooking threads. The final grid contains up to 2,166 probes, including padding. It uses the full probe-placement, bounce and wall-separation passes.
+- Browser games refine up to 147 probes per room on the main thread. Each frame advances at most four probes in total, taking turns across active rooms. The engine checks a 0.75 ms time budget after each probe. The final grid replaces the first sample when complete. Leaving a room cancels its pending work.
+- The full renderer lights ceiling panels directly with clustered shadows and samples the grid for their diffuse return. It also captures a local reflection probe. On the compact renderer, each grid probe stores the direct illuminance of panels visible from that point alongside their bounced light.
+
+Skinned characters blend between the outdoor and indoor fields across half a metre on either side of the doorway. Static surfaces sample the room at their world position. When the sun moves far enough to require a new bake, the previous spatial field stays visible until its replacement is ready.
 
 ## Look scene
 
@@ -317,9 +325,8 @@ Other variants (`none`, `vis`, `diffuse`, `sun`, `sep`) show the older
 
 ## Not yet
 
-- Unthreaded browser games currently show the room’s direct lighting. Native games bake the indirect light in the background.
-- The CPU bake (web, baked files) is slower with the direct sky's second
-  estimate: 1.3 s -> 5 s for 14,000 probes on this machine.
+- For offline CPU bakes, the second direct-sky estimate increased the time for
+  a 14,000-probe grid from 1.3 to 5 seconds on the test machine.
 - Gradients are uploaded only with probe visibility (DDGI); grids without
   it interpolate trilinearly and now show the unsmoothed probes.
 - Probes are 0.5 m apart, so the bake has no contact darkening of its own.

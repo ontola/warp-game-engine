@@ -90,6 +90,7 @@ pub struct LuaGame {
     light: Lighting,
     applied_sky: Option<SkyChoice>,
     sky_upload: Option<PreparedSky>,
+    daylight: Option<render::daylight::DaylightCycle>,
     log: VecDeque<String>,
     pub live: Option<live::Live>,
     /// The `logs` tool's buffer (usable while `live` is out serving).
@@ -203,7 +204,7 @@ impl LuaGame {
         host.ignore(NOT_MODULES);
         if single.is_none() { host.enable_libraries(); }
         crate::kit::install(&mut host);
-        let mut g = LuaGame { dir: dir.to_path_buf(), single: single.clone(), seed: cfg.seed, fresh, cfg, host, core, inited: BTreeSet::new(), light: Lighting::default(), applied_sky: None, sky_upload: None,
+        let mut g = LuaGame { dir: dir.to_path_buf(), single: single.clone(), seed: cfg.seed, fresh, cfg, host, core, inited: BTreeSet::new(), light: Lighting::default(), applied_sky: None, sky_upload: None, daylight: None,
             log: VecDeque::new(), live: None, live_logs: None, default_sky, echo: true, party: None, menu: None, menu_stick: 0.0, running_for: 0, ready_due: false, windowed: false, polls: 0, next_id: 1, quit: false, back: false, page_seats: 0, surface: GameSurface::new(dir), trial: None, editor_pages: Default::default() };
         g.surface.install();
         match &over.seats {
@@ -619,6 +620,7 @@ impl LuaGame {
             "recent": c.sounds.recent.iter().map(|(n, t)| json!({ "sound": n, "tick": t })).collect::<Vec<_>>() });
         json!({
             "title": c.title, "tick": c.tick, "time": c.tick as f64 / c.tick_rate as f64, "players": players, "phase": phase, "menu": menu,
+            "sun_direction": match c.sky { SkyChoice::Clock {hour, ..} => Some(render::daylight::sun_at(hour).direction().to_array()), _ => None },
             "sky": c.sky.name(), "entities": c.world.entities.len(), "max_entities": c.world.capacity(), "tags": tags,
             "cameras": cams, "sounds": sounds, "modules": modules, "errors": errors, "state": game,
             "room_lighting": c.rooms.status(),
@@ -642,6 +644,30 @@ impl LuaGame {
         self.flush_log();
         let vals = r?;
         Ok(if vals.is_empty() { "ok".into() } else { vals.iter().map(luajson::show).collect::<Vec<_>>().join("\t") })
+    }
+
+    /// Compile author source in its own restricted interpreter. The browser
+    /// evaluates source in a worker and sends only its data to the live game.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn apply_story(&mut self, source: &str) -> Result<String, String> {
+        let data = crate::story::evaluate(source)?;
+        self.apply_story_data(data)
+    }
+
+    /// Only a game's opt-in installer can replace its active story. The
+    /// trusted hook validates before committing and returns the accepted
+    /// title, or (nil, message) without modifying the running mission.
+    pub fn apply_story_data(&mut self, data: Json) -> Result<String, String> {
+        crate::story::validate_data(&data)?;
+        let name = self.main_name();
+        let installer = self.host.modules().iter().find(|m| m.name == name && !m.broken)
+            .and_then(|m| m.exports.as_ref()).and_then(|e| e.raw_get::<Option<Function>>("apply_story").ok().flatten())
+            .ok_or("this game has no story installer")?;
+        let (title, error): (Option<String>, Option<String>) = self.host.with_call_budget(|lua| {
+            let value = luajson::from_json(lua, &data)?;
+            installer.call(value)
+        })?;
+        title.ok_or_else(|| error.unwrap_or_else(|| "the game rejected the story".into()))
     }
 
     fn load_editor_pages(&mut self) {
@@ -743,7 +769,7 @@ impl LuaGame {
     }
 
     pub fn help() -> &'static str {
-        "commands: lua CODE (run Luau against the game; `state` is main.luau's, and main.luau's globals and exports are in scope) | reload (scripts and sounds now) | restart (clear the world and state, run init) | sky NAME | sounds | entities [TAG] | menu [open|close|resume|new round] | knobs | knob NAME VALUE (saved in main.luau) | trial NAME VALUE (only the running game) | keep | revert | logs | help"
+        "commands: story SOURCE (apply a story) | lua CODE (run Luau against the game; `state` is main.luau's, and main.luau's globals and exports are in scope) | reload (scripts and sounds now) | restart (clear the world and state, run init) | sky NAME | sounds | entities [TAG] | menu [open|close|resume|new round] | knobs | knob NAME VALUE (saved in main.luau) | trial NAME VALUE (only the running game) | keep | revert | logs | help"
     }
 
     fn input(&self, lua: &mlua::Lua, controls: &[Controls]) -> mlua::Result<Table> {
@@ -809,12 +835,32 @@ impl LuaGame {
     }
 
     /// The sky the scripts asked for, applied to the scene and the light.
-    fn update_sky(&mut self) {
+    fn update_sky(&mut self, alpha: f32) -> Result<bool, String> {
         let want = self.core().sky;
-        if self.applied_sky == Some(want) { return; }
+        if let SkyChoice::Clock { previous, hour, weather } = want {
+            let entering = !matches!(self.applied_sky, Some(SkyChoice::Clock { weather: w, .. }) if w == weather);
+            if self.daylight.as_ref().is_none_or(|d| d.weather != weather) {
+                self.daylight = Some(render::daylight::DaylightCycle::new(weather)?);
+            }
+            let cycle = self.daylight.as_mut().unwrap();
+            let delta = (hour - previous + 12.).rem_euclid(24.) - 12.;
+            let changed = cycle.sample(previous + delta * alpha.clamp(0., 1.));
+            if entering {
+                let mut c = api::lock(&self.core);
+                cycle.sky().apply(&mut c.world.scene, &mut self.light);
+                c.world.rebuild = true;
+                self.sky_upload = None;
+            }
+            cycle.apply_lighting(&mut self.light);
+            self.applied_sky = Some(want);
+            return Ok(changed || entering);
+        }
+        if self.applied_sky == Some(want) { return Ok(false); }
         self.applied_sky = Some(want);
         let mut c = api::lock(&self.core);
+        self.daylight = None;
         match want {
+            SkyChoice::Clock { .. } => unreachable!(),
             SkyChoice::Gradient => {
                 c.world.scene.sky = Some(primitives::gradient_sky([0.25, 0.45, 0.8], [0.75, 0.82, 0.9], [0.35, 0.33, 0.3]));
                 c.world.scene.atmosphere = None;
@@ -835,6 +881,7 @@ impl LuaGame {
                 }
             }
         }
+        Ok(false)
     }
 
     fn lighting(&self, alpha: f32) -> Lighting {
@@ -918,6 +965,8 @@ impl LuaGame {
         match head {
             "help" | "" => Ok(Self::help().into()),
             "lua" => self.luau(rest),
+            #[cfg(not(target_arch = "wasm32"))]
+            "story" => self.apply_story(rest),
             "reload" => { let l = self.reload(); Ok(if l.is_empty() { "nothing changed on disk".into() } else { l.join("\n") }) }
             "restart" => { self.restart(); Ok(format!("restarted at seed {}", self.seed)) }
             "sky" => { let s = SkyChoice::parse(rest)?; self.core().sky = s; Ok(format!("sky {}", s.name())) }
@@ -1056,6 +1105,8 @@ impl Game for LuaGame {
             c.world.tick_start();
             for p in &mut c.roster { p.cam_prev = p.cam; }
         }
+        #[cfg(target_arch = "wasm32")]
+        crate::web::update_story(self);
         if let Some(mut l) = self.live.take() { l.serve(self); self.live = Some(l); }
         if self.polls % POLL_TICKS == 0 && self.polls > 0 { self.reload(); }
         self.polls += 1;
@@ -1120,7 +1171,7 @@ impl Game for LuaGame {
         }
         self.core().phase = Phase::Sim;
         self.attach_plants();
-        self.update_sky();
+        let daylight_changed = self.update_sky(frame.alpha)?;
         let light = self.lighting(frame.alpha);
         let mut c = api::lock(&self.core);
         let mut surface_line = None;
@@ -1180,6 +1231,11 @@ impl Game for LuaGame {
         }
         #[cfg(target_arch = "wasm32")]
         for line in render::slow_texture_lines() { app::web::log(&line); }
+        let gpu = frame.gpu;
+        if (rebuild || daylight_changed) && let Some(cycle) = self.daylight.as_ref()
+            && let Some(r) = frame.renderer_mut() {
+            r.update_daylight(gpu, cycle);
+        }
         let r = frame.renderer().ok_or("no renderer")?;
         c.world.flush_at(frame.gpu, r, frame.alpha)?;
         if c.world.scene.meadow.is_some() {

@@ -96,7 +96,11 @@
     },
     {
       "expect": "/sky",
-      "equals": "night:clear"
+      "equals": "clock:clear"
+    },
+    {
+      "expect": "/state/clock/phase",
+      "equals": "night"
     },
     {
       "ticks": 40,

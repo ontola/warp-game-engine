@@ -9,7 +9,7 @@ fn eval(game: &mut LuaGame, code: &str) -> String {
 
 fn tick(game: &mut LuaGame, count: usize) {
     for _ in 0..count { game.tick(&[Controls::default(); 4]); }
-    assert!(game.errors().is_empty(), "{:?}", game.errors());
+    assert!(game.errors().is_empty(), "{:?}", game.logs());
 }
 
 fn load(seats: usize, seed: u64) -> LuaGame {
@@ -174,7 +174,7 @@ fn people_are_visible_through_a_window_and_unload_when_the_observer_walks_away()
     "#);
     let away = Controls { mv: [0., -1.], ..Default::default() };
     for _ in 0..150 { game.tick(&[away]); }
-    assert!(game.errors().is_empty(), "{:?}", game.errors());
+    assert!(game.errors().is_empty(), "{:?}", game.logs());
     eval(&mut game, r#"
         local b, p = state.displayOffice, state.population
         assert(state.fleet.players[1].pos.x>b.x+b.w/2+7)
@@ -182,4 +182,88 @@ fn people_are_visible_through_a_window_and_unload_when_the_observer_walks_away()
         for _, actor in state.windowActors do assert(not humans.head(actor)) end
         for idx in p.pedestrians.active do assert(not p.residents[idx].building) end
     "#);
+}
+
+#[test]
+fn walking_between_views_preserves_one_body_and_appearance_per_resident() {
+    for seats in 1..=4 {
+        let mut game = load(seats, 1948);
+        let read = |game: &mut LuaGame, expr: &str| -> Vec<u32> {
+            serde_json::from_str(&eval(game, expr)).unwrap()
+        };
+        let initial = read(&mut game, r#"
+            local p, nearest, distance = state.population, nil, math.huge
+            local viewer = state.fleet.players[1].pos
+            for id, actor in p.pedestrians.active do
+                local c = p.residents[id]
+                local d = vector.magnitude(c.pos - viewer)
+                if c.path and d < distance then nearest, distance = id, d end
+            end
+            state.tracked = nearest
+            local c = p.residents[nearest]
+            local looks = {}
+            for _, row in p.street do looks[row.look] = true end
+            local count=0
+            for _ in looks do count += 1 end
+            assert(count==72)
+            for i=1,#p.street-1 do assert(p.street[i].look~=p.street[i+1].look) end
+            return {nearest, p.pedestrians.active[nearest], c.look, p.streetCount}
+        "#);
+        let (id, actor, look) = (initial[0] as usize, initial[1], initial[2] as usize);
+        {
+            let core = game.core();
+            assert_eq!(core.humans.people[&actor].look, look);
+            assert!(core.humans.distant_pose("resident", id, 1.).is_none());
+            let distant = (1..=initial[3] as usize).filter(|&i| core.humans.distant_pose("resident", i, 1.).is_some()).count();
+            assert_eq!(distant, initial[3] as usize - 40);
+        }
+        eval(&mut game, r#"
+            for _, seat in state.fleet.players do world.place(seat.body, vector.create(147,.85,150)) end
+        "#);
+        tick(&mut game, 28);
+        let (start, background_look) = game.core().humans.distant_pose("resident", id, 1.).unwrap();
+        assert_eq!(background_look, look);
+        // This gait advances between the low-frequency roster updates.
+        tick(&mut game, 6);
+        let (end, _) = game.core().humans.distant_pose("resident", id, 1.).unwrap();
+        assert!(end.distance(start) < 0.28);
+        eval(&mut game, r#"
+            local c = state.population.residents[state.tracked]
+            world.place(state.fleet.players[1].body,c.pos+vector.create(0,.85,0))
+        "#);
+        tick(&mut game, 27);
+        let handle = read(&mut game, "return {state.population.pedestrians.active[state.tracked]}")[0];
+        let core = game.core();
+        assert_ne!(handle, actor);
+        assert_eq!(core.humans.people[&handle].look, look);
+        assert!(core.humans.distant_pose("resident", id, 1.).is_none());
+        assert!(core.humans.people[&handle].pos.distance(end) < 1.15);
+    }
+}
+
+#[test]
+fn residents_finish_different_shifts_away_from_observers() {
+    let mut game = load(1, 1948);
+    let sample = |g: &mut LuaGame, hour: f32| -> usize {
+        eval(g, &format!("state.clock.hour={hour}; state.population.selectionIn=0"));
+        tick(g, 1);
+        eval(g, r#"
+            local count=0
+            for _,c in state.population.street do if c.active then count+=1 end end
+            return count
+        "#).parse().unwrap()
+    };
+    eval(&mut game, r#"
+        local p, viewer = state.population, state.fleet.players[1].pos
+        state.kept = {}
+        for id,c in p.street do
+            if not c.night and vector.magnitude(c.pos-viewer)<60 then table.insert(state.kept,id) end
+        end
+        assert(#state.kept>=4)
+    "#);
+    let counts: Vec<_> = [17.9, 18.5, 19.0, 19.5, 20.0, 20.5, 21.1].into_iter().map(|h| sample(&mut game,h)).collect();
+    assert!(counts.windows(2).all(|p| p[0] > p[1]), "{counts:?}");
+    eval(&mut game, "for _,id in state.kept do assert(state.population.street[id].active) end");
+    let morning: Vec<_> = [5.2, 6., 7., 8.].into_iter().map(|h| sample(&mut game,h)).collect();
+    assert!(morning.windows(2).all(|p| p[0] < p[1]), "{morning:?}");
 }

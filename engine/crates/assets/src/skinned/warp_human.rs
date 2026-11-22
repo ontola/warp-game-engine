@@ -5,6 +5,37 @@ use render::humans::{APPEARANCE_ATLAS, BodyVertex, Instance};
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
+/// A fitted street actor owns only its material records. All actors continue
+/// to sample the same image layers and use the same weighted vertex buffers.
+pub struct StreetMaterials {
+    start: usize,
+    tags: Vec<u32>,
+}
+
+impl StreetMaterials {
+    pub fn dress(&self, scene: &mut Scene, person: &Instance, skin: Option<[f32; 3]>) -> std::ops::Range<usize> {
+        let skin = skin.map(Vec3::from).unwrap_or_else(|| person.skin_color());
+        let (hair, brows) = person.hair_and_brows(skin);
+        let shirt = Vec3::from(person.shirt_color());
+        for (i, tag) in self.tags.iter().copied().enumerate() {
+            let color = match tag {
+                12 => shirt,
+                14 => Vec3::from(person.trouser_color()),
+                15 | 16 => Vec3::splat(if shirt.dot(Vec3::new(0.3, 0.6, 0.1)) > 0.58 { 0.14 } else { 0.88 }),
+                3 => Vec3::from(person.shoe_color()),
+                17 => Vec3::from(person.shoe_color()) * 0.48,
+                4 => skin,
+                11 => skin / CHEEKS[person.face_tile()],
+                13 => brows,
+                20..=22 => hair,
+                _ => continue,
+            };
+            scene.materials[self.start + i].tint = color.to_array().map(srgb_to_linear);
+        }
+        self.start..self.start + self.tags.len()
+    }
+}
+
 struct Bone {
     joint: usize,
     transform: Affine3A,
@@ -97,7 +128,7 @@ impl Character {
         person: &Instance,
         skin: Option<[f32; 3]>,
     ) -> Result<Self, String> {
-        self.fit_human(person, skin, None, false, false)
+        self.fit_human(person, skin, None, false, false, false)
     }
 
     /// Keep the hm08 upper body in its native relaxed pose for a live two-hand
@@ -107,7 +138,7 @@ impl Character {
         person: &Instance,
         skin: Option<[f32; 3]>,
     ) -> Result<Self, String> {
-        self.fit_human(person, skin, None, true, true)
+        self.fit_human(person, skin, None, true, true, true)
     }
 
     /// A person with their own anatomy: the full resting skeleton uses hm08
@@ -122,7 +153,37 @@ impl Character {
         skin: Option<[f32; 3]>,
         age: Option<f32>,
     ) -> Result<Self, String> {
-        self.fit_human(person, skin, age, true, false)
+        self.fit_human(person, skin, age, true, false, true)
+    }
+
+    /// Full anatomical body on its own rig, with the shared cloth, eye,
+    /// face and groom atlas. No private face bake or strand pool per pedestrian.
+    pub fn warp_human_street(&self, person: &Instance, skin: Option<[f32; 3]>) -> Result<Self, String> {
+        self.fit_human(person, skin, None, true, false, false)
+    }
+
+    /// Give each surface its own material record while preserving its atlas
+    /// layer and flags. Fixed clusters carry vertex indices from a single surface.
+    pub fn street_materials(&self, scene: &mut Scene, actor: ActorHandle) -> StreetMaterials {
+        let originals = self.surface_materials(scene);
+        let start = scene.materials.len();
+        let mut tags = Vec::with_capacity(originals.len());
+        let mut ends = Vec::with_capacity(originals.len());
+        let mut end = scene.skinning.actors[actor.actor].first_vertex;
+        for (surface, original) in self.surfaces.iter().zip(originals) {
+            let material = scene.materials[original as usize];
+            scene.add_material(material);
+            tags.push(surface.material.name.strip_prefix("warp-human-").and_then(|t| t.parse().ok()).unwrap_or(0));
+            end += surface.vertices.len() as u32;
+            ends.push(end);
+        }
+        let mesh = &scene.meshes[actor.mesh];
+        let first = mesh.first_cluster as usize;
+        for cluster in &mut scene.clusters[first..first + mesh.cluster_count as usize] {
+            let vertex = scene.cluster_verts[cluster.first_vert as usize];
+            cluster.material = (start + ends.partition_point(|&end| end <= vertex)) as u32;
+        }
+        StreetMaterials { start, tags }
     }
 
     /// Rest joints for `warp_human_person`, without fitting a mesh.
@@ -186,6 +247,7 @@ impl Character {
         age: Option<f32>,
         native: bool,
         gripping: bool,
+        close_face: bool,
     ) -> Result<Self, String> {
         // A person's limbs are turned from this rig's bind onto the captures
         // (the `warp` crate's humans); a player's legs play the rig's own clips.
@@ -285,11 +347,11 @@ impl Character {
         let brows = brows.lerp(Vec3::splat(0.62), 0.6 * cut.grey * cut.grey);
         let (mut body, indices) = person.fitted_mesh(gripping);
         // The face comes down with the years.
-        if native {
+        if close_face {
             let eyes = eye_midpoint(&body);
             warp_skin::settle(&mut body, &indices, eyes, traits.age);
         }
-        let face = native.then(|| {
+        let face = close_face.then(|| {
             let first = fitted_joints.len();
             let eyes = [false, true].map(|positive| {
                 let mut lo = Vec3::splat(f32::INFINITY);
@@ -390,7 +452,7 @@ impl Character {
             let uv = if v.material == 6 {
                 // A fitted person's eyes are drawn into a free patch of
                 // their own face texture; others share the eye tile.
-                let ([cu, cv], half) = if native { warp_skin::EYE_PATCH } else { ([0.5; 2], 1.) };
+                let ([cu, cv], half) = if close_face { warp_skin::EYE_PATCH } else { ([0.5; 2], 1.) };
                 [
                     cu + (v.normal.x * 0.46).clamp(-0.499, 0.499) * half,
                     cv - (v.normal.y * 0.46).clamp(-0.499, 0.499) * half,
@@ -412,7 +474,7 @@ impl Character {
             let a = &body[tri[0] as usize];
             // A fitted person's hair is grown strands; the crowd's groom
             // meshes stay with the crowd.
-            if native && (a.material >= 20 || a.material == 13) {
+            if close_face && (a.material >= 20 || a.material == 13) {
                 continue;
             }
             let tag = if a.material == 3
@@ -446,7 +508,7 @@ impl Character {
         let skinned: Vec<_> = body.iter().map(skin).collect();
         // A fitted person is seen up close: their own skin and eyes, grown
         // from the seed over the painted face they share.
-        let own_skin = native.then(|| {
+        let own_skin = close_face.then(|| {
             let tile = person.face_tile();
             let eyes = eye_midpoint(&body);
             let under_hair = (hair.lerp(Vec3::splat(0.6), cut.grey) * 0.7 * CHEEKS[tile]

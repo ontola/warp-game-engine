@@ -31,6 +31,47 @@ fn write(path: &Path, text: &str) {
 }
 
 #[test]
+fn story_errors_leave_the_running_story_and_tick_hook_intact() {
+    let dir = folder("story-editor");
+    write(&dir.join("main.luau"), r#"
+        return {
+            init=function() state.title="Original"; state.count=0 end,
+            tick=function() state.count+=1 end,
+            apply_story=function(data)
+                if type(data.title)~="string" then return nil,"missing title" end
+                state.title=data.title
+                return data.title
+            end,
+        }
+    "#);
+    let mut g = game(&dir);
+    assert!(g.apply_story("return {").is_err());
+    assert_eq!(g.apply_story("return {title=false}").unwrap_err(), "missing title");
+    assert!(g.apply_story("world.clear(); return {title='Lost'}").is_err());
+    assert!(g.apply_story_data(json!({"nested":[null]})).is_err());
+    assert_eq!(state(&g)["state"]["title"], "Original");
+    assert_eq!(g.command_line("story local name='Harbor'; return {title=name..' taxi'}").unwrap(), "Harbor taxi");
+    ticks(&mut g, 1, Controls::default());
+    assert_eq!(state(&g)["state"]["title"], "Harbor taxi");
+    assert_eq!(state(&g)["state"]["count"], 1);
+    assert!(g.errors().is_empty());
+}
+
+#[test]
+fn luau_can_retire_one_vehicle_without_displacing_surviving_drivers() {
+    let dir = folder("retire-vehicle");
+    write(&dir.join("main.luau"), "return {}");
+    let mut g = game(&dir);
+    g.luau(r#"
+        vehicles.reset()
+        local a=vehicles.spawn(vector.create(0,0,0))
+        local b=vehicles.spawn(vector.create(5,0,0))
+        assert(vehicles.remove(a) and not vehicles.remove(a))
+        assert(vehicles.get(a)==nil and vehicles.get(b)~=nil)
+    "#).unwrap();
+}
+
+#[test]
 fn a_crowd_shares_its_pool_between_separated_observers() {
     let dir = folder("crowd");
     write(&dir.join("game.toml"), "[humans.ambient]\ncount = 3\nvariety = 1");

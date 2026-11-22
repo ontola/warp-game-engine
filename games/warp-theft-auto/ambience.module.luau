@@ -36,13 +36,9 @@ function ambience.tick(fleet)
 	end
 end
 
-local function lightHours(clock)
-	return clock.hour < 7 or clock.hour > 17.5
-end
-
 function ambience.headlights(seats, clock)
-	if not lightHours(clock) and not clock.headlights then return end
-	clock.headlights = lightHours(clock)
+	if clock.lampLevel == 0 and not clock.headlights then return end
+	clock.headlights = clock.lampLevel > 0
 	local beams = {}
 	if clock.headlights then
 		for _, seat in seats do
@@ -51,7 +47,7 @@ function ambience.headlights(seats, clock)
 			local aircraft = seat.mode == "fly"
 			local mount = seat.pos + forward * (if aircraft then 1.4 else 2.05) + v(0, if aircraft then 0.7 else 0.64, 0)
 			table.insert(beams, {pos = mount, dir = forward + v(0, if aircraft then -0.7 else -0.13, 0),
-				color = "#ffebcc", intensity = 6200, angle = 25, range = 48})
+				color = "#ffebcc", intensity = 6200 * clock.lampLevel, angle = 25, range = 48})
 		end
 	end
 	lights.spots(beams)
@@ -60,7 +56,7 @@ end
 function ambience.lamps(city, seats, clock)
 	-- Streets keep a night-time pool of light around each occupied district.
 	local lamps = {}
-	if lightHours(clock) then
+	if clock.lampLevel > 0 then
 		local selected = {}
 		for _, seat in seats do
 			local near = {}
@@ -73,7 +69,7 @@ function ambience.lamps(city, seats, clock)
 				local index = near[i].index
 				if not selected[index] then
 					selected[index] = true
-					table.insert(lamps, {pos = city.lamps[index], color = "#ffc88f", intensity = 580, range = 23})
+					table.insert(lamps, {pos = city.lamps[index], color = "#ffc88f", intensity = 580 * clock.lampLevel, range = 23})
 				end
 			end
 		end

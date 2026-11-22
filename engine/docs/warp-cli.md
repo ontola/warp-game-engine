@@ -225,7 +225,7 @@ keyboard mapping is in `app::input`.
 | `post` | `set({bloom, bloom_radius, bloom_threshold, bloom_wide, contrast, saturation, vignette, grain, aberration})`, `reset()` |
 | `grass` | `set({patches, cutouts, seed, growth, distance})` places native meadow blades on horizontal plots. `set(nil)` clears the field. |
 | `plants` | `grow({age, seed, pos, yaw, scale, species, look, full})` → id, `remove(id)`, `clear()`, `defaults()`, `status()` |
-| `humans` | `spawn(pool, {pos, yaw})` → id or nil when the pool is full, `set(id, {pos, yaw, pose, t, tired, coil, visible})`, `hit(id, dir)`, `ragdoll(id, push)`, `remove(id)`, `head(id)` and `joint(id, name)` → vector, `room(pool)` → free, total |
+| `humans` | `spawn(pool, {pos, yaw})` → id or nil when the pool is full, `set(id, {pos, yaw, pose, t, tired, coil, visible})`, `hit(id, dir)`, `ragdoll(id, push)`, `obstacles(boxes)`, `recover(id)`, `remove(id)`, `head(id)` and `joint(id, name)` → vector, `room(pool)` → free, total |
 | `lights` | `set({{pos, color, intensity, range}, ...})` (at most 32), `spots({{pos, dir, color, intensity, range, angle, inner}, ...})` (at most 8, with shadows), `clear()` |
 | `sky` | `set(name)`, `get()`, `warm(name)` (bake a sky you will switch to later in the background, so the switch does not stall a frame) |
 | `light` | `set({sun, sun_lux, sky_lux, exposure, exposure_min, exposure_max, exposure_bias, adapt_speed, fog_start, fog_end, fog_density})`, `reset()` |
@@ -305,6 +305,8 @@ keyboard mapping is in `app::input`.
   `exposure_min` and `exposure_max`, shifted by `exposure_bias` stops, at
   `adapt_speed` per second. See [Exposure and HDR output](hdr-and-exposure.md),
   which also covers HDR screens (`WARP_HDR=1`, or F10).
+- **Runtime stories.** A game may export `apply_story(definition)` from its main module. Accept a validated definition by returning its title, or return `nil, message` to keep the current story. In the native console `story SOURCE` evaluates a Luau program returning plain data. The browser story editor evaluates the same language in a disposable worker, then sends the data to the game. Put a list of `{"title":"…","file":"story_name.module.luau"}` entries in the game's `stories.json` to expose its editable templates. [Example city and authoring guide](../../games/warp-theft-auto/README.md)
+- **Continuous daylight.** Call `sky.set_time(hour, weather)` from the world clock. Fractional hours wrap at midnight. All cameras share the sun direction, sky radiance and diffuse skylight. The renderer interpolates between simulation ticks and reuses the same atmosphere textures as the clock advances. `kit/daycycle` drives this API and exposes `lampLevel` to fade street lights through twilight.
 - **Volumetric clouds.** Call `sky.clouds(true)` to load the native cumulus layer or supply a table such as `sky.clouds({coverage = 0.5, base = 1400, thickness = 1000, wind_x = 5, wind_z = 1.5, aerial = false})`. Altitudes and distances are in metres, wind in metres per second. `coverage`, `density` and `shadow` control cover, optical density and sun attenuation. `steps`, `light_steps` and `far` control rendering cost and range. Set `aerial = false` to keep the current scene fog. The field follows simulation time across cameras and sky presets. `sky.clouds(false)` clears the volume. [Atmosphere and clouds](atmosphere.md)
 - **Post and lights**: `post.set` is the look after lighting: `bloom`
   (0 to 2), `bloom_radius` (blur rounds 1 to 6), `bloom_threshold`
@@ -358,11 +360,18 @@ keyboard mapping is in `app::input`.
   a heavy hit): the chest and head swing that way and spring back.
   `ragdoll(id, push)` lets it go limp from the pose it stands in, thrown
   by `push` (m/s, in the world): eleven jointed capsules with loose
-  anatomical limits fall onto the ground under it (only that: no walls)
-  and freeze where they settle, within four seconds. It stays down through
-  `dead` and `down`; any other pose gets it up again. Up to 24 move at
-  once (the oldest freezes); it steps with the simulation, so replays
-  match. The `zombie` style stoops, lolls its head and holds its arms out.
+  anatomical limits fall onto a horizontal floor at the character's feet.
+  Up to 24 rigs move at once on fixed physics ticks. A rig freezes when it
+  settles, after four seconds, or when a new fall needs the oldest active slot.
+  `humans.obstacles(boxes)` supplies shared moving or parked collision boxes.
+  Give each box a stable numeric `id`, world center `pos`, full `size` and
+  optional `yaw` in radians. Supply `prevPos` and `prevYaw` for a first-tick
+  sweep. Pass up to 64 boxes per tick. Only boxes near an active rig allocate
+  physics bodies. An empty list clears them. `humans.recover(id)` waits for
+  a settled body and clear space, returning nil while either is pending.
+  On success it returns the landed feet, starts `rise` at t=0 and releases
+  the ragdoll. Advance `t` from 0 to 1, then resume walking. Setting a pose
+  other than `dead` or `down` also ends a fall at the script's current position. The `zombie` style stoops, lolls its head and holds its arms out.
   `head(id)` is where the head is now (for glowing eyes or a hit test);
   `joint(id, name)` any of `head`, `neck`, `chest`, `hips`, `shoulder_l`,
   `elbow_l`, `hand_l`, `knee_l`, `foot_l` (and `_r`), say to put a weapon

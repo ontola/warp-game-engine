@@ -92,10 +92,12 @@ end
 
 function population.new(city, seed)
 	plant_city(city.plantSites, seed)
-	local pop = {residents={}, paths={}, rooms={}, avatars={}, pedestrians=crowd.new("resident",72), elapsed=0, selectionIn=0}
+	local pop = {seed=seed, residents={}, paths={}, rooms={}, avatars={}, pedestrians=crowd.new("resident",72,seed), elapsed=0, selectionIn=0}
 	for block, loop in city.walkLoops do addBlock(pop,loop,block,seed) end
 	social(pop,city.parks,seed)
-	pop.streetCount = #pop.residents
+	-- The dense exterior roster shares the same resident objects as the fitted actors.
+	pop.street = table.clone(pop.residents)
+	pop.streetCount = #pop.street
 	return pop
 end
 
@@ -136,8 +138,9 @@ local function localResidents(pop, interiors, city)
 	return changed
 end
 
-local function sample(pop, c)
-	local t = pop.elapsed+c.phase
+local function sample(pop, c, ahead)
+	if c.impact then return end
+	local t = pop.elapsed+c.phase+(ahead or 0)
 	if c.path then
 		local leg = pop.paths[c.path][1 + math.floor(t/c.segment)%4]
 		local fraction = math.min(1,(t%c.segment)/c.walkTime)
@@ -167,7 +170,11 @@ local function updateAvatars(pop, seats)
 			model = humans.spawn("local", {pos=seat.pos,yaw=seat.yaw+math.pi})
 			pop.avatars[id] = model
 		end
-		if model then humans.set(model, {pos=seat.pos,yaw=seat.yaw+math.pi,visible=seat.mode=="walk"}) end
+		if model and not seat.impact then
+			local aim=seat.mode=="walk" and seat.storyAim
+			humans.set(model,{pos=seat.seatedPos or seat.pos,yaw=seat.seatedYaw or (if aim then seat.view else seat.yaw)+math.pi,
+				pose=if seat.seatedPos then "sit" elseif aim then "aim" else "walk",visible=seat.mode=="walk" or seat.seatedPos~=nil})
+		end
 		if not seat.bot then
 			table.insert(people,seat)
 			table.insert(observers,seat.pos)
@@ -183,22 +190,46 @@ local function updateAvatars(pop, seats)
 	return people, observers
 end
 
-function population.tick(pop, city, seats, dt, daylight, interiors)
+-- A resident starts or finishes a shift outside the view of every nearby
+-- player. A higher flying observer sees farther across the sidewalks below.
+local function onShift(pop, id, c, hour, observers)
+	if c.night or c.impact then return true end
+	if not c.startsAt then
+		c.startsAt = 5.25 + 2.5*sampleNoise(pop.seed,id,111)
+		c.endsAt = 18.0 + 3.0*sampleNoise(pop.seed,id,193)
+	end
+	local scheduled = hour >= c.startsAt and hour < c.endsAt
+	if c.active == nil or c.active == scheduled then return scheduled end
+	for _, observer in observers do
+		local dx, dz = observer.x-c.pos.x, observer.z-c.pos.z
+		local radius = math.min(230, 86 + math.max(0,observer.y-c.pos.y))
+		if dx*dx+dz*dz < radius*radius then return c.active end
+	end
+	return scheduled
+end
+
+function population.tick(pop, city, seats, dt, hour, interiors)
 	pop.elapsed += dt
 	pop.selectionIn -= dt
 	local people, observers = updateAvatars(pop,seats)
 	local changed = localResidents(pop,interiors,city)
 	if changed or pop.selectionIn<=0 then
 		pop.selectionIn = .40
+		pop.streetRevision = (pop.streetRevision or 0)+1
 		for id, c in pop.residents do
+			if id <= pop.streetCount then
+				sample(pop,c,pop.selectionIn)
+				c.nextPos, c.nextYaw = c.pos, c.yaw
+			end
 			sample(pop,c)
-			c.active = daylight or c.night or pop.pedestrians.active[id]~=nil
+			c.active = onShift(pop,id,c,hour,observers)
 		end
 		-- Each view claims its own nearest people in turn. Prefer the visitor's
 		-- room and the one visible through nearby glass or a doorway. Spare slots still
 		-- draw the street outside its windows.
 		local function rank(c, view, distance2)
 			local seat = people[view]
+			if c.impact and (not c.building or c.building==seat.building or c.building==seat.nearRoom) then return -10000+distance2 end
 			if c.building then
 				if c.building~=seat.building and c.building~=seat.nearRoom then return nil end
 				return distance2*.24
@@ -207,6 +238,7 @@ function population.tick(pop, city, seats, dt, daylight, interiors)
 			return distance2
 		end
 		pop.pedestrians:select(pop.residents,observers,rank)
+		humans.distant("resident",pop.street,pop.pedestrians.active,pop.selectionIn)
 	else
 		for id in pop.pedestrians.active do sample(pop,pop.residents[id]) end
 	end

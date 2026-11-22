@@ -61,6 +61,8 @@ pub struct HumanPool {
     pub count: usize,
     /// Minimum slots retained on devices with a smaller skinning budget.
     pub reserved: usize,
+    /// Cheap unskinned street silhouettes reserved independently of fitted actors.
+    pub distant: usize,
     /// How many different people (faces, builds, clothes) the pool cycles
     /// through. Each is fitted once at load.
     pub variety: usize,
@@ -78,7 +80,7 @@ pub struct HumanPool {
 }
 
 impl Default for HumanPool {
-    fn default() -> Self { HumanPool { count: 8, reserved: 0, variety: 4, style: "person".into(), skin: None, shirt: None, height: [1.6, 1.9], age: None, seed: 1 } }
+    fn default() -> Self { HumanPool { count: 8, reserved: 0, distant: 0, variety: 4, style: "person".into(), skin: None, shirt: None, height: [1.6, 1.9], age: None, seed: 1 } }
 }
 
 impl Default for GameToml {
@@ -156,6 +158,7 @@ impl GameToml {
         let mut total = 0;
         for (name, p) in &self.humans {
             if !(1..=256).contains(&p.count) { return Err(format!("game.toml: humans.{name}.count {} (1 to 256)", p.count)); }
+            if p.distant > 8192 { return Err(format!("game.toml: humans.{name}.distant exceeds 8192")); }
             if p.reserved > p.count { return Err(format!("game.toml: humans.{name}.reserved exceeds count")); }
             if !(1..=16).contains(&p.variety) { return Err(format!("game.toml: humans.{name}.variety {} (1 to 16)", p.variety)); }
             if let Some([lo, hi]) = p.age { if !(18.0..=100.0).contains(&lo) || !(lo..=100.0).contains(&hi) { return Err(format!("game.toml: humans.{name}.age [{lo}, {hi}] (years, 18 to 100, low first)")); } }

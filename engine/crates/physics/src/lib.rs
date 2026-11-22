@@ -83,6 +83,32 @@ impl Physics {
         Static(self.world.colliders.insert(c))
     }
 
+    /// Horizontal support for one ragdoll. Its collision bit keeps other
+    /// floors and people at different elevations independent.
+    pub fn add_floor_for(&mut self, height: f32, collision_bit: u32) -> Static {
+        let groups = InteractionGroups::new(Group::ALL, Group::from_bits_retain(collision_bit), InteractionTestMode::And);
+        let collider = ColliderBuilder::new(SharedShape::halfspace(glamx::Vec3::Y))
+            .translation(glamx::Vec3::Y * height).collision_groups(groups).friction(0.8).build();
+        Static(self.world.colliders.insert(collider))
+    }
+
+    /// A solid obstacle whose owner supplies its world pose each tick. Rapier
+    /// infers contact velocity from consecutive poses and moves dynamic bodies.
+    pub fn add_kinematic_box(&mut self, b: &YawBox) -> Body {
+        let body = RigidBodyBuilder::kinematic_position_based()
+            .pose(Pose3::from_parts(to(b.center), glamx::Quat::from_rotation_y(b.yaw))).ccd_enabled(true).build();
+        let handle = self.world.bodies.insert(body);
+        let collider = ColliderBuilder::cuboid(b.half.x, b.half.y, b.half.z).friction(0.65).build();
+        self.world.colliders.insert_with_parent(collider, handle, &mut self.world.bodies);
+        Body(handle)
+    }
+
+    pub fn move_kinematic(&mut self, body: Body, pos: Vec3, rot: Quat) {
+        if let Some(rb) = self.world.bodies.get_mut(body.0) {
+            rb.set_next_kinematic_position(Pose3::from_parts(to(pos), to_q(rot)));
+        }
+    }
+
     /// Remove one static collider (a destroyed piece of level).
     pub fn remove_static(&mut self, s: Static) { self.world.remove_collider(s.0); }
 

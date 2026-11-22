@@ -3797,6 +3797,26 @@ impl Renderer {
         self.invalidate_dynamic_shadow(); self.reset_history();
     }
 
+    /// Stream a changing clock into the existing sky texture. All cameras share
+    /// this upload. Temporal history and geometry shadow maps stay valid.
+    pub fn update_daylight(&mut self, gpu: &Gpu, cycle: &crate::daylight::DaylightCycle) {
+        let sky = cycle.sky();
+        let tex = self.sky_view.texture();
+        debug_assert_eq!((tex.width(), tex.height()), (sky.width, sky.height));
+        gpu.queue.write_texture(tex.as_image_copy(), bytemuck::cast_slice(&sky.pixels),
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(sky.width * 16), rows_per_image: None },
+            tex.size());
+        self.sky_sh = sky.sh;
+        self.sky_horizon = sky.horizon;
+        self.sky_scale = 1.0;
+        self.sky_rotation = 0.0;
+        self.sky_limit = cycle.radiance_limit();
+        let upper = sky.sky_horizontal_rgb_lux / PI;
+        let ground = sky.tables.model.ground_albedo.as_vec3()
+            * (upper + sky.sun_rgb_lux * (sky.sun_dir.y.max(0.) / PI));
+        self.sky_volume.set_ambient(upper, ground);
+    }
+
     pub fn update_sky(&mut self, gpu:&Gpu, sky:&crate::atmosphere::BakedSky,
         light:&mut Lighting)->Result<(),String> {
         sky.validate()?;

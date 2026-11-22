@@ -73,6 +73,14 @@ impl Fleet {
 
     pub fn count(&self) -> usize { self.cars.len() }
 
+    /// Release this chassis and all of its Rapier colliders. Surviving
+    /// drivers keep their original handles, and retired IDs stay retired.
+    pub fn remove(&mut self, id: u32) -> bool {
+        let Some(car) = self.cars.remove(&id) else { return false; };
+        self.world.remove_body_with_colliders(car.body, true);
+        true
+    }
+
     /// A missing driver engages the parking brake and freezes the car once it settles.
     pub fn drive(&mut self, id: u32, input: Option<Pedals>) -> bool {
         let Some(car) = self.cars.get_mut(&id) else { return false };
@@ -130,6 +138,20 @@ impl Fleet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removed_chassis_leaves_no_body_or_collider_and_ids_stay_stable() {
+        let mut fleet = Fleet::new(std::iter::empty());
+        let first = fleet.spawn(CarSpec::compact(), Vec3::ZERO, 0.);
+        let body = fleet.cars[&first].body;
+        let shapes = fleet.world.bodies[body].colliders().to_vec();
+        let second = fleet.spawn(CarSpec::compact(), Vec3::X * 4., 0.);
+        assert!(!shapes.is_empty() && fleet.remove(first) && !fleet.remove(first));
+        assert!(fleet.world.bodies.get(body).is_none());
+        assert!(shapes.iter().all(|h| fleet.world.colliders.get(*h).is_none()));
+        assert!(fleet.pose(first).is_none() && fleet.pose(second).is_some());
+        assert!(fleet.spawn(CarSpec::compact(), Vec3::ZERO, 0.) > second);
+    }
 
     #[test]
     fn parked_cars_stay_put_and_drivers_share_the_120_hz_world() {

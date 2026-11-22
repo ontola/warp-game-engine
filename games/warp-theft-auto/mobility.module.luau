@@ -10,16 +10,18 @@ local QUERY = { tag="city" }
 local BOARD = 3.7
 local FAST = 2.0
 
-function mobility.add_car(m, pos, yaw)
-	local car = models.car(pos,yaw,#m.vehicles+1)
-	table.insert(m.vehicles, car)
+function mobility.add_car(m, pos, yaw, paint)
+	local index=(m.lastCarId or #m.vehicles)+1
+	local car = models.car(pos,yaw,index,paint)
+	if m.lastCarId then m.lastCarId=index end
+	m.vehicles[index]=car
 	return car
 end
 
 function mobility.new(layout)
 	vehicles.reset("city")
 	local m = {players={}, vehicles={}, layout=layout}
-	for _, spawn in city.vehicle_spawns() do
+	for _, spawn in city.vehicle_spawns(layout.seed) do
 		if spawn.kind == "car" then mobility.add_car(m,spawn.pos,spawn.yaw)
 		else table.insert(m.vehicles,models.helicopter(spawn.pos,spawn.yaw)) end
 	end
@@ -29,7 +31,7 @@ end
 local function nearest(m, p)
 	local best, distance = nil, BOARD
 	for i, car in m.vehicles do
-		if car.owner or math.abs(car.speed) > FAST then continue end
+		if car.owner or car.storyDriver or math.abs(car.speed) > FAST then continue end
 		local d = vector.magnitude(p.pos-car.pos)
 		if d < distance then best, distance = i, d end
 	end
@@ -55,10 +57,11 @@ function mobility.leave(m, id)
 	m.players[id] = nil
 end
 
-local function exitAt(m, car)
+function mobility.exitAt(m, car, side)
 	if math.abs(car.speed)>FAST or (car.kind=="helicopter" and not car.grounded) then return nil end
 	local right, forward = util.right(car.yaw), util.forward(car.yaw)
 	local width = if car.kind=="car" then 1.62 else 2.15
+	right *= side or 1
 	for _, delta in {right*width,-right*width,-forward*3.3,forward*3.3} do
 		local pos = car.pos+delta
 		local y = city.roof(m.layout,pos.x,pos.z,.34)
@@ -76,7 +79,7 @@ end
 local function interact(m,p)
 	if p.vehicle then
 		local car = m.vehicles[p.vehicle]
-		local pos = exitAt(m,car)
+		local pos = mobility.exitAt(m,car)
 		if pos then
 			car.owner, p.vehicle, p.mode = nil, nil, "walk"
 			p.pos, p.view, p.walk.yaw, p.speed = pos, car.yaw, car.yaw, 0
@@ -105,6 +108,17 @@ end
 
 local function cameraFor(p, inp, dt)
 	if p.bot then return end
+	p.storyAim=p.storyPistol~=nil and p.mode=="walk" and not p.impact and inp.held and inp.held.aim
+	if p.storyAim then
+		local focus=p.pos+v(0,1.42,0)
+		local forward=util.forward(p.view)
+		local offset=-forward*1.45+util.right(p.view)*.46+v(0,.15,0)
+		local hit=world.raycast(focus,offset,vector.magnitude(offset),QUERY)
+		local eye=if hit then focus+vector.normalize(offset)*math.max(.12,hit.distance-.14) else focus+offset
+		local ray=forward*math.cos(p.pitch)+v(0,math.sin(p.pitch),0)
+		p.cam:look(eye,eye+ray*15,dt,49)
+		return
+	end
 	local drive, fly = p.mode=="drive", p.mode=="fly"
 	local h, d = 2.7, 4.3
 	if p.building or p.doorway then h, d = 2.05, 2.7 end
@@ -113,7 +127,8 @@ local function cameraFor(p, inp, dt)
 		p.pitch = math.clamp(util.damp(p.pitch,0,1.7,dt)+(inp.look_y or 0),-.55,.20)
 		h, d = if drive then 3.2 else 5.0, if drive then 6.8 else 10
 	end
-	local target = p.pos + v(0,if fly then 1.5 elseif drive then 1.05 else 1.33,0)
+	local target = if p.impact and p.impact.hips then p.impact.hips
+		else p.pos + v(0,if fly then 1.5 elseif drive then 1.05 else 1.33,0)
 	local offset = -util.forward(p.view)*d + v(0,h-(target.y-p.pos.y)-d*math.sin(p.pitch),0)
 	local hit = world.raycast(target,offset,vector.magnitude(offset)+.2,QUERY)
 	local cam = target+offset
@@ -124,6 +139,15 @@ local function cameraFor(p, inp, dt)
 	p.cam:look(cam,target,dt,if fly then 65 elseif drive then 62 else 58)
 end
 
+-- A story car currently driven by a player belongs to that player until
+-- they get out. Other mission-owned cars can be removed immediately.
+function mobility.release_car(m,car)
+	if car.owner then car.releaseWhenEmpty=true; return end
+	vehicles.remove(car.native)
+	world.remove(car.body)
+	m.vehicles[car.index]=nil
+end
+
 function mobility.tick(m,dt,input)
 	local ids = {}
 	for id in m.players do table.insert(ids,id) end
@@ -131,10 +155,13 @@ function mobility.tick(m,dt,input)
 	-- A simultaneous request for the last seat is resolved by stable player ID.
 	for _,id in ids do
 		local p, inp = m.players[id], input[id] or {}
-		if inp.pressed and inp.pressed.north then interact(m,p) end
-		if not p.vehicle then walk(p,inp,dt) end
+		if not p.impact then
+			if inp.pressed and inp.pressed.north then interact(m,p) end
+			if not p.vehicle then walk(p,inp,dt) end
+		end
 	end
 	for _, car in m.vehicles do
+		car.prevPos, car.prevYaw = car.pos, car.yaw
 		local inp = if car.owner then input[car.owner] or {} else nil
 		if car.kind=="car" then
 			local controls = if car.auto then car.auto(car,dt) else models.drive(inp)
@@ -147,13 +174,17 @@ function mobility.tick(m,dt,input)
 	vehicles.step(dt)
 	for _, car in m.vehicles do
 		if car.kind=="car" and car.active then models.sync(car) end
+		if car.releaseWhenEmpty and not car.owner then mobility.release_car(m,car) end
 	end
 	for _,id in ids do
 		local p = m.players[id]
 		if p.vehicle then
 			local car = m.vehicles[p.vehicle]
 			p.pos, p.yaw, p.speed = car.pos, car.yaw, math.abs(car.speed)
-		else
+			if p.mode=="drive" then p.seatedPos,p.seatedYaw=models.seat(car,-1)
+			else p.seatedPos,p.seatedYaw=nil,nil end
+		elseif not p.impact then
+			p.seatedPos,p.seatedYaw=nil,nil
 			local i = nearest(m,p)
 			p.nearby = if i then m.vehicles[i].kind else nil
 		end

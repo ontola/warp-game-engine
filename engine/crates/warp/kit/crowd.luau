@@ -5,8 +5,8 @@ local crowd = {}
 local methods = {}
 methods.__index = methods
 
-function crowd.new(pool, radius)
-	return setmetatable({pool = pool, radius = radius, active = {}}, methods)
+function crowd.new(pool, radius, stableLooks)
+	return setmetatable({pool = pool, radius = radius, stableLooks = stableLooks, active = {}}, methods)
 end
 
 -- Call periodically with candidate feet positions and the observers' world
@@ -14,7 +14,7 @@ end
 -- An optional rank(candidate, observerIndex, squaredDistance) can prioritize
 -- or exclude candidates for each view. Return nil to exclude; lower is closer.
 function methods:select(candidates, observers, rankCandidate)
-	local free, capacity = humans.room(self.pool)
+	local free, capacity, variety, looks = humans.room(self.pool)
 	-- A device can fit fewer skins than the initially configured CPU pool.
 	-- Reclaim the old slot assignments once so no selected actor is off-budget.
 	if self.capacity and capacity < self.capacity then
@@ -27,6 +27,23 @@ function methods:select(candidates, observers, rankCandidate)
 	for _ in self.active do owned += 1 end
 	local limit = math.min(capacity, free + owned)
 	local radius2 = self.radius * self.radius
+	local remaining = {}
+	if self.stableLooks then
+		-- Slot i holds appearance i % variety. Reserve that share during
+		-- selection so a busy appearance never displaces a nearer eligible one.
+		for look = 0, variety-1 do remaining[look] = math.floor((capacity+variety-1-look)/variety) end
+		for id, c in candidates do
+			local key = id-1 + (if type(self.stableLooks)=="number" then self.stableLooks % 9973 else 0)
+			c.look = (key*31 + math.floor(key/8) + math.floor(key/64)) % looks
+		end
+		if free + owned < capacity then
+			for look = 0, variety-1 do remaining[look] = humans.room(self.pool,look) end
+			for id in self.active do
+				local c = candidates[id]
+				if c then remaining[c.look % variety] += 1 end
+			end
+		end
+	end
 	local lists = {}
 	for j, observer in observers do
 		local list = {}
@@ -54,10 +71,14 @@ function methods:select(candidates, observers, rankCandidate)
 		local before = count
 		for _, row in lists do
 			local list = row.list
-			while list[row.next] and chosen[list[row.next].id] do row.next += 1 end
 			local entry = list[row.next]
+			while entry and (chosen[entry.id] or (self.stableLooks and remaining[candidates[entry.id].look % variety] == 0)) do
+				row.next += 1
+				entry = list[row.next]
+			end
 			if entry then
 				chosen[entry.id] = true
+				if self.stableLooks then remaining[candidates[entry.id].look % variety] -= 1 end
 				count += 1
 				row.next += 1
 				if count == limit then break end
@@ -80,8 +101,42 @@ function methods:select(candidates, observers, rankCandidate)
 	table.sort(arrivals)
 	for _, id in arrivals do
 		local c = candidates[id]
-		self.active[id] = humans.spawn(self.pool, {pos = c.pos, yaw = c.yaw})
+		self.active[id] = humans.spawn(self.pool, {pos = c.pos, yaw = c.yaw, look = if self.stableLooks then c.look else nil, resident = if self.stableLooks then id else nil})
 	end
+end
+
+-- Fit an immediately interacting resident between periodic selections. A full
+-- pool can lend the farthest compatible slot outside every observer's reach.
+function methods:allocate(opts, candidates, observers)
+	local _, _, variety = humans.room(self.pool)
+	local actor = humans.spawn(self.pool, opts)
+	if not actor then
+		local farthest, best = nil, 25
+		for other in self.active do
+			local person = candidates[other]
+			if not person or person.externalPose or person.look % variety ~= opts.look % variety then continue end
+			local nearest = math.huge
+			for _, pos in observers do
+				local delta = person.pos-pos
+				nearest = math.min(nearest, vector.dot(delta,delta))
+			end
+			if nearest > best or (nearest == best and farthest and other < farthest) then farthest, best = other, nearest end
+		end
+		if not farthest then return nil end
+		humans.remove(self.active[farthest])
+		self.active[farthest] = nil
+		actor = humans.spawn(self.pool, opts)
+	end
+	return actor
+end
+
+function methods:promote(id, candidates, observers)
+	if self.active[id] then return self.active[id] end
+	local c = candidates[id]
+	if not c or not self.stableLooks then return nil end
+	local actor = self:allocate({pos=c.pos, yaw=c.yaw, look=c.look, resident=id}, candidates, observers)
+	self.active[id] = actor
+	return actor
 end
 
 -- Call after moving the selected candidates each tick. yaw follows humans.set
@@ -90,7 +145,7 @@ function methods:update(candidates)
 	for id, actor in self.active do
 		local c = candidates[id]
 		if c then
-			humans.set(actor, {pos = c.pos, yaw = c.yaw, pose = c.pose})
+			if not c.externalPose then humans.set(actor, {pos = c.pos, yaw = c.yaw, pose = c.pose}) end
 		else
 			humans.remove(actor)
 			self.active[id] = nil

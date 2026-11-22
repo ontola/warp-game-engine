@@ -15,7 +15,7 @@
     {"bench":520,"capture":"four-interiors.png"},
     {"expect":"/room_lighting/baked","equals":4},
     {"expect":"/room_lighting/bake_ms"},
-    {"expect":"/entities","max":1023},
+    {"expect":"/entities","max":1279},
     {"bench":90},
     {"expect":"/errors","equals":[]}
   ]

@@ -1,4 +1,4 @@
--- A clock shared by every view. Warm only the next atmospheric bake.
+-- The sun, sky and clouds share this clock across all views.
 local daycycle = {}
 local phases = {
 	{ hour = 0, sky = "night" }, { hour = 5.5, sky = "sunrise" },
@@ -17,13 +17,10 @@ function daycycle.tick(clock, dt)
 	local index = #phases
 	while clock.hour < phases[index].hour do index -= 1 end
 	local phase = phases[index].sky
-	if clock.phase ~= phase then
-		sky.set(phase .. ":" .. clock.weather)
-		-- Midnight spans two entries. Prepare sunrise even if time starts after dusk.
-		local nextPhase = if phase == "night" then "sunrise" else phases[index + 1].sky
-		sky.warm(nextPhase .. ":" .. clock.weather)
-		clock.phase = phase
-	end
+	clock.phase = phase
+	sky.set_time(clock.hour, clock.weather)
+	local dusk = math.clamp((math.abs(clock.hour - 12) - 5) / 1.25, 0, 1)
+	clock.lampLevel = dusk * dusk * (3 - 2 * dusk)
 	clock.daylight = clock.hour >= 6 and clock.hour < 19
 	return clock.hour
 end

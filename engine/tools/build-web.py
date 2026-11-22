@@ -256,6 +256,7 @@ if not args.no_build:
         for name in ('bungee-regular.ttf', 'outfit-600.ttf', 'outfit-800.ttf', 'bungee-LICENSE.txt', 'outfit-LICENSE.txt'):
             shutil.copy(ROOT / 'lobbies/game-room/assets/fonts' / name, OUT / 'fonts')
         shutil.copy(ROOT / 'lobbies/game-room/assets/splitscreen-club-icon.png', OUT)
+        shutil.copytree(ROOT / 'lobbies/game-room/examples/browser/stories', OUT / 'stories', dirs_exist_ok=True)
     (OUT / 'assets').mkdir(exist_ok=True)
     if args.example == 'terrain_fly':
         for name in TEXTURES:

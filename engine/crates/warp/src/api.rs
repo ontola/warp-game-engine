@@ -941,6 +941,20 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             Ok(())
         })),
         ("get", f!(core, move |_, ()| Ok(lock(&core).sky.name()))),
+        ("set_time", f!(core, move |_, (hour, look): (f32, Option<String>)| {
+            let mut c = lock(&core);
+            sim(&c, "sky.set_time")?;
+            if !hour.is_finite() { return Err(rt("sky.set_time needs a finite hour")); }
+            let hour = hour.rem_euclid(24.);
+            let weather = render::sky::WeatherLook::parse(look.as_deref().unwrap_or("clear")).map_err(rt)?;
+            let previous = match c.sky {
+                SkyChoice::Clock { hour: old, weather: w, .. }
+                    if w == weather && ((hour-old+12.).rem_euclid(24.)-12.).abs() < 0.25 => old,
+                _ => hour,
+            };
+            c.sky = SkyChoice::Clock { previous, hour, weather };
+            Ok(())
+        })),
         ("clouds", f!(core, move |_, value: Value| {
             let mut c = lock(&core);
             sim(&c, "sky.clouds")?;
@@ -1099,13 +1113,19 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
         ("spawn", f!(core, move |_, (pool, opts): (String, Option<Table>)| {
             let mut c = lock(&core);
             sim(&c, "humans.spawn")?;
-            let (mut pos, mut yaw) = (Vec3::ZERO, 0.0);
+            let (mut pos, mut yaw, mut look, mut resident) = (Vec3::ZERO, 0.0, None, None);
             if let Some(t) = opts {
-                for (k, v) in options(&t, &["pos", "yaw"], "humans.spawn")? {
-                    match k.as_str() { "pos" => pos = vec3(&v, "humans.spawn pos")?, "yaw" => yaw = number(&v, "humans.spawn yaw")?, _ => unreachable!() }
+                for (k, v) in options(&t, &["pos", "yaw", "look", "resident"], "humans.spawn")? {
+                    match k.as_str() {
+                        "pos" => pos = vec3(&v, "humans.spawn pos")?,
+                        "yaw" => yaw = number(&v, "humans.spawn yaw")?,
+                        "look" => look = Some(t.raw_get::<usize>("look")?),
+                        "resident" => resident = Some(t.raw_get::<usize>("resident")?),
+                        _ => unreachable!(),
+                    }
                 }
             }
-            c.humans.spawn(&pool, pos, yaw).map_err(rt)
+            c.humans.spawn_with_look(&pool, pos, yaw, look, resident).map_err(rt)
         })),
         ("set", f!(core, move |_, (id, opts): (u32, Table)| {
             let mut c = lock(&core);
@@ -1133,6 +1153,34 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             if up { c.humans.stand(id); }
             Ok(true)
         })),
+        ("obstacles", f!(core, move |_, list: Table| {
+            let mut c = lock(&core);
+            sim(&c, "humans.obstacles")?;
+            let mut boxes = std::collections::BTreeMap::new();
+            for item in list.sequence_values::<Table>() {
+                let t = item?;
+                let id = t.raw_get::<u32>("id")?;
+                let pos = vec3(&t.raw_get("pos")?, "obstacle pos")?;
+                let size = vec3(&t.raw_get("size")?, "obstacle size")?;
+                let yaw = t.raw_get::<Option<f32>>("yaw")?.unwrap_or(0.);
+                let previous = t.raw_get::<Option<Value>>("prevPos")?.map(|v| vec3(&v, "obstacle prevPos")).transpose()?.unwrap_or(pos);
+                let previous_yaw = t.raw_get::<Option<f32>>("prevYaw")?.unwrap_or(yaw);
+                if !pos.is_finite() || !previous.is_finite() || !size.is_finite() || size.min_element() <= 0.
+                    || !yaw.is_finite() || !previous_yaw.is_finite() { return Err(rt("humans.obstacles needs finite poses and positive box sizes")); }
+                let shape = kern::collide::YawBox::new(pos, size, yaw);
+                if boxes.insert(id, crate::ragdoll::Obstacle { shape, previous, previous_yaw }).is_some() {
+                    return Err(rt("humans.obstacles needs a distinct id for each box"));
+                }
+                if boxes.len() > crate::ragdoll::MAX_OBSTACLES { return Err(rt("humans.obstacles takes up to 64 nearby boxes")); }
+            }
+            c.humans.set_obstacles(boxes);
+            Ok(())
+        })),
+        ("recover", f!(core, move |_, id: u32| {
+            let mut c = lock(&core);
+            sim(&c, "humans.recover")?;
+            Ok(c.humans.recover(id).map(vector).unwrap_or(Value::Nil))
+        })),
         ("ragdoll", f!(core, move |_, (id, push): (u32, Option<Value>)| {
             let mut c = lock(&core);
             sim(&c, "humans.ragdoll")?;
@@ -1153,9 +1201,42 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             }
             Ok(lock(&core).humans.joint(id, &name).map(vector).unwrap_or(Value::Nil))
         })),
-        ("room", f!(core, move |_, pool: String| {
-            let (free, all) = lock(&core).humans.room(&pool).ok_or_else(|| rt(format!("humans.room: no pool {pool:?}")))?;
-            Ok((free, all))
+        ("room", f!(core, move |_, (pool, body): (String, Option<usize>)| {
+            let c = lock(&core);
+            let (free, all) = match body { Some(body) => c.humans.body_room(&pool, body), None => c.humans.room(&pool) }
+                .ok_or_else(|| rt(format!("humans.room: unknown pool or body {pool:?} {body:?}")))?;
+            let (_, bodies, looks) = c.humans.distant_limits(&pool).unwrap();
+            Ok((free, all, bodies, looks))
+        })),
+        ("distant", f!(core, move |_, (pool, rows, fitted, seconds): (String, Table, Table, f32)| {
+            let mut c = lock(&core);
+            sim(&c, "humans.distant")?;
+            let (limit, _, variety) = c.humans.distant_limits(&pool).ok_or_else(|| rt(format!("humans.distant: no pool {pool:?}")))?;
+            let count = rows.raw_len();
+            if count > limit { return Err(rt(format!("humans.distant: {count} exceeds the {limit} reserved slots"))); }
+            if !seconds.is_finite() || seconds <= 0. { return Err(rt("humans.distant: expected a positive interval".to_string())); }
+            let mut samples = Vec::with_capacity(count);
+            for id in 1..=count {
+                let row: Table = rows.raw_get(id)?;
+                let pos = vec3(&row.raw_get("pos")?, "humans.distant pos")?;
+                let yaw = row.raw_get::<Option<f32>>("yaw")?.unwrap_or(0.);
+                let next = match row.raw_get::<Value>("nextPos")? {
+                    Value::Nil => pos, v => vec3(&v, "humans.distant nextPos")?,
+                };
+                let look = row.raw_get::<Option<usize>>("look")?.unwrap_or((id - 1) % variety);
+                if look >= variety { return Err(rt(format!("humans.distant: look outside 0..{variety}"))); }
+                let next_yaw = row.raw_get::<Option<f32>>("nextYaw")?.unwrap_or(yaw);
+                if !pos.is_finite() || !next.is_finite() || !yaw.is_finite() || !next_yaw.is_finite() {
+                    return Err(rt(format!("humans.distant: resident {id} needs finite positions and headings")));
+                }
+                samples.push(crate::distant_humans::Sample {
+                    pos, yaw, next, look, next_yaw,
+                    active: row.raw_get::<Option<bool>>("active")?.unwrap_or(true),
+                    fitted: fitted.raw_get::<Option<u32>>(id)?.is_some(),
+                });
+            }
+            c.humans.set_distant(&pool, samples, seconds);
+            Ok(())
         })),
     ])?;
 

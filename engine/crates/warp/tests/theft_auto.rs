@@ -64,8 +64,26 @@ fn city_weather_follows_the_seed_and_survives_the_day_cycle() {
         game.luau(&format!("state.clock.hour = {hour}")).unwrap();
         game.tick(&[Controls::default()]);
         let state = game.state_json();
-        assert_eq!(state["sky"], format!("{phase}:clear"));
+        assert_eq!(state["sky"], "clock:clear");
+        assert_eq!(state["state"]["clock"]["phase"], phase);
+        assert!(state["sun_direction"][1].as_f64().unwrap().is_finite());
         assert_eq!(state["clouds"], clouds);
+    }
+    // In an eight-minute day each 60 Hz step advances the sun by 2π / 28,800.
+    // Cross a former preset change and midnight during ordinary simulation ticks.
+    for hour in [17.99, 23.99] {
+        game.luau(&format!("state.clock.hour = {hour}")).unwrap();
+        let mut last: Option<glam::DVec3> = None;
+        for _ in 0..24 {
+            game.tick(&[Controls::default()]);
+            let warp::sky::SkyChoice::Clock { hour, .. } = game.core().sky else { panic!("clock lost"); };
+            let dir = render::daylight::sun_at(hour).direction();
+            if let Some(previous) = last {
+                let distance = dir.distance(previous);
+                assert!((0.00019..0.00025).contains(&distance), "solar step {distance} at {hour}");
+            }
+            last = Some(dir);
+        }
     }
     game.restart();
     assert_eq!(game.state_json()["clouds"], clouds);
@@ -131,17 +149,24 @@ fn traffic_completes_turns_and_waits_for_boarding_at_intersections() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../games/warp-theft-auto");
     let mut g = LuaGame::load(&dir, &Overrides { players: Some(3), seed: Some(1948), ..Default::default() }, None).unwrap();
     g.echo = false;
-    let mut stops = [0; 3];
-    let mut turns = [0; 3];
-    let mut travel = [0.0_f64; 3];
-    let mut waiting = [false; 3];
-    let mut prev_dir = [None; 3];
-    let mut prev_pos = [None; 3];
+    let count: usize = g.luau("return #state.fleet.traffic").unwrap().parse().unwrap();
+    assert_eq!(count, 12);
+    let parked: usize = g.luau("return #state.fleet.vehicles-#state.fleet.traffic-2").unwrap().parse().unwrap();
+    assert!(parked >= 25);
+    eprintln!("Fleet starts with {parked} parked cars and {count} autonomous drivers");
+    assert_eq!(g.luau("return state.fleet.vehicles[8].kind == 'helicopter' and state.fleet.vehicles[9].kind == 'helicopter'").unwrap(), "true");
+    assert_eq!(g.luau("local cars=state.fleet.vehicles; for i,a in cars do for j=i+1,#cars do if vector.magnitude(a.pos-cars[j].pos)<5.9 then return false end end end; return true").unwrap(), "true");
+    let mut stops = vec![0; count];
+    let mut turns = vec![0; count];
+    let mut travel = vec![0.0_f64; count];
+    let mut waiting = vec![false; count];
+    let mut prev_dir = vec![None; count];
+    let mut prev_pos = vec![None; count];
     let mut last = String::new();
     for sample in 0..=240 {
         let rows = g.luau("local t={} for _,c in state.fleet.vehicles do if c.auto then table.insert(t,{c.pos.x,c.pos.z,c.yaw,c.speed}) end end return t").unwrap();
         let data: Vec<[f64;4]> = serde_json::from_str(&rows).unwrap();
-        assert_eq!(data.len(), 3);
+        assert_eq!(data.len(), count);
         for (i, [x,z,yaw,speed]) in data.into_iter().enumerate() {
             if let Some((px,pz)) = prev_pos[i] { travel[i] += f64::hypot(x-px,z-pz); }
             prev_pos[i] = Some((x,z));
@@ -162,7 +187,7 @@ fn traffic_completes_turns_and_waits_for_boarding_at_intersections() {
     }
     eprintln!("Traffic over 60 s: metres {travel:.0?}, stops and restarts {stops:?}, turns {turns:?}, final {last}");
     assert!(g.errors().is_empty(), "{:?}",g.errors());
-    for i in 0..3 {
+    for i in 0..count {
         assert!(travel[i] > 145. && stops[i] >= 2 && turns[i] >= 2, "traffic car {i} must progress between intersections");
     }
 
@@ -174,7 +199,7 @@ fn traffic_completes_turns_and_waits_for_boarding_at_intersections() {
         for (slot, owned) in taken.iter_mut().enumerate() {
             if *owned { continue; }
             let id = slot+1;
-            let car = format!("state.fleet.vehicles[#state.fleet.vehicles-3+{id}]");
+            let car = format!("state.fleet.vehicles[state.fleet.traffic[{id}]]");
             let stage = format!("local c={car} if math.abs(c.speed)>1 then return false end world.place(state.fleet.players[{id}].body,c.pos+vector.create(2.2*math.cos(c.yaw),.85,-2.2*math.sin(c.yaw))) return true");
             if g.luau(&stage).unwrap() == "true" {
                 g.tick(&[Controls::default();3]);

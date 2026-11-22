@@ -31,6 +31,12 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
         Ok(fleet.spawn(CarSpec::compact(), p, yaw))
     })?)?;
     let c = core.clone();
+    t.set("remove", lua.create_function(move |_, id: u32| {
+        let mut c = lock(&c);
+        sim(&c, "vehicles.remove")?;
+        Ok(c.world.fleet.as_mut().is_some_and(|f| f.remove(id)))
+    })?)?;
+    let c = core.clone();
     t.set("drive", lua.create_function(move |_, (id, controls): (u32, Option<Table>)| {
         let controls = controls.map(|t| {
             let axis = |name: &str| -> mlua::Result<f64> {

@@ -975,6 +975,25 @@ mod tests {
     }
 
     #[test]
+    fn compact_panel_direct_light_obeys_occlusion_and_preserves_bounce() {
+        let sampler = PreviewSampler::default();
+        let lamp = crate::headlights::LocalLight { position: Vec3::new(0., 2.8, 0.), direction: Vec3::NEG_Y,
+            intensity_cd: Vec3::new(1500., 1200., 850.), range_m: 15., inner_cos: 0.7, outer_cos: 0.4,
+            source_radius_m: 0.1, falloff: 2. };
+        let p = Vec3::new(0., 0.8, 0.);
+        let geometry = Occluders::from_boxes(&room());
+        let (sky, bounce, _) = sampler.trace(&geometry, p, Vec3::Y, &[lamp], 1., false);
+        let (sky_compact, combined, _) = sampler.trace(&geometry, p, Vec3::Y, &[lamp], 1., true);
+        assert_eq!(sky, sky_compact);
+        let (_, open) = crate::sprites::light_at(&lamp, p).unwrap();
+        assert!((combined.irradiance(Vec3::Y) - bounce.irradiance(Vec3::Y)).abs_diff_eq(open, 1e-4));
+        assert_eq!(combined.irradiance(Vec3::NEG_Y), bounce.irradiance(Vec3::NEG_Y));
+        let mut blocked = room();
+        blocked.push(bx([-1., 1.7, -1.], [1., 1.8, 1.]));
+        assert_eq!(direct_lamp_probe(&Occluders::from_boxes(&blocked), p, &[lamp]), Probe::default());
+    }
+
+    #[test]
     fn scene_triangles_match_boxes() {
         let mut scene = Scene::default();
         let m = scene.add_material(crate::scene::Material { tint: [0.5; 3], layer: -1, roughness: 0.8, flags: 0, scale: 1.0, metal: 0.0 });
@@ -1017,6 +1036,116 @@ pub fn neighbour_masks(grid: &Grid, occluders: &Occluders, placement: &Placement
             crate::irradiance_volume::neighbour_bit([(jx - x) as i32, (jy - y) as i32, (jz - z) as i32])
         }).fold(0, |a, b| a | b)
     }).collect()
+}
+
+/// A low-discrepancy set of two-bounce paths shared by the six faces of an
+/// ambient cube. Each hit samples the sun and all reachable local fixtures.
+/// The number of paths per probe is fixed so a caller can spread a coarse
+/// room bake across frames, including in single-threaded browsers.
+pub struct PreviewSampler {
+    paths: Vec<(Vec3, [Vec3; 2])>,
+}
+
+impl Default for PreviewSampler {
+    fn default() -> Self {
+        let directions = sphere(64);
+        let count = directions.len();
+        let paths = directions.into_iter().enumerate().map(|(i, primary)| {
+            let cosine = |step: usize, phase: usize| {
+                let u = (((i * step + phase) % count) as f32 + 0.5) / count as f32;
+                let phi = (i + phase) as f32 * 2.3999632;
+                Vec3::new(u.sqrt() * phi.cos(), u.sqrt() * phi.sin(), (1. - u).sqrt())
+            };
+            (primary, [cosine(37, 19), cosine(23, 47)])
+        }).collect();
+        Self { paths }
+    }
+}
+
+/// Direct illuminance on each receiving orientation. Used by renderers with
+/// no clustered fixture pass so direct light and diffuse return are each
+/// accounted for once. Occluders cast a shadow between receiver and lamp.
+pub fn direct_lamp_probe(geometry: &Occluders, p: Vec3, lamps: &[crate::headlights::LocalLight]) -> Probe {
+    let mut direct = Probe::default();
+    for lamp in lamps {
+        let Some((to, e)) = crate::sprites::light_at(lamp, p) else { continue; };
+        if geometry.blocked(p, to, p.distance(lamp.position) - lamp.source_radius_m.max(0.05)) { continue; }
+        for (axis, sum) in AXES.iter().zip(&mut direct.axes) { *sum += e * to.dot(*axis).max(0.); }
+    }
+    direct
+}
+
+impl PreviewSampler {
+    pub fn trace(&self, geometry: &Occluders, mut p: Vec3, sun: Vec3, lamps: &[crate::headlights::LocalLight], cell: f32, direct_fixtures: bool)
+        -> (Probe, Probe, [f32; 4])
+    {
+        // The room centre or a coarse grid point may land in a cupboard.
+        // Move across its nearest exit before gathering surface light.
+        for _ in 0..2 {
+            let mut back = 0;
+            let mut exit = None;
+            for d in AXES {
+                if let Some((t, n)) = geometry.hit(p, d) {
+                    if n.dot(d) > 0. {
+                        back += 1;
+                        if exit.is_none_or(|(nearest, _)| t < nearest) { exit = Some((t, d)); }
+                    }
+                }
+            }
+            if back < 2 { break; }
+            if let Some((t, d)) = exit { p += d * (t + 0.05); }
+        }
+        let mut sky = Probe::default();
+        let mut emission = Probe::default();
+        let mut total = [0.; 6];
+        let mut nearest = cell * 1.75;
+        let mut plane = [0.; 4];
+        for &(primary, scatter) in &self.paths {
+            let (mut o, mut d, mut gain) = (p, primary, 1.);
+            let (mut transport, mut emitted) = (Vec3::ZERO, Vec3::ZERO);
+            for depth in 0..=2 {
+                let Some((t, normal)) = geometry.hit(o, d) else {
+                    if depth == 0 { transport.x = 1.; } else { transport.y += gain; }
+                    break;
+                };
+                if depth == 2 { break; }
+                let n = if normal.dot(d) > 0. { -normal } else { normal };
+                let at = o + d * t;
+                if depth == 0 && t < nearest {
+                    nearest = t;
+                    plane = n.extend(-n.dot(at)).to_array();
+                }
+                o = at + n * 0.03;
+                gain *= 0.5;
+                if sun.y > 0. && n.dot(sun) > 0. && !geometry.blocked(o, sun, f32::INFINITY) {
+                    transport.z += gain * n.dot(sun);
+                }
+                for lamp in lamps {
+                    if let Some((to, e)) = crate::sprites::light_at(lamp, at) {
+                        let cos = n.dot(to);
+                        if cos > 0. && !geometry.blocked(o, to, lamp.position.distance(at) - lamp.source_radius_m.max(0.05)) {
+                            emitted += e * (cos * gain);
+                        }
+                    }
+                }
+                let (tangent, bitangent) = n.any_orthonormal_pair();
+                let local = scatter[depth];
+                d = tangent * local.x + bitangent * local.y + n * local.z;
+            }
+            for (a, axis) in AXES.iter().enumerate() {
+                let w = primary.dot(*axis).max(0.);
+                total[a] += w;
+                sky.axes[a] += transport * w;
+                emission.axes[a] += emitted * w;
+            }
+        }
+        let direct = if direct_fixtures { direct_lamp_probe(geometry, p, lamps) } else { Probe::default() };
+        for a in 0..6 {
+            sky.axes[a] /= total[a];
+            emission.axes[a] = emission.axes[a] / total[a] + direct.axes[a];
+        }
+        (sky, emission, plane)
+    }
 }
 
 /// A brute-force reference for one probe: per axis, cosine-sampled paths of

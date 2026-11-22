@@ -838,6 +838,24 @@ impl Scene {
         self.meshes.len() - 1
     }
 
+    /// Reuse all vertices and triangle indices with a new material assignment.
+    /// Only the cluster descriptors contain material IDs and need a second copy.
+    pub fn mesh_with_materials(&mut self, mesh: usize, replacements: &[(u32, u32)]) -> usize {
+        let source = &self.meshes[mesh];
+        let first = source.first_cluster as usize;
+        let count = source.cluster_count;
+        let sphere = source.sphere;
+        let start = self.clusters.len();
+        self.clusters.extend_from_within(first..first + count as usize);
+        for cluster in &mut self.clusters[start..] {
+            if let Some((_, to)) = replacements.iter().find(|(from, _)| *from == cluster.material) {
+                cluster.material = *to;
+            }
+        }
+        self.meshes.push(MeshRef { first_cluster: start as u32, cluster_count: count, sphere });
+        self.meshes.len() - 1
+    }
+
     pub fn add_instance(&mut self, mesh: usize, xf: Affine3A) {
         self.instances.push(Self::instance(&self.meshes[mesh], xf, 0));
     }

@@ -206,6 +206,12 @@ mod tests {
         let marker = module.global_variables.iter().find(|(_, var)| var.name.as_deref() == Some("surface_marker")).unwrap().0;
         let compact = module.entry_points.iter().position(|point| point.name == "shade_compact").unwrap();
         assert!(!info.get_entry_point(compact)[marker].is_empty());
+        // Both lighting paths must consume the streamed room's diffuse field.
+        // This global is written only while selecting/sampling an irradiance grid.
+        let room = module.global_variables.iter().find(|(_, var)| var.name.as_deref() == Some("irradiance_boundary_weight")).unwrap().0;
+        let full = module.entry_points.iter().position(|point| point.name == "shade").unwrap();
+        assert!(!info.get_entry_point(compact)[room].is_empty());
+        assert!(!info.get_entry_point(full)[room].is_empty());
     }
 
     #[test]

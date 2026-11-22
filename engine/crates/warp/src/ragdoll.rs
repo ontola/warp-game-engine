@@ -6,7 +6,8 @@ use body::Bone;
 use glam::{Affine3A, Mat4, Quat, Vec3};
 use kern::collide::YawBox;
 use physics::ragdoll::{AngularProfile, Ragdoll, Segment};
-use physics::{Physics, Static};
+use physics::{Body, Physics, Static};
+use std::collections::BTreeMap;
 
 pub const PARTS: usize = 11;
 /// At most this many move at once; the oldest freezes to make room.
@@ -67,17 +68,30 @@ pub struct Doll {
     pub palette: Vec<Mat4>,
 }
 
+/// A solid moving box shared by every struck person, keyed by game identity.
+#[derive(Clone, Copy)]
+pub struct Obstacle {
+    pub shape: YawBox,
+    pub previous: Vec3,
+    pub previous_yaw: f32,
+}
+
+pub const MAX_OBSTACLES: usize = 64;
+
 #[derive(Default)]
 pub struct Dolls {
     phys: Option<Physics>,
     acc: f32,
-    pub dolls: std::collections::BTreeMap<u32, Doll>,
+    pub dolls: BTreeMap<u32, Doll>,
+    pub obstacles: BTreeMap<u32, Obstacle>,
+    colliders: BTreeMap<u32, (Body, Vec3)>,
 }
 
 impl Dolls {
     /// Person `id` goes limp: `palette` (model space, rig joints) is how it
     /// stood, `model` where; `push` the blow (world, m/s).
     pub fn fall(&mut self, id: u32, joint: &[usize], bind: &[Vec3], palette: &[Mat4], model: Affine3A, push: Vec3) -> Result<(), String> {
+        if !push.is_finite() { return Err("ragdoll push must be finite".into()); }
         self.remove(id);
         let active: Vec<u32> = self.dolls.iter().filter(|(_, d)| d.rig.is_some()).map(|(k, _)| *k).collect();
         if active.len() >= ACTIVE {
@@ -110,7 +124,7 @@ impl Dolls {
             segs.push(seg(at(b), at(c), 0.075, Some(upper), at(b)));
         }
         let ground = model.translation.y;
-        let floor = phys.add_static(&YawBox::new(Vec3::new(hips.x, ground - 0.5, hips.z), Vec3::new(10.0, 1.0, 10.0), 0.0));
+        let floor = phys.add_floor_for(ground, bit);
         let flat = push.with_y(0.0);
         let force = flat.length();
         let dir = flat.normalize_or(Vec3::Z);
@@ -157,23 +171,81 @@ impl Dolls {
 
     pub fn clear(&mut self) {
         self.dolls.clear();
+        self.obstacles.clear();
+        self.colliders.clear();
         self.phys = None;
         self.acc = 0.0;
     }
 
+    /// Keep a chassis in the physics world only near a moving ragdoll. Check
+    /// the swept segment so even the first contact arrives with car velocity.
+    fn sync_obstacles(&mut self) {
+        let Some(phys) = &mut self.phys else { return };
+        let roots: Vec<_> = self.dolls.values().filter_map(|d| Some(d.rig.as_ref()?.root_position(1.0))).collect();
+        let nearby = |b: &Obstacle| {
+            let delta = b.shape.center - b.previous;
+            let radius = 8.0 + b.shape.half.length();
+            roots.iter().any(|p| {
+                let t = ((*p - b.previous).dot(delta) / delta.length_squared().max(1e-8)).clamp(0., 1.);
+                p.distance_squared(b.previous + delta * t) <= radius * radius
+            })
+        };
+        self.colliders.retain(|id, (body, half)| {
+            let keep = self.obstacles.get(id).is_some_and(|b| b.shape.half == *half && nearby(b));
+            if !keep { phys.remove(*body); }
+            keep
+        });
+        for (&id, b) in &self.obstacles {
+            if self.colliders.contains_key(&id) || !nearby(b) { continue; }
+            let previous = YawBox { center: b.previous, yaw: b.previous_yaw, half: b.shape.half };
+            self.colliders.insert(id, (phys.add_kinematic_box(&previous), b.shape.half));
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn obstacle_count(&self) -> usize { self.colliders.len() }
+
+    pub fn settled(&self, id: u32) -> bool {
+        self.dolls.get(&id).is_some_and(|d| d.frozen.is_some())
+    }
+
+    /// A person getting up next to a car needs room for their standing body.
+    /// Project sideways onto the nearest clear side; try again next tick if
+    /// several tightly parked obstacles leave no clear spot.
+    pub fn standing_space(&self, mut feet: Vec3) -> Option<Vec3> {
+        let overlaps = |b: &YawBox, p: Vec3| {
+            if b.top() <= p.y || b.center.y - b.half.y >= p.y + 1.8 { return None; }
+            b.push_out(Vec3::new(p.x, b.center.y, p.z), 0.34, b.half.max_element() + 1.)
+        };
+        for _ in 0..4 {
+            let Some(out) = self.obstacles.values().find_map(|b| overlaps(&b.shape, feet)) else { return Some(feet) };
+            feet += out + out.normalize_or_zero() * 0.005;
+        }
+        self.obstacles.values().all(|b| overlaps(&b.shape, feet).is_none()).then_some(feet)
+    }
+
     /// A simulation tick: fixed physics steps; settled bodies freeze.
     pub fn tick(&mut self, dt: f32) {
-        let Some(phys) = self.phys.as_mut() else { return };
+        if self.phys.is_none() { return; }
+        self.sync_obstacles();
+        let phys = self.phys.as_mut().unwrap();
         if self.dolls.values().all(|d| d.rig.is_none()) { self.acc = 0.0; return; }
         self.acc += dt;
-        let mut n = 0;
-        while self.acc >= 1.0 / HZ - 1e-6 && n < 4 {
+        let steps = ((self.acc + 1e-6) * HZ).floor().clamp(0., 4.) as usize;
+        for remaining in (1..=steps).rev() {
+            let fraction = 1.0 / remaining as f32;
+            for (id, (body, _)) in &self.colliders {
+                let target = self.obstacles[id].shape;
+                if let Some((pos, rot)) = phys.pose(*body) {
+                    phys.move_kinematic(*body, pos.lerp(target.center, fraction),
+                        rot.slerp(Quat::from_rotation_y(target.yaw), fraction));
+                }
+            }
             phys.step();
             for d in self.dolls.values_mut() {
                 if let Some(rig) = d.rig.as_mut() { rig.update(phys); }
             }
             self.acc -= 1.0 / HZ;
-            n += 1;
         }
         self.acc = self.acc.clamp(0.0, 1.0 / HZ);
         let mut done = Vec::new();

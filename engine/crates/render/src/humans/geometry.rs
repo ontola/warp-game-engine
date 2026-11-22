@@ -234,6 +234,52 @@ impl super::Instance {
         1. + regions[0] * zone(0.78, 0.12) + regions[1] * zone(0.57, 0.13)
             + regions[2] * zone(0.48, 0.11)
     }
+    /// One fixed walking silhouette in the opaque scene. Materials are shared by
+    /// all poses of an identity. The geometry is the mesh tier of the stadium crowd.
+    pub fn street_silhouette(&self, materials: [u32; 5], swing: f32) -> crate::cluster::ClusterMesh {
+        use crate::cluster::{ClusterMesh, Part, Vertex as SceneVertex};
+        let mesh = person(1, Far::Mesh, false);
+        let mut groups: [(Vec<SceneVertex>, Vec<u32>); 5] = Default::default();
+        let scale = self.body_scale();
+        let breadth = self.regional_breadths();
+        let mut remap = Vec::with_capacity(mesh.vertices.len());
+        for v in mesh.vertices {
+            let sleeve = v.arm != 0. && self.outfit() != 1 && v.material == 4 && v.center[1] > 0.53;
+            let group = if sleeve { 0 } else { match v.material { 1 => 0, 2 => 1, 3 => 2, 4 => 3, 7 => 4, _ => unreachable!() } };
+            let mut pos = Vec3::from(v.pos);
+            if v.material == 7 {
+                let (length, width) = [(1., 1.), (2.3, 1.09), (1.35, 1.22)][self.hair_style() as usize];
+                pos.y = 1.006 + (pos.y - 1.006) * length;
+                pos.x *= width;
+                pos.z *= width;
+            } else if v.material == 1 && self.outfit() == 2 {
+                pos.x *= 1.09;
+                pos.z *= 1.12;
+            }
+            pos.x *= Self::width_at(breadth, pos.y);
+            let (pivot, rotation) = if v.arm != 0. {
+                (0.77, 0.42 * v.arm * swing)
+            } else if v.center[0] != 0. && matches!(v.material, 2 | 3) {
+                (0.463, -0.55 * v.center[0].signum() * swing)
+            } else { (0., 0.) };
+            let at = Vec3::Y * pivot;
+            let q = glam::Quat::from_rotation_x(rotation);
+            remap.push((group, groups[group].0.len() as u32));
+            groups[group].0.push(SceneVertex {
+                pos: ((at + q * (pos - at)) * scale).into(),
+                normal: ((q * Vec3::from(v.normal)) / scale).normalize().into(),
+                uv: [0.; 2],
+            });
+        }
+        for tri in mesh.indices.chunks_exact(3) {
+            let (group, _) = remap[tri[0] as usize];
+            groups[group].1.extend(tri.iter().map(|&i| remap[i as usize].1));
+        }
+        let parts: Vec<_> = groups.iter().zip(materials).map(|((vertices, indices), material)|
+            Part { vertices, indices, material }).collect();
+        ClusterMesh::build_fixed(&parts, [0., 0.50 * scale.y, 0., 0.59 * scale.max_element()])
+    }
+
     pub fn body_mesh(&self) -> (Vec<BodyVertex>, Vec<u32>) {
         self.fitted_mesh(false)
     }

@@ -261,7 +261,7 @@ impl Passes {
 }
 
 #[derive(Default)]
-struct State { passes: Option<Passes>, tables: Option<Arc<AtmosphereTables>> }
+struct State { passes: Option<Passes>, tables: Option<Arc<AtmosphereTables>>, ambient: Option<[Vec3; 2]> }
 
 /// Per-renderer state: the atmosphere tables and lazily created passes.
 #[derive(Default)]
@@ -300,15 +300,22 @@ impl SkyVolumeSlot {
     pub fn set_tables(&self, tables: Option<Arc<AtmosphereTables>>) {
         let mut state = self.0.lock().unwrap();
         state.tables = tables;
+        state.ambient = None;
         if let Some(passes) = state.passes.as_mut() { passes.targets.iter_mut().flatten().for_each(|t| t.prev_vp = None); }
+    }
+
+    /// Vary the light on the clouds without replacing weather LUTs or resetting history.
+    pub fn set_ambient(&self, upper: Vec3, ground: Vec3) {
+        self.0.lock().unwrap().ambient = Some([upper, ground]);
     }
 
     /// Encode the passes for one view; returns the composited HDR.
     pub fn render(&self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, settings: &SkyVolume, view: ViewInput) -> Result<wgpu::Texture, String> {
         let settings = settings.validated()?;
         let mut state = self.0.lock().unwrap();
-        let State { passes, tables } = &mut *state;
+        let State { passes, tables, ambient } = &mut *state;
         let tables = tables.clone().unwrap_or_else(default_tables);
+        let [upper, ground] = ambient.unwrap_or([tables.sky_radiance_above, tables.ground_radiance]);
         let passes = passes.get_or_insert_with(|| Passes::new(gpu));
         passes.noise(gpu, enc);
         passes.tables(gpu, &tables);
@@ -359,8 +366,8 @@ impl SkyVolumeSlot {
         u.output = [size.0 as f32, size.1 as f32, if history_valid { 1.0 } else { 0.0 }, if settings.aerial { 1.0 } else { 0.0 }];
         u.sun = light.sun_dir.normalize_or(Vec3::Y).extend(0.0).to_array();
         u.solar = model.solar_rgb_lux.as_vec3().extend(0.0).to_array();
-        u.above = tables.sky_radiance_above.extend(0.0).to_array();
-        u.below = tables.ground_radiance.extend(0.0).to_array();
+        u.above = upper.extend(0.0).to_array();
+        u.below = ground.extend(0.0).to_array();
         u.rayleigh = model.rayleigh_per_km.as_vec3().extend(model.rayleigh_height_km as f32).to_array();
         u.mie = [model.mie_scattering_per_km as f32, model.mie_absorption_per_km as f32, model.mie_height_km as f32, model.mie_g as f32];
         u.ozone = model.ozone_per_km.as_vec3().extend(model.planet_radius_km as f32).to_array();

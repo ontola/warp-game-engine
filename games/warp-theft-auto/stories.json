@@ -1,0 +1,14 @@
+[
+  {
+    "title": "Last Ferry",
+    "file": "story_passenger.module.luau"
+  },
+  {
+    "title": "Exchange Street Sprint",
+    "file": "story_race.module.luau"
+  },
+  {
+    "title": "The Silver Jack Contract",
+    "file": "story_contract.module.luau"
+  }
+]

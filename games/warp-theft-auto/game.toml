@@ -7,7 +7,7 @@ tick_rate = 60
 seed = 1948
 fresh_seed = true
 sky = "afternoon:clear"
-max_entities = 1024
+max_entities = 1280
 steps = 3600000
 memory_mb = 96
 
@@ -20,6 +20,7 @@ seed = 45
 
 [humans.resident]
 count = 40
-variety = 8
+distant = 768
+variety = 9
 age = [22, 77]
 seed = 51

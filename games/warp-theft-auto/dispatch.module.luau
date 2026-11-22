@@ -46,9 +46,9 @@ function dispatch.tick(job, fleet, dt)
 			job.pause = 4
 			job.leg = 1
 			-- Recover a particular vehicle next time, wherever its last driver left it.
-			local start = (job.completed * 7) % #fleet.vehicles
-			for offset = 1, #fleet.vehicles do
-				local index = (start + offset - 1) % #fleet.vehicles + 1
+			local start = (job.completed * 7) % fleet.baseCars
+			for offset = 1, fleet.baseCars do
+				local index = (start + offset - 1) % fleet.baseCars + 1
 				if fleet.vehicles[index].kind == "car" and not fleet.vehicles[index].owner then
 					job.recovery = index
 					break

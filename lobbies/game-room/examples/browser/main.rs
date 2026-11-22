@@ -118,6 +118,13 @@ mod page {
     }
 
     fn set_session(h: &mut Host, game: Option<&str>, phase: &str) {
+        warp::web::reset_story_edit();
+        if let Some(root) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.document_element()) {
+            let _ = match game.filter(|_| phase == "running") {
+                Some(id) => root.set_attribute("data-playing", id),
+                None => root.remove_attribute("data-playing"),
+            };
+        }
         // One id per session, kept over pause and resume (the cloud's insights count it).
         let id = match &h.party["active_session"] { s if game.is_some_and(|g| s["game"] == g) => s["id"].clone(), _ => json!(crate::cloud::uuid()) };
         h.party["active_session"] = match game { Some(g) => json!({"id": id, "game": g, "phase": phase}), None => Value::Null };
@@ -439,7 +446,14 @@ mod page {
         fn pointer(&mut self, pointer: app::Pointer, size: [u32; 2]) { self.lobby.pointer(pointer, size); }
         // The cursor points and clicks in the room: never captured.
         fn mouse_capture(&self) -> Option<bool> { Some(false) }
-        fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> { self.lobby.draw(frame) }
+        fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
+            // A direct link is already loading its game. Upload the lobby the
+            // first time someone visits it, including after a failed game load.
+            if frame.renderer().is_none() && with(|h| h.loading.is_some()) {
+                return Ok(Draw { cameras: Vec::new(), light: Default::default(), hud: render::hud::HudDrawList::new(frame.size) });
+            }
+            self.lobby.draw(frame)
+        }
         fn title(&self) -> Option<String> { self.lobby.title() }
         fn escape(&mut self) -> bool { self.lobby.escape() }
         fn hold_quality(&self) -> bool { self.lobby.hold_quality() }
@@ -616,6 +630,24 @@ mod page {
     #[wasm_bindgen]
     pub fn switch_game(name: String) { start(name); }
 
+    /// Author code runs in a disposable Web Worker with its own VM and memory.
+    #[wasm_bindgen]
+    pub fn evaluate_story(source: &str) -> Result<String, wasm_bindgen::JsValue> {
+        if web_sys::window().is_some() { return Err("Story scripts run in the editor worker".into()); }
+        warp::story::evaluate(source).map(|value| value.to_string()).map_err(Into::into)
+    }
+
+    #[wasm_bindgen]
+    pub fn start_story(game: &str, data: &str) -> Result<(), wasm_bindgen::JsValue> {
+        if !with(|h| h.on_screen.as_deref() == Some(game) && h.loading.is_none()) {
+            return Err("Open the game before starting its story".into());
+        }
+        warp::web::queue_story(data).map_err(Into::into)
+    }
+
+    #[wasm_bindgen]
+    pub fn story_reply() -> Option<String> { warp::web::story_reply() }
+
     /// Claim waiting profile `pending` (its id) for seat `seat`, as a player
     /// at a door does (for tests, and pages with their own controls).
     #[wasm_bindgen]
@@ -627,7 +659,7 @@ mod page {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn main() { page::main(); }
+fn main() { if web_sys::window().is_some() { page::main(); } }
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() { eprintln!("browser is the Game Room's browser build: engine/tools/build-web.py --warp (engine/docs/browser.md)"); }

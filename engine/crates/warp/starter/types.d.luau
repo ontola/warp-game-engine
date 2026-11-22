@@ -243,6 +243,7 @@ declare lights: {
 declare vehicles: {
 	reset: (static_tag: string?) -> (),
 	spawn: (ground_pos: Vec, yaw: number?) -> number,
+	remove: (id: number) -> boolean,
 	drive: (id: number, controls: { throttle: number?, brake: number?, steer: number?, handbrake: number? }?) -> (),
 	step: (dt: number) -> (),
 	get: (id: number) -> { pos: Vec, rot: Vec, speed: number, rpm: number, gear: number, cut: boolean,
@@ -250,18 +251,26 @@ declare vehicles: {
 }
 
 declare humans: {
-	spawn: (pool: string, opts: { pos: Vec?, yaw: number? }?) -> number?,
+	spawn: (pool: string, opts: { pos: Vec?, yaw: number?, look: number?, resident: number? }?) -> number?,
 	-- tired 0..1: bent over, out of breath, over any pose; coil -1..1: wound up for a heavy blow (1), swung through (< 0)
 	set: (id: number, opts: { pos: Vec?, yaw: number?, pose: string?, t: number?, tired: number?, coil: number?, visible: boolean? }) -> boolean,
 	-- A blow along dir (its length the strength, ~1 heavy): the upper body jolts and sways back
 	hit: (id: number, dir: Vec) -> boolean,
 	-- Limp from the pose it stands in, thrown by push (m/s); up again with any pose but dead/down
 	ragdoll: (id: number, push: Vec?) -> boolean,
+	-- Replace the shared solid boxes for active ragdolls. Positions are box centers.
+	obstacles: (boxes: {{id:number, pos:Vec, size:Vec, yaw:number?, prevPos:Vec?, prevYaw:number?}}) -> (),
+	-- Once settled, start the rise pose and return landed feet. Advance rise with set(id,{pose="rise",t=...}).
+	recover: (id:number) -> Vec?,
 	remove: (id: number) -> boolean,
 	head: (id: number) -> Vec?,
 	-- head, neck, chest, hips, shoulder_l/r, elbow_l/r, hand_l/r, knee_l/r, foot_l/r
 	joint: (id: number, name: string) -> Vec?,
-	room: (pool: string) -> (number, number),
+	-- Free slots, total slots, number of fitted bodies and number of complete appearances.
+	room: (pool: string, body: number?) -> (number, number, number, number),
+	-- One cheap silhouette per array index, except IDs already in fitted. Interpolates
+	-- feet and heading toward nextPos/nextYaw over seconds. Reserve [humans.NAME].distant.
+	distant: (pool: string, rows: { {pos: Vec, yaw: number?, nextPos: Vec?, nextYaw: number?, active: boolean?, look: number?} }, fitted: {[number]: number}, seconds: number) -> (),
 }
 
 type GrassRect = { pos: Vec, width: number, depth: number, yaw: number? }
@@ -304,6 +313,8 @@ export type CloudSettings = {
 }
 
 declare sky: {
+	-- Move the sun continuously. Hours wrap at midnight and weather defaults to clear.
+	set_time: (hour: number, weather: string?) -> (),
 	-- Set the shared native cumulus layer in init or tick. True uses fair-weather defaults.
 	-- Heights and distances are metres, wind is metres/second and density is per metre.
 	-- aerial=false keeps the game's surface fog. False disables the volume.
