@@ -109,13 +109,13 @@ impl Menu {
     /// `standalone`: not in a Splitscreen Club session, so it offers Quit.
     pub fn new(standalone: bool) -> Menu {
         let logo = render::picture::decode(LOGO_PNG, 1.0).ok().map(Arc::new);
-        Menu { open: false, title_mode: false, rows: vec![], sel: 0, biome: -1, nav_t: 0.0, logo, standalone }
+        Menu { open: false, title_mode: false, rows: vec![], sel: 0, biome: 0, nav_t: 0.0, logo, standalone }
     }
 
     /// `title`: the start menu (Start instead of Resume, no restart).
     pub fn show(&mut self, title: bool, w: &World) {
         self.title_mode = title;
-        self.biome = if title { -1 } else { w.run.biome_index as i32 };
+        self.biome = if title { 0 } else { w.run.biome_index as i32 };
         // A new run sits right under Resume, as every Splitscreen Club game has it.
         self.rows = if title { vec![Row::Start] } else { vec![Row::Resume, Row::Restart] };
         if !self.standalone {

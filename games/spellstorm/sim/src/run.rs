@@ -252,6 +252,12 @@ impl World {
     /// A new run on seed `s` (Run.start). The tomes found stay with you
     /// into the next run, even after dying.
     pub fn run_start(&mut self, s: u64) {
+        // A new run from the menu while the death screen shows (Joep): it
+        // ends as it does when its own timer runs out.
+        if self.run.state == State::Dead {
+            self.runs_ended += 1;
+            self.ev(Ev::YouDiedEnd);
+        }
         self.run.seed = s;
         self.run.rng = Pcg::new(s);
         self.run.biome_index = 0;
@@ -522,12 +528,11 @@ impl World {
             State::Dead | State::Won => {
                 self.run.end_t -= dt;
                 if self.run.end_t <= 0.0 {
-                    let died = self.run.state == State::Dead;
-                    self.runs_ended += 1;
-                    self.new_run();
-                    if died {
-                        self.ev(Ev::YouDiedEnd);
+                    // run_start ends a death screen (YouDiedEnd, runs_ended).
+                    if self.run.state == State::Won {
+                        self.runs_ended += 1;
                     }
+                    self.new_run();
                 }
             }
             State::Travel => {}
