@@ -69,7 +69,7 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_CAMERA_CUT_FLOOR` | 4 | Lowest camera error-cut scale: voxels start sooner than a few trees' budget alone would put them. 1 disables it; 16 (the old default) picks coarse per-branch voxel levels that show as smooth balls on grown pines at 10-30 m. |
 | `KERN_COOK_THREADS` | machine threads | Worker threads for voxel cooks (`render::par`). A plant's branches and geometry groups cook in parallel; nested and concurrent cooks share the count. |
 | `KERN_FOLIAGE_CUT=budget` | Default: the error-driven foliage cut (each root refines by error alone; the GPU loosens the camera and shadow targets when a cap binds). `budget` restores the budgeted collective admission for A/B. |
-| `KERN_TEXTURE_STREAMING` | `Scene::texture_streaming` (Sideways: on for played windows); `1` streams, `0` uploads every mip at creation ([materials](materials.md#streaming)). |
+| `KERN_TEXTURE_STREAMING` | `Scene::texture_streaming` for scene textures, on for generated faces in native interactive sessions. `1` streams eligible layers and `0` uploads every mip at creation ([materials](materials.md#streaming)). |
 | `KERN_FOLIAGE_OCCLUDERS=terrain` | Default: any rigid opaque geometry hides the GPU forest. `terrain` restores land-only occlusion (`terrain_fly --no-building-occlusion`). |
 
 ## Tuning values

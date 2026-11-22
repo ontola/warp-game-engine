@@ -444,52 +444,53 @@ impl Character {
         // from the seed over the painted face they share.
         let own_skin = native.then(|| {
             let tile = person.face_tile();
-            let maps = warp_skin::face(
-                &body,
-                &indices,
-                eye_midpoint(&body),
-                &shared_tiles()[tile],
-                CHEEKS[tile],
-                traits,
-                // The face's tint multiplies this back to the hair's dark;
-                // under grey hair it is grey.
-                (hair.lerp(Vec3::splat(0.6), cut.grey) * 0.7 * CHEEKS[tile] / skin_color.max(Vec3::splat(0.05))).min(Vec3::ONE),
-                // Dark hair lets little light through to what is under
-                // it, fair hair most of it.
-                0.6 * (1. - hair.lerp(Vec3::splat(0.6), cut.grey).max_element()).powi(2),
-                &cut,
-                warp_skin::Brows {
-                    color: (brows * 0.8 * CHEEKS[tile] / skin_color.max(Vec3::splat(0.05))).min(Vec3::ONE),
-                    spans: [false, true].map(|left| {
-                        let eyes = eye_midpoint(&body);
-                        let mut lo = Vec3::splat(f32::MAX);
-                        let mut hi = Vec3::splat(f32::MIN);
-                        for v in body.iter().filter(|v| v.material == 13 && (v.position.x > eyes.x) == left) {
-                            let p = (v.position - eyes) * warp_skin::METRES;
-                            (lo, hi) = (lo.min(p), hi.max(p));
-                        }
-                        (lo, hi)
-                    }),
-                },
-                // A browser bakes these on its one page thread before the
-                // first frame: half the size there (the array scales it up).
-                if cfg!(target_arch = "wasm32") { 1024 } else { render::frame::TEXTURE_SIZE as usize },
+            let eyes = eye_midpoint(&body);
+            let under_hair = (hair.lerp(Vec3::splat(0.6), cut.grey) * 0.7 * CHEEKS[tile]
+                / skin_color.max(Vec3::splat(0.05))).min(Vec3::ONE);
+            let shade = 0.6 * (1. - hair.lerp(Vec3::splat(0.6), cut.grey).max_element()).powi(2);
+            let brow_hairs = warp_skin::Brows {
+                color: (brows * 0.8 * CHEEKS[tile] / skin_color.max(Vec3::splat(0.05))).min(Vec3::ONE),
+                spans: [false, true].map(|left| {
+                    let mut lo = Vec3::splat(f32::MAX);
+                    let mut hi = Vec3::splat(f32::MIN);
+                    for v in body.iter().filter(|v| v.material == 13 && (v.position.x > eyes.x) == left) {
+                        let p = (v.position - eyes) * warp_skin::METRES;
+                        (lo, hi) = (lo.min(p), hi.max(p));
+                    }
+                    (lo, hi)
+                }),
+            };
+            let bake = move |body: &[BodyVertex], indices: &[u32], size| warp_skin::face(
+                body, indices, eyes, &shared_tiles()[tile], CHEEKS[tile], traits,
+                under_hair, shade, &cut, brow_hairs, size,
             );
+            // CPU consumers (e.g. rigid-part colours) and the streaming tail
+            // use this small painted face. The recipe holds only parameters.
+            let preview = bake(&body, &indices, 64);
+            let person = *person;
+            let generate: render::scene::GeneratedTexture = std::sync::Arc::new(move || {
+                let (mut body, indices) = person.fitted_mesh(gripping);
+                let rest_eyes = eye_midpoint(&body);
+                warp_skin::settle(&mut body, &indices, rest_eyes, traits.age);
+                let size = if cfg!(target_arch = "wasm32") { 1024 } else { render::frame::TEXTURE_SIZE };
+                let maps = bake(&body, &indices, size as usize);
+                (maps.albedo, maps.normal)
+            });
             (
                 format!("warp-human-skin-{tile}-{seed:06x}"),
-                std::sync::Arc::new(maps.albedo),
-                maps.normal,
+                std::sync::Arc::new(preview.albedo), preview.normal, generate,
             )
         });
         let surfaces = groups
             .into_iter()
             .map(|(tag, mut indices)| {
                 let mut surface = surface(person, tag, skin_color, hair, brows);
-                if let (Some((name, albedo, normal)), warp_skin::FACE | 6) = (&own_skin, tag) {
+                if let (Some((name, albedo, normal, generate)), warp_skin::FACE | 6) = (&own_skin, tag) {
                     surface.texture = Some((name.clone(), albedo.clone()));
                     // Both surfaces name the one texture; whichever is added first
                     // brings its normal map (flat over the eyes).
                     surface.normal = Some(normal.clone());
+                    surface.generated = Some(generate.clone());
                 }
                 let mut remap = vec![u32::MAX; body.len()];
                 for index in &mut indices {
@@ -599,6 +600,7 @@ fn surface(person: &Instance, tag: u32, skin: Vec3, hair: Vec3, brows: Vec3) -> 
         influences: Vec::new(),
         texture,
         normal: None,
+        generated: None,
         skin_hair: match tag {
             4 => Some(SkinHair::Skin),
             11 => Some(SkinHair::PackedMask),

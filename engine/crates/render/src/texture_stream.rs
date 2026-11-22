@@ -106,18 +106,74 @@ pub(crate) fn upload(gpu: &Gpu, tex: &wgpu::Texture, layer: u32, first: u32, lev
 }
 
 /// One array's share of a texture layer's work.
-#[derive(Clone)]
 pub(crate) struct Job {
-    pub source: Option<std::sync::Arc<RgbaImage>>,
+    pub source: Option<RgbaImage>,
     pub array_layer: u32,
     pub settings: crate::texture_cache::Settings,
 }
 
-/// Everything a texture layer needs before its full detail can be shown:
-/// its albedo, its normal map and its material map, if any.
-pub(crate) struct LayerJobs { pub layer: u32, pub albedo: Job, pub normal: Vec<Job> }
+impl Job {
+    fn build(self, encoding: Encoding) -> (u32, Vec<Vec<u8>>) {
+        let cache = crate::texture_cache::Cache::from_env();
+        let mut stats = Default::default();
+        let source = self.source.as_ref();
+        let (cached, key) = cache.load(source, self.settings, false, &mut stats);
+        let chain = cached.unwrap_or_else(|| {
+            let (chain, _) = crate::frame::texture_mips::build(source, self.settings, false, self.array_layer as usize);
+            if let Some(key) = key { cache.store(key, self.settings, &chain, false, &mut stats); }
+            chain
+        });
+        drop(self.source);
+        (self.array_layer, encode(chain, encoding, key, &cache))
+    }
+}
 
-struct Ready { layer: u32, albedo: (u32, Vec<Vec<u8>>), normal: Vec<(u32, Vec<Vec<u8>>)>, bytes: usize }
+/// Upload the albedo, normal, and optional material map together before
+/// lowering the layer's LOD floor.
+pub(crate) struct LayerJobs {
+    pub layer: u32,
+    pub generate: Option<crate::scene::GeneratedTexture>,
+    pub albedo: Job,
+    pub normal: Job,
+    pub material: Option<Job>,
+}
+
+impl LayerJobs {
+    pub fn build(mut self, encoding: [Encoding; 2]) -> Ready {
+        if let Some(generate) = self.generate {
+            let (albedo, normal) = generate();
+            self.albedo.source = Some(albedo);
+            self.normal.source = Some(normal);
+        }
+        Ready {
+            layer: self.layer,
+            albedo: self.albedo.build(encoding[0]),
+            normal: self.normal.build(encoding[1]),
+            material: self.material.map(|job| job.build(encoding[1])),
+        }
+    }
+}
+
+pub(crate) struct Ready {
+    layer: u32,
+    albedo: (u32, Vec<Vec<u8>>),
+    normal: (u32, Vec<Vec<u8>>),
+    material: Option<(u32, Vec<Vec<u8>>)>,
+}
+
+impl Ready {
+    pub fn upload(&self, gpu: &Gpu, albedo: &wgpu::Texture, normals: &wgpu::Texture, encoding: [Encoding; 2]) {
+        upload(gpu, albedo, self.albedo.0, 0, &self.albedo.1, encoding[0]);
+        upload(gpu, normals, self.normal.0, 0, &self.normal.1, encoding[1]);
+        if let Some((layer, levels)) = &self.material {
+            upload(gpu, normals, *layer, 0, levels, encoding[1]);
+        }
+    }
+
+    fn bytes(&self) -> usize {
+        self.albedo.1.iter().chain(&self.normal.1).chain(self.material.iter().flat_map(|(_, levels)| levels)).map(Vec::len).sum()
+    }
+}
 
 pub(crate) struct Stream {
     ready: std::sync::Mutex<std::sync::mpsc::Receiver<Ready>>,
@@ -129,31 +185,24 @@ pub(crate) struct Stream {
 impl Stream {
     /// Start a worker that builds every layer's full chains.
     pub fn start(jobs: Vec<LayerJobs>, encoding: [Encoding; 2], material_maps: Vec<Option<u32>>) -> Stream {
-        let (send, ready) = std::sync::mpsc::channel();
+        // A paused renderer must not accumulate full mip chains for every layer.
+        let (send, ready) = std::sync::mpsc::sync_channel(1);
         let remaining = std::sync::atomic::AtomicUsize::new(jobs.len());
-        let build = move |job: &Job, encoding: Encoding| {
-            let cache = crate::texture_cache::Cache::from_env();
-            let mut stats = Default::default();
-            let source = job.source.as_deref();
-            let (cached, key) = cache.load(source, job.settings, false, &mut stats);
-            let chain = cached.unwrap_or_else(|| {
-                let (chain, _) = crate::frame::texture_mips::build(source, job.settings, false, job.array_layer as usize);
-                if let Some(key) = key { cache.store(key, job.settings, &chain, false, &mut stats); }
-                chain
-            });
-            (job.array_layer, encode(chain, encoding, key, &cache))
-        };
         let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).saturating_sub(1).clamp(1, 4);
-        let queue = std::sync::Arc::new(std::sync::Mutex::new(jobs.into_iter()));
-        for _ in 0..threads {
-            let (queue, send) = (queue.clone(), send.clone());
-            std::thread::Builder::new().name("warp texture stream".into()).spawn(move || loop {
-                let Some(job) = queue.lock().unwrap().next() else { break };
-                let albedo = build(&job.albedo, encoding[0]);
-                let normal: Vec<_> = job.normal.iter().map(|n| build(n, encoding[1])).collect();
-                let bytes = albedo.1.iter().chain(normal.iter().flat_map(|n| &n.1)).map(Vec::len).sum();
-                if send.send(Ready { layer: job.layer, albedo, normal, bytes }).is_err() { break; }
-            }).expect("texture stream thread");
+        let (generated, regular): (Vec<_>, Vec<_>) = jobs.into_iter().partition(|job| job.generate.is_some());
+        // Procedural generators may parallelize internally and need scratch
+        // space. Only one generates or sends a completed pair at a time.
+        let ordinary_threads = threads.saturating_sub(usize::from(!generated.is_empty())).max(1);
+        for (jobs, workers) in [(generated, 1), (regular, ordinary_threads)] {
+            let count = workers.min(jobs.len());
+            let queue = std::sync::Arc::new(std::sync::Mutex::new(jobs.into_iter()));
+            for _ in 0..count {
+                let (queue, send) = (queue.clone(), send.clone());
+                std::thread::Builder::new().name("warp texture stream".into()).spawn(move || loop {
+                    let Some(job) = queue.lock().unwrap().next() else { break };
+                    if send.send(job.build(encoding)).is_err() { break; }
+                }).expect("texture stream thread");
+            }
         }
         Stream { ready: std::sync::Mutex::new(ready), remaining, encoding, material_maps }
     }
@@ -171,10 +220,14 @@ impl Stream {
         while self.remaining.load(Relaxed) > 0 && (wait || spent < BUDGET) {
             let next = if wait { ready.recv().ok() } else { ready.try_recv().ok() };
             let Some(layer) = next else { break };
-            upload(gpu, albedo, layer.albedo.0, 0, &layer.albedo.1, self.encoding[0]);
-            for (array_layer, levels) in &layer.normal { upload(gpu, normals, *array_layer, 0, levels, self.encoding[1]); }
+            layer.upload(gpu, albedo, normals, self.encoding);
             tables.write_layer_map(gpu, layer.layer as usize, crate::material_maps::layer_word(self.material_maps.get(layer.layer as usize).copied().flatten(), 0.0, 0.0));
-            spent += layer.bytes;
+            spent += layer.bytes();
+            if wait && spent >= BUDGET {
+                // Blocking capture drains the queue without frame submissions.
+                gpu.queue.submit([]);
+                spent = 0;
+            }
             self.remaining.fetch_sub(1, Relaxed);
         }
     }
@@ -183,6 +236,106 @@ impl Stream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn procedural_layer_streams_the_same_maps_as_an_eager_upload() {
+        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+        let bakes = Arc::new(AtomicUsize::new(0));
+        let image = |color| RgbaImage::from_pixel(4, 4, image::Rgba(color));
+        let albedo = image([33, 44, 55, 128]);
+        let normal = image([128, 140, 245, 98]);
+        let material = image([211, 10, 0, 255]);
+        let settings = crate::texture_cache::Settings {
+            size: 4, format: wgpu::TextureFormat::Rgba8Unorm, fill: [255; 4],
+            preserve_alpha: false, linear_cutout_rgb: false,
+        };
+        let job = |layer, source| Job { array_layer: layer, settings, source };
+        let layer = |generate, a, n| LayerJobs {
+            layer: 2, generate, albedo: job(2, a), normal: job(2, n),
+            material: Some(job(5, Some(material.clone()))),
+        };
+        let encodings = [Encoding::Rgba8; 2];
+        let expected = layer(None, Some(albedo.clone()), Some(normal.clone())).build(encodings);
+        let calls = bakes.clone();
+        let generated = layer(Some(Arc::new(move || {
+            calls.fetch_add(1, Ordering::Relaxed);
+            (albedo.clone(), normal.clone())
+        })), None, None);
+        assert_eq!(bakes.load(Ordering::Relaxed), 0);
+        let stream = Stream::start(vec![generated], encodings, vec![]);
+        let ready = stream.ready.lock().unwrap().recv().unwrap();
+        assert_eq!(bakes.load(Ordering::Relaxed), 1);
+        assert_eq!(ready.albedo, expected.albedo);
+        assert_eq!(ready.normal, expected.normal);
+        assert_eq!(ready.material, expected.material);
+    }
+
+    #[test]
+    #[ignore = "exclusive headless GPU test"]
+    fn gpu_gameplay_streams_only_generated_layers_and_matches_full_textures() {
+        use crate::{Camera, Lighting, Renderer, Scene, scene::Material};
+        use glam::{Affine3A, Quat, Vec3};
+        use std::sync::{Arc, Mutex, mpsc};
+
+        let gpu = Gpu::new().unwrap();
+        let mut scene = Scene::default();
+        let solid = |color| RgbaImage::from_pixel(64, 64, image::Rgba(color));
+        let ordinary = scene.add_image("shirt", solid([15, 220, 20, 255]));
+        let face = scene.add_image("face", solid([230, 20, 15, 128]));
+        scene.textures[face as usize].normal = Some(solid([128, 128, 255, 255]));
+        for (layer, x) in [(ordinary, -0.7), (face, 0.7)] {
+            let flags = if layer == face { crate::scene::SKIN | crate::scene::HAIR } else { 0 };
+            let mat = scene.add_material(Material { layer, flags, tint: [1.; 3], scale: 1., roughness: 0.5, metal: 0. });
+            let mesh = scene.add_mesh(&crate::primitives::quad(mat).mesh());
+            scene.add_instance(mesh, Affine3A::from_scale_rotation_translation(
+                Vec3::splat(1.2), Quat::IDENTITY, Vec3::new(x, 0., 0.),
+            ));
+        }
+        let maps = move || (solid([20, 35, 225, 128]), solid([200, 110, 235, 210]));
+        let (resume, waiting) = mpsc::channel();
+        let waiting = Mutex::new(waiting);
+        scene.generated_textures.insert(face as u32, Arc::new(move || {
+            // Hold the full maps until the preview frame has been read back.
+            waiting.lock().unwrap().recv_timeout(std::time::Duration::from_secs(120)).unwrap();
+            maps()
+        }));
+        let cam = Camera { pos: Vec3::new(0., 0., 2.5), target: Vec3::ZERO, near: 0.05, fov_y: 0.75 };
+        let light = Lighting { taa: 0., sharpen: 0., ..Default::default() };
+        let capture = |renderer: &Renderer, debug| {
+            renderer.reset_capture_sampling();
+            renderer.render(&gpu, &cam, &Lighting { debug, ..light.clone() }, 128, 64).0
+        };
+        let pixel = |frame: &[u8], x: usize| -> [u8; 3] {
+            let start: usize = 4 * (128 * 32 + x);
+            frame[start..start + 3].try_into().unwrap()
+        };
+        assert!(!scene.texture_streaming);
+        let streamed = Renderer::with_generated_streaming(&gpu, &scene, &light, true);
+        assert_eq!(streamed.textures_streaming(), 1);
+        let preview = capture(&streamed, 2.);
+        let [r, g, b] = pixel(&preview, 87);
+        assert!(r > g && r > b, "the face shows its red preview: {r} {g} {b}");
+        let [r, g, b] = pixel(&preview, 41);
+        assert!(g > r && g > b, "the ordinary shirt is green: {r} {g} {b}");
+        resume.send(()).unwrap();
+        streamed.finish_texture_streaming(&gpu);
+        assert_eq!(streamed.textures_streaming(), 0);
+        let actual = [capture(&streamed, 2.), capture(&streamed, 11.)];
+        let [r, g, b] = pixel(&actual[0], 87);
+        assert!(b > r && b > g, "the face shows its blue full map: {r} {g} {b}");
+        drop(streamed);
+
+        scene.generated_textures.clear();
+        let (color, normal) = maps();
+        scene.textures[face as usize].rgba = color;
+        scene.textures[face as usize].normal = Some(normal);
+        let eager = Renderer::new(&gpu, &scene, &light);
+        for (frame, debug) in actual.iter().zip([2., 11.]) {
+            let reference = capture(&eager, debug);
+            let differences = frame.iter().zip(&reference).filter(|(a, b)| a != b).count();
+            assert_eq!(differences, 0, "debug view {debug} differs from the eager upload");
+        }
+    }
 
     #[test]
     fn bc7_sizes_cover_every_mip() {

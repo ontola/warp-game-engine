@@ -431,6 +431,9 @@ impl NormalEncoding {
     }
 }
 
+/// Rebuild the full albedo and tangent-space normal of one texture layer.
+pub type GeneratedTexture = std::sync::Arc<dyn Fn() -> (image::RgbaImage, image::RgbaImage) + Send + Sync>;
+
 /// Textures to put in the albedo array (all resized to one size).
 pub struct TextureSource {
     pub name: String,
@@ -708,6 +711,9 @@ pub struct Scene {
     /// A GPU-posed crowd (`crowd::Crowd::reserve`).
     pub crowd: Option<crate::crowd::CrowdSpec>,
     pub textures: Vec<TextureSource>,
+    /// Full-resolution sources generated at upload time. The corresponding
+    /// entries in `textures` hold small previews for CPU sampling and mip tails.
+    pub generated_textures: std::collections::BTreeMap<u32, GeneratedTexture>,
     /// Albedo layers drawn at runtime (`add_screen_texture`): they keep the
     /// albedo array uncompressed, since a compressed one cannot be drawn to.
     pub screen_layers: Vec<u32>,

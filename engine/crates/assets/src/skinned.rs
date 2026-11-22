@@ -102,6 +102,9 @@ struct Surface {
     material: MaterialFile,
     texture: Option<(String, std::sync::Arc<image::RgbaImage>)>,
     normal: Option<image::RgbaImage>,
+    /// For a fitted face the stored images are small previews. The full pair
+    /// is materialized together when the renderer can upload this layer.
+    generated: Option<render::scene::GeneratedTexture>,
     skin_hair: Option<SkinHair>,
 }
 
@@ -119,6 +122,20 @@ pub enum SkinHair {
     /// The opaque texture already carries the shading mask in its alpha channel.
     PackedMask,
 }
+fn apply_skin_mask(image: &mut image::RgbaImage, mask: &image::GrayImage) {
+    let resized;
+    let mask = if mask.dimensions() == image.dimensions() {
+        mask
+    } else {
+        let (w, h) = image.dimensions();
+        resized = image::imageops::resize(mask, w, h, image::imageops::FilterType::Triangle);
+        &resized
+    };
+    for (pixel, m) in image.pixels_mut().zip(mask.pixels()) {
+        pixel[3] = m[0];
+    }
+}
+
 fn one() -> f32 {
     1.0
 }
@@ -370,6 +387,7 @@ impl Character {
                 material: source.material,
                 texture,
                 normal,
+                generated: None,
                 skin_hair: None,
             });
             next_vertex = end_vertex;
@@ -687,7 +705,9 @@ impl Character {
                     return Err(format!("{}: surface {surface} uses its alpha for cutouts", self.name));
                 }
                 let (w, h) = image.dimensions();
-                SkinHair::Mask(if mask.dimensions() == (w, h) { mask } else {
+                // A generated source has two resolutions. Keep the authored
+                // mask until it is applied to the preview or full-size map.
+                SkinHair::Mask(if target.generated.is_some() || mask.dimensions() == (w, h) { mask } else {
                     image::imageops::resize(&mask, w, h, image::imageops::FilterType::Triangle)
                 })
             }
@@ -715,10 +735,24 @@ impl Character {
                     .unwrap_or_else(|| {
                         let mut image = (**image).clone();
                         if let Some(mask) = mask {
-                            for (pixel, m) in image.pixels_mut().zip(mask.pixels()) { pixel[3] = m[0]; }
+                            apply_skin_mask(&mut image, mask);
                         }
                         let layer = scene.add_image(&key, image);
                         scene.textures[layer as usize].normal = surface.normal.clone();
+                        if let Some(bake) = &surface.generated {
+                            let bake = bake.clone();
+                            let generate: render::scene::GeneratedTexture = if let Some(mask) = mask {
+                                let mask = mask.clone();
+                                std::sync::Arc::new(move || {
+                                    let (mut albedo, normal) = bake();
+                                    apply_skin_mask(&mut albedo, &mask);
+                                    (albedo, normal)
+                                })
+                            } else {
+                                bake
+                            };
+                            scene.generated_textures.insert(layer as u32, generate);
+                        }
                         layer
                     })
             } else {
@@ -940,6 +974,7 @@ mod tests {
                 },
                 texture: None,
                 normal: None,
+                generated: None,
                 skin_hair: None,
             }],
             joints: vec![
@@ -948,6 +983,22 @@ mod tests {
                 ("Root".into(), Mat4::from_translation(Vec3::Z)),
             ],
         }
+    }
+
+    #[test]
+    fn authored_mask_reaches_the_preview_and_generated_skin() {
+        let mut character = pose_bounds_character();
+        let surface = &mut character.surfaces[0];
+        surface.texture = Some(("face".into(), image::RgbaImage::new(2, 2).into()));
+        surface.generated = Some(std::sync::Arc::new(|| (image::RgbaImage::new(4, 4), image::RgbaImage::new(4, 4))));
+        let mask = image::GrayImage::from_fn(4, 4, |x, y| image::Luma([(4 * y + x) as u8]));
+        character.set_skin_hair(0, SkinHair::Mask(mask.clone())).unwrap();
+        let mut scene = Scene::default();
+        character.surface_materials(&mut scene);
+        let (albedo, _) = scene.generated_textures[&0]();
+        assert!(albedo.pixels().zip(mask.pixels()).all(|(p, m)| p[3] == m[0]));
+        let preview = image::imageops::resize(&mask, 2, 2, image::imageops::FilterType::Triangle);
+        assert!(scene.textures[0].rgba.pixels().zip(preview.pixels()).all(|(p, m)| p[3] == m[0]));
     }
 
     #[test]
