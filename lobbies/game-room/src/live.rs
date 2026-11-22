@@ -777,7 +777,7 @@ impl Game for Lobby {
         }
         self.hud_size = frame.size;
         let hud = crate::hud::draw(self, frame.size, frame.alpha);
-        Ok(Draw { cameras: vec![self.stage.room.camera], light: self.stage.light.clone(), hud })
+        Ok(Draw { cameras: vec![crate::hud::fitted(&self.stage.room.camera, frame.size)], light: self.stage.light.clone(), hud })
     }
 
     fn pointer(&mut self, pointer: app::Pointer, size: [u32; 2]) { self.mouse_input(pointer, size); }

@@ -30,8 +30,20 @@ fn project(view_proj: Mat4, size: [u32; 2], p: Vec3) -> Option<[f32; 2]> {
     Some([(ndc.x * 0.5 + 0.5) * size[0] as f32, (0.5 - ndc.y * 0.5) * size[1] as f32])
 }
 
+/// The room camera for a screen of `size`: on screens narrower than 16:9
+/// the field of view grows upwards and downwards, so the room keeps its
+/// 16:9 width and the door and the QR code at the sides stay in view.
+pub fn fitted(camera: &render::Camera, size: [u32; 2]) -> render::Camera {
+    let aspect = size[0] as f32 / size[1].max(1) as f32;
+    let wide = 16.0 / 9.0;
+    let mut camera = *camera;
+    if aspect < wide { camera.fov_y = 2.0 * ((camera.fov_y / 2.0).tan() * wide / aspect).atan(); }
+    camera
+}
+
 /// The room camera's view-projection for a screen of `size`.
 pub fn view_proj(camera: &render::Camera, size: [u32; 2]) -> Mat4 {
+    let camera = &fitted(camera, size);
     let (w, h) = (size[0] as f32, size[1] as f32);
     let view = Mat4::look_at_rh(camera.pos, camera.target, Vec3::Y);
     let proj = Mat4::perspective_rh(camera.fov_y, w / h.max(1.0), camera.near.max(0.05), 4000.0);
