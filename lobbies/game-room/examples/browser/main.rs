@@ -74,6 +74,14 @@ mod page {
         /// `activity`), and the next line's id.
         pub(crate) activity: Vec<Value>,
         activity_id: u64,
+        /// Back held in the room: since when (or the last chord), and whether B armed leaving.
+        backs: Vec<(Device, web_time::Instant, bool)>,
+        /// A chord to run when the room ticks.
+        chord: Option<Chord>,
+        /// RB held on a seat's device (Back with RB in a game skips ahead).
+        rb_held: bool,
+        /// Games started, oldest first (Back + LB plays the last again).
+        played: Vec<String>,
         /// Covers fetched for the room's catalog: (game id, PNG).
         covers: Vec<(String, Vec<u8>)>,
     }
@@ -174,9 +182,72 @@ mod page {
                 h.dirty = true;
             }
         }
+        back_chords(h, devices);
         warp::web::set_seats(seats(h));
         for line in warp::web::take_room_log() { let game = h.on_screen.clone(); note(h, "game", &line, game.as_deref()); }
         Some(h.bound.iter().map(|b| b.iter().copied().collect()).collect())
+    }
+
+    /// The first game in the queue these players can play; the ones before
+    /// it wait at the back.
+    fn next_game() {
+        let first = with(|h| {
+            let players = h.players;
+            let fits: Vec<bool> = h.party["playlist"]["entries"].as_array()?.iter().map(|e| e["game"].as_str().is_some_and(|g| fits(&h.party, g, players))).collect();
+            let at = fits.iter().position(|f| *f);
+            let entries = h.party["playlist"]["entries"].as_array_mut()?;
+            let Some(at) = at else {
+                app::web::log(&format!("nothing in the queue for {players} player(s)"));
+                return None;
+            };
+            let e = entries.remove(at);
+            entries.push(e.clone());
+            h.dirty = true;
+            e["game"].as_str().map(String::from)
+        });
+        if let Some(game) = first { start(game); }
+    }
+
+    /// The game played before, again (Back + LB): the last one started.
+    fn previous_game() {
+        if let Some(game) = with(|h| h.played.last().cloned()) { start(game); }
+    }
+
+    /// Back held in the room ([`back_chords`]): what it asks for, done
+    /// once the room ticks (a game starting needs the host free).
+    #[derive(Clone, Copy, PartialEq)]
+    enum Chord { Next, Previous }
+
+    /// Holding Back in the room shows, after 0.3 s, what Back plus a
+    /// button does (the room draws the party's `back_menu` over the
+    /// player): RB the next game, LB the previous one, B twice leaves.
+    /// Back tapped does nothing here; in a game Back goes to the room, and
+    /// RB held while Back is pressed there skips to the next game.
+    fn back_chords(h: &mut Host, devices: &[(Device, Controls)]) {
+        let now = web_time::Instant::now();
+        let mut menu = Value::Null;
+        for (dev, c) in devices {
+            let Some(seat) = h.bound.iter().position(|b| *b == Some(*dev)) else { continue };
+            if h.on_screen.is_some() || !c.held.has(Buttons::SELECT) { h.backs.retain(|(d, ..)| d != dev); continue; }
+            let k = match h.backs.iter().position(|(d, ..)| d == dev) {
+                Some(k) => k,
+                None => { h.backs.push((*dev, now, false)); h.backs.len() - 1 }
+            };
+            let id = h.party["players"][seat]["id"].as_str().unwrap_or_default().to_string();
+            if c.pressed.has(Buttons::RIGHT_SHOULDER) { h.chord = Some(Chord::Next); h.backs[k].1 = now; }
+            if c.pressed.has(Buttons::LEFT_SHOULDER) && !h.played.is_empty() { h.chord = Some(Chord::Previous); h.backs[k].1 = now; }
+            if c.pressed.has(Buttons::EAST) {
+                if h.backs[k].2 { h.backs.remove(k); leave_party(h, &id); h.party["back_menu"] = Value::Null; h.dirty = true; return; }
+                h.backs[k].2 = true;
+            }
+            if now.duration_since(h.backs[k].1).as_secs_f32() < 0.3 { continue; }
+            let mut chords = vec![json!({"button": "rb", "action": "next", "label": "Play the next game"})];
+            if !h.played.is_empty() { chords.push(json!({"button": "lb", "action": "previous", "label": "Play the previous game"})); }
+            chords.push(json!({"button": "b", "action": "leave", "label": "Leave the party"}));
+            menu = json!({"player": id, "controller": format!("web:{dev}"), "confirm_leave": h.backs[k].2, "chords": chords});
+        }
+        if h.party["back_menu"] != menu { h.party["back_menu"] = menu; h.dirty = true; }
+        h.rb_held = devices.iter().any(|(d, c)| h.bound.contains(&Some(*d)) && c.held.has(Buttons::RIGHT_SHOULDER));
     }
 
     /// The people on the seats, as a game sees them: a running game takes
@@ -295,25 +366,7 @@ mod page {
                     if i < entries.len() { let e = entries.remove(i); entries.push(e); }
                     h.dirty = true;
                 }),
-                "next" => {
-                    // The first game in the queue these players can play;
-                    // the ones before it wait at the back.
-                    let first = with(|h| {
-                        let players = h.players;
-                        let fits: Vec<bool> = h.party["playlist"]["entries"].as_array()?.iter().map(|e| e["game"].as_str().is_some_and(|g| fits(&h.party, g, players))).collect();
-                        let at = fits.iter().position(|f| *f);
-                        let entries = h.party["playlist"]["entries"].as_array_mut()?;
-                        let Some(at) = at else {
-                            app::web::log(&format!("nothing in the queue for {players} player(s)"));
-                            return None;
-                        };
-                        let e = entries.remove(at);
-                        entries.push(e.clone());
-                        h.dirty = true;
-                        e["game"].as_str().map(String::from)
-                    });
-                    if let Some(game) = first { start(game); }
-                }
+                "next" => next_game(),
                 "close_overlay" => resume(),
                 "leave_party" => with(|h| leave_party(h, msg["player_id"].as_str().unwrap_or_default())),
                 // Moved on the couch (the room's mouse menu): whoever sat there swaps.
@@ -346,6 +399,11 @@ mod page {
             empty_room(with(|h| h.players == 0 && h.on_screen.is_none()));
             if let Some(code) = with(|h| h.key.take()) { self.lobby.key_pressed(code); }
             for (game, png) in with(|h| std::mem::take(&mut h.covers)) { self.lobby.set_cover(&game, &png); }
+            match with(|h| h.chord.take()) {
+                Some(Chord::Next) => next_game(),
+                Some(Chord::Previous) => previous_game(),
+                None => {}
+            }
             self.lobby.tick(controls);
             for msg in self.lobby.outbox.as_mut().map(std::mem::take).unwrap_or_default() { self.command(&msg); }
         }
@@ -411,6 +469,8 @@ mod page {
                 if h.on_screen.is_none() { app::web::switch_keeping(cfg, Box::new(lua), |p| with(|h| h.room = Some(p))); } else { app::web::switch(cfg, Box::new(lua)); }
                 h.on_screen = Some(game.clone());
                 set_session(h, Some(&game), "running");
+                h.played.retain(|g| *g != game);
+                h.played.push(game.clone());
                 let text = format!("Started {}", title(&h.party, &game));
                 note(h, "game_started", &text, Some(&game));
                 empty_room(false);
@@ -437,6 +497,8 @@ mod page {
             let Some(room) = h.room.take() else { return false };
             let game = h.on_screen.take().unwrap_or_default();
             if why == app::web::Exit::Back {
+                // RB held with Back: straight on to the next game.
+                if h.rb_held { h.chord = Some(Chord::Next); }
                 let name = game.clone();
                 app::web::resume(room, Some(Box::new(move |p| with(|h| h.paused = Some((name, p))))));
                 set_session(h, Some(&game), "paused");
