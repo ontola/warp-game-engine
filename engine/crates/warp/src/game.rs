@@ -1127,6 +1127,8 @@ impl Game for LuaGame {
             steps.push(format!("people {} ms", t.elapsed().as_millis()));
         }
         if std::mem::take(&mut c.world.rebuild) || frame.renderer().is_none() {
+            #[cfg(target_arch = "wasm32")]
+            render::startup_profile::force(true);
             if loading && let Some(p) = self.party.as_mut() { p.loading(93, "building the scene"); }
             let t = web_time::Instant::now();
             // A look first seen after the start stalls the game while the
@@ -1143,6 +1145,11 @@ impl Game for LuaGame {
             }
             self.sky_upload = None;
             steps.push(format!("scene {} ms", t.elapsed().as_millis()));
+            // A browser build has no KERN_STARTUP_PROFILE: name the slow parts.
+            #[cfg(target_arch = "wasm32")]
+            if let Some(p) = frame.renderer().and_then(|r| r.startup_profile()) && p.total_cpu_ms >= 500.0 {
+                app::web::log(&format!("renderer built in {}", p.slowest(6)));
+            }
         } else {
             if self.surface.pending() {
                 let gpu = frame.gpu;

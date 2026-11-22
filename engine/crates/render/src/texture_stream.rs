@@ -175,8 +175,34 @@ impl Ready {
     }
 }
 
+/// A browser bakes a generated layer (a Warp Human's face) once per page:
+/// a renderer rebuilt for a new look mid-game reuses it.
+#[cfg(target_arch = "wasm32")]
+fn generated_memo(job: LayerJobs, encoding: [Encoding; 2]) -> std::rc::Rc<Ready> {
+    use std::{cell::RefCell, rc::Rc};
+    thread_local! {
+        static BAKED: RefCell<Vec<(crate::scene::GeneratedTexture, u32, Rc<Ready>)>> = const { RefCell::new(Vec::new()) };
+    }
+    let Some(recipe) = job.generate.clone() else { return Rc::new(job.build(encoding)) };
+    let (layer, albedo_at, normal_at) = (job.layer, job.albedo.array_layer, job.normal.array_layer);
+    let found = BAKED.with(|b| b.borrow().iter().find(|(r, l, _)| std::sync::Arc::ptr_eq(r, &recipe) && *l == layer).map(|(_, _, ready)| ready.clone()));
+    if let Some(ready) = found && ready.albedo.0 == albedo_at && ready.normal.0 == normal_at { return ready; }
+    let ready = Rc::new(job.build(encoding));
+    BAKED.with(|b| {
+        let mut b = b.borrow_mut();
+        b.retain(|(r, l, _)| !(std::sync::Arc::ptr_eq(r, &recipe) && *l == layer));
+        // Faces of a few games, not every face of a long session.
+        if b.len() >= 48 { b.remove(0); }
+        b.push((recipe, layer, ready.clone()));
+    });
+    ready
+}
+
 pub(crate) struct Stream {
     ready: std::sync::Mutex<std::sync::mpsc::Receiver<Ready>>,
+    /// A browser has no threads: `pump` builds these one per frame.
+    #[cfg(target_arch = "wasm32")]
+    todo: std::sync::Mutex<std::collections::VecDeque<LayerJobs>>,
     remaining: std::sync::atomic::AtomicUsize,
     encoding: [Encoding; 2],
     material_maps: Vec<Option<u32>>,
@@ -185,6 +211,22 @@ pub(crate) struct Stream {
 impl Stream {
     /// Start a worker that builds every layer's full chains.
     pub fn start(jobs: Vec<LayerJobs>, encoding: [Encoding; 2], material_maps: Vec<Option<u32>>) -> Stream {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let (_, ready) = std::sync::mpsc::sync_channel(1);
+            let remaining = std::sync::atomic::AtomicUsize::new(jobs.len());
+            // Generated layers (faces) first: their previews are the coarsest.
+            let (generated, regular): (Vec<_>, Vec<_>) = jobs.into_iter().partition(|job| job.generate.is_some());
+            let mut todo: std::collections::VecDeque<_> = generated.into();
+            todo.extend(regular);
+            return Stream { ready: std::sync::Mutex::new(ready), todo: std::sync::Mutex::new(todo), remaining, encoding, material_maps };
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        Self::start_threads(jobs, encoding, material_maps)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn start_threads(jobs: Vec<LayerJobs>, encoding: [Encoding; 2], material_maps: Vec<Option<u32>>) -> Stream {
         // A paused renderer must not accumulate full mip chains for every layer.
         let (send, ready) = std::sync::mpsc::sync_channel(1);
         let remaining = std::sync::atomic::AtomicUsize::new(jobs.len());
@@ -215,6 +257,21 @@ impl Stream {
     pub fn pump(&self, gpu: &Gpu, albedo: &wgpu::Texture, normals: &wgpu::Texture, tables: &crate::scene_tables::SceneTables, wait: bool) {
         use std::sync::atomic::Ordering::Relaxed;
         if self.remaining() == 0 { return; }
+        #[cfg(target_arch = "wasm32")]
+        {
+            // One layer a frame, so the page keeps drawing; all of them for a capture.
+            let Ok(mut todo) = self.todo.try_lock() else { return };
+            while let Some(job) = todo.pop_front() {
+                let layer = generated_memo(job, self.encoding);
+                layer.upload(gpu, albedo, normals, self.encoding);
+                tables.write_layer_map(gpu, layer.layer as usize, crate::material_maps::layer_word(self.material_maps.get(layer.layer as usize).copied().flatten(), 0.0, 0.0));
+                self.remaining.fetch_sub(1, Relaxed);
+                gpu.queue.submit([]);
+                if !wait { break; }
+            }
+            return;
+        }
+        #[allow(unreachable_code)]
         let Ok(ready) = self.ready.try_lock() else { return };
         let mut spent = 0;
         while self.remaining.load(Relaxed) > 0 && (wait || spent < BUDGET) {

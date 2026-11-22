@@ -2192,9 +2192,12 @@ impl Renderer {
         let (stream_scene, stream_generated) = match crate::switches::TEXTURE_STREAMING.var().as_deref() {
             Ok("0") => (false, false),
             Ok("1") => (true, true),
+            // A browser bakes on the page's only thread: every layer streams,
+            // one a frame, so a scene never stalls the page for seconds.
+            _ if cfg!(target_arch = "wasm32") => (stream_generated, stream_generated),
             _ => (scene.texture_streaming, stream_generated),
         };
-        let can_stream = (stream_scene || stream_generated) && !cfg!(target_arch = "wasm32")
+        let can_stream = (stream_scene || stream_generated)
             && !(scene.procedural_terrain.is_some() && crate::portable::wanted(gpu));
         let streamed: Vec<bool> = (0..scene.textures.len()).map(|l| {
             let layer = l as u32;

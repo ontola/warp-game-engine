@@ -407,7 +407,7 @@ impl Shell {
             return Ok(());
         }
         let t_draw = Instant::now();
-        let mut frame = Frame { gpu: &live.gpu, size, dt, alpha, split, scene_fps: if dt > 0.0 { 1.0 / dt } else { 0.0 }, scene_worst_ms: dt * 1000.0, focused: true, hdr: None, stream_generated_textures: false, renderer: &mut live.renderer };
+        let mut frame = Frame { gpu: &live.gpu, size, dt, alpha, split, scene_fps: if dt > 0.0 { 1.0 / dt } else { 0.0 }, scene_worst_ms: dt * 1000.0, focused: true, hdr: None, stream_generated_textures: true, renderer: &mut live.renderer };
         let mut draw: Draw = self.game.draw(&mut frame)?;
         // The touch stick, while a thumb is on it.
         if let Some((from, knob, r)) = self.devices.touch_stick(size) {

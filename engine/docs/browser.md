@@ -223,6 +223,13 @@ How the build differs from native:
   before each long step. Warp games' own background work (skin maps, plant cooks)
   runs inline there too, and recorded samples are not fetched (the synth
   sounds play).
+- Texture layers always stream in a browser (`texture_stream.rs`): a new
+  renderer starts with each layer's small mips and `Stream::pump` bakes one
+  layer a frame, so a scene is up in well under a second instead of the
+  20+ s it took to bake every layer and Warp Human face at once. Faces bake
+  at 512 texels and once per page: a renderer rebuilt mid-game (a new look
+  when a player joins) reuses them. Every renderer build of 500 ms or more
+  logs its slowest steps (`renderer built in ...`).
 - Time comes from `web_time::Instant` (`std::time::Instant` natively).
 - Files: the page fetches the textures first and hands them to
   `render::files::preload`; `render::files::read` and `open_image` find them
