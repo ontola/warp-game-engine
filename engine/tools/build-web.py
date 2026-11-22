@@ -147,13 +147,17 @@ def copy_games(names):
             (out / name / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(src / rel, out / name / rel)
         (out / name / 'files.json').write_text(json.dumps(files))
+        # The cover (portrait PNG, 360x480) for the room's catalog; the rest
+        # of the store media stays out.
+        cover = src / 'assets' / 'gamenight' / 'cover.png'
+        if cover.exists(): shutil.copy(cover, out / name / 'cover.png')
         kb = sum((src / f).stat().st_size for f in files) / 1024
         print(f'build/web/games/{name}: {len(files)} files, {kb:.0f} KB')
         meta = json.loads((src / 'gamenight.json').read_text()) if (src / 'gamenight.json').exists() else {}
         players = meta.get('players', {})
         lo, hi = players.get('min', 1), players.get('max', 4)
         library.append({'id': meta.get('id', name), 'folder': name, 'title': meta.get('title', name), 'tagline': meta.get('tagline', ''),
-                         'players': f'{lo}-{hi}' if lo != hi else str(lo), 'min_players': lo, 'max_players': hi})
+                         'players': f'{lo}-{hi}' if lo != hi else str(lo), 'min_players': lo, 'max_players': hi, 'has_cover': cover.exists()})
     (out / 'index.json').write_text(json.dumps(names))
     (out / 'library.json').write_text(json.dumps(library))
 

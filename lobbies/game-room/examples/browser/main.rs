@@ -70,6 +70,8 @@ mod page {
         pub(crate) cloud: crate::cloud::Cloud,
         /// A key pressed since the room last ticked (its buttons).
         key: Option<u32>,
+        /// Covers fetched for the room's catalog: (game id, PNG).
+        covers: Vec<(String, Vec<u8>)>,
     }
 
     thread_local! { static HOST: RefCell<Host> = RefCell::new(Host::default()); }
@@ -301,6 +303,7 @@ mod page {
             if let Some(links) = with(|h| std::mem::take(&mut h.links_dirty).then(|| h.links.clone())) { self.lobby.set_links(links); }
             empty_room(with(|h| h.players == 0 && h.on_screen.is_none()));
             if let Some(code) = with(|h| h.key.take()) { self.lobby.key_pressed(code); }
+            for (game, png) in with(|h| std::mem::take(&mut h.covers)) { self.lobby.set_cover(&game, &png); }
             self.lobby.tick(controls);
             for msg in self.lobby.outbox.as_mut().map(std::mem::take).unwrap_or_default() { self.command(&msg); }
         }
@@ -444,6 +447,19 @@ mod page {
         let links = json!({"room": {"pending": []}, "linked": {}});
         lobby.set_links(links.clone());
         with(|h| { h.party = party; h.players = players; h.base = players; h.bound = vec![None; players]; h.phone = vec![false; players]; h.next_id = players; h.links = links; h.own_looks = own_looks; });
+        // The catalog's covers, fetched after the room is up (it shows a
+        // title card until a cover arrives).
+        let covers: Vec<(String, String)> = with(|h| h.party["library"].as_array().into_iter().flatten()
+            .filter(|g| g["has_cover"] == true)
+            .filter_map(|g| Some((g["id"].as_str()?.to_string(), format!("games/{}/cover.png", g["folder"].as_str()?)))).collect());
+        wasm_bindgen_futures::spawn_local(async move {
+            for (game, url) in covers {
+                match app::web::fetch(&url).await {
+                    Ok(png) => with(|h| h.covers.push((game, png))),
+                    Err(e) => app::web::log(&format!("{url}: {e}")),
+                }
+            }
+        });
         app::web::on_exit(leave);
         app::web::on_devices(|d| with(|h| devices(h, d)));
         app::web::run(room_config(), Box::new(Room { lobby }));
