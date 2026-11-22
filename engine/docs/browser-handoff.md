@@ -25,7 +25,7 @@ this zero-install link to be the real public launch (around February 2027).
   `on_exit` catches Back (Select / Tab) and a game's Quit.
 - `warp::web` (`engine/crates/warp/src/web.rs`): fetch a game folder, load
   it, the shared WebAudio mixer, the query string.
-- `lobbies/game-room/examples/browser.rs`: the Game Room first, with a small
+- `lobbies/game-room/examples/browser/main.rs`: the Game Room first, with a small
   host inside the page. The room's commands come out of `Lobby::outbox`;
   Play loads the game, Back returns to the room with the game paused, the TV
   offers Resume. The queue holds every game and never runs dry.
@@ -58,11 +58,30 @@ on present. Run Chromium headful under xvfb with `--enable-unsafe-webgpu
 A frame takes about 10 s there, so hold keys for 20 s or the lobby never
 sees them. Never present such screenshots as evidence of quality or speed.
 
+## Done since (22 November 2026)
+
+- Tested on a real GPU (MacBook Pro M5 Pro, Chrome 156): the device was
+  lost on every pass with timestamps; they are off on wasm32 now. Numbers
+  in browser.md.
+- The cloud room (`examples/browser/cloud.rs`): room code and QR code,
+  profiles at the doors and on seats, a phone's pick starts or queues a
+  game. Tested against a local `gamenight-cloud`, not yet in production.
+- Back to the room keeps both scenes on the GPU (`app::web::Parked`,
+  `resume`): the room's first frame in about 40 ms instead of 5 s.
+- Pads that wake up join as players; a gone pad's player leaves after the
+  room's 30 s (`app::web::on_devices`).
+- wasi-sdk 34's layout (macOS builds) in build-web.py.
+
+Still open from point 2 below: phone controllers (a phone as a gamepad,
+its controller frames) and phone screens for games; the cloud room
+forwards neither to a browser host yet.
+
 ## What is left, in order
 
-1. **Test on a real GPU.** Only SwiftShader has run it. Joep tests the zip
-   in Chrome on a normal PC; fix what that shows first.
-2. **Phones and profiles: connect to the cloud room.** The page host now
+1. ~~Test on a real GPU.~~ Done on a Mac; a Windows PC with an NVIDIA or
+   AMD card is still untested.
+2. **Phones and profiles: connect to the cloud room.** (Done except phone
+   controllers, see above.) The page host now
    fakes a party (`Lobby::new` demo mode, fixed players, no QR code, no
    profile pickup, no phone controllers). Replace the fake party with the
    real Splitscreen Club room: the party snapshot, seats, playlist, player
@@ -76,12 +95,13 @@ sees them. Never present such screenshots as evidence of quality or speed.
      `web_sys::WebSocket` and `fetch` instead.
    The browser host must do what the native host does for the room: answer
    `next`, `queue_next`, `queue_game`, `remove_playlist_entry`,
-   `close_overlay` (now in `Room::command` in `examples/browser.rs`) and
+   `close_overlay` (now in `Room::command` in `examples/browser/main.rs`) and
    send the party snapshot to the room with `Lobby::set_party`.
-3. **Players come and go.** Local players are fixed by `?players=`. A pad
+3. ~~**Players come and go.**~~ Done. Local players are fixed by `?players=`. A pad
    that wakes up should join as a player (in the room and the next game);
    one that leaves should drop out after the room's usual timeout.
-4. **Put it online.** Serve it from splitscreen.club: Brotli or gzip, long
+4. **Put it online.** Serve it from splitscreen.club (the same origin as
+   the cloud's `/v1`, which sends no CORS headers, e.g. `/play/`): Brotli or gzip, long
    cache with hashed file names, WebGPU feature check with a clear message
    in other browsers. Build in CI (the apt packages above; note that
    warp-game-engine's GitHub Actions currently fails before any step, a

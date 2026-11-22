@@ -3,7 +3,7 @@
 //! `?game=NAME` picks the first game from those `engine/tools/build-web.py
 //! --warp --bare` copied next to the page, `?players=N` how many play here.
 //! The page switches games without reloading the engine through
-//! [`switch_game`]. The Game Room's examples/browser.rs is the same with the
+//! [`switch_game`]. The Game Room's examples/browser/main.rs is the same with the
 //! lobby in front. See engine/docs/browser.md.
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::wasm_bindgen;

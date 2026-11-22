@@ -354,10 +354,14 @@ impl Lobby {
                 let Some(id) = id else { return };
                 let base = self.client.as_ref().map(|c| c.config.links_base.clone()).unwrap_or_default();
                 let now = monotonic();
-                if base.is_empty() || now < self.pickup_cooldown { return; }
+                // Without a host the program around the lobby picks up (the browser build).
+                let outbox = self.client.is_none() && self.outbox.is_some();
+                if (base.is_empty() && !outbox) || now < self.pickup_cooldown { return; }
                 self.pickup_cooldown = now + 5.0;
                 let (pending, player, swap, tx) = (station.pending.clone(), id.to_string(), station.hold, self.web_tx.clone());
-                std::thread::spawn(move || {
+                if outbox {
+                    if let Some(out) = &mut self.outbox { out.push(json!({"type": "room_pickup", "pending": pending, "player_id": player, "swap": swap})); }
+                } else { std::thread::spawn(move || {
                     let mut headers = vec!["X-GameNight-Local-Pickup: 1"];
                     if swap { headers.push("X-GameNight-Swap: 1"); }
                     let path = format!("/api/room-pickup/{}/{}", path_part(&pending), path_part(&player));
@@ -365,7 +369,7 @@ impl Lobby {
                         eprintln!("game-room: pickup refused: {e}");
                         let _ = tx.send(Web::PickupRefused(e));
                     }
-                });
+                }); }
                 // Instant: the character becomes the profile and the door empties now.
                 self.claim(id, &station);
                 let name = self.name(id);

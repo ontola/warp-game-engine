@@ -30,7 +30,7 @@ cpal = { version = "0.18", features = ["wasm-bindgen"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["console", "Document", "Element", "Gamepad", "GamepadButton", "GamepadMappingType", "HtmlCanvasElement", "Location", "Navigator", "Response", "Window"] }
+web-sys = { version = "0.3", features = ["console", "Document", "Element", "Gamepad", "GamepadButton", "GamepadMappingType", "HtmlCanvasElement", "Headers", "Location", "Navigator", "Request", "RequestInit", "Response", "Storage", "Window"] }
 
 [target.'cfg(windows)'.dependencies]
 gilrs = { version = "0.11", default-features = false, features = ["xinput"] }

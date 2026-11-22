@@ -131,6 +131,12 @@ impl Gpu {
             // BC7 albedo, normal and material arrays (texture_stream.rs).
             | wgpu::Features::TEXTURE_COMPRESSION_BC;
         let features = adapter.features() & optional;
+        // Chrome on Apple (Dawn on Metal; M5 Pro, Chrome 156) loses the device
+        // with "Metal command buffer failed: Insufficient Memory" on the first
+        // frame when passes carry timestamp writes (the bloom passes'); without
+        // them it renders. A browser build has no GPU pass times.
+        #[cfg(target_arch = "wasm32")]
+        let features = features - wgpu::Features::TIMESTAMP_QUERY - wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
         let mut limits = wgpu::Limits::default().using_resolution(adapter.limits());
         let al = adapter.limits();
         limits.max_storage_buffer_binding_size = al.max_storage_buffer_binding_size;

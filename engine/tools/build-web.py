@@ -13,7 +13,7 @@ builds the house viewer with those GLBs in assets/ (open ?house=fzk-haus).
 
     build-web.py --warp [--games neon-siege,stack-together] --serve
 builds Splitscreen Club for the browser: the Game Room lobby
-(lobbies/game-room/examples/browser.rs) with those Luau game folders on
+(lobbies/game-room/examples/browser/main.rs) with those Luau game folders on
 its shelf (?game=neon-siege starts in that game). --bare leaves the room
 out (engine/crates/warp/examples/warp_web.rs: the games and a picker). Luau is C++ that needs a C and
 C++ standard library: wasi-libc and libc++ for wasm32 (Debian/Ubuntu:
@@ -89,7 +89,7 @@ parser.add_argument('--port', type=int, default=8790)
 parser.add_argument('--package', default='app', help='crate of the example (default app)')
 parser.add_argument('--example', default='terrain_fly', help='example to build (default terrain_fly)')
 parser.add_argument('--glb', action='append', default=[], help='a GLB to copy into assets/, with its NAME.light.bin when present (house_view)')
-parser.add_argument('--warp', action='store_true', help='build the Game Room with Luau games (lobbies/game-room/examples/browser.rs)')
+parser.add_argument('--warp', action='store_true', help='build the Game Room with Luau games (lobbies/game-room/examples/browser/main.rs)')
 parser.add_argument('--bare', action='store_true', help='with --warp: the games without the room (examples/warp_web.rs)')
 parser.add_argument('--games', default=','.join(WARP_GAMES), help='games/ folders to serve with --warp (comma separated)')
 args = parser.parse_args()
@@ -104,7 +104,11 @@ def wasi_sysroot():
         for triple in ('wasm32-wasi', 'wasm32-wasip1'):
             inc, lib = root / 'include' / triple, root / 'lib' / triple
             if (inc / 'string.h').exists() and (lib / 'libc++.a').exists():
-                return triple, inc, lib
+                return triple, inc, lib, lib, [inc / 'c++/v1']
+            # wasi-sdk 34+: libc++ in lib/<triple>/noeh, its headers in
+            # include/c++/v1 and include/<triple>/noeh/c++/v1.
+            if (inc / 'string.h').exists() and (lib / 'noeh/libc++.a').exists():
+                return triple, inc, lib, lib / 'noeh', [inc / 'noeh/c++/v1', root / 'include/c++/v1']
     sys.exit('Luau needs wasi-libc and libc++ for wasm32: apt install wasi-libc libc++-dev-wasm32 libclang-rt-dev-wasm32 (or WASI_SYSROOT=wasi-sdk/share/wasi-sysroot)')
 
 
@@ -112,22 +116,22 @@ def luau_env(env):
     """Compile Luau against wasi-libc and libc++, without exception support
     (script/src/web.rs stops the game on a thrown error), and hand the linker
     one libstdc++.a (what mlua-sys asks for) holding libc++, libc++abi and libc."""
-    triple, inc, lib = wasi_sysroot()
+    triple, inc, lib, cxxlib, cxxinc = wasi_sysroot()
     cxx = ROOT / 'target/web-cxx'
     cxx.mkdir(parents=True, exist_ok=True)
     ar = shutil.which('llvm-ar') or next((shutil.which(f'llvm-ar-{v}') for v in range(30, 14, -1) if shutil.which(f'llvm-ar-{v}')), None)
     if not ar: sys.exit('llvm-ar is needed to combine libc++, libc++abi and libc')
-    script = 'CREATE libstdc++.a\n' + ''.join(f'ADDLIB {lib / name}\n' for name in ('libc++.a', 'libc++abi.a', 'libc.a')) + 'SAVE\nEND\n'
+    script = 'CREATE libstdc++.a\n' + ''.join(f'ADDLIB {(lib if name == "libc.a" else cxxlib) / name}\n' for name in ('libc++.a', 'libc++abi.a', 'libc.a')) + 'SAVE\nEND\n'
     (cxx / 'libstdc++.a').unlink(missing_ok=True)
     subprocess.run([ar, '-M'], input=script, text=True, cwd=cxx, check=True)
-    env['LUAU_CXXFLAGS'] = f'--target={triple} -isystem {inc / "c++/v1"} -isystem {inc} -fexceptions -fignore-exceptions'
+    env['LUAU_CXXFLAGS'] = f'--target={triple} ' + ''.join(f'-isystem {d} ' for d in cxxinc) + f'-isystem {inc} -fexceptions -fignore-exceptions'
     env['RUSTFLAGS'] += f' -L {cxx}'
 
 
 def copy_games(names):
     """games/NAME for each Luau game, with files.json (its files),
     games/index.json (the names) and games/library.json (the room's shelf:
-    id, title and player counts from gamenight.json): the page fetches these."""
+    the store id, folder, title and player counts from gamenight.json): the page fetches these."""
     out = OUT / 'games'
     shutil.rmtree(out, ignore_errors=True)
     library = []
@@ -146,7 +150,7 @@ def copy_games(names):
         meta = json.loads((src / 'gamenight.json').read_text()) if (src / 'gamenight.json').exists() else {}
         players = meta.get('players', {})
         lo, hi = players.get('min', 1), players.get('max', 4)
-        library.append({'id': name, 'title': meta.get('title', name), 'tagline': meta.get('tagline', ''),
+        library.append({'id': meta.get('id', name), 'folder': name, 'title': meta.get('title', name), 'tagline': meta.get('tagline', ''),
                          'players': f'{lo}-{hi}' if lo != hi else str(lo), 'min_players': lo, 'max_players': hi})
     (out / 'index.json').write_text(json.dumps(names))
     (out / 'library.json').write_text(json.dumps(library))

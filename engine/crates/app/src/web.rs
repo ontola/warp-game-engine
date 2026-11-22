@@ -4,7 +4,7 @@
 //! fixed ticks, keyboard, mouse and gamepads (Gamepad API), the game's
 //! frame and HUD. No debug menu, screenshots, HDR or adaptive quality yet.
 
-use crate::{Draw, Frame, Game, Output, Screen, input::Devices, seat_controls};
+use crate::{Draw, Frame, Game, Output, Screen, input::Devices};
 use render::{Gpu, Renderer};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 use wasm_bindgen::JsCast;
@@ -18,9 +18,11 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 
 thread_local! {
     /// A game waiting to replace the running one ([`switch`]).
-    static NEXT: RefCell<Option<(crate::Config, Box<dyn Game>, Option<Keep>)>> = const { RefCell::new(None) };
+    static NEXT: RefCell<Option<(Parked, Option<Keep>)>> = const { RefCell::new(None) };
     /// What the page does when the game quits or someone presses Back ([`on_exit`]).
     static EXIT: RefCell<Option<Box<dyn FnMut(Exit) -> bool>>> = const { RefCell::new(None) };
+    /// The page's seats for games without their own ([`on_devices`]).
+    static SEATS: RefCell<Option<Box<dyn FnMut(&[(crate::Device, crate::Controls)]) -> Option<Vec<Vec<crate::Device>>>>>> = const { RefCell::new(None) };
     /// Lines the log box always shows above the rolling tail: the start-up
     /// lines (GPU, limits) and the first GPU error, which later errors would
     /// otherwise push out of the box.
@@ -95,6 +97,41 @@ pub async fn fetch(url: &str) -> Result<Vec<u8>, String> {
     Ok(js_sys::Uint8Array::new(&buffer).to_vec())
 }
 
+/// A request with a method, headers and a JSON body (None: no body), for
+/// a web API: the HTTP status and the response body. Not an error on a
+/// non-2xx status, which an API caller tells apart (401: register again).
+pub async fn request(method: &str, url: &str, headers: &[(&str, &str)], json: Option<&str>) -> Result<(u16, Vec<u8>), String> {
+    use wasm_bindgen_futures::JsFuture;
+    let window = web_sys::window().ok_or("no window")?;
+    let init = web_sys::RequestInit::new();
+    init.set_method(method);
+    let h = web_sys::Headers::new().map_err(|e| format!("{e:?}"))?;
+    for (k, v) in headers { h.set(k, v).map_err(|e| format!("{e:?}"))?; }
+    if let Some(body) = json {
+        h.set("content-type", "application/json").map_err(|e| format!("{e:?}"))?;
+        init.set_body(&wasm_bindgen::JsValue::from_str(body));
+    }
+    init.set_headers(&h);
+    let request = web_sys::Request::new_with_str_and_init(url, &init).map_err(|e| format!("{url}: {e:?}"))?;
+    let response: web_sys::Response = JsFuture::from(window.fetch_with_request(&request)).await.map_err(|e| format!("{url}: {e:?}"))?
+        .dyn_into().map_err(|_| format!("{url}: not a response"))?;
+    let buffer = JsFuture::from(response.array_buffer().map_err(|e| format!("{url}: {e:?}"))?).await.map_err(|e| format!("{url}: {e:?}"))?;
+    Ok((response.status(), js_sys::Uint8Array::new(&buffer).to_vec()))
+}
+
+/// The page's `localStorage` value for `key` (None when unset or blocked).
+pub fn stored(key: &str) -> Option<String> {
+    web_sys::window()?.local_storage().ok()??.get_item(key).ok()?
+}
+
+/// Keep `value` under `key` in `localStorage` (ignored when blocked).
+pub fn store(key: &str, value: &str) {
+    if let Some(s) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) { let _ = s.set_item(key, value); }
+}
+
+/// The page's origin (`https://splitscreen.club`).
+pub fn origin() -> String { web_sys::window().and_then(|w| w.location().origin().ok()).unwrap_or_default() }
+
 /// The wasm module's linear memory, in MB (it only grows).
 pub fn memory_mb() -> u32 {
     wasm_bindgen::memory().dyn_into::<js_sys::WebAssembly::Memory>().ok()
@@ -143,18 +180,38 @@ struct Shell {
 /// canvas, the GPU device, the input devices and everything the engine has
 /// compiled: a switch costs only the new game's scene upload.
 pub fn switch(cfg: crate::Config, game: Box<dyn Game>) {
-    NEXT.with(|n| *n.borrow_mut() = Some((cfg, game, None)));
+    NEXT.with(|n| *n.borrow_mut() = Some((Parked { cfg, game, renderer: None }, None)));
+}
+
+/// A game set aside by [`switch_keeping`], with its scene still on the GPU:
+/// [`resume`] puts it back on screen without uploading it again.
+pub struct Parked {
+    pub cfg: crate::Config,
+    pub game: Box<dyn Game>,
+    renderer: Option<Renderer>,
+}
+
+impl Parked {
+    /// A game that never ran here (its scene uploads on its first frame).
+    pub fn new(cfg: crate::Config, game: Box<dyn Game>) -> Self { Parked { cfg, game, renderer: None } }
 }
 
 /// What [`switch_keeping`] hands the replaced game to.
-pub type Keep = Box<dyn FnOnce(crate::Config, Box<dyn Game>)>;
+pub type Keep = Box<dyn FnOnce(Parked)>;
 
 /// [`switch`], handing the replaced game to `keep` as it was (it gets no
-/// ticks or frames there) instead of dropping it. A browser host keeps its
-/// lobby that way while a game runs, and a paused game while the lobby is
-/// on screen, so either comes back in a moment.
-pub fn switch_keeping(cfg: crate::Config, game: Box<dyn Game>, keep: impl FnOnce(crate::Config, Box<dyn Game>) + 'static) {
-    NEXT.with(|n| *n.borrow_mut() = Some((cfg, game, Some(Box::new(keep)))));
+/// ticks or frames there, its scene stays on the GPU) instead of dropping
+/// it. A browser host keeps its lobby that way while a game runs, and a
+/// paused game while the lobby is on screen, so either comes back at once
+/// with [`resume`].
+pub fn switch_keeping(cfg: crate::Config, game: Box<dyn Game>, keep: impl FnOnce(Parked) + 'static) {
+    NEXT.with(|n| *n.borrow_mut() = Some((Parked::new(cfg, game), Some(Box::new(keep)))));
+}
+
+/// Bring a [`Parked`] game back on screen with its scene as it was, handing
+/// the one it replaces to `keep` (when given) the same way.
+pub fn resume(parked: Parked, keep: Option<Box<dyn FnOnce(Parked)>>) {
+    NEXT.with(|n| *n.borrow_mut() = Some((parked, keep)));
 }
 
 /// Why the running game wants to leave ([`on_exit`]).
@@ -175,6 +232,15 @@ pub fn on_exit(f: impl FnMut(Exit) -> bool + 'static) { EXIT.with(|e| *e.borrow_
 
 fn exit(why: Exit) -> bool {
     EXIT.with(|e| match e.borrow_mut().as_mut() { Some(f) => f(why), None => false })
+}
+
+/// Call `f` with every connected device's input before each tick (the
+/// lobby's and every game's), for the devices bound to each seat when the
+/// running game binds none itself ([`Game::seats`]). A browser host joins a
+/// pad that wakes up as a player there, and keeps each player on the same
+/// pad from the room into the games.
+pub fn on_devices(f: impl FnMut(&[(crate::Device, crate::Controls)]) -> Option<Vec<Vec<crate::Device>>> + 'static) {
+    SEATS.with(|s| *s.borrow_mut() = Some(Box::new(f)));
 }
 
 /// Run `game` in the page's canvas `#warp` (or a new one) until the page
@@ -240,15 +306,15 @@ impl Shell {
         let mut steps = 0;
         let mut live = self.live.borrow_mut();
         let Some(live) = live.as_mut() else { return Ok(()) };
-        if let Some((cfg, game, keep)) = NEXT.with(|n| n.borrow_mut().take()) {
-            // The old game's scene goes with its renderer; the next draw
-            // builds the new one on the same device.
-            let (cfg, game) = (std::mem::replace(&mut self.cfg, cfg), std::mem::replace(&mut self.game, game));
-            if let Some(keep) = keep { keep(cfg, game); }
+        if let Some((next, keep)) = NEXT.with(|n| n.borrow_mut().take()) {
+            // The old game's scene goes with its renderer, kept or dropped;
+            // a new game builds its own on its first draw, a resumed one
+            // brings its renderer back.
+            let old = Parked { cfg: std::mem::replace(&mut self.cfg, next.cfg), game: std::mem::replace(&mut self.game, next.game), renderer: std::mem::replace(&mut live.renderer, next.renderer) };
+            if let Some(keep) = keep { keep(old); }
             self.devices.keyboard_enabled = self.cfg.keyboard;
             self.devices.pointer_enabled = self.cfg.pointer;
             self.exited = false;
-            live.renderer = None;
             self.acc = 0.0;
             self.switched = Some(Instant::now());
             if let Some(w) = &self.window { w.set_title(&self.cfg.title); }
@@ -276,7 +342,10 @@ impl Shell {
                 self.exited = true;
                 for (_, c) in &mut devices { c.pressed.0 &= !crate::Buttons::SELECT; c.held.0 &= !crate::Buttons::SELECT; }
             }
-            let controls = seat_controls(self.game.as_mut(), &devices);
+            self.game.devices(&devices);
+            let page = SEATS.with(|s| s.borrow_mut().as_mut().and_then(|f| f(&devices)));
+            let seats = self.game.seats().or(page);
+            let controls = crate::input::route(&devices, seats.as_deref(), self.game.local_players());
             self.game.tick(&controls);
             if !self.exited && self.game.quit() { self.exited = exit(Exit::Quit); }
         }

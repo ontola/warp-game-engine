@@ -171,7 +171,7 @@ pub struct Lobby {
     hud_size: [u32; 2],
     pub(crate) mouse: crate::mouse::Mouse,
     /// Without a host: the commands the lobby would have sent it, for a host
-    /// in the same program to take (the browser build, examples/browser.rs).
+    /// in the same program to take (the browser build, examples/browser/main.rs).
     pub outbox: Option<Vec<serde_json::Value>>,
 }
 
@@ -202,6 +202,10 @@ impl Lobby {
         }
         Ok(lobby)
     }
+
+    /// The demo's local players, one per seat in seat order (a browser host
+    /// adds one when a pad joins and drops one that left).
+    pub fn set_local(&mut self, ids: Vec<String>) { self.local = ids; }
 
     /// The room's light bake, for [`crate::stage::Options::light_cache`].
     pub fn light_cache(&self) -> Vec<u8> { self.stage.light_cache() }

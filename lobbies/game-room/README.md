@@ -27,6 +27,6 @@ Then pick it under **Switch lobby** in the Start menu, with
 `gamenight-launcher --choose-lobby`, or at `http://127.0.0.1:7913/host/lobby`.
 
 In a browser, with the Luau games on its shelf and a small host in the
-page (`examples/browser.rs`): `python3 engine/tools/build-web.py --warp
+page (`examples/browser/main.rs`): `python3 engine/tools/build-web.py --warp
 --serve`, see engine/docs/browser.md. `game-room bake-light --out FILE`
 writes the room's light bake that build ships, so the page need not bake.

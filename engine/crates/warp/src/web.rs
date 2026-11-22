@@ -3,7 +3,7 @@
 //! lists them, `games/NAME/files.json` their files) into the [`vfs`], one
 //! WebAudio output every game shares, and the page's query string. The
 //! pages themselves are examples/warp_web.rs (games only) and the Game
-//! Room's examples/browser.rs (lobby first). See engine/docs/browser.md.
+//! Room's examples/browser/main.rs (lobby first). See engine/docs/browser.md.
 
 use std::path::{Path, PathBuf};
 
