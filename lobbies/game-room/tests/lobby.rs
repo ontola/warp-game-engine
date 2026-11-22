@@ -290,7 +290,9 @@ fn the_catalog_shows_every_game_and_plays_the_middle_one() {
     press(&mut lobby, BTN_BACK);
     assert!(!lobby.catalog_open(), "Back does nothing in the room");
     press(&mut lobby, BTN_RS);
-    assert!(!lobby.catalog_open(), "R3 away from the shelf does nothing");
+    assert!(lobby.catalog_open(), "R3 anywhere switches to the catalog view");
+    press(&mut lobby, BTN_RS);
+    assert!(!lobby.catalog_open(), "and back");
     // Walk left until the shelf is in front of them.
     for _ in 0..600 {
         if lobby.station_for("p0").is_some_and(|s| s.kind == "shelf") { break; }
