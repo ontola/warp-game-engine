@@ -175,6 +175,8 @@ pub struct Lobby {
     /// Seconds since the last key, for the keyboard's little hop.
     key_hop: f32,
     keyboard_shown: bool,
+    /// The full-screen game catalog (catalog.rs).
+    pub catalog: crate::catalog::Catalog,
     hud_size: [u32; 2],
     pub(crate) mouse: crate::mouse::Mouse,
     /// Without a host: the commands the lobby would have sent it, for a host
@@ -272,7 +274,7 @@ impl Lobby {
             props: props.expect("props"), board: board.expect("board"), events: vec![], controllers: HashMap::new(), held: HashMap::new(), input_blocked: HashSet::new(), menus: HashMap::new(),
             bench: vec![], phones: vec![], lost_since: HashMap::new(), toasts: vec![], unjoined: HashMap::new(), holds: HashMap::new(), station_cooldown: HashMap::new(),
             pickup_cooldown: 0.0, item_presses: HashMap::new(), pressed_flash: HashMap::new(), claims: HashMap::new(), pop_box: None, featured_visible: false,
-            bumpers_visible: false, display_active: None, display_at: web_time::Instant::now(), quit: false, web_tx, web_rx, links_due: 0.0, last_queue: vec![], featured, bumpers, key_dips: vec![0.0; keyboard.len()], keyboard, key_hop: 99.0, keyboard_shown: false, hud_size: [1920, 1080], mouse: Default::default(), outbox: None,
+            bumpers_visible: false, display_active: None, display_at: web_time::Instant::now(), quit: false, web_tx, web_rx, links_due: 0.0, last_queue: vec![], featured, bumpers, key_dips: vec![0.0; keyboard.len()], keyboard, key_hop: 99.0, keyboard_shown: false, catalog: Default::default(), hud_size: [1920, 1080], mouse: Default::default(), outbox: None,
         };
         lobby.prompts = lobby.build.prompts.iter().map(|p| (p.name.clone(), Prompt {
             items: p.items.iter().map(|(k, t)| (k.clone(), t.clone(), true)).collect(), enabled: true, ..Default::default() })).collect();
@@ -666,6 +668,7 @@ impl Lobby {
         self.mood.pad_activity = (self.mood.pad_activity - delta).max(0.0);
         self.mood.pad_hop += delta;
         self.update_prompts();
+        self.update_catalog(delta);
         self.host.update_loading(delta);
         self.refresh_show();
         let mut animating = false;

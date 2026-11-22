@@ -97,6 +97,17 @@ impl<'a> Canvas<'a> {
     /// Later shapes go over the text drawn so far (text otherwise draws last).
     pub fn over(&mut self) { self.list.begin_overlay(); }
 
+    /// A picture (handed to the list with `provide`) over `r`, `uv` its part.
+    pub fn image(&mut self, r: [f32; 4], id: render::hud::HudImage, uv: [f32; 4], tint: Color) {
+        let p = self.at([r[0], r[1]]);
+        let clip = self.clip();
+        self.list.image([p[0], p[1], r[2] * self.k, r[3] * self.k], id, uv, srgb(tint), clip);
+    }
+
+    pub fn provide(&mut self, id: render::hud::HudImage, picture: &std::sync::Arc<render::picture::Picture>) {
+        self.list.provide_image(id, picture, render::hud::ImageFilter::Linear);
+    }
+
     pub fn rect(&mut self, r: [f32; 4], c: Color) {
         let p = self.at([r[0], r[1]]);
         let clip = self.clip();
@@ -244,7 +255,7 @@ pub fn logo(c: &mut Canvas) {
 }
 
 /// A game without artwork: its colour as a gradient, the title in caps.
-fn title_card(c: &mut Canvas, game: &Game, r: [f32; 4], size: f32) {
+pub fn title_card(c: &mut Canvas, game: &Game, r: [f32; 4], size: f32) {
     let color = Color::from_string(&game.color, VIOLET);
     for y in 0..r[3] as i32 {
         c.rect([r[0], r[1] + y as f32, r[2], 1.0], color.darkened(0.35 + 0.45 * y as f32 / r[3]));

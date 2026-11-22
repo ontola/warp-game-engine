@@ -4,7 +4,7 @@
 //!   game-room shot [--dump DIR] --out room.png [--size 1280x720]
 //!   game-room play [--players 1] [--bots 3] [--fullscreen]
 //!   game-room bake-light --out room-light.bin
-//!   game-room live-shot --out room.png [--ticks 180] [--bots 3] [--items] [--fx] [--mouse X,Y] [--mouse-menu] [--pending NAME] [--queue TITLE] [--keys]
+//!   game-room live-shot --out room.png [--ticks 180] [--bots 3] [--items] [--fx] [--mouse X,Y] [--mouse-menu] [--pending NAME] [--queue TITLE] [--keys] [--catalog]
 //!
 //! For now the room comes from the Godot lobby's export (tools/
 //! warp_export.gd in gamenight/lobbies/game-room), so both engines draw the
@@ -81,6 +81,20 @@ fn run() -> Result<(), String> {
             party["library"] = serde_json::json!([{"id": "queued", "title": title}]);
             party["playlist"] = serde_json::json!({"entries": [{"game": "queued", "title": title}], "current": null});
             lobby.set_party(party);
+        }
+        // `--catalog`: the full-screen catalog over a shelf of games, with the
+        // covers games in this repo ship (games/*/assets/gamenight/cover.png).
+        if flag("--catalog") {
+            let mut party = lobby.host.party.clone();
+            let games = [("dead-miles", "Dead Miles", "#b5482f"), ("relay-keepers", "Relay Keepers", "#3fb6a8"), ("neon-siege", "Neon Siege", "#ff3df0"), ("spellstorm", "Spellstorm", "#7c5cff"), ("sideways", "Sideways", "#f2a93b")];
+            party["library"] = serde_json::Value::Array(games.iter().map(|(id, title, color)| serde_json::json!({"id": id, "title": title, "color": color})).collect());
+            lobby.set_party(party);
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../games");
+            for (id, ..) in games {
+                if let Ok(png) = std::fs::read(root.join(id).join("assets/gamenight/cover.png")) { lobby.set_cover(id, &png); }
+            }
+            lobby.host.shelf_offset = 1;
+            lobby.open_catalog();
         }
         let ticks = numf("--ticks", 180.0) as u32;
         let mut rgba = headless.frame(&mut lobby)?;

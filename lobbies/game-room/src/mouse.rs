@@ -61,6 +61,7 @@ impl Lobby {
 
     /// Escape: the mouse's Start menu opens, or closes (a page goes back).
     pub fn mouse_escape(&mut self) {
+        if self.catalog.open { self.close_catalog(); return; }
         match self.menus.get(MOUSE) {
             Some(m) if m.page.starts_with("player:") => { self.menus.remove(MOUSE); }
             Some(m) if !m.page.is_empty() => self.menu_page(MOUSE, ""),
@@ -80,6 +81,11 @@ impl Lobby {
             self.mouse.hover = None;
             return;
         }
+        if self.catalog.open {
+            self.mouse.hover = None;
+            self.catalog_pointer(p, size);
+            return;
+        }
         if self.menus.contains_key(MOUSE) {
             self.mouse.hover = None;
             self.mouse_menu(p, size);
@@ -92,6 +98,8 @@ impl Lobby {
         }
         if used { self.mouse.hover = self.pointed(at, size); }
         let Some((station, key)) = self.mouse.hover.clone() else { return };
+        // A click on the game shelf itself opens the catalog; its buttons play.
+        if p.pressed && station.kind == "shelf" && key.is_none() { self.open_catalog(); return; }
         if p.pressed { self.mouse_press(station.clone(), key.as_deref().unwrap_or("Y")); }
         if p.wheel != 0.0 {
             // Wheel up is back through the shelf, like LB.

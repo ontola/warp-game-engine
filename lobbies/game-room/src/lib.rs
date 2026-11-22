@@ -1,6 +1,7 @@
 //! The Splitscreen Club Game Room lobby on Warp: the room (built in Rust, or loaded
 //! from a Godot export for comparison), its renderer setup, and the lobby.
 pub mod board;
+pub mod catalog;
 pub mod character;
 pub mod dump;
 pub mod face;

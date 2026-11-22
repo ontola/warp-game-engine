@@ -260,3 +260,63 @@ fn the_mouse_clicks_a_player_to_remove_them() {
     }
     panic!("no leave_party sent");
 }
+
+#[test]
+fn the_catalog_shows_every_game_and_plays_the_middle_one() {
+    use base64::Engine;
+    let mut png = vec![];
+    image::RgbaImage::from_pixel(6, 8, image::Rgba([200, 40, 90, 255])).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+    let cover = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(&png));
+    let party = json!({
+        "players": [{"id": "p0", "name": "Sanne", "color": "#e36c76"}],
+        "seats": [{"index": 0, "occupant": {"kind": "local", "player_id": "p0"}, "controller": "pad-a"}],
+        "library": [{"id": "a", "title": "Alpha", "color": "#38d6ff", "cover": cover}, {"id": "b", "title": "Bravo", "color": "#ff3df0"}, {"id": "c", "title": "Charlie", "color": "#7cff6b"}],
+        "playlist": {"entries": [], "current": null},
+    });
+    let (url, _to_lobby, from_lobby) = fake_host(party);
+    let config = splitscreen_club::lobby::Config { url, lobby_id: "game-room".into(), token: "secret".into(), links_base: String::new() };
+    let mut lobby = Lobby::connect_with(options(), config).unwrap();
+    run_until(&mut lobby, |l| l.accepts_input() && l.world.player("p0").is_some());
+    let press = |lobby: &mut Lobby, buttons: u32| {
+        lobby.input("p0", buttons, [0.0; 2]);
+        lobby.update(1.0 / 60.0);
+        lobby.input("p0", 0, [0.0; 2]);
+        lobby.update(1.0 / 60.0);
+    };
+    use game_room_sim::world::{BTN_A, BTN_B, BTN_BACK, BTN_RB};
+    // A player that joined holds nothing at first (input waits for a release).
+    lobby.input("p0", 0, [0.0; 2]);
+    assert_eq!(lobby.host.shelf_games().len(), 3);
+    press(&mut lobby, BTN_BACK);
+    assert!(lobby.catalog_open(), "Back opens the catalog");
+    for _ in 0..4 { lobby.update(1.0 / 60.0); }
+    assert!(lobby.catalog.covers.get("a").is_some_and(|c| c.is_some()), "the data URI cover decodes");
+    assert!(lobby.catalog.covers.get("b").is_some_and(|c| c.is_none()), "no cover: a title card");
+    let start = lobby.host.shelf_offset;
+    press(&mut lobby, BTN_RB);
+    assert_eq!(lobby.host.shelf_offset, (start + 1) % 3, "RB browses");
+    let _ = game_room::hud::draw(&lobby, [1920, 1080], 1.0);
+
+    // The mouse clicks a side cover to bring it to the middle.
+    let size = [1920, 1080];
+    for _ in 0..60 { lobby.update(1.0 / 60.0); }
+    let layout = game_room::catalog::catalog_layout(&lobby, size);
+    let &(side, r) = layout.cards.iter().find(|(i, _)| *i != lobby.host.shelf_offset).unwrap();
+    app::Game::pointer(&mut lobby, app::Pointer { position: Some([r[0] + 4.0, r[1] + r[3] / 2.0]), moved: true, pressed: true, ..Default::default() }, size);
+    lobby.update(1.0 / 60.0);
+    assert_eq!(lobby.host.shelf_offset, side, "a click on a side cover brings it to the middle");
+
+    // A plays it now and closes the catalog.
+    let game = lobby.show.shelf[side].id.clone();
+    press(&mut lobby, BTN_A);
+    assert!(!lobby.catalog_open());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        assert!(Instant::now() < deadline, "no queue_next sent");
+        if let Ok(m) = from_lobby.recv_timeout(Duration::from_millis(50)) && m["type"] == "queue_next" { assert_eq!(m["game"], game.as_str()); break; }
+    }
+    press(&mut lobby, BTN_BACK);
+    assert!(lobby.catalog_open());
+    press(&mut lobby, BTN_B);
+    assert!(!lobby.catalog_open(), "B closes it");
+}

@@ -16,6 +16,7 @@ path = "src/main.rs"
 render = { path = "../../engine/crates/render" }
 app = { path = "../../engine/crates/app" }
 glam = "0.31"
+base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png"] }
 serde = { workspace = true }
 serde_json.workspace = true

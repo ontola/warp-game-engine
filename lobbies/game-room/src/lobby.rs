@@ -210,6 +210,18 @@ impl Lobby {
             p.last_input = time;
             p.sleeping = false;
         }
+        if self.catalog.open {
+            self.catalog_input(Some(id), pressed, stick);
+            self.world.set_input(id, 0, [0.0; 2]);
+            return;
+        }
+        // Back opens the catalog of every game on the shelf.
+        if pressed & world::BTN_BACK != 0 && !self.menus.contains_key(id) {
+            self.open_catalog();
+            self.catalog.sticks.insert(id.into(), stick);
+            self.world.set_input(id, 0, [0.0; 2]);
+            return;
+        }
         if pressed & BTN_START != 0 {
             if self.menus.remove(id).is_none() { self.menus.insert(id.into(), Menu::default()); }
         }
@@ -432,6 +444,7 @@ impl Lobby {
     /// The mouse's menu: nobody's, so only what the room itself can do.
     fn mouse_items(&self) -> Vec<MenuItem> {
         let mut items = vec![MenuItem::new("Close menu", "close")];
+        if !self.host.shelf_games().is_empty() { items.push(MenuItem::new("Browse all games", "catalog")); }
         if !self.host.update_ready().is_empty() { items.push(MenuItem::new("Update Splitscreen Club now", "update")); }
         if self.host.party["lobbies"].as_array().is_some_and(|l| l.len() > 1) { items.push(MenuItem::new("Switch lobby", "lobbies")); }
         // A browser page (a host in the page, `outbox`) is closed with its tab.
@@ -523,6 +536,7 @@ impl Lobby {
         let set_confirm = |lobby: &mut Lobby| if let Some(m) = lobby.menus.get_mut(id) { m.confirm = true; };
         match item.action.as_str() {
             "close" => { self.menus.remove(id); }
+            "catalog" => { self.menus.remove(id); self.open_catalog(); }
             "lobbies" => self.menu_page(id, "lobbies"),
             "remove_page" => self.menu_page(id, "remove"),
             "remove" => if confirm {

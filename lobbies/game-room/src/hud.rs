@@ -109,6 +109,7 @@ pub fn draw(lobby: &Lobby, size: [u32; 2], _alpha: f32) -> HudDrawList {
     }
     c.over();
     bench(lobby, &mut c, scale);
+    if lobby.catalog.open { crate::catalog::draw(lobby, &mut c, size); }
 
     // Toasts, bottom centre.
     let mut y = h - 40.0 * scale;
