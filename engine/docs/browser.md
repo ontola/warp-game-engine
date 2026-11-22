@@ -232,7 +232,9 @@ How the build differs from native:
   when a player joins) reuses them. Every renderer build of 500 ms or more
   logs its slowest steps (`renderer built in ...`), and every layer that
   took 50 ms or more logs `texture layer N baked in ...`. Mips there are
-  plain 2x2 averages (`texture_mips::resize`).
+  plain 2x2 averages (`texture_mips::resize`), without the linear-RGB
+  cutout pass, and the arrays stay RGBA8 (no BC7 encoding): each took
+  seconds a layer on the page thread.
 - Time comes from `web_time::Instant` (`std::time::Instant` natively).
 - Files: the page fetches the textures first and hands them to
   `render::files::preload`; `render::files::read` and `open_image` find them
