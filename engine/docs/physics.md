@@ -35,8 +35,11 @@ world.set(chassis, { pos = pose.pos, rot = pose.rot })
 −1–1. Passing nil parks the car when it comes to rest. `step` accepts simulation
 seconds in 0–1 and accumulates them into 120 Hz steps. `get` returns the
 axle-height origin, YXZ Euler rotation in Warp’s usual (pitch, yaw, roll) vector,
-signed forward speed, gear, RPM, engine torque in Nm, ignition cut and tyre
-slip. For each front-left, front-right, rear-left and rear-right wheel, its
+signed forward speed, gear, RPM, engine torque in Nm and ignition cut.
+The road telemetry includes signed engine torque divided by peak torque
+(`load`), summed sliding speed at the contacting wheels in m/s (`slip`),
+the fraction of tyres touching ground (`contact`), and the shares of
+contacting wheels on loose or soft surfaces (`loose`, `soft`). For each front-left, front-right, rear-left and rear-right wheel, its
 vector contains local centre height, steering angle and spin angle in radians.
 
 ## `kern::collide`

@@ -1,6 +1,6 @@
 //! A shared fixed-step road world for games with multiple drivers. The caller
 //! supplies static collision boxes once and the elapsed simulation time per tick.
-use super::{Car, CarSpec, Ground, HZ, add_car, surfaces::{Surface, Surfaces}};
+use super::{Car, CarSpec, Ground, RoadTelemetry, HZ, add_car, surfaces::{Surface, Surfaces}};
 use glam::{EulerRot, Quat as Rotation, Vec3};
 use kern::collide::YawBox;
 use rapier3d::{glamx::{Pose3, Quat, Vec3 as V3}, prelude::*};
@@ -27,7 +27,7 @@ pub struct CarPose {
     pub speed: f64,
     pub rpm: f64,
     pub torque: f64,
-    pub slip: f64,
+    pub road: RoadTelemetry,
     pub gear: i32,
     pub cut: bool,
     pub parked: bool,
@@ -117,7 +117,7 @@ impl Fleet {
             pos: Vec3::from_array(p.translation.to_array()), rot: Vec3::new(pitch, yaw, roll),
             speed: car.speed, gear: car.gear, cut: car.cut(), rpm: car.rpm(), torque: car.engine_torque(),
             parked: self.world.bodies[car.body].is_fixed(),
-            slip: car.wheels.iter().map(|w| w.slide).fold(0., f64::max),
+            road: car.road_telemetry(),
             wheels: std::array::from_fn(|i| {
                 let w = &car.wheels[i];
                 let height = if self.world.bodies[car.body].is_fixed() && !w.contact { 0. } else { car.spec.droop_y + w.compression };

@@ -14,7 +14,7 @@ function models.car(pos, yaw, index)
 		wheels[i] = world.spawn(BASE .. name .. ".gltf", {pos=offset, solid=false, tag="wheel"}, body)
 	end
 	return {kind="car", pos=pos, yaw=yaw, speed=0, body=body, wheels=wheels,
-		native=vehicles.spawn(pos,yaw), rpm=950, gear=1, load=0, slip=0, throttle=0}
+		native=vehicles.spawn(pos,yaw), rpm=950, gear=1, load=0, slip=0, contact=0, loose=0, soft=0, throttle=0}
 end
 
 function models.drive(input)
@@ -34,7 +34,8 @@ function models.sync(car)
 	local p = vehicles.get(car.native)
 	car.pos, car.yaw, car.active = p.pos - v(0,.33,0), p.rot.y, not p.parked
 	car.speed, car.gear, car.rpm, car.cut = p.speed, p.gear, p.rpm, p.cut
-	car.slip, car.torque, car.load = p.slip, p.torque, math.clamp(p.torque/300,0,1)
+	car.slip, car.torque, car.load = p.slip, p.torque, p.load
+	car.contact, car.loose, car.soft = p.contact, p.loose, p.soft
 	world.set(car.body, {pos=p.pos, rot=p.rot})
 	for j, wheel in car.wheels do
 		local w = p.wheels[j]

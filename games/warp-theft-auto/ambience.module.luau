@@ -21,10 +21,13 @@ function ambience.tick(fleet)
 			if engine then
 				sound.set_param(car.voice, "rpm", car.rpm or 900)
 				sound.set_param(car.voice, "throttle", car.throttle or 0)
-				sound.set_param(car.voice, "load", car.load or car.throttle or 0)
+				sound.set_param(car.voice, "load", car.load)
 				sound.set_param(car.voice, "gear", car.gear or 1)
 				sound.set_param(car.voice, "cut", if car.cut then 1 else 0)
-				sound.set_param(car.voice, "slip", car.slip or 0)
+				sound.set_param(car.voice, "slip", car.slip)
+				sound.set_param(car.voice, "contact", car.contact)
+				sound.set_param(car.voice, "loose", car.loose)
+				sound.set_param(car.voice, "soft", car.soft)
 			end
 		elseif car.voice then
 			sound.stop(car.voice)

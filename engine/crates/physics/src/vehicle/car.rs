@@ -62,6 +62,17 @@ pub struct Wheel {
     pub slide: f64,
 }
 
+/// Engine and contact-patch signals for road sounds. Slip is the sum of
+/// longitudinal and transverse sliding speeds over wheels touching ground.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RoadTelemetry {
+    pub load: f32,
+    pub slip: f32,
+    pub contact: f32,
+    pub loose: f32,
+    pub soft: f32,
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct CarStats {
     pub shifts: u32,
@@ -199,6 +210,28 @@ impl Car {
     /// Net engine torque (Nm) of the last substep: combustion minus friction.
     pub fn engine_torque(&self) -> f64 {
         self.engine_torque
+    }
+
+    pub fn road_telemetry(&self) -> RoadTelemetry {
+        let peak = self.spec.torque.iter().map(|p| p[1]).fold(1.0f64, f64::max);
+        let mut t = RoadTelemetry { load: (self.engine_torque() / peak) as f32, ..Default::default() };
+        let mut on = 0.0;
+        for w in &self.wheels {
+            if !w.contact { continue; }
+            on += 1.0;
+            t.slip += ((w.omega * w.radius - w.vx).abs() + w.vy.abs()) as f32;
+            match w.surface {
+                Surface::Asphalt => {}
+                Surface::Grass | Surface::Water => t.soft += 1.0,
+                _ => t.loose += 1.0,
+            }
+        }
+        if on > 0.0 {
+            t.loose /= on;
+            t.soft /= on;
+        }
+        t.contact = on / self.wheels.len().max(1) as f32;
+        t
     }
 
     /// Ignition cut: mid-shift, or on the limiter.
@@ -623,6 +656,28 @@ fn smoothstep(from: f64, to: f64, x: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn road_telemetry_preserves_engine_braking_and_sums_only_contacting_slip() {
+        let mut spec = CarSpec::compact();
+        spec.torque = vec![[1000., 200.], [3500., 420.], [6000., 250.]];
+        let mut world = PhysicsWorld::default();
+        let body = super::super::add_car(&mut world, &spec, Pose3::IDENTITY, false);
+        let mut car = Car::new(spec, body);
+        assert_eq!(car.road_telemetry(), RoadTelemetry::default());
+        car.engine_torque = -105.;
+        for (i,w) in car.wheels.iter_mut().enumerate() {
+            w.contact = i < 2;
+            w.radius = 0.5;
+            w.omega = 12.;
+            w.vx = 9.;
+            w.vy = -2.;
+            w.surface = if i == 0 { Surface::Grass } else { Surface::Gravel };
+        }
+        assert_eq!(car.road_telemetry(), RoadTelemetry {
+            load: -0.25, slip: 10., contact: 0.5, loose: 0.5, soft: 0.5,
+        });
+    }
 
     fn loaded_wheel() -> Wheel {
         let mut spec = CarSpec::compact();

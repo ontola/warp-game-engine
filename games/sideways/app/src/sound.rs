@@ -13,7 +13,6 @@ use audio::{SAMPLE_RATE, Sounds};
 use glam::{Quat, Vec3};
 use sideways::car::Car;
 use sideways::physics::Physics;
-use sideways::surfaces::Surface;
 
 const BUILT_IN_SOUNDS: &str = include_str!("../../data/sounds.luau");
 
@@ -56,39 +55,55 @@ pub fn sound_id(car: &Car) -> &'static str {
 }
 
 /// What the engine and tyres are doing, for the synth.
-pub fn controls(car: &Car, phys: &Physics) -> (Controls, TyreControls) {
-    let peak = car.spec.torque.iter().map(|p| p[1]).fold(1.0f64, f64::max);
+pub fn controls(car: &Car, _phys: &Physics) -> (Controls, TyreControls) {
+    let road = car.road_telemetry();
     let engine = Controls {
         rpm: car.rpm() as f32,
         throttle: car.throttle as f32,
-        load: (car.engine_torque() / peak) as f32,
+        load: road.load,
         cut: car.cut(),
         gear: car.gear,
         speed: car.speed as f32,
     };
-    let mut t = TyreControls { speed: car.speed.abs() as f32, ..Default::default() };
-    let n = car.wheels.len().max(1) as f32;
-    let mut on = 0.0;
-    for w in &car.wheels {
-        if !w.contact {
-            continue;
-        }
-        on += 1.0;
-        // Sliding speed at the patch: longitudinal slip plus sideways.
-        t.slip += ((w.omega * w.radius - w.vx).abs() + w.vy.abs()) as f32;
-        match w.surface {
-            Surface::Asphalt => {}
-            Surface::Grass | Surface::Water => t.soft += 1.0,
-            _ => t.loose += 1.0,
-        }
-    }
-    if on > 0.0 {
-        t.loose /= on;
-        t.soft /= on;
-    }
-    t.contact = on / n;
-    let _ = phys;
+    let t = TyreControls {
+        speed: car.speed.abs() as f32,
+        slip: road.slip,
+        contact: road.contact,
+        loose: road.loose,
+        soft: road.soft,
+        ..Default::default()
+    };
     (engine, t)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sideways::{spec::CarSpec, surfaces::Surface};
+
+    #[test]
+    fn sound_controls_preserve_reversing_speed_and_mixed_ground() {
+        let spec = CarSpec::compact();
+        let mut phys = Physics::new();
+        let body = phys.add_car(&spec, Default::default(), true);
+        let mut car = Car::new(spec, body);
+        car.gear = -1;
+        car.speed = -7.25;
+        car.throttle = 0.375;
+        for (i, wheel) in car.wheels.iter_mut().enumerate() {
+            wheel.contact = i != 3;
+            wheel.surface = [Surface::Asphalt, Surface::Water, Surface::Dirt, Surface::Mud][i];
+            wheel.radius = 0.25;
+            wheel.omega = -24.;
+            wheel.vx = -7.25;
+            wheel.vy = -0.5;
+        }
+        let (engine, tyres) = controls(&car, &phys);
+        assert_eq!((engine.gear, engine.speed, engine.throttle), (-1, -7.25, 0.375));
+        assert_eq!(tyres.speed, 7.25);
+        assert_eq!((tyres.contact, tyres.slip), (0.75, 5.25));
+        assert_eq!((tyres.loose, tyres.soft, tyres.wet), (1./3., 1./3., 0.));
+    }
 }
 
 fn opt(args: &[String], name: &str, default: &str) -> String {

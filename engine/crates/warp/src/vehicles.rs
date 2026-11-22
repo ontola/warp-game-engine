@@ -59,7 +59,9 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
         let t = lua.create_table()?;
         t.set("pos", vec(p.pos))?; t.set("rot", vec(p.rot))?; t.set("speed", p.speed)?;
         t.set("gear", p.gear)?; t.set("rpm", p.rpm)?; t.set("torque", p.torque)?;
-        t.set("slip", p.slip)?; t.set("cut", p.cut)?; t.set("parked", p.parked)?;
+        t.set("load", p.road.load)?; t.set("slip", p.road.slip)?; t.set("contact", p.road.contact)?;
+        t.set("loose", p.road.loose)?; t.set("soft", p.road.soft)?;
+        t.set("cut", p.cut)?; t.set("parked", p.parked)?;
         let wheels = lua.create_table()?;
         for (i, (height, steer, spin)) in p.wheels.into_iter().enumerate() {
             wheels.set(i + 1, Vector::new(height as f32, steer as f32, spin as f32))?;

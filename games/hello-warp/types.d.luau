@@ -243,7 +243,7 @@ declare vehicles: {
 	drive: (id: number, controls: { throttle: number?, brake: number?, steer: number?, handbrake: number? }?) -> (),
 	step: (dt: number) -> (),
 	get: (id: number) -> { pos: Vec, rot: Vec, speed: number, rpm: number, gear: number, cut: boolean,
-		parked: boolean, torque: number, slip: number, wheels: { Vec } }?,
+		parked: boolean, torque: number, load: number, slip: number, contact: number, loose: number, soft: number, wheels: { Vec } }?,
 }
 
 declare humans: {

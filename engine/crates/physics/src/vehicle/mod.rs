@@ -3,7 +3,7 @@ mod car;
 pub mod fleet;
 mod spec;
 pub mod surfaces;
-pub use car::{Car, CarStats, Ground, SUBSTEPS, Wheel};
+pub use car::{Car, CarStats, Ground, RoadTelemetry, SUBSTEPS, Wheel};
 pub use spec::CarSpec;
 use rapier3d::glamx::{Pose3, Vec3};
 use rapier3d::prelude::*;
