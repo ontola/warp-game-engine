@@ -9,6 +9,7 @@ use rapier3d::glamx;
 use rapier3d::prelude::*;
 
 pub mod ragdoll;
+pub mod vehicle;
 mod static_set;
 pub use static_set::StaticSet;
 

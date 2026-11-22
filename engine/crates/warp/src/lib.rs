@@ -25,6 +25,7 @@ pub mod sounds;
 pub mod starter;
 pub mod surface;
 pub mod world;
+pub mod vehicles;
 
 pub use game::{LuaGame, Overrides};
 

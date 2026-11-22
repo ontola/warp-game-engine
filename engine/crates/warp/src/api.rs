@@ -533,6 +533,7 @@ fn data_file(c: &Core, name: &str) -> mlua::Result<std::path::PathBuf> {
 
 pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
     crate::storage::register(lua, api, core.clone())?;
+    crate::vehicles::register(lua, api, core.clone())?;
     let table = |name: &str, fns: Vec<(&str, mlua::Function)>| -> mlua::Result<()> {
         let t = lua.create_table()?;
         for (k, f) in fns { t.raw_set(k, f)?; }
@@ -545,11 +546,13 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
 
     table("plants", vec![
         ("grow", f!(core, move |_, opts: Table| {
-            let o = options(&opts, &["age", "seed", "pos", "yaw", "full", "species", "look"], "plants.grow")?;
+            let o = options(&opts, &["age", "seed", "pos", "yaw", "scale", "full", "species", "look"], "plants.grow")?;
             let get = |k: &str| o.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()).unwrap_or(Value::Nil);
             let age = num(&get("age")).ok_or_else(|| rt("plants.grow: needs age (years)"))?;
             if !(0.0..=2000.0).contains(&age) { return Err(rt("plants.grow: age 0 to 2000 years")); }
             let pos = match get("pos") { Value::Nil => Vec3::ZERO, v => vec3(&v, "plants.grow pos")? };
+            let scale = match get("scale") { Value::Nil => 1.0, v => number(&v, "plants.grow scale")? };
+            if !scale.is_finite() || scale <= 0.0 { return Err(rt("plants.grow scale: expected a positive finite number")); }
             let p = crate::plants::Plant {
                 species: merged(&render::plant_growth::Species::jeffrey_pine(), &get("species"), "plants.grow species")?,
                 look: merged(&render::plant_growth_assembly::Look::jeffrey_pine(), &get("look"), "plants.grow look")?,
@@ -557,6 +560,7 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
                 seed: num(&get("seed")).map_or(1, |s| s.max(0.0) as u64),
                 pos,
                 yaw: num(&get("yaw")).unwrap_or(0.0),
+                scale,
                 full: matches!(get("full"), Value::Boolean(true)),
             };
             let mut c = lock(&core);
@@ -774,6 +778,13 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             c.sounds.play(&name, &params, at, db, pitch, tick).map_err(rt)
         })),
         ("set_param", f!(core, move |_, (h, param, value): (u32, String, f32)| { lock(&core).sounds.set(h, &param, value); Ok(()) })),
+        ("move_to", f!(core, move |_, (h, at): (u32, Value)| {
+            let pos = vec3(&at, "sound.move_to position")?;
+            let c = lock(&core);
+            sim(&c, "sound.move_to")?;
+            c.sounds.move_to(h, pos.to_array());
+            Ok(())
+        })),
         ("stop", f!(core, move |_, h: u32| { lock(&core).sounds.stop(h); Ok(()) })),
         ("list", f!(core, move |lua, ()| { let c = lock(&core); let b = &c.sounds.bank; let mut names: Vec<String> = b.patches.keys().chain(b.sampled.keys()).cloned().collect(); names.sort(); names.dedup(); lua.create_sequence_from(names) })),
         ("has", f!(core, move |_, name: String| { let c = lock(&core); Ok(c.sounds.bank.has(&name)) })),
@@ -985,12 +996,13 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
         ("set", f!(core, move |_, (id, opts): (u32, Table)| {
             let mut c = lock(&core);
             sim(&c, "humans.set")?;
-            let o = options(&opts, &["pos", "yaw", "pose", "t", "tired", "coil"], "humans.set")?;
+            let o = options(&opts, &["pos", "yaw", "pose", "t", "tired", "coil", "visible"], "humans.set")?;
             let Some(p) = c.humans.people.get_mut(&id) else { return Ok(false) };
             let mut up = false;
             for (k, v) in o {
                 match k.as_str() {
                     "pos" => p.pos = vec3(&v, "humans.set pos")?,
+                    "visible" => p.set_visible(boolean(&v, "humans.set visible")?),
                     "yaw" => p.yaw = number(&v, "humans.set yaw")?,
                     "t" => p.t = number(&v, "humans.set t")?.clamp(0.0, 1.0),
                     "tired" => p.tired = number(&v, "humans.set tired")?.clamp(0.0, 1.0),

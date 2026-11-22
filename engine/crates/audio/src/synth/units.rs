@@ -96,7 +96,16 @@ pub struct EngineSpec(pub Option<std::sync::Arc<crate::EngineSound>>);
 impl PartialEq for EngineSpec { fn eq(&self, o: &Self) -> bool { match (&self.0, &o.0) { (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b), (None, None) => true, _ => false } } }
 impl std::fmt::Debug for EngineSpec { fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result { write!(f, "{}", self.0.as_ref().map_or("registry", |s| s.name.as_str())) } }
 
-static ENGINES: std::sync::RwLock<Vec<(String, std::sync::Arc<crate::EngineSound>)>> = std::sync::RwLock::new(Vec::new());
+type EngineModels = Vec<(String, std::sync::Arc<crate::EngineSound>)>;
+
+static ENGINES: std::sync::LazyLock<std::sync::RwLock<EngineModels>> = std::sync::LazyLock::new(|| {
+    let road = crate::Sounds::parse(include_str!("../road-engines.toml")).expect("built-in road engine voices");
+    let models = road.ids().into_iter().map(|id| {
+        let model = road.get(&id).expect("built-in road engine model");
+        (id, std::sync::Arc::new(model))
+    }).collect();
+    std::sync::RwLock::new(models)
+});
 
 /// Make every car in `sounds` available to `engine` units by id.
 pub fn register_engines(sounds: &crate::Sounds) {

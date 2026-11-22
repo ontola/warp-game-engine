@@ -225,6 +225,7 @@ impl Filter {
 struct ModelInfo { mesh: usize, min: Vec3, max: Vec3 }
 
 pub struct World {
+    pub(crate) fleet: Option<physics::vehicle::fleet::Fleet>,
     pub entities: BTreeMap<u32, Entity>,
     next: u32,
     pub scene: Scene,
@@ -287,7 +288,7 @@ impl World {
         let m = scene.add_material(material(&Look::default()));
         let cube = scene.add_mesh(&primitives::cube(m).mesh());
         let slots = Slots::reserve(&mut scene, max_entities);
-        let mut w = World { entities: BTreeMap::new(), next: 1, scene, slots, materials: HashMap::new(), meshes: HashMap::new(), models: HashMap::new(), rebuild: true, added: Vec::new(), dir: dir.to_path_buf(), fx: Fx::default() };
+        let mut w = World { fleet: None, entities: BTreeMap::new(), next: 1, scene, slots, materials: HashMap::new(), meshes: HashMap::new(), models: HashMap::new(), rebuild: true, added: Vec::new(), dir: dir.to_path_buf(), fx: Fx::default() };
         w.materials.insert(Look::default().key(), m);
         w.meshes.insert((0, m), cube);
         w
@@ -477,6 +478,7 @@ impl World {
     }
 
     pub fn clear(&mut self) {
+        self.fleet = None;
         let ids: Vec<u32> = self.entities.keys().copied().collect();
         for id in ids { self.remove(id); }
         self.fx = Fx::default();

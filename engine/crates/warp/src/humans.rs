@@ -252,6 +252,7 @@ pub struct Person {
     slot: usize,
     pub pos: Vec3,
     pub yaw: f32,
+    visible: bool,
     prev_pos: Vec3,
     prev_yaw: f32,
     /// The legs' turn from the facing towards where they walk (radians):
@@ -282,6 +283,14 @@ pub struct Person {
     age: f32,
     /// Moved since the last tick.
     fresh: bool,
+}
+
+impl Person {
+    /// A hidden actor keeps its model and slot, e.g. while riding in a vehicle.
+    pub fn set_visible(&mut self, visible: bool) {
+        self.fresh |= visible && !self.visible;
+        self.visible = visible;
+    }
 }
 
 struct Pool {
@@ -368,7 +377,7 @@ impl Humans {
         p.used[slot] = true;
         let id = self.next;
         self.next += 1;
-        self.people.insert(id, Person { pool: pool.to_string(), slot, pos, yaw, prev_pos: pos, prev_yaw: yaw, legs: 0.0, prev_legs: 0.0, from: Gait::default(), to: Gait::default(), pose: "walk".into(), t: 0.0, prev_t: 0.0, tired: 0.0, prev_tired: 0.0, coil: 0.0, prev_coil: 0.0, jolt: Vec2::ZERO, prev_jolt: Vec2::ZERO, jolt_v: Vec2::ZERO, age: (hash(id as u64, 7) % 1000) as f32 * 0.01, fresh: true });
+        self.people.insert(id, Person { pool: pool.to_string(), slot, pos, yaw, visible: true, prev_pos: pos, prev_yaw: yaw, legs: 0.0, prev_legs: 0.0, from: Gait::default(), to: Gait::default(), pose: "walk".into(), t: 0.0, prev_t: 0.0, tired: 0.0, prev_tired: 0.0, coil: 0.0, prev_coil: 0.0, jolt: Vec2::ZERO, prev_jolt: Vec2::ZERO, jolt_v: Vec2::ZERO, age: (hash(id as u64, 7) % 1000) as f32 * 0.01, fresh: true });
         Ok(Some(id))
     }
 
@@ -390,13 +399,28 @@ impl Humans {
         self.pools.get(pool).map(|p| (p.used[..p.cap].iter().filter(|u| !**u).count(), p.cap))
     }
 
+    /// Save the previous tick before game scripts change positions and poses.
+    pub fn tick_start(&mut self) {
+        for p in self.people.values_mut() {
+            p.prev_pos = p.pos;
+            p.prev_yaw = p.yaw;
+            p.prev_t = p.t;
+            p.prev_tired = p.tired;
+            p.prev_coil = p.coil;
+        }
+    }
+
     /// A simulation tick has run: the legs advance by how far each person moved.
     pub fn tick(&mut self, dt: f32) {
         let Ok(rig) = Rig::shared() else { return };
         for p in self.people.values_mut() {
             let zombie = self.pools.get(&p.pool).is_some_and(|pool| pool.zombie);
             let moved = (p.pos - p.prev_pos).with_y(0.0);
-            let teleport = p.fresh || moved.length() > 3.0;
+            let teleport = p.fresh || p.pos.distance_squared(p.prev_pos) > 9.0;
+            if teleport {
+                p.prev_pos = p.pos;
+                p.prev_yaw = p.yaw;
+            }
             p.from = p.to;
             p.from.phase = p.from.phase.rem_euclid(1.0);
             p.to.phase = p.from.phase;
@@ -422,11 +446,6 @@ impl Humans {
                 let stride = if zombie { 0.7 } else { 1.0 };
                 p.to.phase += sign * distance / (metres * stride * (p.to.speed / 0.85).clamp(0.2, 1.0).sqrt()).max(0.05);
             }
-            p.prev_pos = p.pos;
-            p.prev_yaw = p.yaw;
-            p.prev_t = p.t;
-            p.prev_tired = p.tired;
-            p.prev_coil = p.coil;
             // The jolt springs back, overshooting once: a sway, not a snap.
             p.prev_jolt = p.jolt;
             p.jolt_v += (-p.jolt * 140.0 - p.jolt_v * 11.0) * dt;
@@ -545,6 +564,7 @@ impl Humans {
             at += pool.actors.len();
         }
         for (id, p) in &self.people {
+            if !p.visible { continue; }
             let Some(pool) = self.pools.get(&p.pool) else { continue };
             if p.slot >= pool.actors.len() { continue; }
             let k = index[&p.pool] + p.slot;
@@ -880,7 +900,7 @@ mod tests {
         cfg.insert("p".to_string(), HumanPool { count: 1, ..Default::default() });
         let mut h = Humans::new(&cfg);
         let a = h.spawn("p", Vec3::ZERO, 0.0).unwrap().unwrap();
-        let walk = |h: &mut Humans, step: Vec3| for _ in 0..60 { let p = h.people.get_mut(&a).unwrap(); p.pos += step / 60.0; h.tick(1.0 / 60.0); };
+        let walk = |h: &mut Humans, step: Vec3| for _ in 0..60 { h.tick_start(); let p = h.people.get_mut(&a).unwrap(); p.pos += step / 60.0; h.tick(1.0 / 60.0); };
         // Facing +z, walking +x: the legs turn right, the cycle runs forward.
         walk(&mut h, Vec3::X * 1.3);
         let p = &h.people[&a];
@@ -937,11 +957,13 @@ mod tests {
         assert_eq!(h.spawn("zombie", Vec3::X, 0.0).unwrap(), None, "the pool is full");
         assert!(h.spawn("nobody", Vec3::X, 0.0).is_err());
         for i in 1..=60 {
+            h.tick_start();
             h.people.get_mut(&a).unwrap().pos = Vec3::new(0.0, 0.0, i as f32 * 1.3 / 60.0);
             h.tick(1.0 / 60.0);
         }
         let p = &h.people[&a];
         assert!(p.to.speed > 1.0 && p.to.speed < 1.6, "speed {}", p.to.speed);
+        assert!(p.prev_pos.z < p.pos.z, "rendering needs both tick endpoints");
         assert!(p.to.phase > 0.3, "the legs moved: phase {}", p.to.phase);
         let head = h.head(a).unwrap();
         assert!(head.y > 1.2 && head.y < 2.1, "head at {head}");

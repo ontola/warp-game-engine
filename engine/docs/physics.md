@@ -7,10 +7,37 @@ Warp has two layers of physics, and a game uses whichever it needs:
 - the `physics` crate: rigid bodies on [Rapier](https://rapier.rs) with
   enhanced determinism, for things that tumble, fly and stack.
 
-Sideways' cars use Rapier directly in their own simulation crate
-(`games/sideways/sim/src/physics.rs`): suspension, tyres, engine and
-drivetrain at 120 Hz with four substeps. That vehicle model is the game's,
-not an engine API yet.
+## Four-wheel vehicles
+
+Sideways and Warp Theft Auto use the same `physics::vehicle::Car`. It casts
+four tyres, integrates spring and damper loads, and solves combined tyre slip,
+clutch, differential and gearing at four substeps per 120 Hz physics tick.
+A Rust game supplies a `CarSpec`, `Ground` and `Surfaces` to the solver.
+Sideways supplies its editable rally specs and stage surfaces.
+`physics::vehicle::fleet::Fleet` provides a shared road world for multiple
+drivers. Parked cars remain collidable and resume dynamics when occupied.
+
+A Luau game calls `vehicles.reset("city")` after spawning its level. This
+captures the solid boxes with that tag into a Rapier spatial index. Omitting
+the tag captures all current solids. Reset starts a fresh fleet. The level
+snapshot and vehicles live until reset or `world.clear()`. Each game can spawn
+up to its configured world entity capacity in the fleet.
+
+```lua
+local car = vehicles.spawn(vector.create(10, 0, 5), 0) -- ground point and yaw
+vehicles.drive(car, { throttle = 1, steer = .2 })      -- positive steers right
+vehicles.step(dt)                                      -- once for all drivers
+local pose = vehicles.get(car)
+world.set(chassis, { pos = pose.pos, rot = pose.rot })
+```
+
+`vehicles.drive` accepts throttle, brake and handbrake in 0–1, plus steer in
+−1–1. Passing nil parks the car when it comes to rest. `step` accepts simulation
+seconds in 0–1 and accumulates them into 120 Hz steps. `get` returns the
+axle-height origin, YXZ Euler rotation in Warp’s usual (pitch, yaw, roll) vector,
+signed forward speed, gear, RPM, engine torque in Nm, ignition cut and tyre
+slip. For each front-left, front-right, rear-left and rear-right wheel, its
+vector contains local centre height, steering angle and spin angle in radians.
 
 ## `kern::collide`
 

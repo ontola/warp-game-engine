@@ -775,8 +775,9 @@ impl LuaGame {
             let has_plants = !c.plants.plants.is_empty();
             // Keep showing the old plants until every new one has cooked, so
             // a regrown row swaps at once instead of blinking out.
-            let cooking = c.plants.status().2 > 0;
-            if (c.plants.dirty && !cooking) || (c.world.rebuild && has_plants && c.world.scene.gpu_forest.is_some()) {
+            // status() compares cook keys for every placement; settled vegetation
+            // needs no polling beyond checking for newly completed cooks above.
+            if (c.plants.dirty && c.plants.status().2 == 0) || (c.world.rebuild && has_plants && c.world.scene.gpu_forest.is_some()) {
                 c.plants.dirty = false;
                 let c = &mut *c;
                 let started = web_time::Instant::now();
@@ -1053,6 +1054,7 @@ impl Game for LuaGame {
         };
         if self.menu_tick(&controls) { return; }
         let input = match self.input(self.host.lua(), &controls) { Ok(t) => t, Err(e) => { self.say(format!("input: {e}")); return; } };
+        self.core().humans.tick_start();
         self.hook("tick", || Ok(mlua::MultiValue::from_vec(vec![Value::Number(dt as f64), Value::Table(input.clone())])));
         {
             let mut c = self.core();

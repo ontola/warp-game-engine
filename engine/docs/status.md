@@ -218,6 +218,7 @@ Luau folder games support local library imports and dependency-aware hot reload 
 Luau entities can follow a parent, and native games can resolve named model sockets ([parenting](parenting.md)).
 
 - **Sideways** (rally): playable; the main performance scene.
+- **[Warp Theft Auto](../../games/warp-theft-auto/README.md)** runs one to four split-screen players in a seeded city with shared cars, helicopters, delivery contracts and a day clock. Its road cars and Sideways use the same native suspension, tyre and drivetrain solver.
 - **Growing Guns** (arena shooter): a port of the Godot game; its README's
   status tables say how far the port is. Native Quest build (OpenXR) is
   experimental: about 107 fps average at full eye resolution and 120 Hz, not a

@@ -175,6 +175,8 @@ declare sound: {
 	play: (name: string, opts: { [string]: number | Vec }?) -> number,
 	-- Change a parameter of a playing sound.
 	set_param: (handle: number, param: string, value: number) -> (),
+	-- Move a spatial sound along with its emitter.
+	move_to: (handle: number, pos: Vec) -> (),
 	-- Release a playing sound (looping sounds play until stopped).
 	stop: (handle: number) -> (),
 	list: () -> { string },
@@ -234,10 +236,20 @@ declare lights: {
 -- pose: walk, idle, crouch, wave, reach, raise, strike, aim, shove, attack, punch, jab,
 -- hit, hit_head, cast, roll, dead, down, feed (crouched, bent over something on the
 -- ground), rise (getting up off the ground over t); t is its progress, 0 to 1.
+-- The shared four-wheel vehicle simulation. Reset snapshots solid boxes once.
+declare vehicles: {
+	reset: (static_tag: string?) -> (),
+	spawn: (ground_pos: Vec, yaw: number?) -> number,
+	drive: (id: number, controls: { throttle: number?, brake: number?, steer: number?, handbrake: number? }?) -> (),
+	step: (dt: number) -> (),
+	get: (id: number) -> { pos: Vec, rot: Vec, speed: number, rpm: number, gear: number, cut: boolean,
+		parked: boolean, torque: number, slip: number, wheels: { Vec } }?,
+}
+
 declare humans: {
 	spawn: (pool: string, opts: { pos: Vec?, yaw: number? }?) -> number?,
 	-- tired 0..1: bent over, out of breath, over any pose; coil -1..1: wound up for a heavy blow (1), swung through (< 0)
-	set: (id: number, opts: { pos: Vec?, yaw: number?, pose: string?, t: number?, tired: number?, coil: number? }) -> boolean,
+	set: (id: number, opts: { pos: Vec?, yaw: number?, pose: string?, t: number?, tired: number?, coil: number?, visible: boolean? }) -> boolean,
 	-- A blow along dir (its length the strength, ~1 heavy): the upper body jolts and sways back
 	hit: (id: number, dir: Vec) -> boolean,
 	-- Limp from the pose it stands in, thrown by push (m/s); up again with any pose but dead/down
@@ -253,11 +265,12 @@ declare plants: {
 	-- A grown plant (a Jeffrey pine unless `species` changes its rules): its
 	-- age in years sets how many shoots, limbs and needle brushes it has, not
 	-- its scale. It cooks on a background thread and appears when done.
+	-- `scale` multiplies the cooked plant at this placement (default 1).
 	-- `species` and `look` override fields of plants.defaults() (unknown
 	-- names are an error). `full` also cooks the voxel levels and proxies
 	-- (LOD and far views; minutes for an old tree); without it a preview of
 	-- the source meshes takes a fraction of a second. Returns the plant's id.
-	grow: (opts: { age: number, seed: number?, pos: Vec?, yaw: number?, full: boolean?, species: { [string]: any }?, look: { [string]: any }? }) -> number,
+	grow: (opts: { age: number, seed: number?, pos: Vec?, yaw: number?, scale: number?, full: boolean?, species: { [string]: any }?, look: { [string]: any }? }) -> number,
 	remove: (id: number) -> boolean,
 	clear: () -> (),
 	-- Plants placed, shown, still cooking with nothing to show, failed (and the

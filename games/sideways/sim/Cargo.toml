@@ -6,6 +6,7 @@ license.workspace = true
 description = "Sideways gameplay simulation: stage, cars, AI, race"
 
 [dependencies]
+physics = { path = "../../../engine/crates/physics" }
 gdcompat.workspace = true
 kern.workspace = true
 rapier3d.workspace = true

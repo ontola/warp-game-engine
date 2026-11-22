@@ -222,7 +222,8 @@ keyboard mapping is in `app::input`.
 | `sound` | `play(name, {at, db, pitch, <param> = value}) -> handle`, `set_param(handle, param, value)`, `stop(handle)`, `list()` |
 | `hud` | `text(text, x, y, {size, color, align, width})`, `box(x, y, w, h, color)`, `size() -> w, h`, `measure(text, size?) -> w, h` (one line of `text` in the HUD font, in pixels), `view(player) -> x, y, w, h`, `project(pos, player?) -> x, y or nil` |
 | `post` | `set({bloom, bloom_radius, bloom_threshold, bloom_wide, contrast, saturation, vignette, grain, aberration})`, `reset()` |
-| `humans` | `spawn(pool, {pos, yaw})` → id or nil when the pool is full, `set(id, {pos, yaw, pose, t, tired, coil})`, `hit(id, dir)`, `ragdoll(id, push)`, `remove(id)`, `head(id)` and `joint(id, name)` → vector, `room(pool)` → free, total |
+| `plants` | `grow({age, seed, pos, yaw, scale, species, look, full})` → id, `remove(id)`, `clear()`, `defaults()`, `status()` |
+| `humans` | `spawn(pool, {pos, yaw})` → id or nil when the pool is full, `set(id, {pos, yaw, pose, t, tired, coil, visible})`, `hit(id, dir)`, `ragdoll(id, push)`, `remove(id)`, `head(id)` and `joint(id, name)` → vector, `room(pool)` → free, total |
 | `lights` | `set({{pos, color, intensity, range}, ...})` (at most 32), `spots({{pos, dir, color, intensity, range, angle, inner}, ...})` (at most 8, with shadows), `clear()` |
 | `sky` | `set(name)`, `get()`, `warm(name)` (bake a sky you will switch to later in the background, so the switch does not stall a frame) |
 | `light` | `set({sun, sun_lux, sky_lux, exposure, exposure_min, exposure_max, exposure_bias, adapt_speed, fog_start, fog_end, fog_density})`, `reset()` |
@@ -317,6 +318,11 @@ keyboard mapping is in `app::input`.
   at a low emissive (0.03) with soft wide bloom, a glossy dark deck and a
   lamp over each player. Neon Siege is Geometry Wars style: outlines at
   emissive 0.14 under a tight bloom, a camera straight down, no sky light.
+- **Plants**. `age` controls the number of growing seasons. Choose a small
+  set of ages, seeds, growth rules and looks for a grove. Placements with
+  the same recipe share a cook. Set each placement’s `pos`, `yaw` and
+  positive uniform `scale` to vary its position, facing and size. Scale
+  defaults to 1 and applies to both the mesh preview and the full forest.
 - **Humans**: Warp Humans, the engine's skinned people, from pools that
   game.toml reserves (`[humans.zombie] count = 40, style = "zombie"`), so
   spawning never rebuilds the renderer. Set each one's feet `pos` and
@@ -351,6 +357,9 @@ keyboard mapping is in `app::input`.
   `joint(id, name)` any of `head`, `neck`, `chest`, `hips`, `shoulder_l`,
   `elbow_l`, `hand_l`, `knee_l`, `foot_l` (and `_r`), say to put a weapon
   in a hand.
+  Set `visible = false` to hide the fitted actor while a player rides in a
+  vehicle. The actor keeps its identity, slot and joint queries. Restore
+  `visible = true` at the exit position to show that same person again.
   Looks only: they never collide, and the game keeps its own positions.
   Each human is a full skinned mesh skinned every frame, so keep pools to
   the crowd that is on screen. The rig is in `engine/assets/humans/rig`;

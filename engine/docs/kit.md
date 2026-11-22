@@ -100,6 +100,14 @@ person), `speed` (kart). Extras: `platformer:bounce(speed?)`,
 `walker:push(impulse)`, `walker:stick(input)`, `kart:boost(seconds,
 extra?)`, `kart:speed01()`.
 
+## kit/crowd
+
+`require("kit/crowd").new(pool, radius)` shares a fitted Warp Humans pool among cameras. Supply candidates as a dense array with stable indices, feet `pos`, human `yaw`, and optional `active` and `pose`. Call `crowd:select(candidates, observerPositions)` periodically to share slots between observers, then `crowd:update(candidates)` each tick to animate the selected people. The game owns the routes and simulation for residents outside the radius.
+
+## kit/daycycle
+
+`require("kit/daycycle").new(startHour, secondsPerDay, weather)` creates a game-time clock. Call `daycycle.tick(clock, dt)` once per simulation tick. All views share its `hour`, `phase` and `daylight`. It switches between six sky presets and warms the next atmospheric bake before the transition.
+
 ## kit/camera
 
 ```lua

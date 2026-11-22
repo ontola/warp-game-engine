@@ -31,6 +31,37 @@ fn write(path: &Path, text: &str) {
 }
 
 #[test]
+fn a_crowd_shares_its_pool_between_separated_observers() {
+    let dir = folder("crowd");
+    write(&dir.join("game.toml"), "[humans.ambient]\ncount = 3\nvariety = 1");
+    write(&dir.join("main.luau"), r#"
+local crowd = require("kit/crowd")
+local v = vector.create
+return { init = function()
+    -- A person already using this pool belongs to a different system.
+    local bystander = humans.spawn("ambient", {pos = v(0,0,0)})
+    local c = crowd.new("ambient", 12)
+    local residents = {{pos = v(1,0,0)}, {pos = v(2,0,0)}, {pos = v(31,0,0)}}
+    c:select(residents, {v(0,0,0), v(30,0,0)})
+    local first = c.active[1]
+    assert(first and c.active[3] and not c.active[2])
+    c:update(residents)
+    c:select(residents, {v(0,0,0), v(0,0,0)})
+    assert(c.active[1] == first and c.active[2] and not c.active[3])
+    c:select(residents, {})
+    assert(humans.room("ambient") == 2)
+    assert(humans.set(bystander, {visible = false}) and humans.set(bystander, {visible = true}))
+    assert(humans.head(bystander) ~= nil)
+    state.passed = true
+end }
+"#);
+    let g = game(&dir);
+    let result = state(&g);
+    assert_eq!(result["errors"], json!([]), "{result}");
+    assert_eq!(result["state"]["passed"], true);
+}
+
+#[test]
 fn the_repo_copy_of_hello_warp_is_the_starter() {
     let dir = repo().join("games/hello-warp");
     for (rel, text) in warp::starter::FILES {

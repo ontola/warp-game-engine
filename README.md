@@ -54,6 +54,7 @@ WebGPU minimum of 8 storage buffers per shader stage so it can get there.
 | [Growing Guns](games/growing-guns/README.md) | Arena shooter ported from Godot, with a Quest build | Rust |
 | Spellstorm | Co-op wizard roguelite (port in progress) | Rust + Luau mods |
 | [SpaceRacer](games/spaceracer/README.md) | Native development port of the racer | Rust + Luau rules |
+| [Warp Theft Auto](games/warp-theft-auto/README.md) | Open-world driving, flying and vehicle recovery in a procedural port city for one to four players | Luau + Rust vehicle physics |
 | [Dead Miles](games/dead-miles/README.md) | Co-op zombie walk east, by night | Luau |
 | [Neon Siege](games/neon-siege/README.md), [Neon Trails](games/neon-trails/README.md), [Stack Together](games/stack-together/README.md) | Party games ported from LÖVE | Luau |
 | [Painted Meadow](games/painted-meadow/README.md) | Stylised walk with its own lighting and finish shaders | Luau |
