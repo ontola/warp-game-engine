@@ -277,17 +277,19 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
     // The middle game's colour as a soft glow from the top (its cover is
     // already the big card: not again behind it).
     let color = Color::from_string(&shelf[middle].color, VIOLET);
-    let glow = 24;
-    for k in 0..glow {
-        let (top, bottom) = ((h * 0.7 * k as f32 / glow as f32).round(), (h * 0.7 * (k + 1) as f32 / glow as f32).round());
-        let t = 1.0 - (k as f32 + 0.5) / glow as f32;
-        c.rect([0.0, top, w, bottom - top], color.darkened(0.55).with_alpha(0.45 * t * t * fade));
-    }
-    // Darker towards the bottom, for the title and buttons.
-    let bands = 24;
-    for k in 0..bands {
-        let (top, bottom) = ((h * (0.5 + 0.5 * k as f32 / bands as f32)).round(), (h * (0.5 + 0.5 * (k + 1) as f32 / bands as f32)).round());
-        c.rect([0.0, top, w, bottom - top], rgba(0.0, 0.0, 0.0, 0.55 * (k as f32 + 0.5) / bands as f32 * fade));
+    // One colour per two pixel rows: smooth, no bands. The glow fades
+    // out from the top, the bottom darkens for the title and buttons.
+    let glow = color.darkened(0.55);
+    let base = rgba(0.02, 0.02, 0.04, 1.0);
+    let mut y = 0.0;
+    while y < h {
+        let t = y / h;
+        let g = (1.0 - t / 0.75).max(0.0);
+        let g = 0.45 * g * g;
+        let dark = 1.0 - 0.55 * ((t - 0.5) / 0.5).clamp(0.0, 1.0);
+        let mix = |a: f32, b: f32| (a * (1.0 - g) + b * g) * dark;
+        c.rect([0.0, y, w, 2.0], Color { r: mix(base.r, glow.r), g: mix(base.g, glow.g), b: mix(base.b, glow.b), a: fade });
+        y += 2.0;
     }
     c.text(faces.bold, [48.0 * scale, 72.0 * scale], "ALL GAMES", TextAlign::Left, -1.0, (34.0 * scale).floor(), TEXT.with_alpha(fade));
     let count = format!("{} of {}", middle + 1, shelf.len());
@@ -297,6 +299,8 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
 
     let layout = catalog_layout(lobby, size);
     let mouse = lobby.mouse.at;
+    let mut opens: Vec<(usize, [f32; 4], [f32; 4])> = vec![];
+    let queue = lobby.host.upcoming();
     for &(i, r) in &layout.cards {
         c.over();
         let mid = i == middle;
@@ -320,6 +324,7 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
             if n[0] + n[2] < r[0] + r[2] && n[0] + n[2] > x0 { x0 = n[0] + n[2]; }
         }
         let open = [x0, r[1], (x1 - x0).max(1.0), r[3]];
+        opens.push((i, r, open));
         c.clip_to(Some(open));
         match cover(i) {
             Some(art) => { c.provide(art.image, &art.picture); c.image(r, art.image, fill_uv(art.size, r), rgba(k, k, k, fade)); }
@@ -328,6 +333,34 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
         c.clip_to(None);
     }
     c.over();
+    // Over the cards, each only where its card shows: a loading game's
+    // progress, and a queued game's place in the queue.
+    for &(i, r, open) in &opens {
+        let game = &shelf[i].id;
+        c.clip_to(Some(open));
+        let k = r[3] / opens.last().map_or(r[3], |o| o.1[3]);
+        if let Some(percent) = lobby.host.loading_shown(game) {
+            let bh = (34.0 * scale * k).floor();
+            let band = [r[0], r[1] + r[3] - bh * 1.9, r[2], bh * 1.9];
+            c.rect(band, rgba(0.03, 0.03, 0.06, 0.85 * fade));
+            let label = lobby.host.loading_kicker(game);
+            let fs = (bh * 0.5).floor();
+            c.text(faces.bold, [open[0], band[1] + bh * 0.75], &label, TextAlign::Center, open[2], fs, crate::lobby::AMBER.with_alpha(fade));
+            let bar = [r[0] + bh * 0.5, band[1] + bh * 1.15, r[2] - bh, bh * 0.28];
+            c.rect(bar, rgba(1.0, 1.0, 1.0, 0.15 * fade));
+            c.rect([bar[0], bar[1], bar[2] * (percent / 100.0).clamp(0.0, 1.0), bar[3]], crate::lobby::AMBER.with_alpha(fade));
+        }
+        if let Some(place) = queue.iter().position(|e| &e.game == game) {
+            let radius = (26.0 * scale * k).floor();
+            // Top right of the part of the card that shows.
+            let center = [open[0] + open[2] - radius * 1.35, r[1] + radius * 1.35];
+            c.circle(center, radius + 3.0 * scale, Color::hex("0b0b12").with_alpha(fade));
+            c.circle(center, radius, crate::lobby::GREEN.with_alpha(fade));
+            let fs = (radius * 1.1).floor();
+            c.text(faces.bold, [center[0] - radius, center[1] + fs * 0.36], &(place + 1).to_string(), TextAlign::Center, radius * 2.0, fs, Color::hex("0b0b12").with_alpha(fade));
+        }
+    }
+    c.clip_to(None);
     let station = lobby.host.station_at((game_room_sim::layout::GAME_SHELF.0 + game_room_sim::layout::GAME_SHELF.1) / 2.0, None);
     let card_bottom = layout.cards.last().map_or(h * 0.72, |c| c.1[1] + c.1[3]);
     let title = if shelf[middle].title.is_empty() { "Game" } else { &shelf[middle].title };
@@ -350,12 +383,11 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
         c.text(faces.regular, [r[0] + r[3], r[1] + r[3] / 2.0 + fs * 0.36], label, TextAlign::Center, r[2] - r[3] * 1.2, fs, TEXT.with_alpha(if live { fade } else { 0.4 * fade }));
     }
     // The queue, small, bottom right.
-    let queue = lobby.host.upcoming();
     if !queue.is_empty() {
         let fs = (19.0 * scale).floor();
         let line = fs * 1.55;
         let shown = queue.len().min(4);
-        let qw = queue.iter().take(shown).map(|e| render::hud::measure(&e.title, faces.regular, fs)[0]).fold(160.0 * scale, f32::max) + fs * 3.2;
+        let qw = queue.iter().take(shown).map(|e| render::hud::measure(&format!("{}  100%", e.title), faces.regular, fs)[0]).fold(160.0 * scale, f32::max) + fs * 3.2;
         let qh = fs * 2.4 + line * shown as f32 + if queue.len() > shown { line * 0.8 } else { 0.0 };
         let (qx, qy) = (w - qw - 32.0 * scale, h - qh - 72.0 * scale);
         c.over();
@@ -365,7 +397,8 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
         for (i, e) in queue.iter().take(shown).enumerate() {
             let y = qy + fs * 2.4 + line * (i as f32 + 0.75);
             c.text(faces.regular, [qx + fs, y], &format!("{:02}", i + 1), TextAlign::Left, -1.0, (fs * 0.8).floor(), DIM.with_alpha(fade));
-            c.text(faces.regular, [qx + fs * 2.6, y], &e.title, TextAlign::Left, -1.0, fs, TEXT.with_alpha(fade));
+            let title = match lobby.host.loading_shown(&e.game) { Some(_) => format!("{}  {}%", e.title, lobby.host.loading_percent(&e.game)), None => e.title.clone() };
+            c.text(faces.regular, [qx + fs * 2.6, y], &title, TextAlign::Left, -1.0, fs, TEXT.with_alpha(fade));
         }
         if queue.len() > shown {
             c.text(faces.regular, [qx + fs * 2.6, qy + qh - fs * 0.6], &format!("+{} more", queue.len() - shown), TextAlign::Left, -1.0, (fs * 0.8).floor(), DIM.with_alpha(fade));

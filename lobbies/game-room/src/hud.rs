@@ -136,16 +136,18 @@ pub fn draw(lobby: &Lobby, size: [u32; 2], _alpha: f32) -> HudDrawList {
     c.over();
     bench(lobby, &mut c, scale);
 
-    // Toasts, bottom centre.
-    let mut y = h - 40.0 * scale;
+    // Toasts, bottom centre; in the catalog view top centre, clear of its
+    // buttons and hints.
+    let catalog = lobby.catalog_open();
+    let mut y = if catalog { 40.0 * scale } else { h - 40.0 * scale };
     for t in lobby.toasts.iter().rev() {
         let fs = (22.0 * scale).floor();
         let tw = width(&t.text, fs) + 44.0;
-        let r = [w / 2.0 - tw / 2.0, y - fs - 20.0, tw, fs + 24.0];
+        let r = if catalog { [w / 2.0 - tw / 2.0, y, tw, fs + 24.0] } else { [w / 2.0 - tw / 2.0, y - fs - 20.0, tw, fs + 24.0] };
         c.rect(r, PANEL);
         c.rect([r[0], r[1], 4.0, r[3]], t.color);
         text(&mut c, &t.text, [r[0] + 24.0, r[1] + fs + 4.0], fs, TEXT);
-        y -= r[3] + 10.0;
+        y += if catalog { r[3] + 10.0 } else { -(r[3] + 10.0) };
     }
     if !lobby.host.update_ready().is_empty() {
         let fs = (18.0 * scale).floor();
