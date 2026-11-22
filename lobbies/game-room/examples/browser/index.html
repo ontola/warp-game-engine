@@ -54,6 +54,11 @@ html[data-qr] .hints .phone{display:none}
 html:not([data-opening]) #warp-progress.later #warp-join{display:none}
 #warp-progress.later #warp-join{gap:12px;margin-top:12px}
 #warp-progress.later #warp-qr{width:72px;height:72px;padding:4px}
+/* The installed app: every game, full speed. */
+#warp-install{color:var(--muted);font-size:14px;text-align:center;margin:0}
+#warp-install a{color:var(--violet);font-weight:800;text-decoration:none}
+#warp-install a:hover{text-decoration:underline}
+#warp-progress.later #warp-install{display:none}
 #warp-progress.later .brand,#warp-progress.later .hints{display:none}
 #warp-progress.later .loader{width:100%}
 #warp-progress.later #warp-step{font-size:14px}
@@ -102,6 +107,7 @@ body.debug #warp-games{display:flex!important}
     <li class="phone"><b>Phone</b> scan the code on the wall</li>
   </ul>
   <div id="warp-join" hidden><div id="warp-qr"></div><div><strong>Join with your phone</strong><span>Scan the code, or open <b id="warp-host"></b> and enter <b id="warp-code"></b></span></div></div>
+  <p id="warp-install">This is the browser version, with a few games. <a id="warp-install-link" href="https://splitscreen.club/#download">Download Splitscreen Club</a> for every game at full speed.</p>
 </div>
 <div id="club-notice" role="status">
   <svg viewBox="0 0 48 48" aria-hidden="true"><rect x="4" y="12" width="40" height="22" rx="10" fill="#ffb454"/><circle cx="12" cy="30" r="9" fill="#ffb454"/><circle cx="36" cy="30" r="9" fill="#ffb454"/>
@@ -151,6 +157,8 @@ function showJoin(origin, code) {
   document.getElementById('warp-join').hidden = false;
   document.documentElement.setAttribute('data-qr', '');
 }
+// On Windows the installer itself; elsewhere the site's download section.
+if (/Windows/.test(navigator.userAgent)) { const a = document.getElementById('warp-install-link'); a.href = 'https://splitscreen.club/download/GameNight-Setup.exe'; a.textContent = 'Download Splitscreen Club for Windows'; }
 // ?game=NAME: name the game (and show its cover) while everything loads.
 const opening = new URLSearchParams(location.search).get('game');
 if (opening) document.documentElement.setAttribute('data-opening', '');
