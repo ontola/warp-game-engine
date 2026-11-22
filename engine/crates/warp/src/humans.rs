@@ -21,6 +21,9 @@ use std::collections::BTreeMap;
 use std::f32::consts::{PI, TAU};
 use std::sync::OnceLock;
 
+/// The most different people a pool fits in a browser.
+const BROWSER_VARIETY: usize = 2;
+
 use crate::config::HumanPool;
 
 const RIG_JSON: &[u8] = include_bytes!("../../../assets/humans/rig/player-rig.json");
@@ -346,7 +349,10 @@ impl Humans {
     }
 
     pub fn new(cfg: &BTreeMap<String, HumanPool>) -> Self {
-        let pools = cfg.iter().map(|(name, c)| (name.clone(), Pool { zombie: c.style == "zombie", cfg: c.clone(), models: Vec::new(), skeletons: OnceLock::new(), actors: Vec::new(), used: vec![false; c.count], cap: c.count })).collect();
+        // A browser fits each person on its one page thread before the
+        // first frame (25 people took 150 s in Dead Miles): fewer there.
+        let fitted = |c: &HumanPool| HumanPool { variety: if cfg!(target_arch = "wasm32") { c.variety.min(BROWSER_VARIETY) } else { c.variety }, ..c.clone() };
+        let pools = cfg.iter().map(|(name, c)| (name.clone(), Pool { zombie: c.style == "zombie", cfg: fitted(c), models: Vec::new(), skeletons: OnceLock::new(), actors: Vec::new(), used: vec![false; c.count], cap: c.count })).collect();
         Humans { pools, next: 1, ..Default::default() }
     }
 
