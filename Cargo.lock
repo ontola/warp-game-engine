@@ -5014,6 +5014,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "swash",
+ "vfs",
  "web-time",
  "wgpu",
 ]
@@ -5756,7 +5757,9 @@ dependencies = [
  "spaceracer",
  "splitscreen-club",
  "tungstenite",
+ "vfs",
  "warp-xr",
+ "web-time",
  "wgpu",
  "zip",
 ]

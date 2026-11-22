@@ -16,6 +16,7 @@ spaceracer = { path = "../sim" }
 app = { path = "../../../engine/crates/app" }
 render = { path = "../../../engine/crates/render" }
 assets = { path = "../../../engine/crates/assets" }
+vfs = { path = "../../../engine/crates/vfs" }
 splitscreen-club.workspace = true
 glam = "0.31"
 serde = { workspace = true, features = ["derive"] }
@@ -28,6 +29,10 @@ gdcompat = { path = "../../sideways/determinism" }
 fastnoise-lite = "1"
 warp-xr = { path = "../../../engine/crates/xr" }
 wgpu = "30"
+
+# The browser build (web.rs): std::time::Instant panics there.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-time = "1.1"
 
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = { version = "0.6", features = ["native-activity"] }
