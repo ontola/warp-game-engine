@@ -2,6 +2,7 @@
 -- builds one furnished, walkable floor when a pedestrian approaches a door or window.
 local room = {}
 local v = vector.create
+local WALL, FLOOR, CEILING_SLAB = .23, .024, .17
 local finishes = {}
 local function finish(color, surface, emissive)
 	local look = {color=color, surface=surface, emissive=emissive}
@@ -89,21 +90,28 @@ local function storefront(b)
 	return 1.76, b.w/2-.66, sill, 2.50
 end
 
+-- The room probe extends to the middle of the boundary slabs. At a window
+-- this is the glass plane, so a reflection heading out sees the street.
+function room.light_bounds(b)
+	local halfW, halfD = (b.w-WALL)/2, (b.d-WALL)/2
+	return v(b.x-halfW,FLOOR/2,b.z-halfD), v(b.x+halfW,b.h-CEILING_SLAB/2,b.z+halfD)
+end
+
 function room.window_distance_sq(b, feet)
 	local x, z, eye = math.abs(feet.x-b.x), feet.z-b.z, feet.y+1.5
 	local span, center, sill, head = sideWindow(b)
-	local dx = x-(b.w/2-.115)
+	local dx = x-((b.w-WALL)/2)
 	local dz = math.max(0,math.abs(z-center)-span/2)
 	local dy = math.max(sill-eye,0,eye-head)
 	local lateral = dx*dx + dy*dy + dz*dz
 	local left, right, bottom, top = storefront(b)
-	dx, dy, dz = math.max(left-x,0,x-right), math.max(bottom-eye,0,eye-top), z-(b.d/2-.115)
+	dx, dy, dz = math.max(left-x,0,x-right), math.max(bottom-eye,0,eye-top), z-((b.d-WALL)/2)
 	return math.min(lateral, dx*dx + dy*dy + dz*dz)
 end
 
 local function envelope(b, put, pane, wall, floor, lamp)
 	local w, d, h = b.w, b.d, b.h
-	local thick, lining = .23, .045
+	local thick, lining = WALL, .045
 	local doorW, doorH = 2.8, 2.5
 	local wing = (w - doorW) / 2
 	local exterior = {color=b.color, surface=b.surface}
@@ -145,8 +153,8 @@ local function envelope(b, put, pane, wall, floor, lamp)
 	put(0,(h+doorH)/2,(d-thick)/2,w,h-doorH,thick,exterior)
 	put(0,(h+doorH)/2,d/2-thick-lining/2,w-2*thick,h-doorH,lining,wall,false)
 	-- Feet remain on the continuous island collider through the threshold.
-	put(0,.012,0,w-2*thick,.024,d-2*thick,floor,false)
-	put(0,h-.085,0,w,.17,d,CEILING)
+	put(0,FLOOR/2,0,w-2*thick,FLOOR,d-2*thick,floor,false)
+	put(0,h-CEILING_SLAB/2,0,w,CEILING_SLAB,d,CEILING)
 	for _, xSide in {-1,1} do
 		for _, zSide in {-1,1} do
 			put(xSide*w*.23,h-.215,zSide*d*.22,1.5,.09,.60,lamp,false)

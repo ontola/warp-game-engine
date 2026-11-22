@@ -118,7 +118,8 @@ local function lightRoom(b, pieces)
 				intensity = if b.kind == "hotel" then 700 else 1250, range = 18})
 		end
 	end
-	lights.room(b.id, {min = v(b.x-b.w/2, 0, b.z-b.d/2), max = v(b.x+b.w/2, b.h, b.z+b.d/2),
+	local lower, upper = room.light_bounds(b)
+	lights.room(b.id, {min = lower, max = upper,
 		entities = pieces, panels = panels})
 end
 

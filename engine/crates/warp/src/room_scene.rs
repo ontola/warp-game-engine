@@ -188,6 +188,17 @@ mod tests {
         assert!(game.errors().is_empty(), "{:?}", game.logs());
         let core = game.core();
         let room = core.rooms.rooms.iter().flatten().next().expect("streamed office");
+        // A room's reflection volume ends at its panes. Extending it to the
+        // outside masonry makes the proxy reflect the lit room across the street.
+        let mut panes = 0;
+        for entity in room.entities.iter().filter_map(|id| core.world.get(*id)) {
+            if entity.look.glass.is_none() { continue; }
+            let p = entity.pos;
+            let distance = (p.x-room.min.x).abs().min((p.x-room.max.x).abs()).min((p.z-room.max.z).abs());
+            assert!(distance < 0.001, "glazing {p:?} lies off the room probe boundary");
+            panes += 1;
+        }
+        assert_eq!(panes, 4);
         let geometry = core.world.room_occluders(&room.entities).unwrap();
         let lamps = room.panels.iter().map(|p| p.0).collect::<Vec<_>>();
         assert_eq!(lamps.len(), 4);
