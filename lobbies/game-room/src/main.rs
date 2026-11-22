@@ -41,6 +41,7 @@ fn run() -> Result<(), String> {
         // fullscreen unless --windowed.
         let options = game_room::stage::Options::from_args(numf, flag, |k| arg(k).is_some());
         let mut lobby = game_room::live::Lobby::connect(options)?;
+        lobby.remember_view();
         // Controllers come from the host as frames; the mouse points and clicks but is nobody.
         let cfg = app::Config { title: "Splitscreen Club Game Room".into(), size: [1600, 900], fullscreen: !flag("--windowed"), keyboard: false, pointer: true, frames: numf("--frames", 0.0) as u64,
             // From native resolution: the room is text and pixel art, soft when

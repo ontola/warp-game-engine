@@ -61,7 +61,6 @@ impl Lobby {
 
     /// Escape: the mouse's Start menu opens, or closes (a page goes back).
     pub fn mouse_escape(&mut self) {
-        if self.catalog.open { self.close_catalog(); return; }
         match self.menus.get(MOUSE) {
             Some(m) if m.page.starts_with("player:") => { self.menus.remove(MOUSE); }
             Some(m) if !m.page.is_empty() => self.menu_page(MOUSE, ""),
@@ -81,14 +80,14 @@ impl Lobby {
             self.mouse.hover = None;
             return;
         }
-        if self.catalog.open {
-            self.mouse.hover = None;
-            self.catalog_pointer(p, size);
-            return;
-        }
         if self.menus.contains_key(MOUSE) {
             self.mouse.hover = None;
             self.mouse_menu(p, size);
+            return;
+        }
+        if self.catalog_open() {
+            self.mouse.hover = None;
+            self.catalog_pointer(p, size);
             return;
         }
         let Some(at) = p.position else { self.mouse.hover = None; return };
