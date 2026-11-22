@@ -44,7 +44,8 @@ python3 engine/tools/build-web.py --warp --serve
 ```
 
 Open http://localhost:8790/ (`?players=3` for three seats at the start,
-default 2; `?game=neon-siege` starts in that game; `?cloud=URL` names the
+default none: until someone joins, the page asks for a controller or the
+QR code; `?game=neon-siege` starts in that game; `?cloud=URL` names the
 Splitscreen Club cloud, `?cloud=off` plays without one). A small host lives in the page instead of a
 Splitscreen Club host: the room's commands (Play at the TV or the shelf,
 queue, skip, Resume) reach it through `Lobby::outbox`, it loads the game

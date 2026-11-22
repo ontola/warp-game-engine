@@ -11,7 +11,8 @@
 //! A device that presses a button takes a free seat or joins as a new
 //! player; a pad that stays gone leaves after the room's 30 s.
 //!
-//! `?players=N` seats at the start (default 2), `?game=NAME` starts in that game instead of the room,
+//! `?players=N` seats at the start (default none: the room asks for a
+//! controller or the QR code until someone joins), `?game=NAME` starts in that game instead of the room,
 //! `?cloud=URL` the Splitscreen Club cloud (default: the page's own origin;
 //! `?cloud=off` plays without one). See engine/docs/browser.md.
 
@@ -30,6 +31,8 @@ mod page {
     const COLORS: [&str; 6] = ["#38d6ff", "#3ddc97", "#ffb454", "#ff4f8b", "#e8c14a", "#a78bfa"];
     /// Colours for players who join with a pad, by seat.
     const PLAYER_COLORS: [&str; 8] = ["#e36c76", "#49b8bc", "#d7ad43", "#a67bdd", "#4daf7c", "#cf7aaf", "#5b8def", "#f08c4a"];
+    /// Skins for players who join, by seat (the demo party's).
+    const SKINS: [&str; 6] = ["#f5e9be", "#d99b72", "#efc39a", "#905c40", "#bf855b", "#654332"];
     /// The most seats a table has.
     const MAX_SEATS: usize = 8;
 
@@ -128,10 +131,11 @@ mod page {
     fn add_player(h: &mut Host) -> usize {
         let i = h.bound.len();
         let id = format!("p{i}");
-        let mut look = h.own_looks.get(i % h.base.max(1)).cloned().unwrap_or_else(|| json!({}));
+        let mut look = json!({});
         look["id"] = json!(id);
         look["name"] = json!(format!("Player {}", i + 1));
         look["color"] = json!(PLAYER_COLORS[i % PLAYER_COLORS.len()]);
+        look["skin_color"] = json!(SKINS[i % SKINS.len()]);
         look["avatar"] = json!(game_room::face::demo(i));
         look["couch"] = json!(i);
         h.own_looks.push(look.clone());
@@ -162,6 +166,16 @@ mod page {
         }
         h.players = h.bound.len();
         h.dirty = true;
+    }
+
+    /// Tell the page whether the room is on screen with nobody in it: it
+    /// shows "press a button on a controller, or scan the code" then
+    /// (`<html data-empty>`, see index.html).
+    fn empty_room(empty: bool) {
+        thread_local! { static SHOWN: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) }; }
+        if SHOWN.with(|s| s.replace(Some(empty))) == Some(empty) { return; }
+        let Some(root) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.document_element()) else { return };
+        let _ = if empty { root.set_attribute("data-empty", "") } else { root.remove_attribute("data-empty") };
     }
 
     /// The room on screen: its lobby, and the page's host answering it.
@@ -210,6 +224,7 @@ mod page {
                 self.lobby.set_party(party);
             }
             if let Some(links) = with(|h| std::mem::take(&mut h.links_dirty).then(|| h.links.clone())) { self.lobby.set_links(links); }
+            empty_room(with(|h| h.players == 0 && h.on_screen.is_none()));
             self.lobby.tick(controls);
             for msg in self.lobby.outbox.as_mut().map(std::mem::take).unwrap_or_default() { self.command(&msg); }
         }
@@ -265,6 +280,7 @@ mod page {
                 if h.on_screen.is_none() { app::web::switch_keeping(cfg, Box::new(lua), |p| with(|h| h.room = Some(p))); } else { app::web::switch(cfg, Box::new(lua)); }
                 h.on_screen = Some(game.clone());
                 set_session(h, Some(&game), "running");
+                empty_room(false);
             });
         });
     }
@@ -276,6 +292,7 @@ mod page {
             app::web::resume(paused, Some(Box::new(|p| with(|h| h.room = Some(p)))));
             h.on_screen = Some(game.clone());
             set_session(h, Some(&game), "running");
+            empty_room(false);
         });
     }
 
@@ -307,7 +324,7 @@ mod page {
 
     async fn run() -> Result<(), String> {
         let library: Vec<Value> = serde_json::from_slice(&app::web::fetch("games/library.json").await?).map_err(|e| format!("games/library.json: {e}"))?;
-        let players = warp::web::param("players").and_then(|p| p.parse().ok()).unwrap_or(2usize).clamp(1, 8);
+        let players = warp::web::param("players").and_then(|p| p.parse().ok()).unwrap_or(0usize).min(MAX_SEATS);
         app::web::progress(Some(0.2), "Building the Game Room");
         let t0 = web_time::Instant::now();
         let mut options = game_room::stage::Options::default();

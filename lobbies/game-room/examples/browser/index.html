@@ -38,6 +38,14 @@ canvas#warp{width:100vw;height:100vh;display:block;touch-action:none;user-select
 #warp-progress.later .loader{width:100%}
 #warp-progress.later #warp-step{font-size:14px}
 
+/* The room with nobody in it yet (the engine sets html[data-empty]). */
+#club-notice{position:fixed;top:28px;left:50%;transform:translate(-50%,-12px);opacity:0;visibility:hidden;transition:opacity .35s,transform .35s,visibility .35s;
+  display:flex;align-items:center;gap:18px;padding:16px 24px;border-radius:20px;background:rgba(13,16,32,.86);border:1px solid rgba(255,255,255,.1);
+  box-shadow:0 12px 36px rgba(0,0,0,.45);backdrop-filter:blur(8px);z-index:1;max-width:calc(100vw - 32px);box-sizing:border-box}
+html[data-empty] #club-notice{opacity:1;visibility:visible;transform:translate(-50%,0)}
+#club-notice svg{flex:none;width:44px;height:44px}
+#club-notice strong{display:block;font-weight:800;font-size:clamp(17px,2vw,22px)}
+#club-notice span{color:var(--muted);font-size:clamp(14px,1.6vw,17px)}
 #warp-log{display:none;position:fixed;left:8px;bottom:8px;white-space:pre-wrap;max-width:90vw;max-height:40vh;overflow:hidden;pointer-events:none;font:12px monospace;color:#ddd;text-shadow:0 0 3px #000;z-index:3}
 #warp-games{display:none!important}
 body.debug #warp-log{display:block}
@@ -58,6 +66,11 @@ body.debug #warp-games{display:flex!important}
     <li><b>Controller</b> press any button to join</li>
     <li><b>Phone</b> scan the code on the wall</li>
   </ul>
+</div>
+<div id="club-notice" role="status">
+  <svg viewBox="0 0 48 48" aria-hidden="true"><rect x="4" y="12" width="40" height="22" rx="10" fill="#ffb454"/><circle cx="12" cy="30" r="9" fill="#ffb454"/><circle cx="36" cy="30" r="9" fill="#ffb454"/>
+    <rect x="9" y="21" width="10" height="3.5" rx="1.75" fill="#0d1020"/><rect x="12.25" y="17.75" width="3.5" height="10" rx="1.75" fill="#0d1020"/><circle cx="33" cy="19.5" r="2.6" fill="#0d1020"/><circle cx="38" cy="24.5" r="2.6" fill="#0d1020"/></svg>
+  <div><strong>Connect a controller and press any button</strong><span>or scan the QR code on the wall with your phone</span></div>
 </div>
 <div id="warp-log"></div>
 <script type="module">

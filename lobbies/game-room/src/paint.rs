@@ -378,8 +378,10 @@ pub fn plaque(c: &mut Canvas, show: &Show) {
     let [w, h] = c.size;
     c.rect([0.0, 0.0, w, h], Color::hex("0c0a16"));
     // As big as the plaque allows: phones read it from the couch, at an angle.
-    let side = w - 12.0;
-    let qr = [(w - side) / 2.0, 6.0, side, side];
+    // Even margins above the square and below the code, with a clear gap
+    // between them (Joep, 22 November 2026: the code ran into the square).
+    let side = w - 24.0;
+    let qr = [(w - side) / 2.0, 14.0, side, side];
     let cy = qr[1] + side / 2.0;
     if show.qr.is_empty() {
         text(c, "Phone joining", [qr[0], cy - 6.0], 16.0, DIM, side, TextAlign::Center);
@@ -393,7 +395,7 @@ pub fn plaque(c: &mut Canvas, show: &Show) {
         for m in &show.qr { c.rect([qr[0] + m[0] * side, qr[1] + m[1] * side, m[2] * side, m[3] * side], Color::hex("0c0a16")); }
     }
     let code = if show.room_code.is_empty() { "· · · ·" } else { &show.room_code };
-    c.text(faces().wordmark, [0.0, h - 34.0], code, TextAlign::Center, w, 52.0, TEXT);
+    c.text(faces().wordmark, [0.0, h - 16.0], code, TextAlign::Center, w, 52.0, TEXT);
 }
 
 /// room.gd `draw_bumper`: an Xbox-style bumper, with a chevron pointing
