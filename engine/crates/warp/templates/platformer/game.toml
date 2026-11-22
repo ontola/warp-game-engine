@@ -1,0 +1,10 @@
+# Coin Climb, the platformer template (`warp new DIR --template platformer`).
+# Every key is optional; see engine/docs/warp-cli.md.
+title = "Coin Climb"
+tick_rate = 60
+players = 1
+bots = 1
+min_players = 2
+seed = 3
+fresh_seed = true
+sky = "morning"

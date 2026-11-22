@@ -26,7 +26,8 @@ One Rust workspace, with Cargo.toml and Cargo.lock at the repository root.
 | `engine/crates/splitscreen-club` | Native Splitscreen Club client (party host, seats, wire contract). |
 | `engine/crates/script` | Luau scripting host with hot reload. |
 | `engine/crates/live` | Live control of a running game over MCP. |
-| `engine/crates/warp` | The `warp` executable: runs games made only of Luau scripts, synth patches and assets. |
+| `engine/crates/warp` | The `warp` executable: runs games made only of Luau scripts, synth patches and assets. `kit/` is the game kit (Luau libraries every game can `require`, guide `engine/docs/kit.md`), `templates/` the games `warp new --template` writes. |
+| `engine/tools/vibe-eval` | The vibecode eval: prompts a model to make games from `prompts.json` and scores them headless (`vibe-eval.py --help`). |
 | `engine/docs/` | Guides that describe how things work now, `status.md`, and `renderer-switches.md` (every `KERN_*` variable). |
 | `engine/docs/log/` | The development log: dated experiments, measurements and session notes (`*-rNN.md` are iterations). Evidence, not current docs. |
 | `engine/tools/` | Python diagnostics: frame budgets, hitches, scenario replay. |

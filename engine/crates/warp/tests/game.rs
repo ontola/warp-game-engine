@@ -810,3 +810,127 @@ fn artist_files_validate_independently_at_game_load() {
     let error = LuaGame::load(&dir, &Overrides::default(), None).err().expect("wrong hook signature");
     assert!(error.contains("lighting.wgsl"), "{error}");
 }
+
+/// The kit (engine/crates/warp/kit, engine/docs/kit.md): `require("kit/...")`
+/// works in folder and one-file games, and a game's own copy wins.
+#[test]
+fn the_kit_loads_everywhere_and_a_local_copy_wins() {
+    let dir = folder("kit");
+    let one = dir.join("one.luau");
+    std::fs::write(&one, r#"--! bots = 1
+local names = {}
+for _, n in libraries("kit") do table.insert(names, n) end
+local round = require("kit/round")
+local timer = require("kit/timer")
+local function init()
+    state.names = names
+    state.round = round.new({ countdown = 0, win_score = 2 })
+    state.t = timer.new()
+    state.fired = 0
+    state.t:every(0.5, function() state.fired += 1 end)
+end
+local function tick(dt)
+    state.round:tick(dt)
+    state.t:tick(dt)
+    if game.tick() == 10 then state.round:add(2, 2) end
+end
+return { init = init, tick = tick }
+"#).unwrap();
+    let mut g = game(&one);
+    ticks(&mut g, 60, Controls::default());
+    let s = state(&g);
+    assert_eq!(s["errors"], json!([]), "{s}");
+    let names: Vec<&str> = warp::kit::FILES.iter().map(|(n, _)| *n).collect();
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(s["state"]["names"], json!(sorted), "libraries(\"kit\") lists the kit");
+    assert_eq!(s["state"]["fired"], json!(2), "every 0.5 s over one second");
+    assert_eq!((s["state"]["round"]["phase"].clone(), s["state"]["round"]["winners"].clone()), (json!("results"), json!([2])));
+
+    let game_dir = dir.join("folder");
+    std::fs::create_dir_all(game_dir.join("kit")).unwrap();
+    std::fs::write(game_dir.join("kit/util.module.luau"), "return { mine = true }").unwrap();
+    std::fs::write(game_dir.join("main.luau"), r#"local util = require("kit/util")
+local ui = require("kit/ui")
+local function init() state.mine = util.mine == true; state.ui = ui.scale ~= nil end
+return { init = init }
+"#).unwrap();
+    let mut g = game(&game_dir);
+    ticks(&mut g, 2, Controls::default());
+    let s = state(&g);
+    // kit/ui requires kit/util too, and gets the game's copy: ui still loads
+    // because it only uses util at call time.
+    assert_eq!((s["errors"].clone(), s["state"]["mine"].clone(), s["state"]["ui"].clone()), (json!([]), json!(true), json!(true)), "{s}");
+}
+
+/// The controllers move bodies the way their docs say.
+#[test]
+fn kit_controllers_run_jump_and_drive() {
+    let dir = folder("kit-move");
+    let file = dir.join("move.luau");
+    std::fs::write(&file, r#"local controller = require("kit/controller")
+local bot = require("kit/bot")
+local v = vector.create
+local function init()
+    world.spawn("cube", { pos = v(0, -0.5, 0), size = v(400, 1, 400) })
+    local a = world.spawn("capsule", { pos = v(0, 1, 0), size = v(0.6, 0.65, 0.6), solid = false })
+    local b = world.spawn("capsule", { pos = v(10, 1, 0), size = v(0.8, 0.9, 0.8), solid = false })
+    local c = world.spawn("cube", { pos = v(-10, 0.5, 0), size = v(1.2, 0.8, 2), solid = false })
+    state.plat = controller.platformer(a)
+    state.walk = controller.walker(b, { dash = 14 })
+    state.kart = controller.kart(c)
+    state.peak = 0
+    state.ids = { a, b, c }
+end
+local function tick(dt)
+    local t = game.tick()
+    local i = bot.input()
+    i.move_x = 1
+    if t == 30 then bot.press(i, "jump") elseif t > 30 and t < 50 then i.held.jump = true end
+    local ev = state.plat:update(i, dt)
+    if ev.jumped then state.jumped = t end
+    state.peak = math.max(state.peak, world.get(state.ids[1]).pos.y)
+    local w = bot.walk_to(world.get(state.ids[2]).pos, v(10, 0, -50))
+    if t == 40 then bot.press(w, "east") end
+    local wev = state.walk:update(w, dt)
+    if wev.dashed then state.dashed = t end
+    local k = bot.input()
+    k.move_y = 1
+    state.kart:update(k, dt)
+    state.plat_x = world.get(state.ids[1]).pos.x
+    state.walk_z = world.get(state.ids[2]).pos.z
+    state.kart_z = world.get(state.ids[3]).pos.z
+end
+return { init = init, tick = tick }
+"#).unwrap();
+    let mut g = game(&file);
+    ticks(&mut g, 180, Controls::default());
+    let s = state(&g)["state"].clone();
+    let f = |k: &str| s[k].as_f64().unwrap_or_else(|| panic!("{k}: {s}"));
+    assert_eq!(s["jumped"], json!(30), "{s}");
+    // The platformer's default jump clears about 2.6 m (feet; 0.65 half height).
+    assert!((2.3..3.0).contains(&(f("peak") - 0.65)), "peak {}", f("peak"));
+    assert!(f("plat_x") > 15.0, "runs right at about 7 m/s: {}", f("plat_x"));
+    assert_eq!(s["dashed"], json!(40));
+    assert!(f("walk_z") < -15.0, "walks towards -Z: {}", f("walk_z"));
+    assert!(f("kart_z") < -40.0, "drives forward (-Z at yaw 0): {}", f("kart_z"));
+}
+
+/// Every template loads, plays and its bots score; `warp new --template`
+/// writes it with the kit guide.
+#[test]
+fn templates_play_with_bots() {
+    for t in warp::starter::TEMPLATES {
+        let dir = folder("template").join(t.name);
+        let files = warp::starter::write_template(&dir, "Tried", t).unwrap();
+        assert!(files.contains(&"KIT.md".to_string()) && files.contains(&"sounds/jump.luau".to_string()), "{files:?}");
+        let mut g = LuaGame::load(&dir, &Overrides { players: Some(1), bots: Some(2), ..Default::default() }, None).unwrap();
+        g.echo = false;
+        assert_eq!(g.cfg.title, "Tried");
+        ticks(&mut g, 60 * 60, Controls::default());
+        let s = state(&g);
+        assert_eq!(s["errors"], json!([]), "{}: {s}", t.name);
+        let scores: f64 = s["state"]["round"]["scores"].as_object().unwrap().values().map(|v| v.as_f64().unwrap()).sum();
+        assert!(scores >= 3.0, "{}: bots scored {scores} in a minute", t.name);
+    }
+}

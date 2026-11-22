@@ -1,0 +1,11 @@
+{ "size": [640, 360],
+  "steps": [
+    { "ticks": 200, "note": "countdown, then the bot and the player start" },
+    { "expect": "/errors", "equals": [] },
+    { "expect": "/state/round/phase", "equals": "playing" },
+    { "expect": "/state/climbers/0/ctl/grounded", "equals": true },
+    { "press": ["SOUTH"], "ticks": 1, "note": "jump (a ledge may be overhead, so check right after take-off)" },
+    { "expect": "/state/climbers/0/ctl/vel/1", "min": 1 },
+    { "ticks": 50, "mv": [1, 0], "note": "run right" },
+    { "capture": "coin-climb.png", "state": "coin-climb.json" }
+  ] }

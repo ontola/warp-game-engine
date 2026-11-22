@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Default)]
-pub(super) struct Libraries(BTreeMap<String, Library>);
+pub(super) struct Libraries(BTreeMap<String, Library>, BTreeMap<String, &'static str>);
 
 struct Library {
     stamp: Option<(SystemTime, u64)>,
@@ -52,6 +52,11 @@ impl Libraries {
         changed
     }
 
+    /// A library compiled into the engine (the game kit): `require(name)`
+    /// finds it when the game has no local library of that name, so a game
+    /// can copy one into its folder and change it.
+    pub fn builtin(&mut self, name: &str, source: &'static str) { self.1.insert(name.to_owned(), source); }
+
     pub fn forget(&mut self, file: &str) {
         if let Some(lib) = file
             .strip_suffix(".module.luau")
@@ -82,10 +87,11 @@ impl Libraries {
                 if let Some(exports) = cache.raw_get::<Option<Table>>(name.as_str())? {
                     return Ok(exports);
                 }
-                let lib = self.0.get(&name).ok_or_else(|| {
-                    mlua::Error::runtime(format!("unknown local library {name}.module.luau"))
-                })?;
-                let src = lib.source.as_ref().map_err(mlua::Error::runtime)?;
+                let src: &str = match (self.0.get(&name), self.1.get(&name)) {
+                    (Some(lib), _) => lib.source.as_deref().map_err(mlua::Error::runtime)?,
+                    (None, Some(src)) => src,
+                    (None, None) => return Err(mlua::Error::runtime(format!("unknown local library {name}.module.luau"))),
+                };
                 if !loading.borrow_mut().insert(name.clone()) {
                     return Err(mlua::Error::runtime(format!("cyclic require of {name}")));
                 }
@@ -93,7 +99,7 @@ impl Libraries {
                     let globals = env(lua, base, &lua.create_table()?)?;
                     globals.raw_set("require", functions.raw_get::<Function>("require")?)?;
                     globals.raw_set("libraries", functions.raw_get::<Function>("libraries")?)?;
-                    lua.load(src.as_str())
+                    lua.load(src)
                         .set_name(format!("@{name}.module.luau"))
                         .set_environment(globals)
                         .eval::<Table>()
@@ -107,7 +113,8 @@ impl Libraries {
             // new file is a new entry (`for _, name in libraries("content/cards")`).
             let libraries = scope.create_function(|lua, folder: String| {
                 let prefix = format!("{}/", folder.trim_end_matches('/'));
-                lua.create_sequence_from(self.0.keys().filter(|name| name.starts_with(&prefix)).cloned())
+                let names: BTreeSet<&String> = self.0.keys().chain(self.1.keys()).filter(|name| name.starts_with(&prefix)).collect();
+                lua.create_sequence_from(names.into_iter().cloned())
             })?;
             functions.raw_set("require", require.clone())?;
             functions.raw_set("libraries", libraries.clone())?;

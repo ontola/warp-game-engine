@@ -32,7 +32,8 @@ warp run my-game --live                # ... and let Claude change it over MCP
 | `warp check DIR [--ticks N]` | Load, run `init` and N idle ticks (default 120) without a GPU, then print the state. Exits with status 1 on any script or patch error. The fastest check of an edit. |
 | `warp samples DIR [--bundle] [--credits]` | Fetch the recordings `samples.lock` lists into the cache, checking each sha256 (`--bundle`: into `DIR/samples/` for a package; `--credits`: who made them). See [audio.md](audio.md#recorded-samples-in-a-warp-game-sampleslock). |
 | `warp audio render FILE.luau [...]`, `check FILES`, `units` | The [`warp-audio`](audio.md#warp-audio) tool: render a patch and print its levels and a text spectrogram, check patches, list units. |
-| `warp new DIR [--title TITLE]` | Write the starter game into a new folder; `warp new GAME.luau` writes it as [one file](#a-game-in-one-file). |
+| `warp new DIR [--title TITLE] [--template NAME]` | Write the starter game into a new folder; `warp new GAME.luau` writes it as [one file](#a-game-in-one-file). `--template platformer` starts from a whole game built on the [game kit](kit.md) instead, with the kit's guide as `KIT.md`. |
+| `warp templates` | List the templates. |
 
 `DIR` can also be a [one-file game](#a-game-in-one-file) (`GAME.luau`).
 
@@ -160,6 +161,15 @@ end
 
 [Dead Miles](../../games/dead-miles/content/encounters) loads its
 encounters this way.
+
+## The game kit
+
+Before writing movement, cameras, a HUD or match flow yourself, use the
+[game kit](kit.md): Luau libraries built into `warp` that any game loads
+with `require("kit/controller")` (also a one-file game). Controllers for
+platformers, top-down and twin-stick games, third person and karts; camera
+rigs; HUD pieces; countdown, scores and results; bot inputs; timers and
+tweens.
 
 ## The Luau API
 
