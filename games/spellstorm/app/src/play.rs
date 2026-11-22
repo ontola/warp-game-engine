@@ -99,9 +99,9 @@ impl Spellstorm {
         let mut hud = crate::hud::Hud::default();
         hud.level(&world);
         let mut menu = crate::menu::Menu::new(party.is_none());
-        if humans > 0 {
-            menu.show(true, &world);
-        }
+        // Straight into the first level, no title screen (Joep); Start
+        // opens the menu.
+        let _ = humans;
         Spellstorm { world, view: View::new(kits), hud, menu, humans, drive: (0..humans).collect(), party, party_seats: vec![], quit: false, built: false, ready_after_build: false, interp: Default::default(), tuning, shader, live: None, scan_t: 0 }
     }
 

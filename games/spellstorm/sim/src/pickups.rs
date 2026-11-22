@@ -273,6 +273,7 @@ impl World {
                 if best_d < GLOBE_TAKE {
                     let heal = GLOBE_HEAL * self.mods(w).heal;
                     self.am(w).healed(heal);
+                    self.wiz_mut(w).used |= crate::wizard::used::DRINK;
                     self.count("globes");
                     g.drinker = Some(w);
                     *self.ecs.get::<&mut Globe>(id).unwrap() = g;

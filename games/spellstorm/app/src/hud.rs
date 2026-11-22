@@ -132,7 +132,7 @@ const HINT_GONE: f32 = 1.2;
 /// cleared again, shot, cast, then the same for the other starting element;
 /// dodging and the sword. New skills first once learned: two elements
 /// together as soon as a second slot opens.
-const HINTS: [u32; 13] = [NEW_ELEMENT, used::CAST2, used::NOVA, used::PLANT, used::ENCHANT, used::LOAD, used::SHAKE, used::BOLT_EL, used::CAST, used::CAST_PAIR, used::ROLL, used::SWING, used::DEFLECT];
+const HINTS: [u32; 14] = [used::DRINK, NEW_ELEMENT, used::CAST2, used::NOVA, used::PLANT, used::ENCHANT, used::LOAD, used::SHAKE, used::BOLT_EL, used::CAST, used::CAST_PAIR, used::ROLL, used::SWING, used::DEFLECT];
 /// Not a move: an element learned and never loaded yet. After a new skill's
 /// card, its hint stays until it has been used (Joep).
 const NEW_ELEMENT: u32 = 1 << 30;
@@ -185,6 +185,7 @@ fn hint_text(bit: u32, wz: &spellstorm::wizard::Wizard, mods: &spellstorm::relic
             format!("New: {} {} and {} {}, then {{rt}} casts {}", button_of(a), a.name(), button_of(b), b.name(), name(&[a, b]))
         }
         used::SHAKE => "Hold {rs} to clear elements".into(),
+        used::DRINK => "Drink blood to heal".into(),
         _ => String::new(),
     }
 }
@@ -336,6 +337,9 @@ impl Hud {
             // A new skill's hint waits for its card to go (Joep).
             let cards = !self.unlocks.is_empty();
             let u = h.used;
+            // Only while hurt (Joep); healed, the hint goes until next time.
+            let a = w.a(id);
+            let hurt = a.hp < a.max_hp - 0.5;
             let ready = |bit: u32| match bit {
                 // Only something learned later: the first elements are the
                 // basics' own hints.
@@ -350,16 +354,21 @@ impl Hud {
                 used::CAST2 => !cards && wz.queue.size >= 2 && u & used::CAST != 0,
                 // One of the first steps (Joep), once something is loaded.
                 used::SHAKE => !wz.queue.is_empty() && u & used::LOAD != 0,
+                used::DRINK => hurt,
                 _ => true,
             };
             // Something just learned (a new element, a new move) comes before
             // whatever basic is showing, a while after its card (Joep: "press
             // X to load it" under the player too, until they do).
-            const NEW: [u32; 5] = [NEW_ELEMENT, used::CAST2, used::NOVA, used::PLANT, used::ENCHANT];
+            const NEW: [u32; 6] = [used::DRINK, NEW_ELEMENT, used::CAST2, used::NOVA, used::PLANT, used::ENCHANT];
             let learned = NEW.iter().copied().find(|&bit| !done(bit, h.used, h.used_el) && ready(bit));
             if let Some((bit, t)) = &mut h.now {
                 *t += dt;
-                if done(*bit, h.used, h.used_el) {
+                if *bit == used::DRINK && !hurt && !done(*bit, h.used, h.used_el) {
+                    h.now = None;
+                    h.text.clear();
+                    h.wait = 0.0;
+                } else if done(*bit, h.used, h.used_el) {
                     h.gone = Some((std::mem::take(&mut h.text), 0.0));
                     h.now = None;
                     h.wait = 0.0;

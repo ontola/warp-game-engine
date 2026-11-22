@@ -70,6 +70,8 @@ pub mod used {
     pub const CAST_FIRST: u32 = 4096;
     pub const CAST_SECOND: u32 = 8192;
     pub const CAST_PAIR: u32 = CAST_FIRST | CAST_SECOND;
+    /// Drank a pool of blood (a health globe).
+    pub const DRINK: u32 = 16384;
 }
 pub const ROLL_TIME: f64 = 0.5;
 pub const ROLL_SPEED: f64 = 12.5;
