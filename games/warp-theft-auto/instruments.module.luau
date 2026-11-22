@@ -89,7 +89,7 @@ local function marker(story, id, x, y, w, h, s)
 	hud.box(px-2*s,py-2*s,4*s,3*s,gold)
 end
 
-local function pistol(story,x,y,w,h,s)
+local function reticle(story,x,y,w,h,s)
 	local cx,cy=x+w*.5,y+h*.5
 	if story.aiming then
 		local c = if story.onTarget then "#ff9774" else ink
@@ -97,17 +97,6 @@ local function pistol(story,x,y,w,h,s)
 			hud.box(cx+d*8*s-1*s,cy-1*s,3*s,2*s,c)
 			hud.box(cx-s,cy+d*8*s-s,2*s,3*s,c)
 		end
-	end
-	-- A city arcade sidearm framed at the bottom of the owner's viewport.
-	local px=x+w*(if story.aiming then .56 else .69)
-	local py=y+h-((if story.aiming then 59 else 35)+(story.shotFlash or 0)*60)*s
-	hud.box(px-6*s,py+15*s,23*s,47*s,"#564b46")
-	hud.box(px-9*s,py+3*s,30*s,19*s,"#253139")
-	hud.box(px-8*s,py,27*s,12*s,"#79939b")
-	hud.box(px-3*s,py-3*s,3*s,4*s,"#b9c5c4")
-	if (story.shotFlash or 0)>.02 then
-		hud.box(px-2*s,py-18*s,10*s,16*s,"#ffbf50")
-		hud.box(px-7*s,py-11*s,19*s,5*s,"#ffda8a")
 	end
 end
 
@@ -156,9 +145,9 @@ function instruments.draw(cityState, fleet, clock, job, player, story, menu, tit
 		action = if seat.mode == "fly" then "Space / A   Rise     Shift / RB   Lower" else "W / RT   Gas     S / LT   Brake"
 		if seat.mode == "drive" and math.abs(seat.speed) < 2 then action = "W / RT   Gas     F / Y   Exit" end
 	end
-	if story and story.owner == id and seat.mode=="walk" and (story.weapon=="Arcade pistol" or (story.shotFlash or 0)>0) then
-		pistol(story,x,y,w,h,s)
-		if story.weapon then action = "RMB / LT   Aim     LMB / RT   Fire" end
+	if story and story.owner == id and seat.mode=="walk" and story.weapon=="Arcade pistol" then
+		reticle(story,x,y,w,h,s)
+		action = "RMB / LT   Aim     LMB / RT   Fire"
 	end
 	text("R / X   Stories",mx+2*s,my-39*s,14*s,ink)
 	local aw = math.max(hud.measure(action,16*s), hud.measure(mode,23*s)) + 24*s

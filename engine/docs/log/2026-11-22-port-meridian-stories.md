@@ -29,4 +29,8 @@ The city exports `apply_story` and offers the same passenger, race and contract 
 
 The shared daylight API interpolates the atmospheric radiance, light on clouds and diffuse skylight. Direct shadows follow the moving sun. Indoor transport starts with a traced preview and the browser refines at most four probes across all occupied rooms per frame, checking a 0.75 ms budget after each probe.
 
+## Browser release checks
+
+The public v1.1 build from `8d8308f7` loaded the city on both the full and minimum-limit WebGPU paths. In the two-seat test, player one drove at 31 km/h while player two stayed on foot in a separate view. The editor ran a computed route, rejected malformed Luau and an unknown mission action, downloaded and reopened identical author source, and kept the draft across a return to the Game Room. The native integration run passed 88 tests. The remote party service returned HTTP 429 during repeated lobby registrations from the test machine. Local split-screen and the story editor continued working.
+
 [Play Warp Theft Auto](https://splitscreen.club/playtests/warp-theft-auto/v1.1/?game=warp-theft-auto&players=1) · [Game and authoring guide](../../../games/warp-theft-auto/README.md)

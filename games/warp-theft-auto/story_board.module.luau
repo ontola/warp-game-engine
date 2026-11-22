@@ -3,7 +3,7 @@ local Cast = require("story_cast")
 local passenger = require("story_passenger")
 local race = require("story_race")
 local contract = require("story_contract")
-local board = {}
+local board = {warm=missions.warm}
 local examples = {passenger, race, contract}
 board.titles = {passenger.title, race.title, contract.title, "Harbor dispatch"}
 
@@ -20,7 +20,7 @@ function board.start(state, definition, owner)
 	end
 	if not owner or not state.fleet.players[owner] then return nil, "Join a local seat before starting a story" end
 	local cast = Cast.new(state.fleet, state.population)
-	local active, message = missions.start(checked, state.fleet, cast, owner)
+	local active, message = missions.start(checked, state.fleet, cast, owner, state.population.avatars)
 	if not active then cast:clear(); return nil, message end
 	board.clear(state)
 	state.storyCast, state.story = cast, active
@@ -59,12 +59,7 @@ end
 
 function board.tick(state, dt, input)
 	if not state.story then return end
-	if not state.fleet.players[state.story.owner] then
-		for _, player in players.list() do if not player.bot then state.story.owner = player.id; break end end
-	end
-	if state.fleet.players[state.story.owner] then
-		missions.tick(state.story, state.fleet, state.storyCast, dt, input)
-	end
+	missions.tick(state.story, state.fleet, state.storyCast, dt, input)
 end
 
 return board

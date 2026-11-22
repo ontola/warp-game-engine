@@ -34,6 +34,7 @@ local function init()
 		shadow = .5, steps = 36, light_steps = 4, aerial = false,
 	})
 	city.set_clock(state.city, state.clock.hour)
+	stories.warm()
 	state.storyBoard = {choice = 1}
 	state.job = dispatch.new(state.city)
 	light.set({exposure = "auto", exposure_min = 3, exposure_max = 16, adapt_speed = 6})

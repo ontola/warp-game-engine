@@ -2,12 +2,15 @@
 -- while a player edits, joins a car, drives a gate or follows a passenger.
 local missions={validate=require("story_schema").validate}
 local util=require("kit/util")
+local sidearm=require("sidearm")
+missions.warm=sidearm.warm
 local v=vector.create
 local live=setmetatable({},{__mode="k"})
 local serial=0
 
 local function unequip(m)
 	local ctx=live[m]
+	if ctx then sidearm.remove(ctx) end
 	local seat=ctx and ctx.fleet.players[m.owner]
 	if seat and seat.storyPistol==ctx.serial then seat.storyPistol,seat.storyAim=nil,nil end
 	m.weapon,m.aiming,m.onTarget=nil,false,false
@@ -35,7 +38,7 @@ local function enterStep(m,cast)
 	end
 end
 
-function missions.start(definition,fleet,cast,ownerId)
+function missions.start(definition,fleet,cast,ownerId,avatars)
 	-- The caller validates the complete source before switching stories.
 	if not fleet.players[ownerId] then return nil,"Choose an active player for this story" end
 	for _,a in definition.cast do
@@ -47,13 +50,18 @@ function missions.start(definition,fleet,cast,ownerId)
 	local m={id=definition.id,title=definition.title,owner=ownerId,step=1,total=#definition.steps,
 		status="active",aiming=false,onTarget=false,shotFlash=0}
 	serial+=1
-	live[m]={definition=definition,fleet=fleet,serial=serial}
+	live[m]={definition=definition,fleet=fleet,avatars=avatars,serial=serial}
 	enterStep(m,cast)
 	return m
 end
 
 function missions.stop(m,cast)
-	if m then unequip(m); live[m]=nil end
+	if m then
+		local ctx=live[m]
+		unequip(m)
+		if ctx then sidearm.clearFlash(ctx) end
+		live[m]=nil
+	end
 	cast:clear()
 end
 
@@ -102,11 +110,11 @@ local function contract(m,ctx,a,seat,cast,inp)
 	m.target=pos
 	m.aiming=seat.mode=="walk" and not seat.impact and inp.held~=nil and inp.held.aim==true
 	m.onTarget=false
-	if not m.aiming or not pos then return false end
-	local cam=camera.get(m.owner)
-	local axis=cam.target-cam.pos
-	if vector.magnitude(axis)<.01 then return false end
-	local ray=vector.normalize(axis)
+	local cam=if m.aiming then camera.get(m.owner) else nil
+	local axis=cam and cam.target-cam.pos
+	local ray=if axis and vector.magnitude(axis)>.01 then vector.normalize(axis) else nil
+	sidearm.follow(ctx,ctx.avatars and ctx.avatars[m.owner],seat,ray)
+	if not ray or not pos then return false end
 	local along=vector.dot(pos+v(0,1.05,0)-cam.pos,ray)
 	local inRange=along>0 and distance(seat.pos,pos)<=(a.range or 30)
 	if inRange then
@@ -119,22 +127,24 @@ local function contract(m,ctx,a,seat,cast,inp)
 	end
 	if not (inp.pressed and inp.pressed.fire) or ctx.cooldown>0 then return false end
 	m.shotFlash,ctx.cooldown=.10,.28
+	sidearm.fire(ctx)
 	sound.play("arcade_pistol",{at=seat.pos,db=-7})
 	return m.onTarget and cast:hit(a.person,ray*2+v(0,.3,0))
 end
 
 function missions.tick(m,fleet,cast,dt,input)
 	if not m then return end
-	m.shotFlash=math.max(0,(m.shotFlash or 0)-dt)
-	if m.status~="active" then return end
-	if m.raceTime~=nil then m.raceTime+=dt end
 	local ctx=live[m]
 	if not ctx then return end
+	m.shotFlash=math.max(0,(m.shotFlash or 0)-dt)
+	if m.shotFlash<=0 then sidearm.clearFlash(ctx) end
+	if m.status~="active" then return end
+	if m.raceTime~=nil then m.raceTime+=dt end
 	local seat=fleet.players[m.owner]
 	if not seat then
 		local replacement
 		for id,p in fleet.players do if not p.bot and (not replacement or id<replacement) then replacement=id end end
-		if not replacement then return end
+		if not replacement then sidearm.remove(ctx); sidearm.clearFlash(ctx); m.aiming,m.onTarget=false,false; return end
 		m.owner,seat=replacement,fleet.players[replacement]
 		if m.weapon then seat.storyPistol=ctx.serial end
 	end
