@@ -226,7 +226,11 @@ impl LuaGame {
     pub fn core(&self) -> std::sync::MutexGuard<'_, Core> { api::lock(&self.core) }
 
     fn say(&mut self, line: String) {
+        #[cfg(not(target_arch = "wasm32"))]
         if self.echo { println!("{line}"); }
+        // In a browser the page's log (the console; on screen with ?debug).
+        #[cfg(target_arch = "wasm32")]
+        if self.echo { app::web::log(&line); }
         self.log.push_back(line.clone());
         while self.log.len() > LOG_KEEP { self.log.pop_front(); }
         if let Some(l) = &self.live_logs { l.push(line); }
@@ -1166,7 +1170,7 @@ impl Game for LuaGame {
         drop(c);
         if let Some(line) = surface_line { self.say(line); }
         if let Some(line) = late { self.say(line); }
-        if loading && !steps.is_empty() { self.say(format!("{} loading: {}", app::manners::stamp(), steps.join(", "))); }
+        if (loading || cfg!(target_arch = "wasm32")) && !steps.is_empty() { self.say(format!("{} loading: {}", app::manners::stamp(), steps.join(", "))); }
         let hud = self.hud(frame.size);
         if std::mem::take(&mut self.ready_due) && let Some(p) = self.party.as_mut() { p.ready(); }
         Ok(Draw { cameras, light, hud })
