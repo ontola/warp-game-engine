@@ -197,7 +197,7 @@ pub fn install_panic_hook() {
 /// A phone: the browser's phone preset (`quality=full` turns it off).
 pub fn mobile() -> bool { !matches!(query_param("quality").as_deref(), Some("full" | "high")) }
 
-const MOBILE_BASE_HEIGHT: u32 = 540;
+const MOBILE_BASE_HEIGHT: u32 = 1080;
 
 fn mobile_light(mut light: render::Lighting) -> render::Lighting {
     light.gi = 0.0;
@@ -292,6 +292,11 @@ pub fn main(app: AndroidApp, start: impl FnOnce() + Send + 'static) {
         // SAFETY: before this process starts its render and helper threads.
         if let Some((k, v)) = pair.split_once(':') { unsafe { std::env::set_var(k.trim(), v.trim()) } }
     }
+    // Phone default, measured on Adreno 740 and 830 (2026-11-23): the full
+    // shade pass cost 67 ms a frame on the 740 at 378 lines, the simple one
+    // 9.5 ms at 1080. `env=` overrides. Bounded draws: see `direct_draws`.
+    // SAFETY: as above, no other threads yet.
+    if std::env::var_os("KERN_SIMPLE_LIGHTING").is_none() { unsafe { std::env::set_var("KERN_SIMPLE_LIGHTING", "1") } }
     install_panic_hook();
     use android_activity::WindowManagerFlags as F;
     app.set_window_flags(F::KEEP_SCREEN_ON | F::FULLSCREEN | F::LAYOUT_IN_SCREEN, F::empty());
@@ -481,6 +486,22 @@ fn follow_window(gfx: &mut Gfx) {
 
 fn window_size(w: &NativeWindow) -> [u32; 2] { [w.width().max(1) as u32, w.height().max(1) as u32] }
 
+/// Adreno 8xx drivers (the 830, 2026-11-23) drop indirect draws: only
+/// emissive and transparent things showed. There the renderer draws with
+/// bounded direct draws. The 740 draws indirect fine, and Spellstorm seemed
+/// to lose its walls and wizards with bounded draws, so only where needed.
+fn direct_draws(gpu: &str) {
+    let adreno = gpu.split("Adreno (TM) ").nth(1).and_then(|r| r.trim().get(..1)).and_then(|d| d.parse::<u32>().ok());
+    if adreno.is_some_and(|series| series >= 8) {
+        for k in ["KERN_SIMPLE_CULL", "KERN_BOUNDED_DRAWS"] {
+            // SAFETY: the renderer reads these when it is made, after this;
+            // nothing else in the process reads or writes them.
+            if std::env::var_os(k).is_none() { unsafe { std::env::set_var(k, "1") } }
+        }
+        log("bounded direct draws (this GPU drops indirect draws)");
+    }
+}
+
 /// The first window: the GPU, its surface and the presenter.
 fn on_window(window: NativeWindow) -> Result<(), String> {
     let size = window_size(&window);
@@ -489,6 +510,7 @@ fn on_window(window: NativeWindow) -> Result<(), String> {
     let (gpu, config) = Gpu::for_surface(&instance, &surface, size[0], size[1])?;
     surface.configure(&gpu.device, &config);
     log(&format!("GPU: {} ({:?}), {}x{}, {:?}", gpu.info.name, gpu.info.backend, config.width, config.height, config.format));
+    direct_draws(&gpu.info.name);
     let limits = gpu.device.limits();
     log(&format!("{} storage buffers, {} sampled textures per shader stage", limits.max_storage_buffers_per_shader_stage, limits.max_sampled_textures_per_shader_stage));
     gpu.device.on_uncaptured_error(Arc::new(|e: wgpu::Error| log(&format!("GPU error: {e}"))));

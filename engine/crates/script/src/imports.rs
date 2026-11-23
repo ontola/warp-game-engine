@@ -22,11 +22,12 @@ impl Libraries {
             present.insert(name.to_owned());
             let stamp = vfs::stamp(file);
             if stamp.is_none() || !self.0.get(name).is_some_and(|lib| lib.stamp == stamp) {
-                // A browser has no real paths to resolve: its files are only
+                // A browser (and the Android host, whose game files are in
+                // memory) has no real paths to resolve: its files are only
                 // the game's own.
-                #[cfg(target_arch = "wasm32")]
+                #[cfg(any(target_arch = "wasm32", target_os = "android"))]
                 let source = { let _ = root; vfs::read_to_string(file).map_err(|err| format!("{path}: {err}")) };
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
                 let source = file
                     .canonicalize()
                     .and_then(|resolved| {
