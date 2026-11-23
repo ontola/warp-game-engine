@@ -246,7 +246,7 @@ declare lights: {
 
 -- Warp Humans from game.toml's [humans.NAME] pools: spawn returns nil when
 -- the pool is full. Set pos (feet) and yaw each tick; the legs follow.
--- pose: walk, idle, sit, crouch, wave, reach, raise, strike, aim, shove, attack, punch, jab,
+-- pose: walk, idle, sit, crouch, wave, reach, raise, strike, aim, hold, shove, attack, punch, jab,
 -- hit, hit_head, cast, roll, dead, down, feed (crouched, bent over something on the
 -- ground), rise (getting up off the ground over t); t is its progress, 0 to 1.
 -- The shared four-wheel vehicle simulation. Reset snapshots solid boxes once.
@@ -264,12 +264,16 @@ declare vehicles: {
 declare humans: {
 	spawn: (pool: string, opts: { pos: Vec?, yaw: number?, look: number?, resident: number? }?) -> number?,
 	-- tired 0..1: bent over, out of breath, over any pose; coil -1..1: wound up for a heavy blow (1), swung through (< 0)
-	set: (id: number, opts: { pos: Vec?, yaw: number?, pose: string?, t: number?, tired: number?, coil: number?, visible: boolean? }) -> boolean,
+	-- hold: grip = right shoulder to wrist, support = right wrist to left wrist (+Z forward, metres before pitch).
+	-- pitch is in radians, positive up. t blends in the head following that pitch.
+	set: (id: number, opts: { pos: Vec?, yaw: number?, pose: string?, t: number?, tired: number?, coil: number?, visible: boolean?, grip: Vec?, support: Vec?, pitch: number? }) -> boolean,
 	-- A blow along dir (its length the strength, ~1 heavy): the upper body jolts and sways back
 	hit: (id: number, dir: Vec) -> boolean,
 	ragdoll_raycast: (id: number, origin: Vec, dir: Vec, max: number) -> number?,
 	ragdoll_closest: (id: number, point: Vec) -> Vec?,
 	ragdoll_hit: (id: number, point: Vec, velocity: Vec) -> boolean,
+	-- Release with this tick's movement (or an explicit velocity), then kick the limb nearest the world contact.
+	ragdoll_impact: (id: number, point: Vec, kick: Vec, carriedVelocity: Vec?) -> boolean,
 	-- Limp from the pose it stands in, thrown by push (m/s); up again with any pose but dead/down
 	ragdoll: (id: number, push: Vec?, spin: Vec?) -> boolean,
 	-- Replace the shared solid boxes for active ragdolls. Positions are box centers.

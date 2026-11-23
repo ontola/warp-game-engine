@@ -210,7 +210,7 @@ impl TwoHandHold {
         let spacing = secondary - primary;
         // Find a weapon translation that both arms can reach, keeping the
         // closest placement to the sampled primary hand when it already fits.
-        let mut primary = primary;
+        let mut primary = self.right.closest_target(pose, primary);
         for _ in 0..8 {
             let wanted = primary + spacing;
             let miss = self.left.closest_target(pose, wanted) - wanted;
@@ -246,6 +246,26 @@ mod tests {
             );
             assert!(xf.transform_vector3(Vec3::Z).distance(turn * aim * Vec3::Z) < 1e-5);
         }
+    }
+
+    #[test]
+    fn shared_prop_stays_at_the_actual_primary_wrist_with_a_reachable_support_hand() {
+        let bind = [
+            ("RightArm", Vec3::new(-0.21, 0.0, 0.0)),
+            ("RightForeArm", Vec3::new(-0.21, -0.26, 0.0)),
+            ("RightHand", Vec3::new(-0.21, -0.52, 0.0)),
+            ("LeftArm", Vec3::new(0.21, 0.0, 0.0)),
+            ("LeftForeArm", Vec3::new(0.21, -0.26, 0.0)),
+            ("LeftHand", Vec3::new(0.21, -0.52, 0.0)),
+        ];
+        let hold = TwoHandHold::bind(bind.iter().map(|(n, p)| (*n, Mat4::from_translation(*p)))).unwrap();
+        let mut palette = [Mat4::IDENTITY; 6];
+        let requested = Vec3::new(0.30, 0.0, 0.23);
+        let spacing = Vec3::new(0.07, 0.02, 0.0);
+        let mount = hold.apply(&mut palette, requested, requested + spacing);
+        assert!(mount.distance(requested) > 0.01);
+        assert!(palette[2].transform_point3(bind[2].1).distance(mount) < 1e-5);
+        assert!(palette[5].transform_point3(bind[5].1).distance(mount + spacing) < 1e-5);
     }
 
     #[test]

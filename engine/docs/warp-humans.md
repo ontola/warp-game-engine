@@ -4,8 +4,16 @@
 
 Calling `humans.ragdoll` transfers the fitted person’s current pose to eleven connected rigid bodies. Their shoulders, elbows, spine, neck, hips and knees have joint limits. During the first 0.19 seconds the knees and hips flex, the forearms draw in and the chin tucks. This extra muscle tension holds for 0.28 seconds and fades over the next 0.78 seconds. Ground and vehicle contact can interrupt the motion throughout the fall. The same response works with procedural body proportions and needs no fall animation asset. For a fall caused by a moving object, pass the person’s current world velocity and angular velocity. See the [Luau human API](warp-cli.md) and [joint controls](physics.md#ragdoll-joint-limits-and-muscle-response).
 
+Set `gripping = true` in a `[humans.NAME]` pool to fit its fingers curled around a held prop. The hand shape is built once with each body and applies to all poses in that pool.
+
+For a localized impact on a standing character, call `humans.ragdoll_impact(id, point, kick)` after updating the character position for the tick. The rig inherits world velocity from that movement, then the closest limb receives the additional world-space velocity change at the contact point. Pass a fourth vector in metres per second when promoting a moving distant character whose fitted rig is new. Further hits on the same ragdoll preserve its pose and momentum.
+
 A settled ragdoll keeps its pose after its rigid bodies leave the solver. `humans.ragdoll_raycast(id, origin, direction, range)` returns the distance to the first posed capsule. `humans.ragdoll_closest(id, point)` returns the closest point inside or on those capsules. Both return `nil` for a standing or removed person. `humans.ragdoll_hit(id, point, velocity)` applies a velocity change to the nearest limb and wakes a settled rig in place. A game transferring a distant pedestrian to a retained body can call `humans.hide_distant(pool, sourceId)` to hide its current crowd sample immediately.
 
+
+## Holding a prop in Luau
+
+Use `humans.set(id, {pose="hold", grip=grip, support=support, pitch=pitch, t=look})` to animate a two-handed prop over the current walk or run. In the facing body's frame, +Z points forward and +X toward the left shoulder. Supply the right shoulder-to-wrist offset and the right-to-left wrist spacing in metres at zero pitch. Positive pitch raises the prop. Set `t` between zero and one to blend the head into the look direction. Read `humans.joint(id,"hand_r")` after setting the pose to mount the prop at its fitted wrist. Each arm uses the same two-point contact solver as Growing Guns.
 
 ## Stadium playtest
 
