@@ -136,9 +136,12 @@ declare world: {
 	move: (id: number, vel: Vec, dt: number, opts: Query?) -> (Vec, boolean),
 }
 
--- Effects the engine animates and removes on its own: entities tagged "fx",
--- never solid, skipped when the world is full. Warm their look in init.
+-- Effects advance on the game clock. Bursts and rings use non-solid entities
+-- tagged "fx" and can warm their looks in init.
 declare fx: {
+    -- Growing Guns fire, smoke, embers, heat distortion and local lights in all views.
+    -- Radius is in metres (0 < radius <= 200). This visual effect uses no entity slots.
+    explosion: (pos: Vec, radius: number) -> (),
 	-- Pieces flying out from pos: each at 25-100 % of speed (m/s), living
 	-- 50-100 % of life (s) and shrinking. flat: in the ground plane only;
 	-- stretch: seconds of velocity as length (streaks); gravity: m/s^2 down.

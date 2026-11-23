@@ -667,6 +667,30 @@ fn effects_fly_out_and_are_gone_after_their_life() {
 }
 
 #[test]
+fn explosions_share_the_world_clock_and_leave_entity_slots_free() {
+    let dir = folder("explosion");
+    write(&dir.join("main.luau"), "return {}");
+    let mut g = game(&dir);
+    g.luau("fx.explosion(vector.create(3, 2, -5), 6)").unwrap();
+    assert!(g.luau("fx.explosion(vector.create(0, 0, 0), -2)").is_err());
+    assert!(g.luau("fx.explosion(vector.create(0/0, 1, 1), 6)").is_err());
+    assert!(g.luau("fx.explosion(vector.create(1, 1, 1), 1/0)").is_err());
+    ticks(&mut g, 1, Controls::default());
+    {
+        let c = g.core();
+        let effects = c.world.explosions.as_ref().unwrap();
+        assert_eq!(effects.explosion_stats().full, 1);
+        assert!(effects.len() > 0 && effects.len() <= render::fx::ExplosionBudget::LOW.live_puffs);
+        assert!(effects.lights(0.0).iter().any(|light| light.position == glam::Vec3::new(3., 2., -5.)));
+        assert!(c.world.entities.is_empty());
+    }
+    ticks(&mut g, 600, Controls::default());
+    assert!(g.core().world.explosions.as_ref().unwrap().is_empty());
+    g.luau("fx.explosion(vector.create(3, 2, -5), 6); world.clear()").unwrap();
+    assert!(g.core().world.explosions.as_ref().unwrap().is_empty());
+}
+
+#[test]
 fn neon_siege_bots_clear_waves_and_replay_exactly() {
     let run = || {
         let mut g = LuaGame::load(&repo().join("games/neon-siege"), &Overrides { bots: Some(3), ..Default::default() }, None).unwrap();

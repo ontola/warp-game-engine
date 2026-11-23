@@ -4568,6 +4568,12 @@ impl Renderer {
         self.fx.0.lock().unwrap().as_ref().map_or_else(Vec::new, |fx| fx.quality_stats())
     }
 
+    /// Whether the current lighting path and requested device limits support the smoke volume.
+    pub fn supports_baked_explosion_smoke(&self, gpu: &Gpu) -> bool {
+        !self.simple_lighting && self.minimal_forward.is_none()
+            && crate::fx::baked_smoke_fits(gpu.device.limits().max_texture_dimension_3d)
+    }
+
     /// Compile effect pipelines during loading instead of the first explosion.
     pub fn prepare_effects(&self, gpu: &Gpu) { self.fx.prepare(gpu); }
 

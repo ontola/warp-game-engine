@@ -254,6 +254,9 @@ pub struct World {
     pub added: Vec<String>,
     dir: PathBuf,
     fx: Fx,
+    /// Renderer-owned particle drawing, shared by every seat, outside entity slots.
+    pub explosions: Option<render::fx::Effects>,
+    pub(crate) baked_explosion_smoke: bool,
 }
 
 /// Effects the engine animates on its own (`fx.burst`, `fx.ring`): plain
@@ -303,10 +306,16 @@ impl World {
         let m = scene.add_material(material(&Look::default()));
         let cube = scene.add_mesh(&primitives::cube(m).mesh());
         let slots = Slots::reserve(&mut scene, max_entities);
-        let mut w = World { fleet: None, entities: BTreeMap::new(), next: 1, scene, slots, materials: HashMap::new(), meshes: HashMap::new(), models: HashMap::new(), warmed: BTreeMap::new(), rebuild: true, added: Vec::new(), dir: dir.to_path_buf(), fx: Fx::default() };
+        let mut w = World { fleet: None, entities: BTreeMap::new(), next: 1, scene, slots, materials: HashMap::new(), meshes: HashMap::new(), models: HashMap::new(), warmed: BTreeMap::new(), rebuild: true, added: Vec::new(), dir: dir.to_path_buf(), fx: Fx::default(), explosions: None, baked_explosion_smoke: false };
         w.materials.insert(Look::default().key(), m);
         w.meshes.insert((0, m), cube);
         w
+    }
+
+    /// New effects follow the renderer profile. Headless games use procedural billows.
+    pub(crate) fn set_baked_explosion_smoke(&mut self, enabled: bool) {
+        self.baked_explosion_smoke = enabled;
+        if let Some(effects) = &mut self.explosions { effects.set_baked_smoke(enabled); }
     }
 
     pub fn capacity(&self) -> usize { self.slots.capacity() }
@@ -533,6 +542,7 @@ impl World {
         let ids: Vec<u32> = self.entities.keys().copied().collect();
         for id in ids { self.remove(id); }
         self.fx = Fx::default();
+        if let Some(explosions) = &mut self.explosions { explosions.clear(); }
     }
 
     /// Add a shape and look's mesh now (in `init`), so spawning it later

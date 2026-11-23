@@ -1030,7 +1030,7 @@ impl LuaGame {
 }
 
 /// Bloom and the scripts' lamps onto the renderer (cheap when unchanged).
-fn post(r: &render::Renderer, p: &api::Post, lamps: &[api::Lamp], spots: &[api::Spot]) -> Result<(), String> {
+fn post(r: &render::Renderer, p: &api::Post, lamps: &[api::Lamp], spots: &[api::Spot], mut lights: Vec<render::headlights::LocalLight>) -> Result<(), String> {
     let mut o = r.debug_options();
     let before = o;
     if let Some(b) = p.bloom {
@@ -1041,7 +1041,10 @@ fn post(r: &render::Renderer, p: &api::Post, lamps: &[api::Lamp], spots: &[api::
         o.bloom_screen = p.bloom_wide;
     }
     if o != before { r.set_debug_options(o)?; }
-    let lights: Vec<render::headlights::LocalLight> = lamps.iter().map(|l| {
+    // Transient blast lights come first. Keep script lamp order as their slots return.
+    lights.truncate(api::MAX_LAMPS);
+    let remaining = api::MAX_LAMPS - lights.len();
+    lights.extend(lamps.iter().take(remaining).map(|l| {
         let lin = l.color.map(|c| c.clamp(0.0, 1.0).powf(2.2));
         render::headlights::LocalLight {
             position: l.pos,
@@ -1053,7 +1056,7 @@ fn post(r: &render::Renderer, p: &api::Post, lamps: &[api::Lamp], spots: &[api::
             source_radius_m: 0.1_f32.min(l.range * 0.5),
             falloff: 1.5,
         }
-    }).collect();
+    }));
     r.set_local_lights(&lights)?;
     let spots: Vec<render::headlights::SpotLight> = spots.iter().map(|l| {
         let lin = l.color.map(|c| c.clamp(0.0, 1.0).powf(2.2));
@@ -1127,6 +1130,10 @@ impl Game for LuaGame {
         {
             let mut c = self.core();
             c.world.step_fx(dt);
+            let time = c.tick as f32 / c.tick_rate;
+            if let Some(explosions) = &mut c.world.explosions {
+                explosions.advance(time);
+            }
             c.humans.tick(dt);
             c.tick += 1;
         }
@@ -1242,7 +1249,18 @@ impl Game for LuaGame {
             let time = c.render_time(frame.alpha);
             r.set_meadow_wind(&render::wind::WindState { time_seconds: time, strength: 0.35, ..Default::default() })?;
         }
-        post(r, &c.post, &c.lamps, &c.spots)?;
+        if rebuild {
+            c.world.set_baked_explosion_smoke(r.supports_baked_explosion_smoke(frame.gpu));
+        }
+        let blast_time = c.render_time(frame.alpha) as f32;
+        let blast_lights = if let Some(explosions) = &mut c.world.explosions {
+            if rebuild { explosions.renderer_replaced(); }
+            explosions.flush(frame.gpu, r, blast_time)?;
+            explosions.lights(blast_time)
+        } else {
+            Vec::new()
+        };
+        post(r, &c.post, &c.lamps, &c.spots, blast_lights)?;
         if c.rooms.enabled {
             let c = &mut *c;
             c.rooms.update(&c.world, frame.gpu, r, light.sun_dir, rebuild)?;

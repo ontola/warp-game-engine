@@ -786,6 +786,24 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
     ])?;
 
     table("fx", vec![
+        ("explosion", f!(core, move |_, (pos, radius): (Value, Value)| {
+            let pos = vec3(&pos, "fx.explosion position")?;
+            let radius = number(&radius, "fx.explosion radius")?;
+            if !pos.is_finite() || !radius.is_finite() || radius <= 0.0 || radius > 200.0 {
+                return Err(rt("fx.explosion needs a finite position and a radius in (0, 200] metres"));
+            }
+            let mut c = lock(&core);
+            sim(&c, "fx.explosion")?;
+            let time = c.tick as f32 / c.tick_rate;
+            let baked = c.world.baked_explosion_smoke;
+            let explosions = c.world.explosions.get_or_insert_with(|| {
+                let mut effects = render::fx::Effects::with_explosion_budget(render::fx::ExplosionBudget::LOW);
+                effects.set_baked_smoke(baked);
+                effects
+            });
+            explosions.explosion(time, pos, radius, Vec3::new(1.0, 0.70, 0.20));
+            Ok(())
+        })),
         ("burst", f!(core, move |_, (pos, opts): (Value, Option<Table>)| {
             let (p, b) = (vec3(&pos, "fx.burst position")?, burst(opts)?);
             let mut c = lock(&core);
