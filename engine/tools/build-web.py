@@ -59,6 +59,11 @@ WARP_PICKER = '''<div id="warp-games" style="position:fixed;top:8px;right:8px;di
 const bar = document.getElementById('warp-games');
 const games = await (await fetch('games/index.json')).json();
 const room = ROOM;
+if (room) {
+  for (const g of await window.clubGameLibrary()) {
+    if (g.web_entry && !games.includes(g.folder)) games.push(g.folder);
+  }
+}
 const current = () => new URLSearchParams(location.search).get('game') || (room ? 'room' : games[0]);
 const paint = () => { for (const b of bar.children) b.style.background = b.dataset.game === current() ? '#8fd19e' : '#222'; };
 for (const g of (room ? ['room'] : []).concat(games)) {
@@ -109,8 +114,16 @@ parser.add_argument('--warp', action='store_true', help='build the Game Room wit
 parser.add_argument('--bare', action='store_true', help='with --warp: the games without the room (examples/warp_web.rs)')
 parser.add_argument('--games', default=','.join(WARP_GAMES), help='games/ folders to serve with --warp (comma separated)')
 parser.add_argument('--luau-only', action='store_true', help='only include the selected Luau games on the browser shelf')
+parser.add_argument('--web-game', action='append', nargs=3, default=[], metavar=('MANIFEST', 'ENTRY', 'COVER'),
+                    help='with --warp: register a prebuilt HTML game from its gamenight.json, site-relative HTML path outside games/, and cover PNG (or -)')
+parser.add_argument('--production-shelf', nargs=2, type=Path, metavar=('BALLKICKERS_REPO', 'FROG_FIGHTER_REPO'),
+                    help='build the full /play/ Game Room shelf, including build/web exports from these two source checkouts')
 parser.add_argument('--assets-only', metavar='DIR', help="with --warp: only the room's files and the games (no wasm, no page) into DIR: the Android host's bundle (build-android-host.py)")
 args = parser.parse_args()
+if args.production_shelf:
+    if args.bare or args.assets_only or args.luau_only or args.games != ','.join(WARP_GAMES):
+        parser.error('--production-shelf builds the full browser lobby; use --web-game for a custom shelf')
+    args.warp = True
 if args.assets_only:
     OUT = Path(args.assets_only).resolve()
 if args.warp:
@@ -167,6 +180,20 @@ def copy_games(names):
     games/index.json (the names) and games/library.json (the room's shelf:
     the store id, folder, title and player counts from gamenight.json): the page fetches these."""
     out = OUT / 'games'
+    browser_games = []
+    for manifest, entry, cover in args.web_game:
+        meta = json.loads(Path(manifest).read_text())
+        game_id = meta['id']
+        if not re.fullmatch(r'[a-z0-9][a-z0-9-]*', game_id):
+            sys.exit(f'Invalid HTML game id: {game_id}')
+        target = (OUT / entry).resolve()
+        if (not target.is_relative_to(OUT.resolve()) or target.is_relative_to(out.resolve())
+                or not target.is_file() or target.suffix.lower() != '.html'):
+            sys.exit(f'{entry}: place the exported HTML inside {OUT} and outside its generated games/ folder')
+        image = None if cover == '-' else Path(cover)
+        if image and (not image.is_file() or image.resolve().is_relative_to(out.resolve())):
+            sys.exit(f'{cover}: choose a cover file outside {out}')
+        browser_games.append((meta, target.relative_to(OUT.resolve()).as_posix(), image))
     shutil.rmtree(out, ignore_errors=True)
     library = []
     for name in names:
@@ -215,6 +242,26 @@ def copy_games(names):
         lo, hi = players.get('min', 1), players.get('max', 4)
         library.append({'id': meta.get('id', name), 'folder': name, 'title': meta.get('title', name), 'tagline': meta.get('tagline', ''),
                          'players': f'{lo}-{hi}' if lo != hi else str(lo), 'min_players': lo, 'max_players': hi, 'has_cover': cover.exists(), 'bots': 0, 'builtin': True})
+    for meta, relative, cover in browser_games:
+        game_id = meta['id']
+        if any(g['id'] == game_id or g['folder'] == game_id for g in library):
+            sys.exit(f'Conflicting HTML game id: {game_id}')
+        game_dir = out / game_id
+        game_dir.mkdir(parents=True)
+        # The story editor asks every game on the shelf for editable Luau files.
+        (game_dir / 'files.json').write_text('[]')
+        if cover:
+            shutil.copy(cover, game_dir / 'cover.png')
+        lo, hi = meta['players']['min'], meta['players']['max']
+        library.append({'id': game_id, 'folder': game_id, 'title': meta['title'], 'tagline': meta.get('tagline', ''),
+                        'players': f'{lo}-{hi}' if lo != hi else str(lo), 'min_players': lo, 'max_players': hi,
+                        'has_cover': bool(cover), 'bots': 0, 'web_entry': relative})
+        names.append(game_id)
+    if args.production_shelf:
+        extra = [g for g in library if g.get('web_entry') and g['id'] in ('ballkickers', 'frog-fighter')]
+        for game in extra:
+            shutil.copyfile(out / game['id'] / 'cover.png', OUT / 'godot' / game['id'] / 'cover.png')
+        (OUT / 'godot/library.json').write_text(json.dumps(extra), encoding='utf-8')
     (out / 'index.json').write_text(json.dumps(names))
     (out / 'library.json').write_text(json.dumps(library))
 
@@ -227,6 +274,17 @@ if args.assets_only:
     sys.exit(0)
 
 if not args.no_build:
+    if args.production_shelf:
+        from pack_godot_web import pack_games
+        exports = []
+        for name, repo in zip(('ballkickers', 'frog-fighter'), args.production_shelf):
+            manifest = repo / 'gamenight.json'
+            cover = repo / 'assets/gamenight/cover.png'
+            if json.loads(manifest.read_text(encoding='utf-8'))['id'] != name or not cover.is_file():
+                sys.exit(f'{repo}: expected the {name} manifest and cover')
+            exports.append((name, repo / 'build/web'))
+            args.web_game.append((manifest, f'godot/{name}/index.html', cover))
+        pack_games(exports, OUT / 'godot', refresh=True)
     lock = (ROOT / 'Cargo.lock').read_text()
     version = re.search(r'name = "wasm-bindgen"\nversion = "([^"]+)"', lock).group(1)
     bindgen = shutil.which('wasm-bindgen')
@@ -260,6 +318,10 @@ if not args.no_build:
     page = page.replace(f"./pkg/{args.example}.js'", f"./pkg/{args.example}.js?v={version}'").replace(f"'pkg/{args.example}_bg.wasm'", f"'pkg/{args.example}_bg.wasm?v={version}'")
     page = page.replace('<html lang="en">', f'<html lang="en" data-version="{version}">', 1)
     page = page.replace('<meta charset="utf-8">', '<meta charset="utf-8">\n<meta http-equiv="Cache-Control" content="no-cache">' + VERSION_CHECK, 1)
+    if room:
+        page = page.replace('src="web-catalog.js"', f'src="web-catalog.js?v={version}"')
+        if not args.production_shelf and (args.web_game or args.luau_only or args.games != ','.join(WARP_GAMES)):
+            page = page.replace('<html lang="en"', '<html lang="en" data-custom-shelf', 1)
     (OUT / 'version.json').write_text(json.dumps({'version': version}))
     (OUT / 'index.html').write_text(page)
     if room:
@@ -269,6 +331,7 @@ if not args.no_build:
         shutil.copy(ROOT / 'lobbies/game-room/assets/splitscreen-club-icon.png', OUT)
         # qrcode-generator 1.4.4 (MIT, Kazuhiko Arase): the loading screen's QR code.
         shutil.copy(ROOT / 'lobbies/game-room/examples/browser/qrcode.js', OUT)
+        shutil.copy(ROOT / 'lobbies/game-room/examples/browser/web-catalog.js', OUT)
         shutil.copytree(ROOT / 'lobbies/game-room/examples/browser/stories', OUT / 'stories', dirs_exist_ok=True)
     (OUT / 'assets').mkdir(exist_ok=True)
     if args.example == 'terrain_fly':

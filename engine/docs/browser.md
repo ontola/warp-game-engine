@@ -210,6 +210,44 @@ How the build differs from native:
   thread is busy (a long frame) the sound can stutter; an AudioWorklet would
   take it off that thread.
 
+### Building the full production shelf for `/play/`
+
+Build the two Godot games in adjacent checkouts with their Web export tools,
+including the game bridge and license files. Each produces `build/web` in its
+own repository. From the Warp repository run the production profile:
+
+```sh
+python3 engine/tools/build-web.py --production-shelf ../ballkickers ../frog-fighter
+```
+
+The profile stages both exports, their covers and one shared Godot runtime.
+It registers `godot/ballkickers/index.html` and `godot/frog-fighter/index.html`
+on the default six Luau and two built-in Rust games. It also works offline
+with the game exports, engine build dependencies and toolchain installed.
+For a custom selection with already staged HTML files, use
+`--warp --games ... --web-game MANIFEST ENTRY COVER`. A plain `--warp`
+builds the engine's own default shelf. Check `build/web/games/library.json` for all ten
+entries. Publish the complete staging directory together under `/play/` so
+the lobby, game entry points, runtime, covers and story assets keep their
+relative URLs. Each HTML entry is relative to the site's root, for example
+`godot/ballkickers/index.html` opens at `/play/godot/ballkickers/index.html`.
+
+Production also serves the profile's `godot/` directory persistently under
+`https://splitscreen.club/play/godot/`, outside replaceable lobby releases.
+The standard `--warp` page at that origin merges the two entries from
+`godot/library.json` into its bundled shelf when missing. The external
+covers live at `godot/<id>/cover.png`. Offline hosts, other origins, explicit
+custom shelves and the native Android host use their own catalog. A missing,
+invalid or slow production manifest leaves the bundled games available.
+
+The browser host opens each HTML game on demand in a same-origin iframe. The
+`splitscreen-club-webgame-v1` message channel carries the existing game
+protocol's party, seats, controller input and pause/resume messages. Export
+pages can also run directly. When WebGPU cannot start the 3D room, its loading
+screen offers direct links. This packaging targets the browser on desktops
+and phones. The native Android host still loads its native and Luau games.
+
+
 ## What the browser needs
 
 - Engine rule (Joep, 6 November 2026): every pass fits 8 storage buffers
