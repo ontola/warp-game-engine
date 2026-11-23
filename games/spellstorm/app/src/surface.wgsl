@@ -10,6 +10,13 @@
 // material's numbers start in Scene::aux. Vertex colours ride in the
 // corner uvs: x = r + 256 g, y = b + 256 a, 8 bits each.
 
+// Phones (Joep's Tab S9+: 53 of 68 ms shading here at full cost): the
+// game installs this file with SS_LITE true (live.rs surface): two noise
+// octaves instead of four, no bump from extra noise samples (the normal
+// stays the mesh's), one triplanar tap. Same colours, ramps and darkness.
+const SS_LITE: bool = false;
+const SS_OCT: i32 = select(4, 2, SS_LITE);
+
 struct SurfaceIn {
     kind: u32,
     instance: u32,
@@ -151,6 +158,14 @@ fn ss_noise(s: SurfaceIn, o: u32) -> SurfaceOut {
     let uz = tp.xy;
     let uy = tp.xz;
     let ux = tp.zy * vec2<f32>(-1.0, 1.0);
+    if SS_LITE {
+        // The side the surface faces most, one tap, no bump.
+        let an = abs(ln);
+        var g1 = ss_grey(a_tile, uz, dxl.xy, dyl.xy);
+        if an.y >= an.x && an.y >= an.z { g1 = ss_grey(a_tile, uy, dxl.xz, dyl.xz); }
+        else if an.x >= an.z { g1 = ss_grey(a_tile, ux, dxl.zy * vec2<f32>(-1.0, 1.0), dyl.zy * vec2<f32>(-1.0, 1.0)); }
+        return SurfaceOut(s.tint * ss_srgb_to_linear(ss_ramp(o + 5u, g1)) * ss_vcol(s).rgb, s.n, s.rough, s.metal, vec3<f32>(0.0));
+    }
     let g = ss_grey(a_tile, uz, dxl.xy, dyl.xy) * w.z + ss_grey(a_tile, uy, dxl.xz, dyl.xz) * w.y
         + ss_grey(a_tile, ux, dxl.zy * vec2<f32>(-1.0, 1.0), dyl.zy * vec2<f32>(-1.0, 1.0)) * w.x;
     // The ramp is applied per texel in Godot (sRGB), then filtered.
@@ -192,7 +207,7 @@ fn ss_fbm3(q: vec3<f32>) -> f32 {
     var p = q;
     var a = 0.5;
     var s = 0.0;
-    for (var i = 0; i < 4; i++) {
+    for (var i = 0; i < SS_OCT; i++) {
         s += a * ss_vnoise3(p);
         p = p * 2.03 + vec3<f32>(1.7, 9.2, 3.1);
         a *= 0.5;
@@ -227,6 +242,10 @@ fn ss_stone(s: SurfaceIn, o: u32) -> SurfaceOut {
     let bump = ss_f(o + 4u);
     let rough = ss_f(o + 9u);
     // The crack's width follows how fast its noise changes across a pixel.
+    if SS_LITE {
+        let lite = ss_stone_at(s.p, s.n, o, 0.06);
+        return SurfaceOut(lite.col, s.n, rough - lite.grain * 0.15, 0.0, vec3<f32>(0.0));
+    }
     let p = s.p * scale;
     let cq = p * vec3<f32>(0.9, 1.8, 0.9) + 4.0;
     let c0 = ss_fbm3(cq);
@@ -263,6 +282,7 @@ fn ss_cloth(s: SurfaceIn, o: u32) -> SurfaceOut {
     var col = color * tint * (0.78 + 0.35 * dw.x) * (0.97 + 0.03 * dw.y);
     col = mix(col, col * 0.55, grime * 0.5);
     let rim = pow(1.0 - clamp(dot(s.n, -s.dir), 0.0, 1.0), 3.0);
+    if SS_LITE { return SurfaceOut(col, s.n, 0.92, 0.0, col * rim * 0.15); }
     let h = dw.x * 0.6 + dw.y * 0.15;
     let hx = ss_cloth_h(op + dxl, weave, fade);
     let hy = ss_cloth_h(op + dyl, weave, fade);
@@ -301,7 +321,7 @@ fn ss_fbm2(q: vec2<f32>) -> f32 {
     var p = q;
     var v = 0.0;
     var a = 0.5;
-    for (var i = 0; i < 4; i++) {
+    for (var i = 0; i < SS_OCT; i++) {
         v += a * ss_noise2(p);
         p = SS_ROT * p * 2.03;
         a *= 0.5;
@@ -607,6 +627,7 @@ fn ss_floor_at(p: vec2<f32>, o: u32, time: f32) -> FloorAt {
 
 fn ss_floor(s: SurfaceIn, o: u32) -> SurfaceOut {
     let here = ss_floor_at(s.p.xz, o, s.time);
+    if SS_LITE { return SurfaceOut(here.col, s.n, here.rough, 0.0, here.glow); }
     let hx = ss_floor_at(s.p.xz + s.dx.xz, o, s.time).h;
     let hy = ss_floor_at(s.p.xz + s.dy.xz, o, s.time).h;
     let bump = 0.035;
