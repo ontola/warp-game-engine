@@ -96,20 +96,25 @@ local function checkpoint(ctx,a,seat,cast,radius)
 	return distance(previous+delta*t,a.pos)<=r
 end
 
--- Combat records only confirmed shots. An unrelated hit can never complete
--- the current step. If a later step needs that actor, explain the failure now.
-local function resolveShots(m,ctx,cast)
-	local shots=m.shotPeople
-	m.shotPeople=nil
-	if not shots then return false end
+-- Check the remaining objectives only when combat reports a casualty. A
+-- vehicle can end a passenger's route or invalidate a contract target.
+local function resolveCasualties(m,ctx,cast)
+	local shots,roadDeaths=m.shotPeople,m.checkRoadDeaths
+	m.shotPeople,m.checkRoadDeaths=nil,nil
+	if not shots and not roadDeaths then return false end
 	for i=m.step,#ctx.definition.steps do
 		local step=ctx.definition.steps[i]
-		if step.person and shots[step.person] and (i~=m.step or step.op~="contract") then
-			finish(m,"failed",cast.people[step.person].name.." was shot.")
+		local actor=step.person and cast.people[step.person]
+		if actor and roadDeaths and actor.roadDeath then
+			finish(m,"failed",actor.name.." was hit by a vehicle.")
+			return false
+		end
+		if actor and shots and shots[step.person] and (i~=m.step or step.op~="contract") then
+			finish(m,"failed",actor.name.." was shot.")
 			return false
 		end
 	end
-	return m.contractPerson~=nil and shots[m.contractPerson]==true
+	return shots~=nil and m.contractPerson~=nil and shots[m.contractPerson]==true
 end
 
 function missions.tick(m,fleet,cast,dt,input)
@@ -120,7 +125,7 @@ function missions.tick(m,fleet,cast,dt,input)
 		finish(m,"failed","Run this story again after updating the game.")
 		return
 	end
-	local contractHit=resolveShots(m,ctx,cast)
+	local contractHit=resolveCasualties(m,ctx,cast)
 	if m.status~="active" then return end
 	if m.raceTime~=nil then m.raceTime+=dt end
 	local seat=fleet.players[m.owner]

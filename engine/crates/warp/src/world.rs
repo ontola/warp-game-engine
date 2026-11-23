@@ -7,6 +7,7 @@
 //! emissive, roughness, metal) seen for the first time adds a material and a
 //! mesh, which needs a new renderer on the next frame (`rebuild`): free
 //! during `init`, a short stall later.
+mod dents;
 use glam::{Affine3A, EulerRot, Quat, Vec3};
 use kern::collide::{Mover, YawBox};
 use render::primitives;
@@ -258,7 +259,7 @@ impl Filter {
     }
 }
 
-struct ModelInfo { mesh: usize, min: Vec3, max: Vec3, crush_hinge: Vec3 }
+struct ModelInfo { mesh: usize, min: Vec3, max: Vec3, crush_hinge: Vec3, rest: std::ops::Range<usize>, vertex_parts: Vec<u8>, part_center: Vec3 }
 
 pub struct World {
     pub(crate) fleet: Option<physics::vehicle::fleet::Fleet>,
@@ -269,6 +270,7 @@ pub struct World {
     materials: HashMap<[i32; 9], u32>,
     meshes: HashMap<(usize, u32), usize>,
     models: HashMap<String, ModelInfo>,
+    dents: dents::Pool,
     /// Explicitly preloaded looks survive scene replacement even with no live instances.
     warmed: BTreeMap<(Shape, [i32; 9]), Look>,
     /// Meshes or materials were added since the renderer was made.
@@ -331,7 +333,7 @@ impl World {
         let m = scene.add_material(material(&Look::default()));
         let cube = scene.add_mesh(&primitives::cube(m).mesh());
         let slots = Slots::reserve(&mut scene, max_entities);
-        let mut w = World { fleet: None, entities: BTreeMap::new(), next: 1, scene, slots, materials: HashMap::new(), meshes: HashMap::new(), models: HashMap::new(), warmed: BTreeMap::new(), rebuild: true, added: Vec::new(), dir: dir.to_path_buf(), fx: Fx::default(), explosions: None, baked_explosion_smoke: false, explosions_prepared: None };
+        let mut w = World { fleet: None, entities: BTreeMap::new(), next: 1, scene, slots, materials: HashMap::new(), meshes: HashMap::new(), models: HashMap::new(), dents: Default::default(), warmed: BTreeMap::new(), rebuild: true, added: Vec::new(), dir: dir.to_path_buf(), fx: Fx::default(), explosions: None, baked_explosion_smoke: false, explosions_prepared: None };
         w.materials.insert(Look::default().key(), m);
         w.meshes.insert((0, m), cube);
         w
@@ -375,6 +377,8 @@ impl World {
         for ((shape, _), look) in &self.warmed {
             w.mesh(shape, look)?;
         }
+        self.restore_dents(&mut w)?;
+        self.dents = w.dents;
         w.scene.meadow = self.scene.meadow.take();
         w.scene.meadow_footprints = std::mem::take(&mut self.scene.meadow_footprints);
         self.entities = std::mem::take(&mut w.entities);
@@ -400,6 +404,8 @@ impl World {
         m
     }
 
+    pub fn part_center(&self,path:&str)->Option<Vec3>{self.models.get(path).map(|p|p.part_center)}
+
     fn crush_hinge(&self, shape: &Shape) -> Vec3 {
         match shape {
             Shape::Model(path) => self.models.get(path).map_or(Vec3::ZERO, |m| m.crush_hinge),
@@ -421,14 +427,18 @@ impl World {
             Shape::Outline { sides, width } => 3 + (*sides as usize) * 1000 + *width as usize,
             Shape::Model(path) => {
                 if !self.models.contains_key(path) {
-                    let base = path.rsplit_once("#crush").map_or(path.as_str(), |(base, _)| base);
+                    let base = path.split_once('#').map_or(path.as_str(), |(base, _)| base);
                     if !self.models.contains_key(base) {
                         let file = self.asset(base)?;
                         let model = assets::gltf::load(&mut self.scene, &file)?;
                         for (i, part) in model.crush_sections {
-                            self.models.insert(format!("{base}#crush{i}"), ModelInfo { mesh: part.mesh, min: part.min, max: part.max, crush_hinge: part.hinge });
+                            self.models.insert(format!("{base}#crush{i}"), ModelInfo { mesh: part.mesh, min: part.min, max: part.max, crush_hinge: part.hinge, rest:0..0, vertex_parts:Vec::new(), part_center:Vec3::ZERO });
                         }
-                        self.models.insert(base.to_owned(), ModelInfo { mesh: model.mesh, min: model.min, max: model.max, crush_hinge: Vec3::ZERO });
+                        for (name, part) in model.parts {
+                            self.models.insert(format!("{base}#part-{name}"), ModelInfo { mesh: part.mesh, min: part.min, max: part.max, crush_hinge: Vec3::ZERO, rest:0..0, vertex_parts:Vec::new(),part_center:part.hinge });
+                        }
+                        let rest=model.vertex_start..model.vertex_start+model.vertex_count;
+                        self.models.insert(base.to_owned(), ModelInfo { mesh: model.mesh, min: model.min, max: model.max, crush_hinge: Vec3::ZERO, rest, vertex_parts:model.vertex_parts, part_center:Vec3::ZERO });
                         self.rebuild = true;
                     }
                     if !self.models.contains_key(path) { return Err(format!("model has no section {path}")); }
@@ -524,6 +534,7 @@ impl World {
         if e.shape != old.shape || (e.look != old.look && e.look.key() != old.look.key()) {
             (e.mesh, e.local) = self.mesh(&e.shape, &e.look)?;
             e.crush_hinge = self.crush_hinge(&e.shape);
+            self.release_dent(id);
         }
         if let Some(w) = &e.wire { e.local = w.bounds(); }
         show(&mut self.slots, &mut self.scene, &mut e);
@@ -571,6 +582,7 @@ impl World {
 
     pub fn remove(&mut self, id: u32) -> bool {
         let Some(root) = self.entities.remove(&id) else { return false };
+        self.release_dent(id);
         if let Some(p) = root.parent { self.entities.get_mut(&p).unwrap().children.retain(|&i| i != id); }
         let mut pending = Vec::new();
         let mut next = Some(root);
@@ -578,7 +590,7 @@ impl World {
             pending.extend(e.children);
             if let Some(slot) = e.slot { self.slots.remove(&mut self.scene, slot); }
             for slot in e.edge_slots { self.slots.remove(&mut self.scene, slot); }
-            next = pending.pop().and_then(|i| self.entities.remove(&i));
+            next = pending.pop().and_then(|i| { self.release_dent(i); self.entities.remove(&i) });
         }
         true
     }
@@ -745,14 +757,14 @@ impl World {
     }
 
     /// Upload moved slots to a renderer made from this scene.
-    pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer) -> Result<(), String> { self.slots.flush(gpu, renderer, &self.scene) }
+    pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer) -> Result<(), String> { self.upload_dents(gpu, renderer)?; self.slots.flush(gpu, renderer, &self.scene) }
 
     /// A simulation tick starts (see [`World::flush_at`]).
     pub fn tick_start(&mut self) { self.slots.tick(&self.scene); }
 
     /// [`World::flush`], with moving entities drawn `alpha` of the way
     /// between their previous and current tick.
-    pub fn flush_at(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, alpha: f32) -> Result<(), String> { self.slots.flush_at(gpu, renderer, &self.scene, alpha) }
+    pub fn flush_at(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, alpha: f32) -> Result<(), String> { self.upload_dents(gpu, renderer)?; self.slots.flush_at(gpu, renderer, &self.scene, alpha) }
 }
 
 fn material(look: &Look) -> Material {

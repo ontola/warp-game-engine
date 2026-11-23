@@ -1,6 +1,7 @@
 -- Named actors borrow fitted Warp Humans from the city. Story cars are ordinary
 -- Rapier sedans that can be driven by a local player or a waypoint controller.
 local mobility=require("mobility")
+local corpses=require("corpses")
 local city=require("world")
 local cape=require("west-cape")
 local models=require("vehicles")
@@ -13,9 +14,13 @@ local Cast={}
 -- data. Rebind it on a live edit without respawning a person or a car.
 function Cast.bind(self,fleet,population,fitter)
 	fleet.storyPeople=fleet.storyPeople or {}
-	return setmetatable(self,{
+	setmetatable(self,{
 		__index=Cast, fleet=fleet, population=population, fitter=fitter or population.pedestrians,
 	})
+	for key,p in self.people do
+		if (p.shot or p.gibbed) and not p.dead then self:adoptDeath(key) end
+	end
+	return self
 end
 
 function Cast.new(fleet,population,fitter)
@@ -43,6 +48,9 @@ function Cast:person(key,opts)
 		local candidate=(look+offset)%looks
 		actor=systems.fitter:allocate({pos=opts.pos,yaw=opts.yaw or 0,look=candidate},pop.residents,observers)
 		if actor then look=candidate; break end
+	end
+	if not actor and corpses.freeLook(pop,systems.fleet,systems.fitter.pool,look) then
+		actor=systems.fitter:allocate({pos=opts.pos,yaw=opts.yaw or 0,look=look},pop.residents,observers)
 	end
 	if not actor then return nil,"no fitted slot available for this look" end
 	local p={name=opts.name or key,pos=opts.pos,yaw=opts.yaw or 0,look=look,actor=actor,
@@ -74,7 +82,7 @@ end
 
 function Cast:walk(key,points,speed)
 	local p=self.people[key]
-	if not p or p.rideId or not points or #points==0 then return false end
+	if not p or p.dead or p.rideId or not points or #points==0 then return false end
 	p.route,p.leg,p.pace,p.arrived=points,1,math.clamp(speed or 1.5,.15,6),false
 	return true
 end
@@ -97,7 +105,7 @@ end
 -- Both corner waypoints clear the car plus a person's standing radius.
 function Cast:approach(key,vehicle,seat,speed)
 	local p,car=self.people[key],resolveCar(self,vehicle)
-	if not p or not car or car.kind~="car" then return false end
+	if not p or p.dead or not car or car.kind~="car" then return false end
 	local side=if seat=="driver" then -1 else 1
 	local right,forward=util.right(car.yaw),util.forward(car.yaw)
 	local delta=p.pos-car.pos
@@ -179,22 +187,40 @@ function Cast:drive(key,points,speed)
 end
 
 function Cast:hit(key,push,gibbed)
+	if gibbed then return self:kill(key,push,true) end
 	local p=self.people[key]
-	if not p then return false end
+	if not p or p.dead then return false end
 	p.wasHit,p.route,p.arrived=true,nil,false
 	if p.rideId then
 		if not self:dismount(key) then releaseSeat(p,getmetatable(self).fleet.vehicles[p.rideId]) end
-	end
-	if gibbed then
-		humans.set(p.actor,{visible=false})
-		p.gibbed,p.externalPose,p.impact=true,true,{stage="gibbed"}
-		return true
 	end
 	if p.impact and p.impact.stage=="down" then return true end
 	if not humans.ragdoll(p.actor,push or v(0,1,-2)) then return false end
 	p.impact={stage="down",elapsed=0,home=p.pos}
 	p.externalPose=true
 	return true
+end
+
+-- Transfer an already fallen person, including deaths left by a previous
+-- live version. A mission keeps its name and completion state independently.
+function Cast:adoptDeath(key,gibbed)
+	local p=self.people[key]
+	if not p or p.dead then return false end
+	local systems=getmetatable(self)
+	systems.fleet.storyPeople[p.actor]=nil
+	p.wasHit,p.route,p.arrived=true,nil,false
+	return corpses.retain(systems.population,systems.fleet,p,p.actor,systems.fitter.pool,gibbed or p.gibbed)
+end
+
+function Cast:kill(key,push,gibbed)
+	local p=self.people[key]
+	if not p or p.dead then return false end
+	if not gibbed then
+		if not self:hit(key,push) then return false end
+	elseif p.rideId then
+		releaseSeat(p,getmetatable(self).fleet.vehicles[p.rideId])
+	end
+	return self:adoptDeath(key,gibbed)
 end
 
 function Cast:wasHit(key)
@@ -236,7 +262,7 @@ function Cast:remove(key)
 	local p=self.people[key]
 	if p then
 		if p.rideId then releaseSeat(p,fleet.vehicles[p.rideId]) end
-		humans.remove(p.actor)
+		if not p.dead then humans.remove(p.actor) end
 		world.remove(p.body)
 		fleet.storyPeople[p.actor],self.people[key]=nil,nil
 		return true

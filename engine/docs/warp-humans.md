@@ -4,6 +4,9 @@
 
 Calling `humans.ragdoll` transfers the fitted person’s current pose to eleven connected rigid bodies. Their shoulders, elbows, spine, neck, hips and knees have joint limits. During the first 0.19 seconds the knees and hips flex, the forearms draw in and the chin tucks. This extra muscle tension holds for 0.28 seconds and fades over the next 0.78 seconds. Ground and vehicle contact can interrupt the motion throughout the fall. The same response works with procedural body proportions and needs no fall animation asset. For a fall caused by a moving object, pass the person’s current world velocity and angular velocity. See the [Luau human API](warp-cli.md) and [joint controls](physics.md#ragdoll-joint-limits-and-muscle-response).
 
+A settled ragdoll keeps its pose after its rigid bodies leave the solver. `humans.ragdoll_raycast(id, origin, direction, range)` returns the distance to the first posed capsule. `humans.ragdoll_closest(id, point)` returns the closest point inside or on those capsules. Both return `nil` for a standing or removed person. `humans.ragdoll_hit(id, point, velocity)` applies a velocity change to the nearest limb and wakes a settled rig in place. A game transferring a distant pedestrian to a retained body can call `humans.hide_distant(pool, sourceId)` to hide its current crowd sample immediately.
+
+
 ## Stadium playtest
 
 Play a full desktop Growing Guns match with one local player, three bots and the procedural spectators:

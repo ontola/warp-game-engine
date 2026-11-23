@@ -448,6 +448,10 @@ impl Humans {
         self.pools.get(pool)?.distant.visible_pose(resident, alpha)
     }
 
+    pub(crate) fn hide_distant(&mut self, pool: &str, resident: usize) -> bool {
+        self.pools.get_mut(pool).is_some_and(|p| p.distant.hide(resident))
+    }
+
     pub(crate) fn set_distant(&mut self, pool: &str, samples: Vec<crate::distant_humans::Sample>, seconds: f32) {
         self.pools.get_mut(pool).unwrap().distant.replace(samples, seconds);
     }
@@ -514,6 +518,18 @@ impl Humans {
     /// a ragdoll until it gets up (any pose but `dead` or `down`) or goes.
     pub fn ragdoll(&mut self, id: u32, push: Vec3) -> Result<bool, String> {
         self.ragdoll_with_motion(id, push, None)
+    }
+
+    pub fn ragdoll_raycast(&self, id: u32, origin: Vec3, dir: Vec3, limit: f32) -> Option<f32> {
+        self.dolls.raycast(id, origin, dir, limit)
+    }
+
+    pub fn ragdoll_closest(&self, id: u32, point: Vec3) -> Option<Vec3> {
+        self.dolls.closest(id, point).map(|(_, surface)| surface)
+    }
+
+    pub fn ragdoll_hit(&mut self, id: u32, point: Vec3, velocity: Vec3) -> Result<bool, String> {
+        self.dolls.hit(id, point, velocity)
     }
 
     pub(crate) fn ragdoll_with_motion(&mut self, id: u32, push: Vec3, spin: Option<Vec3>) -> Result<bool, String> {
@@ -728,6 +744,7 @@ impl Humans {
     /// Where one of a person's joints is now (`JOINT_NAMES`), in the world.
     pub fn joint(&self, id: u32, name: &str) -> Option<Vec3> {
         let bone = JOINT_NAMES.iter().find(|(n, _)| *n == name)?.1;
+        if bone == Bone::Pelvis && let Some(hips) = self.dolls.hips(id) { return Some(hips); }
         let p = self.people.get(&id)?;
         let rig = Rig::shared().ok()?;
         let zombie = self.pools.get(&p.pool).is_some_and(|pool| pool.zombie);
@@ -1083,6 +1100,43 @@ mod tests {
         assert!(h.joint(a, "head").unwrap().y > 1.2);
         h.ragdoll(a, Vec3::Z).unwrap();
         assert!(h.remove(a));
+        assert_eq!(h.falling(), 0);
+    }
+
+    #[test]
+    fn settled_ragdoll_queries_and_impulse_preserve_its_exact_pose() {
+        let cfg = BTreeMap::from([("resident".to_owned(), HumanPool { count: 1, ..Default::default() })]);
+        let mut h = Humans::new(&cfg);
+        let id = h.spawn("resident", Vec3::new(4., 0., -7.), 0.8).unwrap().unwrap();
+        h.tick(1. / 60.);
+        assert!(h.ragdoll_raycast(id, Vec3::ZERO, Vec3::Z, 30.).is_none());
+        assert!(h.ragdoll(id, Vec3::new(2., 0., -1.)).unwrap());
+        for _ in 0..400 { h.tick(1. / 60.); }
+        assert_eq!(h.falling(), 0);
+        let point = h.joint(id, "hand_l").unwrap();
+        let origin = h.joint(id, "hips").unwrap() + 2. * Vec3::Y;
+        let nearest = h.ragdoll_closest(id, origin).unwrap();
+        let distance = h.ragdoll_raycast(id, origin, Vec3::NEG_Y, 4.).unwrap();
+        assert!((1.4..2.05).contains(&distance), "posed capsule distance {distance}");
+        assert!(nearest.distance(origin) <= distance + 0.001);
+        assert!(h.ragdoll_raycast(id, origin, Vec3::NEG_Y, distance - 0.01).is_none());
+        assert!(h.ragdoll_raycast(id, origin + Vec3::X * 4., Vec3::NEG_Y, 5.).is_none());
+        assert!(h.ragdoll_raycast(id, origin, Vec3::ZERO, 5.).is_none());
+        let before: Vec<_> = JOINT_NAMES.iter().map(|(name, _)| h.joint(id, name).unwrap()).collect();
+        assert!(h.ragdoll_hit(id, point, Vec3::ZERO).unwrap());
+        assert_eq!(h.falling(), 0);
+        assert!(h.ragdoll_hit(id, point, Vec3::new(3., 5., 0.)).unwrap());
+        assert_eq!(h.falling(), 1);
+        for ((name, _), before) in JOINT_NAMES.iter().zip(before) {
+            assert!(h.joint(id, name).unwrap().distance(before) < 0.001, "{name} snapped on wake");
+        }
+        assert!(h.ragdoll_closest(id, origin).unwrap().distance(nearest) < 0.001);
+        assert!((h.ragdoll_raycast(id, origin, Vec3::NEG_Y, 4.).unwrap() - distance).abs() < 0.001);
+        for _ in 0..8 { h.tick(1. / 60.); }
+        assert!(h.joint(id, "hand_l").unwrap().distance(point) > 0.025);
+        assert!(h.remove(id));
+        assert!(h.ragdoll_closest(id, point).is_none());
+        assert!(!h.ragdoll_hit(id, point, Vec3::Y).unwrap());
         assert_eq!(h.falling(), 0);
     }
 

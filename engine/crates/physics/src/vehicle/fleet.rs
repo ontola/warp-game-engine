@@ -81,6 +81,8 @@ pub struct Fleet {
     contact_profiles: BTreeMap<String, SharedShape>,
     /// Model-space triangles split once per fitted body and grid, shared by all paints.
     crush_grids: BTreeMap<String, (kern::crush::Grid, Vec<(usize, [Vec3; 3])>)>,
+    dent_templates: BTreeMap<String,(Vec<Vec3>,Vec<[u32;3]>)>,
+    panel_surfaces: BTreeMap<String,(Vec<Vec3>,Vec<([u32;3],u8)>)>,
     surfaces: Surfaces,
     next: u32,
     acc: f64,
@@ -101,7 +103,7 @@ impl Fleet {
                 .collision_groups(InteractionGroups::new(super::GROUP_WORLD, Group::ALL, InteractionTestMode::And)).build();
             world.colliders.insert(c);
         }
-        Self { world, cars: BTreeMap::new(), contact_profiles: BTreeMap::new(), crush_grids: BTreeMap::new(), surfaces: Surfaces::default(), next: 1, acc: 0., impacts: BTreeMap::new() }
+        Self { world, cars: BTreeMap::new(), contact_profiles: BTreeMap::new(), crush_grids: BTreeMap::new(), dent_templates:BTreeMap::new(), panel_surfaces:BTreeMap::new(), surfaces: Surfaces::default(), next: 1, acc: 0., impacts: BTreeMap::new() }
     }
 
     /// Park on the supplied ground point. Parked cars remain solid to traffic.
@@ -222,6 +224,7 @@ impl Fleet {
         let hull = SharedShape::trimesh_with_flags(vertices, triangles, TriMeshFlags::FIX_INTERNAL_EDGES)
             .map_err(|e| format!("vehicle contact mesh: {e}"))?;
         self.crush_grids.remove(&name);
+        self.dent_templates.remove(&name);
         for entry in self.cars.values_mut() {
             if entry.query_skin.as_ref().is_some_and(|(n, _)| n == &name) { entry.query_skin = None; }
         }
@@ -270,6 +273,48 @@ impl Fleet {
         }
         let hull = SharedShape::trimesh(vertices,indices).map_err(|e| format!("crushed contact mesh: {e}"))?;
         entry.query_skin=Some((profile.to_owned(),hull));
+        Ok(())
+    }
+
+    pub fn has_panel_surface(&self,name:&str)->bool { self.panel_surfaces.contains_key(name) }
+
+    pub fn set_panel_surface(&mut self,name:String,vertices:Vec<Vec3>,faces:Vec<([u32;3],u8)>) {
+        self.panel_surfaces.insert(name,(vertices,faces));
+    }
+
+    pub fn cut_query(&mut self,id:u32,profile:&str,model:&str,dents:&[kern::crush::Dent],mask:u32)->Result<(),String>{
+        let car=self.cars.get_mut(&id).ok_or("unknown vehicle")?;
+        let (rest,faces)=self.panel_surfaces.get(model).ok_or("unknown panel model")?;
+        let points=rest.iter().map(|&p|crate::to(kern::crush::dent_vertex(p,Vec3::Y,dents).0)).collect();
+        let faces=faces.iter().filter(|(_,part)|*part==0 || mask&(1u32<<*part)==0).map(|&(tri,_)|tri).collect();
+        let shape=SharedShape::trimesh(points,faces).map_err(|e|format!("cut contact mesh: {e}"))?;
+        car.query_skin=Some((profile.to_owned(),shape));
+        Ok(())
+    }
+
+    /// Dense, shared sampling of the fitted sheet. Geometry changes only when a
+    /// car receives another hit; there is no per-road-tick mesh cooking.
+    pub fn dent_query(&mut self,id:u32,name:&str,dents:&[kern::crush::Dent])->Result<(),String>{
+        let entry=self.cars.get_mut(&id).ok_or("unknown vehicle")?;
+        let original=self.contact_profiles.get(name).and_then(|s|s.as_trimesh()).ok_or("unknown contact profile")?;
+        let (base,indices)=self.dent_templates.entry(name.to_owned()).or_insert_with(||{
+            let mut verts=Vec::new();let mut indices=Vec::new();
+            let mut unique=std::collections::HashMap::<[u32;3],u32>::new();
+            let mut queue:Vec<_>=original.indices().iter().map(|tri|tri.map(|i|crate::from(original.vertices()[i as usize]))).collect();
+            while let Some([a,b,c])=queue.pop(){
+                let d=[a.distance_squared(b),b.distance_squared(c),c.distance_squared(a)];
+                let (x,y,z)=if d[0]>=d[1] && d[0]>=d[2]{(a,b,c)}else if d[1]>=d[2]{(b,c,a)}else{(c,a,b)};
+                if x.distance_squared(y)>0.24*0.24 {
+                    let mid=(x+y)*0.5; queue.extend([[x,mid,z],[mid,y,z]]);
+                }else{
+                    indices.push([a,b,c].map(|v|*unique.entry(v.to_array().map(f32::to_bits)).or_insert_with(||{let idx=verts.len() as u32;verts.push(v);idx})));
+                }
+            }
+            (verts,indices)
+        });
+        let points=base.iter().map(|&p|crate::to(kern::crush::dent_vertex(p,Vec3::Y,dents).0)).collect();
+        let shape=SharedShape::trimesh(points,indices.clone()).map_err(|e|format!("dented contact mesh: {e}"))?;
+        entry.query_skin=Some((name.to_owned(),shape));
         Ok(())
     }
 

@@ -4711,6 +4711,19 @@ impl Renderer {
         Ok(())
     }
 
+    /// Update vertex positions/normals in a previously reserved range. The same
+    /// topology backs the main, shadow, transparency and motion passes.
+    pub fn update_vertices(&self, gpu: &Gpu, first: usize, vertices: &[crate::cluster::Vertex]) -> Result<(), String> {
+        let bytes = bytemuck::cast_slice(vertices);
+        let offset = (first * std::mem::size_of::<crate::cluster::Vertex>()) as u64;
+        let topology = &self.motion_geometry.0;
+        if offset.checked_add(bytes.len() as u64).is_none_or(|end| end > topology.regions[0].1) { return Err("vertex update outside scene".into()); }
+        topology.write(gpu,0,offset,bytes);
+        self.invalidate_dynamic_shadow();
+        if let Some(f) = &self.minimal_forward { f.lock().unwrap().update_vertices(gpu,offset,bytes); }
+        Ok(())
+    }
+
     pub fn update_instances(&self, gpu: &Gpu, first: usize, instances: &[crate::scene::GpuInstance]) -> Result<(), String> {
         if self.baked_animations.as_ref().is_some_and(|animation|animation.contains_owner_range(first,instances.len())) {
             return Err("baked actor parts are driven by the shared GPU animation pass".into());

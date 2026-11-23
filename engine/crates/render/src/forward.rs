@@ -52,7 +52,7 @@ impl Forward {
             indices.extend(model.indices.iter().map(|i|i+base));
             rigid_models.push(start..indices.len()as u32);
         }
-        let vertices=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor{label:Some("minimal vertices"),contents:bytemuck::cast_slice(&all_vertices),usage:wgpu::BufferUsages::VERTEX});
+        let vertices=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor{label:Some("minimal vertices"),contents:bytemuck::cast_slice(&all_vertices),usage:wgpu::BufferUsages::VERTEX|wgpu::BufferUsages::COPY_DST});
         let palette=gpu.device.create_buffer(&wgpu::BufferDescriptor{label:Some("minimal joints"),size:(PALETTE_ROWS*16)as u64,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
         if indices.is_empty(){indices.push(0);}
         let indices=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor{label:Some("minimal indices"),contents:bytemuck::cast_slice(&indices),usage:wgpu::BufferUsages::INDEX});
@@ -81,6 +81,7 @@ impl Forward {
         let query=supported.then(||(gpu.device.create_query_set(&wgpu::QuerySetDescriptor{label:Some("minimum timestamps"),ty:wgpu::QueryType::Timestamp,count:48}),gpu.device.create_buffer(&wgpu::BufferDescriptor{label:Some("minimum timestamps resolve"),size:48*8,usage:wgpu::BufferUsages::QUERY_RESOLVE|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false})));
         Self{profiler:crate::gpu_profile::Profiler::new(supported,48),profiling:false,query,sequence:0,profile_frame_id:None,pipeline,pipeline_srgb,layout,lava_view,lava_sampler,stone_view,stone_detail:scene.graphics.stone_detail,draw_distance:scene.graphics.minimal_draw_distance,min_angle:scene.graphics.minimal_min_angle,rigid_models,rigid_actors:Vec::new(),palette,vertices,indices,materials:materials.clone(),meshes,ranges,owners:scene.instances.clone(),targets:Vec::new()}
     }
+    pub fn update_vertices(&self,gpu:&Gpu,offset:u64,bytes:&[u8]) { if !bytes.is_empty() { gpu.queue.write_buffer(&self.vertices,offset,bytes); } }
     pub fn update(&mut self,first:usize,instances:&[GpuInstance])->Result<(),String>{
         if first.checked_add(instances.len()).is_none_or(|n|n>self.owners.len()){return Err("minimal owner update exceeds scene".into());}
         for i in instances {if i.cluster_count>0&&!self.ranges.contains_key(&(i.first_cluster,i.cluster_count)){return Err("minimal renderer requires a registered mesh".into());}}

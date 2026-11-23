@@ -86,8 +86,8 @@ local function localResidents(pop, interiors, city)
 	for id, ids in pop.rooms do
 		if not interiors.active[id] then
 			for _, index in ids do
-				local untilTime=pop.residents[index].shotUntil
-				if untilTime and untilTime>pop.elapsed then pop.absentWorkers[index]=untilTime end
+				local worker=pop.residents[index]
+				if worker.shotUntil then pop.absentWorkers[index]=worker end
 				pop.residents[index] = nil
 			end
 			pop.rooms[id] = nil
@@ -103,11 +103,14 @@ local function localResidents(pop, interiors, city)
 			local phase = sampleNoise(b.seed,i,3)
 			local c = {building=id, role=anchor.role, action=anchor.pose, pos=anchor.pos,
 				yaw=anchor.yaw, phase=phase*17, night=b.kind=="hotel" or i%4~=0}
-			local untilTime=pop.absentWorkers[index]
-			if untilTime then
-				if untilTime>pop.elapsed then c.shotUntil=untilTime end
-				pop.absentWorkers[index]=nil
+			local absent=pop.absentWorkers[index]
+			if type(absent)=="table" then
+				c=absent
+			elseif absent and absent>pop.elapsed then
+				-- Older live sessions stored just the worker's suppression time.
+				c.shotUntil=absent
 			end
+			pop.absentWorkers[index]=nil
 			if anchor.to then
 				c.a, c.delta = anchor.pos, anchor.to-anchor.pos
 				c.walkTime = vector.magnitude(c.delta)/(.8+.48*phase)
@@ -178,14 +181,19 @@ end
 
 -- A resident starts or finishes a shift outside the view of every nearby
 -- player. A higher flying observer sees farther across the sidewalks below.
+local function deathObserved(c,observers)
+	for _,eye in observers do
+		if vector.magnitude(eye-c.pos)<=65 or (c.deathPos and vector.magnitude(eye-c.deathPos)<=65) then return true end
+	end
+	return false
+end
+
 local function onShift(pop, id, c, hour, observers)
+	if c.corpse then return false end
 	if c.shotUntil and not c.impact then
 		if pop.elapsed < c.shotUntil then return false end
-		-- Resume an outdoor routine away from every observer, not under a gun sight.
-		for _, eye in observers do
-			if vector.magnitude(eye-c.pos) < 50 then return false end
-		end
-		c.shotUntil = nil
+		if deathObserved(c,observers) then return false end
+		c.shotUntil,c.dead,c.gibbed,c.externalPose,c.deathHome,c.deathPos,c.blastWounds=nil,nil,nil,nil,nil,nil,nil
 	end
 	if c.night or c.impact then return true end
 	if not c.startsAt then
@@ -208,6 +216,12 @@ function population.tick(pop, city, seats, dt, hour, interiors)
 	local people, observers = updateAvatars(pop,seats)
 	local changed = localResidents(pop,interiors,city)
 	if changed or pop.selectionIn<=0 then
+		for id,worker in pop.absentWorkers do
+			local expired
+			if type(worker)=="number" then expired=worker<=pop.elapsed
+			else expired=not worker.corpse and worker.shotUntil<=pop.elapsed and not deathObserved(worker,observers) end
+			if expired then pop.absentWorkers[id]=nil end
+		end
 		pop.selectionIn = .40
 		pop.streetRevision = (pop.streetRevision or 0)+1
 		for id, c in pop.residents do

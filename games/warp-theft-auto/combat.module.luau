@@ -5,6 +5,7 @@ local crowd=require("kit/crowd")
 local fx=require("combat_fx")
 local explosions=require("explosions")
 local impacts=require("impacts")
+local corpses=require("corpses")
 local sidearm=require("sidearm")
 local launcher=require("launcher")
 local cars=require("vehicles")
@@ -29,7 +30,16 @@ function combat.new(fleet,pop)
 end
 
 function combat.reload(state)
-	if state.combat then Cast.bind(state.combat.cast,state.fleet,state.population,crowd.new("rival")) end
+	if state.combat then
+		local s=state.combat
+		Cast.bind(s.cast,state.fleet,state.population,crowd.new("rival"))
+		for key,enemy in s.enemies do
+			if enemy.health<=0 and s.cast.people[key] and not s.cast.people[key].dead then
+				s.cast:adoptDeath(key)
+				enemy.waitClear=true
+			end
+		end
+	end
 	if state.storyCast then Cast.bind(state.storyCast,state.fleet,state.population) end
 end
 
@@ -47,12 +57,17 @@ local function updateRivals(s,fleet,dt)
 			if not seat.bot then dist=math.min(dist,vector.magnitude(route.a-seat.pos)) end
 		end
 		enemy.respawnIn=math.max(0,enemy.respawnIn-dt)
-		if actor and (dist>85 or (enemy.health<=0 and enemy.respawnIn<10.8)) then
+		if enemy.health<=0 and dist>65 and (not actor or not actor.corpse) then enemy.waitClear=false end
+		if actor and dist>85 and not actor.corpse then
 			removeMarker(enemy)
 			s.cast:remove(route.key)
 			actor=nil
 		end
-		if not actor and dist<65 and enemy.respawnIn==0 then
+		if actor and actor.dead and not actor.corpse and not enemy.waitClear and enemy.respawnIn==0 then
+			s.cast:remove(route.key)
+			actor=nil
+		end
+		if not actor and not enemy.waitClear and dist<65 and enemy.respawnIn==0 then
 			actor=s.cast:person(route.key,{name=route.name,pos=route.a,look=route.look})
 			if actor then
 				enemy.health,enemy.returning=2,false
@@ -79,12 +94,12 @@ local function visitPeople(state,minimum,maximum,visit)
 	local s,cast=state.combat,state.storyCast
 	if cast then
 		for key,p in cast.people do
-			if not p.shot then visit("cast",key,p,p.pos,p.actor) end
+			if not p.shot and not p.dead then visit("cast",key,p,p.pos,p.actor) end
 		end
 	end
 	for _,route in routes do
 		local p=s.cast.people[route.key]
-		if p and s.enemies[route.key].health>0 then visit("rival",route.key,p,p.pos,p.actor) end
+		if p and not p.dead and s.enemies[route.key].health>0 then visit("rival",route.key,p,p.pos,p.actor) end
 	end
 	impacts.visitResidents(state.population,minimum,maximum,function(id,c,feet,actor)
 		visit("resident",id,c,feet,actor)
@@ -128,7 +143,13 @@ local function targetOnRay(state,origin,ray,from,distance,projectile,limited)
 		local along,point=sidearm.intersect(origin,ray,from,pos,range,height)
 		if along and (not (projectile or limited) or along<=distance) and (not target or along<target.along or
 			(along==target.along and kind==target.kind and key<target.key)) then
-			target={kind=kind,key=key,along=along,point=point,feet=feet,head=not p.impact and point.y>=pos.y+height*.82}
+			target={kind=kind,key=key,along=along,point=point,feet=feet,actor=actor,person=p,head=not p.impact and point.y>=pos.y+height*.82}
+		end
+	end)
+	corpses.visit(state.population,origin,origin+ray*distance,function(id,_,feet,actor)
+		local along=humans.ragdoll_raycast(actor,origin,ray,distance)
+		if along and (not target or along<target.along or along==target.along and target.kind=="corpse" and id<target.key) then
+			target={kind="corpse",key=id,along=along,point=origin+ray*along,feet=feet,actor=actor}
 		end
 	end)
 	local limit=if target then math.max(0,target.along-.001) else distance
@@ -164,7 +185,7 @@ local function hitTarget(state,target,ray,blast,damage,gibbed)
 		return impacts.shootResident(state.population,state.fleet,key,target.feet,push,gibbed),true
 	elseif target.kind=="cast" then
 		local p=cast.people[key]
-		if not cast:hit(key,push,gibbed) then return false,false end
+		if not cast:kill(key,push,gibbed) then return false,false end
 		p.shot=true
 		if story and story.status=="active" then
 			story.shotPeople=story.shotPeople or {}
@@ -174,16 +195,37 @@ local function hitTarget(state,target,ray,blast,damage,gibbed)
 	end
 	local enemy=s.enemies[key]
 	local lethal=enemy.health<=damage
-	if lethal and not s.cast:hit(key,push,gibbed) then return false,false end
+	if lethal and not s.cast:kill(key,push,gibbed) then return false,false end
 	enemy.health=if lethal then 0 else enemy.health-damage
 	if lethal then
-		enemy.respawnIn=12
+		enemy.respawnIn,enemy.waitClear=45,true
 		removeMarker(enemy)
 	end
 	return true,lethal
 end
 
+-- Existing ragdolls receive the impact at the actual limb, including sleeping bodies.
+-- Fragmentation consumes ownership exactly once, before another seat or blast can hit.
+local function hitBody(state,id,actor,feet,point,dir,strength,gib,owner)
+	local origins
+	if gib then
+		origins=fx.fragmentOrigins(actor,feet)
+		if not corpses.gib(state.population,id) then return false end
+	elseif not humans.ragdoll_hit(actor,point,dir*math.clamp(strength*2,.3,12)) then
+		return false
+	end
+	fx.hit(state.combat.effects,point,dir,gib,game.tick()+owner,origins,strength)
+	return true
+end
+
 local function recordHit(state,owner,target,dir,blast,damage)
+	if target.kind=="corpse" then
+		if hitBody(state,target.key,target.actor,target.feet,target.point,dir,damage,blast and damage>=1.5,owner) then
+			local player=state.combat.players[owner]
+			if player then sidearm.confirmHit(player,target.point) end
+		end
+		return
+	end
 	local gibbed=blast and damage>=3
 	local joints=if gibbed then fx.fragmentOrigins(target.actor,target.feet) else nil
 	local hit,lethal=hitTarget(state,target,dir,blast,damage,gibbed)
@@ -207,9 +249,7 @@ end
 local function blastDamage(state,owner,center,radius,target,forward)
 	local extent=v(radius,radius,radius)
 	local hits={}
-	visitPeople(state,center-extent,center+extent,function(kind,key,p,feet,actor)
-		local pos,height=characterBounds(p,feet,actor)
-		local contact=pos+v(0,height*.5,0)
+	local function candidate(kind,key,p,feet,actor,contact)
 		local delta=contact-center
 		local distance=vector.magnitude(delta)
 		if distance>=radius then return end
@@ -220,6 +260,14 @@ local function blastDamage(state,owner,center,radius,target,forward)
 		local damage=9*(1-distance/radius)^2
 		table.insert(hits,{kind=kind,key=key,feet=feet,actor=actor,person=p,point=contact,
 			dir=if distance>.01 then delta/distance else forward,damage=damage})
+	end
+	visitPeople(state,center-extent,center+extent,function(kind,key,p,feet,actor)
+		local pos,height=characterBounds(p,feet,actor)
+		candidate(kind,key,p,feet,actor,pos+v(0,height*.5,0))
+	end)
+	corpses.visit(state.population,center-extent,center+extent,function(id,body,feet,actor)
+		local contact=humans.ragdoll_closest(actor,center)
+		if contact then candidate("corpse",id,body.person,feet,actor,contact) end
 	end)
 	-- Applying damage may release crowd rigs. Finish visiting before changing them.
 	table.sort(hits,function(a,b) return if a.kind==b.kind then a.key<b.key else a.kind<b.kind end)
@@ -326,11 +374,53 @@ local function shoot(state,id,player,seat,input,dt)
 	end
 end
 
+local function roadDamage(state,hit)
+	local s,p=state.combat,hit.person
+	local speed=hit.speed
+	local dir=if vector.magnitude(hit.velocity)>.001 then vector.normalize(hit.velocity) else v(0,0,-1)
+	local strength=math.clamp(speed*.12,.55,4)
+	if hit.corpse then
+		hitBody(state,hit.corpse,hit.actor,p.pos-v(0,.23,0),hit.pos,dir,strength,hit.gib,hit.owner)
+		return
+	end
+	if p.dead then return end
+	local killed=false
+	if hit.lethal and not hit.seat then
+		local push=dir*math.min(speed*.5,9)+v(0,1,0)
+		if hit.resident then
+			killed=impacts.shootResident(state.population,state.fleet,hit.resident,p.pos,push,false)
+		else
+			for key,enemy in s.enemies do
+				if s.cast.people[key]==p and s.cast:kill(key,push) then
+					enemy.health,enemy.respawnIn,enemy.waitClear=0,45,true
+					removeMarker(enemy)
+					killed=true
+					break
+				end
+			end
+			if not killed and state.storyCast then
+				for key,actor in state.storyCast.people do
+					if actor==p then
+						killed=state.storyCast:kill(key,push)
+						if killed then
+							p.roadDeath=true
+							if state.story and state.story.status=="active" then state.story.checkRoadDeaths=true end
+						end
+						break
+					end
+				end
+			end
+		end
+	end
+	fx.hit(s.effects,hit.pos,dir,killed,game.tick()+hit.owner,nil,strength)
+end
+
 function combat.tick(state,dt,input)
 	local s,fleet,story=state.combat,state.fleet,state.story
 	s.crates=s.crates or explosions.placeCrates()
 	explosions.tick(s.crates,fleet)
 	fx.tick(s.effects,dt)
+	for _,hit in state.population.roadHits or {} do roadDamage(state,hit) end
 	updateRivals(s,fleet,dt)
 	for id,player in s.players do
 		if not fleet.players[id] or fleet.players[id].bot then

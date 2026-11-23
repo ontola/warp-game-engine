@@ -7,6 +7,7 @@
 //! and shaded once per pixel in HDR (frame.rs).
 
 pub mod cluster;
+pub mod mesh_deform;
 #[cfg(target_arch = "wasm32")]
 mod web;
 pub mod par;

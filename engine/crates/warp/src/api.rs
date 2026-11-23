@@ -289,6 +289,7 @@ pub fn shape(name: &str) -> mlua::Result<Shape> {
             if !(3..=64).contains(&sides) || !(0.005..=0.5).contains(&width) { return Err(bad()); }
             Shape::Outline { sides, width: (width * 1000.0).round() as u32 }
         }
+        p if p.split_once("#part-").is_some_and(|(file,name)| (file.ends_with(".glb") || file.ends_with(".gltf")) && !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')) => Shape::Model(p.to_string()),
         p if p.ends_with(".glb") || p.ends_with(".gltf") || p.rsplit_once("#crush").is_some_and(|(file, n)|
             (file.ends_with(".glb") || file.ends_with(".gltf")) && matches!(n.as_bytes(), [b'0'..=b'8'])) => Shape::Model(p.to_string()),
         other => return Err(rt(format!("unknown shape {other:?}: cube, pane, sphere, capsule, outline6 or a model path such as \"assets/crate.glb\""))),
@@ -754,6 +755,18 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
         ("find", f!(core, move |lua, tag: String| lua.create_sequence_from(lock(&core).world.find(&tag)))),
         ("count", f!(core, move |_, ()| Ok(lock(&core).world.entities.len()))),
         ("capacity", f!(core, move |_, ()| Ok(lock(&core).world.capacity()))),
+        ("part_center", f!(core, move |_, path:String| Ok(lock(&core).world.part_center(&path).map(vector)))),
+        ("warm_dents", f!(core, move |_, (list,count): (Table,usize)| {
+            if list.raw_len()>16 { return Err(rt("too many dent models")); }
+            let paths=list.sequence_values::<String>().collect::<mlua::Result<Vec<_>>>()?;
+            let mut c=lock(&core);sim(&c,"world.warm_dents")?;
+            c.world.warm_dents(paths,count).map_err(rt)
+        })),
+        ("dent", f!(core, move |_, (id,fields,mask): (u32,Option<Table>,Option<u32>)| {
+            let fields=fields.map(crate::vehicles::read_dents).transpose()?;
+            let mut c=lock(&core);sim(&c,"world.dent")?;
+            c.world.dent(id,fields,mask.unwrap_or(0)).map_err(rt)
+        })),
         ("raycast", f!(core, move |lua, (origin, dir, max, opts): (Value, Value, Option<f32>, Option<Table>)| {
             let (o, d) = (vec3(&origin, "raycast origin")?, vec3(&dir, "raycast direction")?);
             let f = filter(opts)?;
@@ -1235,6 +1248,27 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             sim(&c, "humans.recover")?;
             Ok(c.humans.recover(id).map(vector).unwrap_or(Value::Nil))
         })),
+        ("ragdoll_raycast", f!(core, move |_, (id, origin, dir, limit): (u32, Value, Value, f32)| {
+            let origin = vec3(&origin, "ragdoll ray origin")?;
+            let dir = vec3(&dir, "ragdoll ray direction")?;
+            if !origin.is_finite() || !dir.is_finite() || !limit.is_finite() || limit < 0. {
+                return Err(rt("humans.ragdoll_raycast needs a finite ray and nonnegative range"));
+            }
+            Ok(lock(&core).humans.ragdoll_raycast(id, origin, dir, limit))
+        })),
+        ("ragdoll_closest", f!(core, move |_, (id, point): (u32, Value)| {
+            let point = vec3(&point, "ragdoll query position")?;
+            if !point.is_finite() { return Err(rt("humans.ragdoll_closest needs a finite position")); }
+            Ok(lock(&core).humans.ragdoll_closest(id, point).map(vector).unwrap_or(Value::Nil))
+        })),
+        ("ragdoll_hit", f!(core, move |_, (id, point, velocity): (u32, Value, Value)| {
+            let point = vec3(&point, "ragdoll hit position")?;
+            let velocity = vec3(&velocity, "ragdoll hit velocity")?;
+            if !point.is_finite() || !velocity.length_squared().is_finite() { return Err(rt("humans.ragdoll_hit needs finite position and velocity")); }
+            let mut c = lock(&core);
+            sim(&c, "humans.ragdoll_hit")?;
+            c.humans.ragdoll_hit(id, point, velocity).map_err(rt)
+        })),
         ("ragdoll", f!(core, move |_, (id, push, spin): (u32, Option<Value>, Option<Value>)| {
             let mut c = lock(&core);
             sim(&c, "humans.ragdoll")?;
@@ -1262,6 +1296,11 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
                 .ok_or_else(|| rt(format!("humans.room: unknown pool or body {pool:?} {body:?}")))?;
             let (_, bodies, looks) = c.humans.distant_limits(&pool).unwrap();
             Ok((free, all, bodies, looks))
+        })),
+        ("hide_distant", f!(core, move |_, (pool, id): (String, usize)| {
+            let mut c = lock(&core);
+            sim(&c, "humans.hide_distant")?;
+            Ok(c.humans.hide_distant(&pool, id))
         })),
         ("distant", f!(core, move |_, (pool, rows, fitted, seconds): (String, Table, Table, f32)| {
             let mut c = lock(&core);

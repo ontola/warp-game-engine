@@ -264,6 +264,9 @@ declare humans: {
 	set: (id: number, opts: { pos: Vec?, yaw: number?, pose: string?, t: number?, tired: number?, coil: number?, visible: boolean? }) -> boolean,
 	-- A blow along dir (its length the strength, ~1 heavy): the upper body jolts and sways back
 	hit: (id: number, dir: Vec) -> boolean,
+	ragdoll_raycast: (id: number, origin: Vec, dir: Vec, max: number) -> number?,
+	ragdoll_closest: (id: number, point: Vec) -> Vec?,
+	ragdoll_hit: (id: number, point: Vec, velocity: Vec) -> boolean,
 	-- Limp from the pose it stands in, thrown by push (m/s); up again with any pose but dead/down
 	ragdoll: (id: number, push: Vec?, spin: Vec?) -> boolean,
 	-- Replace the shared solid boxes for active ragdolls. Positions are box centers.
@@ -276,6 +279,7 @@ declare humans: {
 	joint: (id: number, name: string) -> Vec?,
 	-- Free slots, total slots, number of fitted bodies and number of complete appearances.
 	room: (pool: string, body: number?) -> (number, number, number, number),
+	hide_distant: (pool: string, resident: number) -> boolean, -- hide immediately until the next crowd snapshot
 	-- One cheap silhouette per array index, except IDs already in fitted. Interpolates
 	-- feet and heading toward nextPos/nextYaw over seconds. Reserve [humans.NAME].distant.
 	distant: (pool: string, rows: { {pos: Vec, yaw: number?, nextPos: Vec?, nextYaw: number?, active: boolean?, look: number?} }, fitted: {[number]: number}, seconds: number) -> (),
