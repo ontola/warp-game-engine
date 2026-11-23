@@ -214,23 +214,19 @@ How the build differs from native:
 
 Build the two Godot games in adjacent checkouts with their Web export tools,
 including the game bridge and license files. Each produces `build/web` in its
-own repository. From the Warp repository, start with a fresh `build/web` staging
-directory and run:
+own repository. From the Warp repository run the production profile:
 
 ```sh
-python3 engine/tools/pack_godot_web.py \
-  --ballkickers ../ballkickers/build/web --frog-fighter ../frog-fighter/build/web \
-  --output build/web/godot
-python3 engine/tools/build-web.py --warp \
-  --web-game ../ballkickers/gamenight.json godot/ballkickers/index.html ../ballkickers/assets/gamenight/cover.png \
-  --web-game ../frog-fighter/gamenight.json godot/frog-fighter/index.html ../frog-fighter/assets/gamenight/cover.png
+python3 engine/tools/build-web.py --production-shelf ../ballkickers ../frog-fighter
 ```
 
-The packer writes a shared, content-addressed Godot runtime alongside the two
-games. The second command copies the covers and appends both games to the
-default six Luau games and the two built-in Rust games. The release command
-uses both `--web-game` arguments every time. A plain `--warp` builds the
-engine's default shelf. Check `build/web/games/library.json` for all ten
+The profile stages both exports, their covers and one shared Godot runtime.
+It registers `godot/ballkickers/index.html` and `godot/frog-fighter/index.html`
+on the default six Luau and two built-in Rust games. It also works offline
+with the game exports, engine build dependencies and toolchain installed.
+For a custom selection with already staged HTML files, use
+`--warp --games ... --web-game MANIFEST ENTRY COVER`. A plain `--warp`
+builds the engine's own default shelf. Check `build/web/games/library.json` for all ten
 entries. Publish the complete staging directory together under `/play/` so
 the lobby, game entry points, runtime, covers and story assets keep their
 relative URLs. Each HTML entry is relative to the site's root, for example

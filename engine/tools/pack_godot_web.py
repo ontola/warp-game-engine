@@ -56,23 +56,36 @@ def install_game(source, name, root):
     return fingerprint
 
 
+def pack_games(exports, dest, *, refresh=False):
+    dest = dest.resolve()
+    if dest.exists() and not refresh:
+        raise SystemExit(f"Choose a new output directory: {dest}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=dest.parent, prefix=".godot-build-") as scratch:
+        stage = Path(scratch) / "godot"
+        stage.mkdir()
+        for name, source in exports:
+            fingerprint = install_game(source, name, stage)
+            print(f"{name}/index.html  runtime/{fingerprint}")
+        if not dest.exists():
+            stage.rename(dest)
+            return
+        # Refresh only generated files in the staging tree. Retain other games
+        # and immutable runtime URLs that existing pages may still reference.
+        for file in stage.rglob("*"):
+            if file.is_file():
+                target = dest / file.relative_to(stage)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                file.replace(target)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ballkickers", type=Path, required=True)
     parser.add_argument("--frog-fighter", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True, help="New godot/ directory inside the lobby site")
     args = parser.parse_args()
-    dest = args.output.resolve()
-    if dest.exists():
-        raise SystemExit(f"Choose a new output directory: {dest}")
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=dest.parent, prefix=".godot-build-") as scratch:
-        stage = Path(scratch) / "godot"
-        stage.mkdir()
-        for game, source in (("ballkickers", args.ballkickers), ("frog-fighter", args.frog_fighter)):
-            fingerprint = install_game(source, game, stage)
-            print(f"{game}/index.html  runtime/{fingerprint}")
-        stage.rename(dest)
+    pack_games([("ballkickers", args.ballkickers), ("frog-fighter", args.frog_fighter)], args.output)
 
 
 if __name__ == "__main__":

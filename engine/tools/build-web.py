@@ -111,8 +111,14 @@ parser.add_argument('--games', default=','.join(WARP_GAMES), help='games/ folder
 parser.add_argument('--luau-only', action='store_true', help='only include the selected Luau games on the browser shelf')
 parser.add_argument('--web-game', action='append', nargs=3, default=[], metavar=('MANIFEST', 'ENTRY', 'COVER'),
                     help='with --warp: register a prebuilt HTML game from its gamenight.json, site-relative HTML path outside games/, and cover PNG (or -)')
+parser.add_argument('--production-shelf', nargs=2, type=Path, metavar=('BALLKICKERS_REPO', 'FROG_FIGHTER_REPO'),
+                    help='build the full /play/ Game Room shelf, including build/web exports from these two source checkouts')
 parser.add_argument('--assets-only', metavar='DIR', help="with --warp: only the room's files and the games (no wasm, no page) into DIR: the Android host's bundle (build-android-host.py)")
 args = parser.parse_args()
+if args.production_shelf:
+    if args.bare or args.assets_only or args.luau_only or args.games != ','.join(WARP_GAMES):
+        parser.error('--production-shelf builds the full browser lobby; use --web-game for a custom shelf')
+    args.warp = True
 if args.assets_only:
     OUT = Path(args.assets_only).resolve()
 if args.warp:
@@ -258,6 +264,17 @@ if args.assets_only:
     sys.exit(0)
 
 if not args.no_build:
+    if args.production_shelf:
+        from pack_godot_web import pack_games
+        exports = []
+        for name, repo in zip(('ballkickers', 'frog-fighter'), args.production_shelf):
+            manifest = repo / 'gamenight.json'
+            cover = repo / 'assets/gamenight/cover.png'
+            if json.loads(manifest.read_text(encoding='utf-8'))['id'] != name or not cover.is_file():
+                sys.exit(f'{repo}: expected the {name} manifest and cover')
+            exports.append((name, repo / 'build/web'))
+            args.web_game.append((manifest, f'godot/{name}/index.html', cover))
+        pack_games(exports, OUT / 'godot', refresh=True)
     lock = (ROOT / 'Cargo.lock').read_text()
     version = re.search(r'name = "wasm-bindgen"\nversion = "([^"]+)"', lock).group(1)
     bindgen = shutil.which('wasm-bindgen')
