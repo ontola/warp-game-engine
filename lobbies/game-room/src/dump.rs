@@ -119,6 +119,9 @@ pub struct Room {
     pub images: Vec<image::RgbaImage>,
     pub locals: Vec<LocalLight>,
     pub spots: Vec<SpotLight>,
+    /// The low tier: no shadowed spots, and no lights that only add
+    /// movement (the moving heads, the disco ball).
+    pub low_lights: bool,
     /// Per spot: Godot's distance exponent and volumetric fog energy.
     pub spot_falloff: Vec<f32>,
     pub spot_fog: Vec<f32>,
@@ -146,7 +149,7 @@ impl Room {
         let cam = mat4(&dump.camera["transform"]);
         let pos = cam.w_axis.truncate();
         let camera = render::Camera { pos, target: pos - cam.z_axis.truncate(), fov_y: num(&dump.camera, "fov_y").to_radians(), near: num(&dump.camera, "near").max(0.05) };
-        Self { dir, dump, bin, hidden: vec![], live: false, blended_hidden: Default::default(), scene_index: vec![], scene_mesh: vec![], material_layers: HashMap::new(), tuning: Tuning { light: 1.0, ambient: 1.0 }, material_ids: HashMap::new(), screens: HashMap::new(), screen_of_texture: HashMap::new(), atlas: Atlas { layer: -1, ..Default::default() }, images, locals: vec![], spots: vec![], spot_falloff: vec![], spot_fog: vec![], local_fog: vec![], blocks: vec![], ambient: Vec3::ZERO, camera, min: Vec3::ZERO, max: Vec3::ZERO }
+        Self { dir, dump, bin, hidden: vec![], live: false, blended_hidden: Default::default(), scene_index: vec![], scene_mesh: vec![], material_layers: HashMap::new(), tuning: Tuning { light: 1.0, ambient: 1.0 }, material_ids: HashMap::new(), screens: HashMap::new(), screen_of_texture: HashMap::new(), atlas: Atlas { layer: -1, ..Default::default() }, images, locals: vec![], spots: vec![], low_lights: false, spot_falloff: vec![], spot_fog: vec![], local_fog: vec![], blocks: vec![], ambient: Vec3::ZERO, camera, min: Vec3::ZERO, max: Vec3::ZERO }
     }
 
     /// The Rust-built room (room.rs).
@@ -505,6 +508,7 @@ impl Room {
         for l in &self.dump.lights {
             let energy = num(l, "energy");
             if energy <= 0.0 || l["negative"].as_bool().unwrap_or(false) { continue; }
+            if self.low_lights && l["name"].as_str().is_some_and(|n| n.starts_with("mover") || n == "disco") { continue; }
             let xf = mat4(&l["transform"]);
             let position = xf.w_axis.truncate();
             let direction = -xf.z_axis.truncate().normalize_or(Vec3::NEG_Y);
@@ -522,7 +526,7 @@ impl Room {
                     // smoothstep from the edge to well inside comes close.
                     let k = num(l, "angle_attenuation").max(0.05);
                     let inner = angle * (1.0 - 0.75 * k.min(1.0)).max(0.05);
-                    if l["shadow"].as_bool().unwrap_or(false) {
+                    if l["shadow"].as_bool().unwrap_or(false) && !self.low_lights {
                         let up = if direction.y.abs() > 0.9 { Vec3::Z } else { Vec3::Y };
                         self.spot_falloff.push(falloff);
                         self.spot_fog.push(fog);

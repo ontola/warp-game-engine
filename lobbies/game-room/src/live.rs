@@ -757,7 +757,8 @@ impl Game for Lobby {
         let shelf: Vec<(String, String)> = self.show.shelf.iter().map(|g| (g.title.clone(), g.color.clone())).collect();
         self.board.update(&mut self.stage.room, &mut self.stage.scene, &pending, &shelf, self.host.shelf_offset, light);
         lights.extend(self.board.lights().iter().copied());
-        lights.extend(glows);
+        // The low tier keeps to the room's own lights.
+        if !self.stage.options.low { lights.extend(glows); }
         lights.extend(shots);
         let (gpu, renderer) = (frame.gpu, frame.renderer().ok_or("no renderer")?);
         self.animate(gpu, renderer, delta)?;
@@ -772,7 +773,8 @@ impl Game for Lobby {
         // The idle TV cycles its colours: repaint the screens ten times a
         // second, and at once when something on them changed.
         self.since_paint += delta;
-        if self.since_paint >= 0.1 || (self.screens_dirty && self.since_paint >= 1.0 / 30.0) {
+        let (idle, busy) = if self.stage.options.low { (0.25, 1.0 / 15.0) } else { (0.1, 1.0 / 30.0) };
+        if self.since_paint >= idle || (self.screens_dirty && self.since_paint >= busy) {
             self.since_paint = 0.0;
             self.screens_dirty = false;
             self.show.time = self.time;

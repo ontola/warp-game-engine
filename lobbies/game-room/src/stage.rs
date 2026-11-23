@@ -39,12 +39,16 @@ pub struct Options {
     /// baking when it was made from the same room, grid, rays and gi. The
     /// browser build ships one, since a page bakes on one thread.
     pub light_cache: Option<Vec<u8>>,
+    /// The low tier (phones, weak GPUs; `--low`, `?quality=low`): no
+    /// shadow maps, no fog beams, no glow, no particles, and only the
+    /// room's key lights. The baked light stays the same.
+    pub low: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self { tuning: Tuning { light: PI, ambient: PI }, gi: 1.6, probes: true, rays: 64, ev: None, taa: 0.0, sharpen: 0.5,
-            bloom_add: false, bloom: None, bloom_rounds: 6, bloom_threshold: None, fog: true, fog_gi: 0.4, fog_density: 1.0, fog_intensity: 0.6, fog_blur: 12.0, light_cache: None }
+            bloom_add: false, bloom: None, bloom_rounds: 6, bloom_threshold: None, fog: true, fog_gi: 0.4, fog_density: 1.0, fog_intensity: 0.6, fog_blur: 12.0, light_cache: None, low: false }
     }
 }
 
@@ -59,7 +63,7 @@ impl Options {
             ev: opt("--ev"), taa: numf("--taa", d.taa), sharpen: numf("--sharpen", d.sharpen),
             bloom_add: flag("--bloom-add"), bloom: opt("--bloom"), bloom_rounds: numf("--bloom-rounds", d.bloom_rounds as f32) as u32,
             bloom_threshold: opt("--bloom-threshold"), fog: !flag("--no-fog"), fog_gi: numf("--fog-gi", d.fog_gi),
-            fog_density: numf("--fog-density", d.fog_density), fog_intensity: numf("--fog", d.fog_intensity), fog_blur: numf("--fog-blur", d.fog_blur), light_cache: None,
+            fog_density: numf("--fog-density", d.fog_density), fog_intensity: numf("--fog", d.fog_intensity), fog_blur: numf("--fog-blur", d.fog_blur), light_cache: None, low: flag("--low"),
         }
     }
 }
@@ -98,7 +102,7 @@ impl Stage {
             // The lobby uses 2x MSAA, no TAA: crisp pixel art.
             taa: options.taa, sharpen: options.sharpen, ..Default::default() };
         room.add_sprites(&mut scene, &room.camera);
-        room.add_particles(&mut scene, &room.camera)?;
+        if !options.low { room.add_particles(&mut scene, &room.camera)?; }
         let labels = add_labels(&mut scene, &room);
         extend(&mut scene, &room);
 
@@ -118,10 +122,12 @@ impl Stage {
             probes
         };
         let bake_seconds = bake_start.elapsed().as_secs_f32();
+        // After the bake, so the bounce (and a shipped light cache) stays.
+        if options.low { room.low_lights = true; room.relight(); }
 
         // Godot's volumetric fog: lamp beams, ambient light in the haze, and
         // the scene behind dimmed by it.
-        if env["volumetric_fog_enabled"].as_bool().unwrap_or(false) && options.fog {
+        if env["volumetric_fog_enabled"].as_bool().unwrap_or(false) && options.fog && !options.low {
             let albedo = linear(&env["volumetric_fog_albedo"]);
             // Mean probe irradiance stands in for SDFGI's injection into the froxels.
             let mean = if probes.is_empty() { room.ambient } else { probes.iter().map(|p| p.axes.iter().sum::<Vec3>() / 6.0).sum::<Vec3>() / probes.len() as f32 };
@@ -137,6 +143,8 @@ impl Stage {
                 length: num(&env, "volumetric_fog_length", 64.0),
             });
         }
+        // Without the haze's glow the room reads darker: open up a little.
+        if options.low { light.ev100 -= 0.4; }
         Ok(Self { room, scene, light, probes, options, bake_seconds, labels, light_key })
     }
 
@@ -157,6 +165,7 @@ impl Stage {
         let mut options = renderer.debug_options();
         // Godot's glow: levels 3-6 summed, screen-blended. The 0.36 matches its
         // capture: Godot's levels are smaller per level than our wide rounds.
+        options.bloom_enabled = !self.options.low;
         options.bloom_screen = !self.options.bloom_add;
         options.bloom_strength = self.options.bloom.unwrap_or(num(env, "glow_intensity", 0.8) * 0.36);
         options.bloom_rounds = self.options.bloom_rounds;
