@@ -513,13 +513,17 @@ impl Humans {
     /// Person `id` goes limp as it stands, thrown by `push` (world, m/s):
     /// a ragdoll until it gets up (any pose but `dead` or `down`) or goes.
     pub fn ragdoll(&mut self, id: u32, push: Vec3) -> Result<bool, String> {
+        self.ragdoll_with_motion(id, push, None)
+    }
+
+    pub(crate) fn ragdoll_with_motion(&mut self, id: u32, push: Vec3, spin: Option<Vec3>) -> Result<bool, String> {
         let Some(p) = self.people.get(&id) else { return Ok(false) };
         let rig = Rig::shared()?;
         let zombie = self.pools.get(&p.pool).is_some_and(|pool| pool.zombie);
         let mut palette = vec![Mat4::IDENTITY; rig.character.joint_count];
         let bind = self.skeleton(rig, p).bind;
         pose(rig, self.skeleton(rig, p), p, zombie, 1.0, &mut palette);
-        self.dolls.fall(id, &rig.joint, &bind, &palette, model_transform(p.pos, p.yaw) * Affine3A::from_scale(p.size), push)?;
+        self.dolls.fall(id, &rig.joint, &bind, &palette, model_transform(p.pos, p.yaw) * Affine3A::from_scale(p.size), push, spin)?;
         Ok(true)
     }
 
@@ -1083,6 +1087,22 @@ mod tests {
     }
 
     #[test]
+    fn passive_ragdoll_starts_from_inherited_motion_without_a_launch() {
+        let cfg = BTreeMap::from([("resident".to_string(), HumanPool { count: 1, ..Default::default() })]);
+        let mut people = Humans::new(&cfg);
+        let id = people.spawn("resident", Vec3::ZERO, 0.).unwrap().unwrap();
+        people.tick(1. / 60.);
+        let hips = people.joint(id, "hips").unwrap();
+        assert!(people.ragdoll_with_motion(id, Vec3::X * 2., Some(Vec3::ZERO)).unwrap());
+        assert!(people.joint(id, "hips").unwrap().distance(hips) < 0.001);
+        people.tick(1. / 60.);
+        let delta = people.joint(id, "hips").unwrap() - hips;
+        assert!(delta.x > 0.018 && delta.x < 0.047, "inherited sideways motion {delta}");
+        assert!(delta.y < 0.005, "no upward launch on passive release: {delta}");
+        assert!(people.ragdoll_with_motion(id, Vec3::ZERO, Some(Vec3::NAN)).is_err());
+    }
+
+    #[test]
     fn vehicle_ragdoll_travels_lands_and_recovers_beside_a_parked_chassis() {
         use crate::ragdoll::Obstacle;
         use kern::collide::YawBox;
@@ -1092,7 +1112,7 @@ mod tests {
             let id = people.spawn("resident", Vec3::ZERO, 0.).unwrap().unwrap();
             let shape = YawBox::new(Vec3::new(3.3, 0.85, 0.), Vec3::new(1.8, 1.7, 4.4), 0.);
             if parked { people.set_obstacles(BTreeMap::from([(7, Obstacle {
-                shape, previous: shape.center, previous_yaw: 0.,
+                shape, previous: shape.center, previous_yaw: 0., chassis: None,
             })])); }
             assert!(people.ragdoll(id, Vec3::X * 16.).unwrap());
             assert!(people.recover(id).is_none());
@@ -1116,6 +1136,88 @@ mod tests {
     }
 
     #[test]
+    fn an_old_ragdoll_keeps_riding_a_moving_support_and_falls_when_it_leaves() {
+        use crate::ragdoll::Obstacle;
+        use kern::collide::YawBox;
+        let cfg = BTreeMap::from([("resident".into(), HumanPool { count: 1, ..Default::default() })]);
+        let mut people = Humans::new(&cfg);
+        let id = people.spawn("resident", Vec3::ZERO, 0.).unwrap().unwrap();
+        people.tick(1. / 60.);
+        people.ragdoll_with_motion(id, Vec3::ZERO, Some(Vec3::ZERO)).unwrap();
+        let size = Vec3::new(10., 0.2, 10.);
+        let mut previous = Vec3::Y * -0.1;
+        let mut at_four = 0.;
+        for tick in 1..=360 {
+            let center = previous + Vec3::Y * 0.01;
+            people.set_obstacles(BTreeMap::from([(1, Obstacle {
+                shape: YawBox::new(center, size, 0.), previous, previous_yaw: 0., chassis: None,
+            })]));
+            people.tick(1. / 60.);
+            previous = center;
+            if tick == 240 { at_four = people.joint(id, "hips").unwrap().y; }
+        }
+        let carried = people.joint(id, "hips").unwrap().y;
+        assert!(carried > at_four + 1., "support moved 1.2m after four seconds: {at_four} -> {carried}");
+        assert!(people.recover(id).is_none(), "cannot get up on moving support");
+        people.set_obstacles(BTreeMap::from([(1, Obstacle {
+            shape: YawBox::new(previous, size, 0.), previous, previous_yaw: 0., chassis: None,
+        })]));
+        for _ in 0..180 { people.tick(1. / 60.); }
+        assert_eq!(people.falling(), 1, "keep the rig attached to its parked support");
+        assert!(people.dolls.settled(id), "can get up while supported and parked");
+        people.set_obstacles(BTreeMap::new());
+        for _ in 0..15 { people.tick(1. / 60.); }
+        let midair = people.joint(id, "hips").unwrap().y;
+        assert!(midair > 0.8 && midair < carried - 0.2 && people.falling() == 1, "rig still falls at {midair}");
+        for _ in 0..300 { people.tick(1. / 60.); }
+        assert_eq!(people.falling(), 0);
+        assert!(people.recover(id).is_some());
+    }
+
+    #[test]
+    fn contact_with_the_compact_rotates_the_doll_over_the_hood() {
+        use physics::vehicle::{CarSpec, fleet::{Fleet, Pedals}};
+        use kern::collide::YawBox;
+        use crate::ragdoll::Obstacle;
+
+        let road = YawBox::new(Vec3::new(0., -0.5, 0.), Vec3::new(40., 1., 200.), 0.);
+        let mut fleet = Fleet::new([road].into_iter());
+        let car = fleet.spawn(CarSpec::compact(), Vec3::new(0., 0., 18.), 0.);
+        fleet.drive(car, Some(Pedals { throttle: 0.85, ..Default::default() }));
+        let cfg = BTreeMap::from([("resident".to_string(), HumanPool { count: 1, ..Default::default() })]);
+        let mut people = Humans::new(&cfg);
+        let id = people.spawn("resident", Vec3::ZERO, 0.).unwrap().unwrap();
+        let mut contact_tick = None;
+        let mut on_hood = false;
+        let mut tilted = false;
+        for tick in 0..420 {
+            fleet.step(1. / 60.);
+            let hull = fleet.chassis_contact(car, None).unwrap();
+            let origin = hull.current.0;
+            if contact_tick.is_none() && origin.z <= 2.45 {
+                assert!(people.ragdoll_with_motion(id, Vec3::ZERO, Some(Vec3::ZERO)).unwrap());
+                contact_tick = Some(tick);
+            }
+            let Some(start) = contact_tick else { people.tick(1. / 60.); continue; };
+            let shape = YawBox::new(origin + Vec3::Y * 0.47, Vec3::new(1.96, 1.3, 4.44), 0.);
+            people.set_obstacles(BTreeMap::from([(car, Obstacle {
+                shape, previous: hull.previous.0 + Vec3::Y * 0.47, previous_yaw: 0., chassis: Some(hull.clone()),
+            })]));
+            people.tick(1. / 60.);
+            let chest = people.joint(id, "chest").unwrap();
+            let hips = people.joint(id, "hips").unwrap();
+            let head = people.joint(id, "head").unwrap();
+            let local = hull.current.1.inverse() * (chest - origin);
+            let across = local.z > -2.025 && local.z < -0.86 && local.x.abs() < 0.9 && local.y > 0.58;
+            on_hood |= across;
+            tilted |= across && (head - hips).normalize_or_zero().y < 0.75;
+            if tick - start == 110 { break; }
+        }
+        assert!(contact_tick.is_some() && on_hood, "torso never crossed above the hood");
+        assert!(tilted, "torso remained upright while passing over the hood");
+    }
+
+    #[test]
     fn four_nearby_moving_chassis_push_four_ragdolls_and_release_their_colliders() {
         use crate::ragdoll::Obstacle;
         use kern::collide::YawBox;
@@ -1132,7 +1234,7 @@ mod tests {
             for car in 0..40 {
                 let previous = Vec3::new(-2.7 + tick as f32 * 0.14, 0.77, car as f32 * 25.);
                 let shape = YawBox::new(previous + Vec3::X * 0.14, Vec3::new(2., 1.54, 4.4), 0.);
-                boxes.insert(car, Obstacle { shape, previous, previous_yaw: 0. });
+                boxes.insert(car, Obstacle { shape, previous, previous_yaw: 0., chassis: None });
             }
             people.set_obstacles(boxes);
             people.tick(1. / 60.);

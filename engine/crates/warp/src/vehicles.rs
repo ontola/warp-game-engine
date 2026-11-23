@@ -1,7 +1,7 @@
 //! The shared vehicle solver from Luau. The static collision set is captured at
 //! reset so each wheel queries Rapier's spatial index instead of scanning the scene.
 use crate::api::{Shared, lock, sim, vec3};
-use physics::vehicle::{CarSpec, fleet::{Fleet, Pedals}};
+use physics::vehicle::{CarSpec, fleet::{Fleet, HullSection, Pedals}};
 use script::mlua::{self, Lua, Table, Value, Vector};
 
 fn error(msg: &str) -> mlua::Error { mlua::Error::runtime(msg) }
@@ -17,6 +17,21 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             .filter(|e| e.solid && tag.as_ref().is_none_or(|name| name == &e.tag)).map(|e| e.bounds()));
         c.world.fleet = Some(fleet);
         Ok(())
+    })?)?;
+    let c = core.clone();
+    t.set("contact_profile", lua.create_function(move |_, (name, bottom, list): (String, f32, Table)| {
+        let mut c = lock(&c);
+        sim(&c, "vehicles.contact_profile")?;
+        if !(2..=20).contains(&list.raw_len()) { return Err(error("vehicles.contact_profile needs 2..20 sections")); }
+        let mut sections = Vec::with_capacity(list.raw_len());
+        for row in list.sequence_values::<Table>() {
+            let row = row?;
+            let width = row.raw_get("width")?;
+            sections.push(HullSection { z: row.raw_get("z")?, width, top: row.raw_get("top")?,
+                roof_width: row.raw_get::<Option<f32>>("roofWidth")?.unwrap_or(width) });
+        }
+        c.world.fleet.as_mut().ok_or_else(|| error("call vehicles.reset before contact_profile"))?
+            .set_contact_profile(name, bottom, &sections).map_err(|e| error(&e))
     })?)?;
     let c = core.clone();
     t.set("spawn", lua.create_function(move |_, (pos, yaw): (Value, Option<f32>)| {

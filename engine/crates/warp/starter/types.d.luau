@@ -247,6 +247,7 @@ declare lights: {
 -- ground), rise (getting up off the ground over t); t is its progress, 0 to 1.
 -- The shared four-wheel vehicle simulation. Reset snapshots solid boxes once.
 declare vehicles: {
+	contact_profile: (name: string, bottom: number, sections: {{z:number, width:number, top:number, roofWidth:number?}}) -> (),
 	reset: (static_tag: string?) -> (),
 	spawn: (ground_pos: Vec, yaw: number?) -> number,
 	remove: (id: number) -> boolean,
@@ -263,9 +264,9 @@ declare humans: {
 	-- A blow along dir (its length the strength, ~1 heavy): the upper body jolts and sways back
 	hit: (id: number, dir: Vec) -> boolean,
 	-- Limp from the pose it stands in, thrown by push (m/s); up again with any pose but dead/down
-	ragdoll: (id: number, push: Vec?) -> boolean,
+	ragdoll: (id: number, push: Vec?, spin: Vec?) -> boolean,
 	-- Replace the shared solid boxes for active ragdolls. Positions are box centers.
-	obstacles: (boxes: {{id:number, pos:Vec, size:Vec, yaw:number?, prevPos:Vec?, prevYaw:number?}}) -> (),
+	obstacles: (boxes: {{id:number, pos:Vec, size:Vec, yaw:number?, prevPos:Vec?, prevYaw:number?, vehicle:number?, profile:string?}}) -> (),
 	-- Once settled, start the rise pose and return landed feet. Advance rise with set(id,{pose="rise",t=...}).
 	recover: (id:number) -> Vec?,
 	remove: (id: number) -> boolean,

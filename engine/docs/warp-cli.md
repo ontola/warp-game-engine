@@ -380,12 +380,25 @@ keyboard mapping is in `app::input`.
   `ragdoll(id, push)` lets it go limp from the pose it stands in, thrown
   by `push` (m/s, in the world): eleven jointed capsules with loose
   anatomical limits fall onto a horizontal floor at the character's feet.
+  Pass an explicit third vector to release the rig with exact world linear and
+  angular velocity, e.g. `humans.ragdoll(id, walkingVelocity, vector.create(0, 0, 0))` for
+  a walker meeting a moving collider. Angular velocity is in radians per second.
   Up to 24 rigs move at once on fixed physics ticks. A rig freezes when it
-  settles, after four seconds, or when a new fall needs the oldest active slot.
+  settles on fixed ground or a new fall needs the oldest active slot. After four
+  seconds the settling test tolerates small joint motion. A parked car supports
+  recovery while its passenger stays simulated until actually getting up.
   `humans.obstacles(boxes)` supplies shared moving or parked collision boxes.
   Give each box a stable numeric `id`, world center `pos`, full `size` and
   optional `yaw` in radians. Supply `prevPos` and `prevYaw` for a first-tick
-  sweep. Pass up to 64 boxes per tick. Only boxes near an active rig allocate
+  sweep. With `vehicle=carId` an obstacle uses the fleet car's actual compound
+  chassis at its consecutive road-physics poses, including pitch and roll.
+  To give a fleet model a more detailed contact skin, register
+  `vehicles.contact_profile(name, bottom, sections)` after `vehicles.reset`
+  and include `profile=name` on its obstacle. Describe 2 to 20 ordered
+  cross-sections with local `z`, full `width`, `top`, and optional `roofWidth`.
+  All lengths use metres relative to the chassis origin. Cars share one cooked
+  surface for each name. The
+  box remains its proximity and standing-clearance bound. Pass up to 64 per tick. Only boxes near an active rig allocate
   physics bodies. An empty list clears them. `humans.recover(id)` waits for
   a settled body and clear space, returning nil while either is pending.
   On success it returns the landed feet, starts `rise` at t=0 and releases

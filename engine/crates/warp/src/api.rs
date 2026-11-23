@@ -1204,7 +1204,14 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
                 if !pos.is_finite() || !previous.is_finite() || !size.is_finite() || size.min_element() <= 0.
                     || !yaw.is_finite() || !previous_yaw.is_finite() { return Err(rt("humans.obstacles needs finite poses and positive box sizes")); }
                 let shape = kern::collide::YawBox::new(pos, size, yaw);
-                if boxes.insert(id, crate::ragdoll::Obstacle { shape, previous, previous_yaw }).is_some() {
+                let vehicle = t.raw_get::<Option<u32>>("vehicle")?;
+                let profile = t.raw_get::<Option<String>>("profile")?;
+                if vehicle.is_none() && profile.is_some() { return Err(rt("humans.obstacles profile needs a vehicle")); }
+                let chassis = vehicle.map(|car| {
+                    c.world.fleet.as_ref().and_then(|fleet| fleet.chassis_contact(car, profile.as_deref()))
+                        .ok_or_else(|| rt(format!("humans.obstacles: unknown vehicle {car} or contact profile")))
+                }).transpose()?;
+                if boxes.insert(id, crate::ragdoll::Obstacle { shape, previous, previous_yaw, chassis }).is_some() {
                     return Err(rt("humans.obstacles needs a distinct id for each box"));
                 }
                 if boxes.len() > crate::ragdoll::MAX_OBSTACLES { return Err(rt("humans.obstacles takes up to 64 nearby boxes")); }
@@ -1217,11 +1224,12 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             sim(&c, "humans.recover")?;
             Ok(c.humans.recover(id).map(vector).unwrap_or(Value::Nil))
         })),
-        ("ragdoll", f!(core, move |_, (id, push): (u32, Option<Value>)| {
+        ("ragdoll", f!(core, move |_, (id, push, spin): (u32, Option<Value>, Option<Value>)| {
             let mut c = lock(&core);
             sim(&c, "humans.ragdoll")?;
             let push = match push { Some(v) => vec3(&v, "humans.ragdoll push")?, None => Vec3::ZERO };
-            c.humans.ragdoll(id, push).map_err(rt)
+            let spin = spin.map(|v| vec3(&v, "humans.ragdoll spin")).transpose()?;
+            c.humans.ragdoll_with_motion(id, push, spin).map_err(rt)
         })),
         ("remove", f!(core, move |_, id: u32| { let mut c = lock(&core); sim(&c, "humans.remove")?; Ok(c.humans.remove(id)) })),
         ("hit", f!(core, move |_, (id, dir): (u32, Value)| {

@@ -4,7 +4,7 @@ use super::{Car, CarSpec, Ground, RoadTelemetry, HZ, add_car, surfaces::{Surface
 use glam::{EulerRot, Quat as Rotation, Vec3};
 use kern::collide::YawBox;
 use rapier3d::{glamx::{Pose3, Quat, Vec3 as V3}, prelude::*};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::{Arc, OnceLock}};
 
 struct Pavement;
 impl Ground for Pavement {
@@ -34,9 +34,38 @@ pub struct CarPose {
     pub wheels: [(f64, f64, f64); 4],
 }
 
+/// The road solver's collision shape and full poses before and after its last game tick.
+#[derive(Clone)]
+pub struct ChassisContact {
+    hull: SharedShape,
+    pub previous: (Vec3, Rotation),
+    pub current: (Vec3, Rotation),
+}
+
+impl ChassisContact {
+    pub fn same_hull(&self, other: &Self) -> bool { Arc::ptr_eq(&self.hull.0, &other.hull.0) }
+
+    /// Mirror the very same shapes in a secondary simulation (e.g. nearby ragdolls).
+    pub fn add_kinematic(&self, physics: &mut crate::Physics) -> crate::Body {
+        physics.add_kinematic_shape(self.previous.0, self.previous.1, self.hull.clone())
+    }
+}
+
+/// Cross-section of a vehicle's contact skin in chassis-local coordinates.
+pub struct HullSection { pub z: f32, pub width: f32, pub top: f32, pub roof_width: f32 }
+
+struct FleetCar {
+    car: Car,
+    previous: Pose3,
+    // The compact's lower body and cabin are already cooked by the road solver.
+    // Assemble their shared handles only for consumers that need the whole hull.
+    hull: OnceLock<SharedShape>,
+}
+
 pub struct Fleet {
     world: PhysicsWorld,
-    cars: BTreeMap<u32, Car>,
+    cars: BTreeMap<u32, FleetCar>,
+    contact_profiles: BTreeMap<String, SharedShape>,
     surfaces: Surfaces,
     next: u32,
     acc: f64,
@@ -55,7 +84,7 @@ impl Fleet {
                 .collision_groups(InteractionGroups::new(super::GROUP_WORLD, Group::ALL, InteractionTestMode::And)).build();
             world.colliders.insert(c);
         }
-        Self { world, cars: BTreeMap::new(), surfaces: Surfaces::default(), next: 1, acc: 0. }
+        Self { world, cars: BTreeMap::new(), contact_profiles: BTreeMap::new(), surfaces: Surfaces::default(), next: 1, acc: 0. }
     }
 
     /// Park on the supplied ground point. Parked cars remain solid to traffic.
@@ -67,7 +96,8 @@ impl Fleet {
         car.hold = true;
         let id = self.next;
         self.next += 1;
-        self.cars.insert(id, car);
+        let previous = car.pose(&self.world);
+        self.cars.insert(id, FleetCar { car, previous, hull: OnceLock::new() });
         id
     }
 
@@ -76,14 +106,15 @@ impl Fleet {
     /// Release this chassis and all of its Rapier colliders. Surviving
     /// drivers keep their original handles, and retired IDs stay retired.
     pub fn remove(&mut self, id: u32) -> bool {
-        let Some(car) = self.cars.remove(&id) else { return false; };
-        self.world.remove_body_with_colliders(car.body, true);
+        let Some(entry) = self.cars.remove(&id) else { return false; };
+        self.world.remove_body_with_colliders(entry.car.body, true);
         true
     }
 
     /// A missing driver engages the parking brake and freezes the car once it settles.
     pub fn drive(&mut self, id: u32, input: Option<Pedals>) -> bool {
-        let Some(car) = self.cars.get_mut(&id) else { return false };
+        let Some(entry) = self.cars.get_mut(&id) else { return false };
+        let car = &mut entry.car;
         car.hold = input.is_none();
         let p = input.unwrap_or_default();
         car.throttle = p.throttle.clamp(0., 1.);
@@ -97,10 +128,12 @@ impl Fleet {
     }
 
     pub fn step(&mut self, dt: f64) {
+        for entry in self.cars.values_mut() { entry.previous = entry.car.pose(&self.world); }
         self.acc += dt;
         let step = 1. / HZ;
         while self.acc + 1e-10 >= step {
-            for car in self.cars.values_mut() {
+            for entry in self.cars.values_mut() {
+                let car = &mut entry.car;
                 if self.world.bodies[car.body].is_fixed() { continue; }
                 car.integrate(&mut self.world, &Pavement, &self.surfaces, step);
                 if car.hold && car.on_ground == 4 && car.linvel(&self.world).length_squared() < 0.004
@@ -117,8 +150,55 @@ impl Fleet {
         }
     }
 
+    /// An optional low-poly secondary contact skin, shared by every instance.
+    /// The road solver keeps the vehicle spec's chassis mass and driving contacts.
+    pub fn set_contact_profile(&mut self, name: String, bottom: f32, sections: &[HullSection]) -> Result<(), String> {
+        if name.is_empty() || name.len() > 64 || (!self.contact_profiles.contains_key(&name) && self.contact_profiles.len() >= 64) {
+            return Err("vehicles.contact_profile needs a name up to 64 bytes and at most 64 profiles".into());
+        }
+        if !bottom.is_finite() || !(2..=20).contains(&sections.len()) ||
+            sections.iter().any(|s| !s.z.is_finite() || !s.top.is_finite() || !s.width.is_finite() || !s.roof_width.is_finite()
+                || s.top <= bottom || s.width <= 0. || s.roof_width <= 0.) ||
+            sections.windows(2).any(|w| w[1].z - w[0].z < 0.001) {
+            return Err("vehicles.contact_profile needs 2..20 finite ordered sections with positive widths and top above bottom".into());
+        }
+        // Build a single watertight surface. Interior faces between adjoining
+        // hull sections would catch capsules sliding from the nose up the hood.
+        let mut vertices = Vec::with_capacity(sections.len() * 4);
+        let mut triangles = vec![[0,2,1],[0,3,2]];
+        for (i,s) in sections.iter().enumerate() {
+            let (w,r) = (s.width * 0.5, s.roof_width * 0.5);
+            vertices.extend([V3::new(-w,bottom,s.z), V3::new(w,bottom,s.z), V3::new(r,s.top,s.z), V3::new(-r,s.top,s.z)]);
+            let rear = i as u32 * 4;
+            if i > 0 {
+                let front = rear - 4;
+                for j in 0..4 { let k = (j + 1) % 4; triangles.extend([[front+j,front+k,rear+k],[front+j,rear+k,rear+j]]); }
+            }
+            if i + 1 == sections.len() { triangles.extend([[rear,rear+1,rear+2],[rear,rear+2,rear+3]]); }
+        }
+        let hull = SharedShape::trimesh_with_flags(vertices, triangles, TriMeshFlags::FIX_INTERNAL_EDGES)
+            .map_err(|e| format!("vehicle contact mesh: {e}"))?;
+        self.contact_profiles.insert(name, hull);
+        Ok(())
+    }
+
+    pub fn chassis_contact(&self, id: u32, profile: Option<&str>) -> Option<ChassisContact> {
+        let entry = self.cars.get(&id)?;
+        let attached = self.world.bodies[entry.car.body].colliders();
+        if attached.is_empty() { return None; }
+        let hull = match profile {
+            Some(name) => self.contact_profiles.get(name)?,
+            None => entry.hull.get_or_init(|| SharedShape::compound(attached.iter().map(|handle| {
+                let c = &self.world.colliders[*handle];
+                (*c.position_wrt_parent().expect("chassis collider"), c.shared_shape().clone())
+            }).collect())),
+        }.clone();
+        let pose = |p: Pose3| (crate::from(p.translation), crate::from_q(p.rotation));
+        Some(ChassisContact { hull, previous: pose(entry.previous), current: pose(entry.car.pose(&self.world)) })
+    }
+
     pub fn pose(&self, id: u32) -> Option<CarPose> {
-        let car = self.cars.get(&id)?;
+        let car = &self.cars.get(&id)?.car;
         let p = car.pose(&self.world);
         let (yaw, pitch, roll) = Rotation::from_array(p.rotation.to_array()).to_euler(EulerRot::YXZ);
         Some(CarPose {
@@ -140,10 +220,56 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_named_contact_skin_is_shared_slopes_between_sections_and_updates_atomically() {
+        let mut fleet = Fleet::new(std::iter::empty());
+        let car = fleet.spawn(CarSpec::compact(), Vec3::ZERO, 0.);
+        let other = fleet.spawn(CarSpec::compact(), Vec3::X * 10., 0.);
+        let section = |z, top| HullSection { z, top, width: 1.6, roof_width: 1.4 };
+        let mesh = [section(-2.2, 0.2), section(-1.4, 0.6), section(1.0, 1.)];
+        fleet.set_contact_profile("compact".into(), -0.1, &mesh).unwrap();
+        let contact = fleet.chassis_contact(car, Some("compact")).unwrap();
+        assert!(contact.same_hull(&fleet.chassis_contact(other, Some("compact")).unwrap()));
+        assert!(!contact.same_hull(&fleet.chassis_contact(car, None).unwrap()));
+        let mut secondary = crate::Physics::new(Vec3::ZERO, 60.);
+        let body = contact.add_kinematic(&mut secondary);
+        let (_, point, normal) = secondary.raycast_bodies(Vec3::new(0., 3., -1.8), Vec3::new(0., 0., -1.8), &[body]).unwrap();
+        assert!((point.y - 0.73).abs() < 0.001 && normal.y > 0.8 && normal.z < -0.3);
+        let bad = [section(1.0, 0.6), section(0.0, 0.5)];
+        assert!(fleet.set_contact_profile("compact".into(), -0.1, &bad).is_err());
+        assert!(contact.same_hull(&fleet.chassis_contact(car, Some("compact")).unwrap()));
+        assert!(fleet.chassis_contact(car, Some("missing")).is_none());
+    }
+
+    #[test]
+    fn shared_chassis_keeps_the_hood_below_the_cabin_and_tracks_road_poses() {
+        let road = YawBox::new(Vec3::new(0., -0.5, 0.), Vec3::new(40., 1., 200.), 0.);
+        let mut fleet = Fleet::new([road].into_iter());
+        let id = fleet.spawn(CarSpec::compact(), Vec3::ZERO, 0.);
+        let initial = fleet.chassis_contact(id, None).unwrap();
+        let mut secondary = crate::Physics::new(Vec3::ZERO, 60.);
+        let body = initial.add_kinematic(&mut secondary);
+        let height = |z| secondary.raycast_bodies(Vec3::new(0., 3., z), Vec3::new(0., 0., z), &[body]).unwrap().1.y;
+        assert!((height(-1.6) - 0.94).abs() < 0.01);
+        assert!((height(0.0) - 1.47).abs() < 0.01);
+        fleet.drive(id, Some(Pedals { throttle: 1., ..Default::default() }));
+        let mut previous = initial.current;
+        for _ in 0..90 {
+            fleet.step(1. / 60.);
+            let next = fleet.chassis_contact(id, None).unwrap();
+            assert!(initial.same_hull(&next));
+            assert_eq!(next.previous, previous);
+            previous = next.current;
+        }
+        assert!(previous.0.z < -1.0);
+        fleet.remove(id);
+        assert!(fleet.chassis_contact(id, None).is_none());
+    }
+
+    #[test]
     fn removed_chassis_leaves_no_body_or_collider_and_ids_stay_stable() {
         let mut fleet = Fleet::new(std::iter::empty());
         let first = fleet.spawn(CarSpec::compact(), Vec3::ZERO, 0.);
-        let body = fleet.cars[&first].body;
+        let body = fleet.cars[&first].car.body;
         let shapes = fleet.world.bodies[body].colliders().to_vec();
         let second = fleet.spawn(CarSpec::compact(), Vec3::X * 4., 0.);
         assert!(!shapes.is_empty() && fleet.remove(first) && !fleet.remove(first));
