@@ -290,7 +290,9 @@ impl Room {
     fn place(&mut self, scene: &mut Scene, w: u32, h: u32, k: f32) -> ScreenRect {
         const PAD: u32 = 8;
         let side = render::screen::SIZE;
-        let k = k.min((side - PAD) as f32 / w.max(1) as f32).min((side - PAD) as f32 / h.max(1) as f32).max(1.0);
+        // Below 1 when the screen is larger than a layer (small headset
+        // layers): painted smaller, never cut off and stretched.
+        let k = k.min((side - PAD) as f32 / w.max(1) as f32).min((side - PAD) as f32 / h.max(1) as f32);
         let (w, h) = (((w as f32 * k).round() as u32).min(side - PAD), ((h as f32 * k).round() as u32).min(side - PAD));
         let a = &mut self.atlas;
         if a.layer >= 0 && a.x + w + PAD > side { a.x = 0; a.y += a.row; a.row = 0; }

@@ -287,6 +287,11 @@ enum Event {
 pub fn main(app: AndroidApp, start: impl FnOnce() + Send + 'static) {
     let _ = APP.set(app.clone());
     let _ = QUERY.set(intent_query(&app));
+    // `env=NAME:VALUE,NAME:VALUE` sets renderer switches (KERN_...) for a test run.
+    for pair in query_param("env").unwrap_or_default().split(',') {
+        // SAFETY: before this process starts its render and helper threads.
+        if let Some((k, v)) = pair.split_once(':') { unsafe { std::env::set_var(k.trim(), v.trim()) } }
+    }
     install_panic_hook();
     use android_activity::WindowManagerFlags as F;
     app.set_window_flags(F::KEEP_SCREEN_ON | F::FULLSCREEN | F::LAYOUT_IN_SCREEN, F::empty());
@@ -805,7 +810,8 @@ fn draw_banner(hud: &mut HudDrawList, size: [u32; 2]) {
 /// Every 300 frames, the frame times in logcat (returns true then).
 fn stats(times: &mut Vec<[f32; 4]>, title: &str, sample: [f32; 4]) -> bool {
     times.push(sample);
-    if times.len() < 300 { return false; }
+    // Every 300 frames, or every 5 s when frames are slow.
+    if times.len() < 300 && times.iter().map(|t| t[0]).sum::<f32>() < 5000.0 { return false; }
     let pick = |k: usize, q: f32| {
         let mut v: Vec<f32> = times.iter().map(|t| t[k]).collect();
         v.sort_by(f32::total_cmp);
