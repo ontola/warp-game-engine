@@ -76,10 +76,24 @@ local debug key unless `--keystore` is given. The Splitscreen Club app's
 browser host in Chrome. `--lib-only` stops after the library and the
 bundle, for packing them into the app itself later.
 
+## Renderer on phones
+
+Measured on a Galaxy Tab S9+ (Adreno 740) and a Xiaomi 13 class phone
+(Adreno 830), 2026-11-23:
+
+- The full `shade` pass cost 67 ms a frame on the 740 at 378 lines; the
+  simple one (`KERN_SIMPLE_LIGHTING`) 9.5 ms at 1080 lines. The host turns
+  it on, and the 3D view starts at 1080 lines (adaptive quality lowers it).
+- The 830's driver drops indirect draws: only emissive and transparent
+  things showed. The host draws with bounded direct draws
+  (`KERN_SIMPLE_CULL`, `KERN_BOUNDED_DRAWS`).
+- Texture arrays use the desktop sizes (render feature `phone`); the 512 px
+  headset layers cut off and stretched the room's painted screens.
+- `env=NAME:VALUE,NAME:VALUE` in the query sets renderer switches for a test
+  run. Frame and GPU pass times are in logcat every 300 frames or 5 s.
+
 ## Open
 
-- Not yet measured on a real phone; frame times are in logcat every 300
-  frames (`frame every … ms`).
 - Rumble, the refresh rate request (120 Hz panels run at 60 unless asked),
   pausing the sound in the background, keyboard input.
 - Game saves stay in memory (as in the browser).

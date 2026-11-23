@@ -761,8 +761,10 @@ impl Game for Lobby {
         let shelf: Vec<(String, String)> = self.show.shelf.iter().map(|g| (g.title.clone(), g.color.clone())).collect();
         self.board.update(&mut self.stage.room, &mut self.stage.scene, &pending, &shelf, self.host.shelf_offset, light);
         lights.extend(self.board.lights().iter().copied());
-        // The low tier keeps to the room's own lights.
-        if !self.stage.options.low { lights.extend(glows); }
+        // Every tier keeps the players' glows: a few short lights, and on a
+        // phone (simple lighting, no GI) players were pitch black in the
+        // dark corners without them (Joep).
+        lights.extend(glows);
         lights.extend(shots);
         let (gpu, renderer) = (frame.gpu, frame.renderer().ok_or("no renderer")?);
         self.animate(gpu, renderer, delta)?;

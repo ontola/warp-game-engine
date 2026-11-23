@@ -197,7 +197,7 @@ pub fn install_panic_hook() {
 /// A phone: the browser's phone preset (`quality=full` turns it off).
 pub fn mobile() -> bool { !matches!(query_param("quality").as_deref(), Some("full" | "high")) }
 
-const MOBILE_BASE_HEIGHT: u32 = 540;
+const MOBILE_BASE_HEIGHT: u32 = 1080;
 
 fn mobile_light(mut light: render::Lighting) -> render::Lighting {
     light.gi = 0.0;
@@ -291,6 +291,14 @@ pub fn main(app: AndroidApp, start: impl FnOnce() + Send + 'static) {
     for pair in query_param("env").unwrap_or_default().split(',') {
         // SAFETY: before this process starts its render and helper threads.
         if let Some((k, v)) = pair.split_once(':') { unsafe { std::env::set_var(k.trim(), v.trim()) } }
+    }
+    // Phone defaults, measured on Adreno 740 and 830 (2026-11-23): the full
+    // shade pass cost 67 ms a frame on the 740 at 378 lines, the simple one
+    // 9.5 ms at 1080; the 830's driver drops indirect draws (only emissive
+    // things showed), so draw with bounded direct draws. `env=` overrides.
+    for (k, v) in [("KERN_SIMPLE_LIGHTING", "1"), ("KERN_SIMPLE_CULL", "1"), ("KERN_BOUNDED_DRAWS", "1")] {
+        // SAFETY: as above, no other threads yet.
+        if std::env::var_os(k).is_none() { unsafe { std::env::set_var(k, v) } }
     }
     install_panic_hook();
     use android_activity::WindowManagerFlags as F;
