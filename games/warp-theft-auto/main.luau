@@ -12,6 +12,7 @@ local instruments = require("instruments")
 local stories = require("story_board")
 local waypoint = require("waypoint")
 local combat = require("combat")
+local wheel = require("weapon_wheel")
 
 local function join(player)
 	mobility.join(state.fleet, player.id)
@@ -50,6 +51,7 @@ end
 
 local function tick(dt, input)
 	daycycle.tick(state.clock, dt)
+	wheel.input(state, input)
 	stories.input(state, input)
 	mobility.tick(state.fleet, dt, input)
 	-- Runtime stories can move all four players between the city and woods in

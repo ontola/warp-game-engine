@@ -2,6 +2,7 @@ local ui = require("kit/ui")
 local city = require("world")
 local dispatch = require("dispatch")
 local sidearm = require("sidearm")
+local wheel = require("weapon_wheel")
 local instruments = {}
 local ink, muted, panel = "#fff6df", "#b9cbd0", "#101e26ec"
 local gold, aqua = "#ffd360", "#6bdfd0"
@@ -224,6 +225,7 @@ function instruments.draw(cityState, fleet, clock, job, player, story, menu, tit
 	local x,y,w,h = ui.area(id)
 	-- Fit labels to the individual viewport, including vertically stacked splits.
 	local s = math.max(.49, math.min(h / 610, w / 810, 1.7))
+	if seat.weaponWheelOpen and menu.owner~=id then wheel.draw(seat,x,y,w,h,s); return end
 	local margin = 15*s
 	local left, top = x + margin, y + margin
 	local width = math.min(w*0.61, 318*s)
@@ -261,9 +263,19 @@ function instruments.draw(cityState, fleet, clock, job, player, story, menu, tit
 		if seat.mode == "drive" and math.abs(seat.speed) < 2 then action = "W / RT   Gas     F / Y   Exit" end
 	end
 	local armed = seat.mode == "walk" and not seat.impact and weapon ~= nil
-	local gunHint = "RMB / LT   Aim     LMB / Space / RT   Fire"
+	local gunHint = "RMB / LT   Aim     LMB / RT   Fire"
+	if armed then
+		mode = string.upper(wheel.name(seat))
+		if weapon.ammo~=nil and weapon.magazine then
+			mode ..= string.format("   %d / %d",weapon.ammo,weapon.magazine)
+		end
+		if (weapon.reloadRemaining or 0)>0 then
+			gunHint=string.format("Reloading   %.1f s",weapon.reloadRemaining)
+		end
+	end
 	if armed and menu.owner~=id then reticle(weapon,seat,id,x,y,w,h,s) end
 	text("R / X   Stories",mx+2*s,my-39*s,14*s,ink)
+	if armed then text("Hold Q / LB   Weapons",mx+2*s,my-57*s,14*s,ink) end
 	local aw = math.max(hud.measure(action,16*s), hud.measure(mode,23*s), if armed then hud.measure(gunHint,15*s) else 0) + 24*s
 	local height = (if armed then 80 else 58)*s
 	local ax, ay = tt-aw, y+h-margin-height
