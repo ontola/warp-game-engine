@@ -786,6 +786,12 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
     ])?;
 
     table("fx", vec![
+        ("warm_explosions", f!(core, move |_, ()| {
+            let mut c = lock(&core);
+            sim(&c, "fx.warm_explosions")?;
+            c.world.explosions_prepared.get_or_insert(false);
+            Ok(())
+        })),
         ("explosion", f!(core, move |_, (pos, radius): (Value, Value)| {
             let pos = vec3(&pos, "fx.explosion position")?;
             let radius = number(&radius, "fx.explosion radius")?;

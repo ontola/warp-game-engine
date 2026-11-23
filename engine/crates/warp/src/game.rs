@@ -1252,6 +1252,13 @@ impl Game for LuaGame {
         if rebuild {
             c.world.set_baked_explosion_smoke(r.supports_baked_explosion_smoke(frame.gpu));
         }
+        if c.world.explosions_prepared.is_some_and(|prepared| rebuild || !prepared) {
+            if loading && let Some(p) = self.party.as_mut() { p.loading(96, "preparing explosions"); }
+            let t = web_time::Instant::now();
+            r.prepare_explosions(frame.gpu)?;
+            c.world.explosions_prepared = Some(true);
+            steps.push(format!("explosions {} ms", t.elapsed().as_millis()));
+        }
         let blast_time = c.render_time(frame.alpha) as f32;
         let blast_lights = if let Some(explosions) = &mut c.world.explosions {
             if rebuild { explosions.renderer_replaced(); }

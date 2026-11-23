@@ -669,8 +669,9 @@ fn effects_fly_out_and_are_gone_after_their_life() {
 #[test]
 fn explosions_share_the_world_clock_and_leave_entity_slots_free() {
     let dir = folder("explosion");
-    write(&dir.join("main.luau"), "return {}");
+    write(&dir.join("main.luau"), "return { init = function() fx.warm_explosions(); fx.warm_explosions() end }");
     let mut g = game(&dir);
+    assert!(g.core().world.explosions.is_none());
     g.luau("fx.explosion(vector.create(3, 2, -5), 6)").unwrap();
     assert!(g.luau("fx.explosion(vector.create(0, 0, 0), -2)").is_err());
     assert!(g.luau("fx.explosion(vector.create(0/0, 1, 1), 6)").is_err());

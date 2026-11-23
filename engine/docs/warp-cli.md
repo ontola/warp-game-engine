@@ -217,7 +217,7 @@ keyboard mapping is in `app::input`.
 | Table | Functions |
 | --- | --- |
 | `world` | `spawn(shape, opts, parent?) -> id`, `set_parent(id, parent?)`, `set(id, opts)`, `place(id, pos, yaw?)`, `warm(shape, look)`, `get(id) -> entity or nil`, `exists(id)`, `remove(id)`, `clear()`, `find(tag) -> ids`, `count()`, `raycast(origin, dir, max?, query?) -> hit or nil`, `overlap(center, radius, query?) -> ids`, `move(id, vel, dt, query?) -> vel, grounded` |
-| `fx` | `explosion(pos, radius)`, `burst(pos, {color, emissive, shape, count, speed, life, size, stretch, gravity, flat})`, `ring(pos, {color, emissive, radius, life, width, segments})`, `count() -> particles, rings` |
+| `fx` | `warm_explosions()`, `explosion(pos, radius)`, `burst(pos, {color, emissive, shape, count, speed, life, size, stretch, gravity, flat})`, `ring(pos, {color, emissive, radius, life, width, segments})`, `count() -> particles, rings` |
 | `players` | `list() -> players`, `get(id) -> player or nil`, `count()`, `rumble(id, strength, seconds?)` |
 | `camera` | `set(player, {pos, target, fov})`, `get(player)`, `views({[player] = view})` (who shares which part of a split screen; views from 1, so a game can split when players walk apart) |
 | `sound` | `play(name, {at, db, pitch, <param> = value}) -> handle`, `set_param(handle, param, value)`, `stop(handle)`, `list()` |
@@ -285,7 +285,9 @@ keyboard mapping is in `app::input`.
   devices that support the 48 × 48 × 1,536 smoke texture use the shared baked
   smoke animation. Simple-lighting profiles, smaller devices and blasts admitted
   before a renderer exists use Growing Guns' procedural smoke billows.
-  Games supply sounds and gameplay responses separately.
+  Call `fx.warm_explosions()` in `init` to upload the selected smoke and draw
+  the first blast offscreen during loading. Games supply sounds and gameplay
+  responses separately.
   `fx.burst(pos, opts)` throws `count` pieces (default 12
   cubes, 0.12 m) out from `pos`, each at 25 % to 100 % of `speed` (m/s) and
   living 50 % to 100 % of `life` (s), shrinking as they go; `flat` keeps

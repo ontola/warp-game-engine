@@ -257,6 +257,8 @@ pub struct World {
     /// Renderer-owned particle drawing, shared by every seat, outside entity slots.
     pub explosions: Option<render::fx::Effects>,
     pub(crate) baked_explosion_smoke: bool,
+    /// None uses lazy loading; Some records whether the requested warmup ran on this renderer.
+    pub(crate) explosions_prepared: Option<bool>,
 }
 
 /// Effects the engine animates on its own (`fx.burst`, `fx.ring`): plain
@@ -306,7 +308,7 @@ impl World {
         let m = scene.add_material(material(&Look::default()));
         let cube = scene.add_mesh(&primitives::cube(m).mesh());
         let slots = Slots::reserve(&mut scene, max_entities);
-        let mut w = World { fleet: None, entities: BTreeMap::new(), next: 1, scene, slots, materials: HashMap::new(), meshes: HashMap::new(), models: HashMap::new(), warmed: BTreeMap::new(), rebuild: true, added: Vec::new(), dir: dir.to_path_buf(), fx: Fx::default(), explosions: None, baked_explosion_smoke: false };
+        let mut w = World { fleet: None, entities: BTreeMap::new(), next: 1, scene, slots, materials: HashMap::new(), meshes: HashMap::new(), models: HashMap::new(), warmed: BTreeMap::new(), rebuild: true, added: Vec::new(), dir: dir.to_path_buf(), fx: Fx::default(), explosions: None, baked_explosion_smoke: false, explosions_prepared: None };
         w.materials.insert(Look::default().key(), m);
         w.meshes.insert((0, m), cube);
         w

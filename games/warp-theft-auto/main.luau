@@ -19,6 +19,7 @@ local function join(player)
 end
 
 local function init()
+	fx.warm_explosions()
 	state.seed = random.int(1, 1000000)
 	state.city = city.build(state.seed)
 	state.fleet = mobility.new(state.city)

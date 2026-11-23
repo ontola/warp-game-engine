@@ -4577,6 +4577,13 @@ impl Renderer {
     /// Compile effect pipelines during loading instead of the first explosion.
     pub fn prepare_effects(&self, gpu: &Gpu) { self.fx.prepare(gpu); }
 
+    /// Upload the applicable smoke and submit an offscreen explosion during startup.
+    pub fn prepare_explosions(&self, gpu: &Gpu) -> Result<(), String> {
+        self.prepare_effects(gpu);
+        self.fx.0.lock().unwrap().as_mut().expect("effects prepared").warm_explosion(
+            gpu, self.supports_baked_explosion_smoke(gpu), self.minimal_forward.is_some())
+    }
+
     /// Emitters and clock for the GPU particle pool (`gpu_particles::GpuParticles::flush`).
     pub fn update_gpu_particles(&self, gpu: &Gpu, update: crate::gpu_particles::Update) -> Result<(), String> {
         self.gpu_particles.update(gpu, update)
