@@ -32,9 +32,13 @@ fn both_city_lawns_follow_their_diagonal_walks_and_tree_grates() {
         for dx in [-1.,1.] {
             for dz in [-1.,1.] {
                 assert!(sample(x+dx*7.,z+dz*7.)[1] < 0.9, "paved diagonal");
-                // This point is 0.4 m inside a grate but only 0.11 m inside the path.
-                let grate = sample(x+dx*13.5,z+dz*12.5);
+                // The grate sits in the turf, clear of the diagonal path.
+                let grate = sample(x+dx*13.5,z+dz*8.5);
                 assert!(grate[2] == 0. || grate[1] < 0.6, "tree grate clearance {grate:?}");
+                let path_x = x + dx*13.;
+                let path_z = z + dz*13.;
+                assert!(core.world.entities.values().all(|e| !e.solid || (e.pos.x-path_x).abs() > 1. || (e.pos.z-path_z).abs() > 1.),
+                    "tree trunk obstructs the diagonal path");
             }
         }
     }

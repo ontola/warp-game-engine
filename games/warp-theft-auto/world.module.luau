@@ -264,6 +264,41 @@ local function park(s,x,z,plaza,lawns)
     end
 end
 
+-- Each placement shares a small mesh. Only the woody trunk blocks movement.
+local function streetTree(s,x,z,yaw,scale,garden)
+    local pos=v(x,if garden then .036 else 0,z)
+    world.spawn("assets/plants/street-tree.glb",{pos=pos,rot=v(0,yaw,0),
+        size=v(scale,scale,scale),solid=false,tag="street-tree"})
+    obstacle(s,x,1.65*scale,z,.38*scale,3.3*scale,.38*scale,"#635445",nil,{visible=false})
+    if garden then table.insert(garden.cutouts,{pos=pos,width=1.35*scale,depth=1.35*scale}) end
+end
+
+local function shrubBed(x,z,yaw,scale,garden)
+    local pos=v(x,if garden then .036 else 0,z)
+    world.spawn("assets/plants/shrub-bed.glb",{pos=pos,rot=v(0,yaw,0),
+        size=v(scale,scale,scale),solid=false,tag="shrub-bed"})
+    if garden then table.insert(garden.cutouts,{pos=pos,width=3.8*scale,depth=1.6*scale,yaw=yaw}) end
+end
+
+local function plantBlock(s,ix,iz,x,z,plaza,garden,pad,lawns)
+    local turn=noise(s.seed,ix,iz,81)*2*math.pi
+    local scale=.87+.23*noise(s.seed,ix,iz,82)
+    if plaza or garden then
+        local turf=if garden then lawns else nil
+        for _,side in {-1,1} do
+            streetTree(s,x+side*13.5,z+side*2.8,turn+side,scale,turf)
+            shrubBed(x+side*3.4,z+side*15.5,turn*.05,1.1,turf)
+            if garden then shrubBed(x+side*15.7,z-side*4.8,math.pi*.5,1,turf) end
+        end
+    elseif not pad and ix<2 and (ix+iz)%2==0 then
+        -- Behind the houses, in the furnishing strip inside the sidewalk loop.
+        local dx=7.5+2.5*noise(s.seed,ix,iz,83)
+        if ix%2==0 then dx=-dx end
+        streetTree(s,x+dx,z-17.9,turn,scale,nil)
+        shrubBed(x-dx,z-17.6,0,scale,nil)
+    end
+end
+
 local function streetLamp(s,x,z)
     box(x,2.8,z,.18,5.6,.18,METAL)
     box(x-1,5.52,z,2.1,.17,.18,METAL)
@@ -289,6 +324,12 @@ local function avenue(s)
         local x=if z==-16 then 9.35 else -9.35
         table.insert(s.plantSites,v(x,0,z))
         if z<0 then table.insert(s.plantSites,v(-x,0,z-4)) end
+    end
+    for i,z in {23,43,70,96,137} do
+        local x=if i%2==0 then 10.1 else -10.1
+        local scale=.88+.18*noise(s.seed,0,i,84)
+        streetTree(s,x,z,i*2.4,scale,nil)
+        if i%2==1 then shrubBed(x,z+5,math.pi*.5,.90,nil) end
     end
     crossing(-7.15,-7.15,-1)
     crossing(7.15,7.15,1)
@@ -381,12 +422,15 @@ function city.build(seed)
             elseif ix==2 then docks(s,x,z,ix,iz,seed)
             elseif (ix==-1 or ix==0 or ix==1) and (iz==-1 or iz==0) then office(s,x,z,ix,iz,seed)
             else hotel(s,x,z,ix,iz,seed) end
+            plantBlock(s,ix,iz,x,z,plaza,garden,pad,lawns)
             -- One circuit per block, all of it on the continuous sidewalk.
             local reach=STEP/2-8
             table.insert(s.walkLoops,{v(x-reach,0,z-reach),v(x+reach,0,z-reach),v(x+reach,0,z+reach),v(x-reach,0,z+reach)})
             if plaza or garden then
+                -- In a lawn the trunks and their grates sit beside the diagonal paths.
+                local pineZ=if garden then 9 else 13
                 for _,dx in {-13,13} do
-                    for _,dz in {-13,13} do
+                    for _,dz in {-pineZ,pineZ} do
                         local pos=v(x+dx,0,z+dz)
                         table.insert(s.plantSites,pos)
                         if garden then table.insert(lawns.cutouts,{pos=pos,width=TREE_GRATE,depth=TREE_GRATE}) end

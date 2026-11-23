@@ -7,7 +7,7 @@ tick_rate = 60
 seed = 1948
 fresh_seed = true
 sky = "afternoon:clear"
-max_entities = 1280
+max_entities = 1360
 steps = 3600000
 memory_mb = 96
 
