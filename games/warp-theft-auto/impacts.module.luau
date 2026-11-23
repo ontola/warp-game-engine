@@ -247,6 +247,7 @@ local function person(pop,p,actor,seat,dt,boxes,grid,resident)
 	local first,vehicle,out,fall,speed=math.huge,nil,nil,false,0
 	local nearby=nearbyCars(grid,p.pos)
 	for _,box in nearby or EMPTY do
+		if p.exitStep and box.id==p.trafficCar then continue end
 		local t,offset,closing=contact(box,before,p.pos,dt)
 		if t then
 			local hard=closing>=FALL_SPEED

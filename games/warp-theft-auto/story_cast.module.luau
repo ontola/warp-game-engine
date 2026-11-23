@@ -31,6 +31,13 @@ local function duplicate(self,key)
 	return self.people[key] or self.cars[key]
 end
 
+local function walkerBody(p)
+	if not p.body then
+		p.body=world.spawn("cube",{pos=p.pos+HIP,size=v(.6,1.7,.6),solid=false,visible=false,tag="story-walker"})
+	end
+	return p.body
+end
+
 function Cast:person(key,opts)
 	if duplicate(self,key) then return nil,"duplicate cast name" end
 	local systems=getmetatable(self)
@@ -55,7 +62,7 @@ function Cast:person(key,opts)
 	if not actor then return nil,"no fitted slot available for this look" end
 	local p={name=opts.name or key,pos=opts.pos,yaw=opts.yaw or 0,look=look,actor=actor,
 		pose=opts.pose or "idle",story=true,arrived=true}
-	p.body=world.spawn("cube",{pos=p.pos+HIP,size=v(.6,1.7,.6),solid=false,visible=false,tag="story-walker"})
+	if not opts.deferWalker then walkerBody(p) end
 	self.people[key]=p
 	systems.fleet.storyPeople[actor]=p
 	humans.set(actor,{pose=p.pose})
@@ -83,6 +90,7 @@ end
 function Cast:walk(key,points,speed)
 	local p=self.people[key]
 	if not p or p.dead or p.rideId or not points or #points==0 then return false end
+	walkerBody(p)
 	p.route,p.leg,p.pace,p.arrived=points,1,math.clamp(speed or 1.5,.15,6),false
 	return true
 end
@@ -122,9 +130,11 @@ end
 
 local function seatPerson(p,car)
 	p.pos,p.yaw=models.seat(car,if p.seat=="driver" then -1 else 1)
+	-- The bucket seat puts a traffic driver’s eyes below the upper window frame.
+	if p.trafficCar then p.pos-=v(0,.13,0) end
 	p.pose="sit"
-	world.place(p.body,p.pos+HIP,p.yaw)
-	humans.set(p.actor,{pos=p.pos,yaw=p.yaw,pose="sit",visible=true})
+	if p.body then world.place(p.body,p.pos+HIP,p.yaw) end
+	humans.set(p.actor,{pos=p.pos,yaw=p.yaw,pose="sit",visible=p.visible~=false})
 end
 
 function Cast:ride(key,vehicle,seat)
@@ -147,14 +157,20 @@ local function releaseSeat(p,car)
 	p.rideId,p.seat=nil,nil
 end
 
-function Cast:dismount(key)
+function Cast:dismount(key,stepOut)
 	local p=self.people[key]
 	if not p or not p.rideId then return false end
 	local fleet=getmetatable(self).fleet
 	local car=fleet.vehicles[p.rideId]
 	local pos=if car then mobility.exitAt(fleet,car,if p.seat=="driver" then -1 else 1) else p.pos
 	if not pos then return false end
+	walkerBody(p)
+	if stepOut then p.exitStep={from=p.pos,to=pos,yaw=p.yaw,time=0} end
 	releaseSeat(p,car)
+	if stepOut then
+		p.arrived,p.previousFeet=true,nil
+		return true
+	end
 	p.pos,p.pose,p.arrived,p.previousFeet=pos,"idle",true,nil
 	world.place(p.body,pos+HIP,p.yaw)
 	humans.set(p.actor,{pos=pos,yaw=p.yaw,pose="idle"})
@@ -190,7 +206,8 @@ function Cast:hit(key,push,gibbed,point)
 	if gibbed then return self:kill(key,push,true,point) end
 	local p=self.people[key]
 	if not p or p.dead then return false end
-	p.wasHit,p.route,p.arrived=true,nil,false
+	walkerBody(p)
+	p.wasHit,p.route,p.arrived,p.exitStep=true,nil,false,nil
 	local carried
 	if p.rideId then
 		local car=getmetatable(self).fleet.vehicles[p.rideId]
@@ -243,8 +260,24 @@ end
 function Cast:tick(dt)
 	local fleet=getmetatable(self).fleet
 	for _,p in self.people do
-		if p.impact then continue end
-		if p.rideId then
+		if p.impact or p.dead then continue end
+		if p.exitStep then
+			local step=p.exitStep
+			step.time+=dt
+			local t=math.clamp(step.time/.46,0,1)
+			local blend=t*t*(3-2*t)
+			local delta=step.to-step.from
+			p.pos=step.from+delta*blend
+			local heading=math.atan2(delta.x,delta.z)
+			p.yaw=step.yaw+util.angle_diff(heading,step.yaw)*blend
+			p.pose=if t<.18 then "sit" else "rise"
+			world.place(p.body,p.pos+HIP,p.yaw)
+			humans.set(p.actor,{pos=p.pos,yaw=p.yaw,pose=p.pose,t=t})
+			if t>=1 then
+				p.exitStep=nil
+				if not p.route then p.pose="idle"; humans.set(p.actor,{pose=p.pose}) end
+			end
+		elseif p.rideId then
 			local car=fleet.vehicles[p.rideId]
 			if car then seatPerson(p,car) end
 		elseif p.route then
@@ -275,7 +308,7 @@ function Cast:remove(key)
 	if p then
 		if p.rideId then releaseSeat(p,fleet.vehicles[p.rideId]) end
 		if not p.dead then humans.remove(p.actor) end
-		world.remove(p.body)
+		if p.body then world.remove(p.body) end
 		fleet.storyPeople[p.actor],self.people[key]=nil,nil
 		return true
 	end

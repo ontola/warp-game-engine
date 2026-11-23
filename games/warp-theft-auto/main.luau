@@ -3,6 +3,7 @@ local cape = require("west-cape")
 local mobility = require("mobility")
 local interiors = require("interiors")
 local traffic = require("traffic")
+local drivers = require("traffic_drivers")
 local population = require("population")
 local impacts = require("impacts")
 local daycycle = require("kit/daycycle")
@@ -28,6 +29,7 @@ local function init()
 	traffic.add(state.fleet)
 	for _, player in players.list() do join(player) end
 	state.population = population.new(state.city, state.seed)
+	drivers.bind(state.fleet,state.population)
 	state.combat = combat.new(state.fleet, state.population)
 	state.clock = daycycle.new(16, 480, "clear")
 	daycycle.tick(state.clock, 0)
@@ -54,6 +56,7 @@ local function tick(dt, input)
 	wheel.input(state, input)
 	stories.input(state, input)
 	mobility.tick(state.fleet, dt, input)
+	drivers.tick(state.fleet,dt)
 	-- Runtime stories can move all four players between the city and woods in
 	-- one tick. Release the previous rooms and trunks before filling either pool.
 	local wanted, views = interiors.release_unused(state.interiors,state.city.buildings,state.fleet.players)
@@ -82,7 +85,11 @@ end
 
 return {
 	init = init, tick = tick, draw = draw, player_joined = join,
-	reload = function() combat.reload(state) end,
+	reload = function()
+		traffic.reload(state.fleet)
+		drivers.bind(state.fleet,state.population)
+		combat.reload(state)
+	end,
 	apply_story = function(definition)
 		local title, err = stories.start(state, definition)
 		if title then waypoint.update(state) end

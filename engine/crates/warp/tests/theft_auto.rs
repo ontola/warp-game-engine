@@ -280,3 +280,270 @@ fn traffic_completes_turns_and_waits_for_boarding_at_intersections() {
     assert_eq!(taken,[true;3], "every traffic car must offer a boarding window");
     assert!(g.errors().is_empty(), "{:?}", g.errors());
 }
+
+fn traffic_game() -> LuaGame {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../games/warp-theft-auto");
+    let mut game = LuaGame::load(&dir, &Overrides {
+        players: Some(2), seed: Some(1948), ..Default::default()
+    }, None).unwrap();
+    game.echo = false;
+    game.luau(r#"
+        local fleet=state.fleet
+        state.motorist=fleet.vehicles[fleet.traffic[1]]
+        -- Stand behind the moving car, in the roadway. A lateral offset
+        -- gives us a clean near miss from the same shooter at the same range.
+        state.lineUp=function(car,side,away)
+            local v=vector.create
+            local heading=v(-math.sin(car.yaw),0,-math.cos(car.yaw))
+            local right=v(math.cos(car.yaw),0,-math.sin(car.yaw))
+            local seat=fleet.players[2]
+            world.place(seat.body,car.pos-heading*13+right*side+v(0,.85,0))
+            seat.view=car.yaw+(if away then math.pi else 0)
+            seat.pitch=-.035
+        end
+    "#).unwrap();
+    game
+}
+
+fn traffic_ticks(game: &mut LuaGame, count: usize) {
+    for _ in 0..count { game.tick(&[Controls::default();2]); }
+    assert!(game.errors().is_empty(), "{:?}",game.logs());
+}
+
+fn shoot_from_second_seat(game: &mut LuaGame) {
+    let shot=Controls { pressed:Buttons(Buttons::RIGHT_TRIGGER), ..Controls::default() };
+    game.tick(&[Controls::default(),shot]);
+    assert!(game.errors().is_empty(), "{:?}",game.logs());
+}
+
+#[test]
+fn drivers_react_to_a_hit_or_close_pass_and_recover_after_the_last_threat() {
+    let mut g=traffic_game();
+    // Use the clear dock approach here; the obstruction case exercises collisions.
+    g.luau("state.motorist=state.fleet.vehicles[state.fleet.traffic[2]]").unwrap();
+    traffic_ticks(&mut g,12);
+    g.luau(r#"
+        local c=state.motorist
+        state.lineUp(c,0,false)
+        state.fleet.players[2].pistolCooldown=1
+    "#).unwrap();
+    shoot_from_second_seat(&mut g);
+    g.luau(r#"
+        assert(not state.combat.players[2].shotNumber and not state.motorist.panic)
+        state.fleet.players[2].pistolCooldown=0
+        state.lineUp(state.motorist,0,true)
+    "#).unwrap();
+    shoot_from_second_seat(&mut g);
+    g.luau("assert(state.combat.players[2].shotNumber==1 and not state.motorist.panic)").unwrap();
+    traffic_ticks(&mut g,28);
+
+    g.luau(r#"
+        local c=state.motorist
+        state.lineUp(c,0,false)
+        local behind=vector.create(math.sin(c.yaw),0,math.cos(c.yaw))
+        state.cover=world.spawn("cube",{tag="city",solid=true,pos=c.pos+behind*8+vector.create(0,1.2,0),size=vector.create(5,3,.3)})
+    "#).unwrap();
+    shoot_from_second_seat(&mut g);
+    g.luau(r#"
+        assert(state.combat.players[2].shotNumber==2 and not state.motorist.panic)
+        world.remove(state.cover)
+    "#).unwrap();
+    traffic_ticks(&mut g,28);
+    g.luau("state.lineUp(state.motorist,-2.3,false); state.beforeDamage=state.motorist.damage.total").unwrap();
+    shoot_from_second_seat(&mut g);
+    g.luau(r#"
+        local f,c=state.fleet,state.motorist
+        assert(state.combat.players[2].shotNumber==3 and c.panic,"a shot beside the car should frighten its driver")
+        assert(c.damage.total==state.beforeDamage,"the near miss should leave the car intact")
+        for _,other in f.vehicles do
+            if not other.auto or vector.magnitude(other.pos-c.pos)>100 then assert(not other.panic) end
+        end
+    "#).unwrap();
+    traffic_ticks(&mut g,28);
+    g.luau("state.lineUp(state.motorist,0,false); state.beforeDamage=state.motorist.damage.total; state.calmAt=state.motorist.panic.untilTime").unwrap();
+    shoot_from_second_seat(&mut g);
+    g.luau("local c=state.motorist; assert(c.damage.total>state.beforeDamage and c.panic.untilTime>state.calmAt,\"a direct hit should renew the alarm\")").unwrap();
+    traffic_ticks(&mut g,660);
+    g.luau("local c=state.motorist; assert(c.auto and c.driverActor and not c.panic,\"a safe driver should resume the circuit\")").unwrap();
+}
+
+#[test]
+fn a_shot_at_a_car_taken_by_another_seat_leaves_that_player_in_control() {
+    let mut g=traffic_game();
+    g.luau(r#"
+        local c=state.motorist
+        local v=vector.create
+        local forward=v(-math.sin(c.yaw),0,-math.cos(c.yaw))
+        local right=v(math.cos(c.yaw),0,-math.sin(c.yaw))
+        -- Leave the native boxes separate but obstruct all four dismount points.
+        for i,offset in {right*2.9,-right*2.9,forward*5.2,-forward*5.2} do
+            assert(state.combat.cast:car("block-"..i,{pos=c.pos+offset,yaw=c.yaw}))
+        end
+        world.place(state.fleet.players[1].body,c.pos+right*1.35+v(0,.85,0))
+    "#).unwrap();
+    traffic_ticks(&mut g,1);
+    g.luau(r#"
+        local c=state.motorist
+        state.originalDriver=state.fleet.drivers.people[tostring(c.index)]
+        local p=state.originalDriver
+        assert(p.rideId==c.index and c.storyDriver==p.actor and humans.head(p.actor))
+    "#).unwrap();
+    let board=Controls { pressed:Buttons(Buttons::NORTH), ..Controls::default() };
+    g.tick(&[board,Controls::default()]);
+    g.luau(r#"
+        local c,p=state.motorist,state.originalDriver
+        assert(not c.owner and p.rideId==c.index and c.storyDriver==p.actor,
+            "a blocked driver must keep the seat until they can step out safely")
+        for i=1,4 do assert(state.combat.cast:remove("block-"..i)) end
+        world.place(state.fleet.players[1].body,c.pos+vector.create(2.2,.85,0))
+        world.place(state.fleet.players[2].body,c.pos+vector.create(-2.2,.85,0))
+    "#).unwrap();
+    traffic_ticks(&mut g,1);
+    g.tick(&[board,board]);
+    g.luau(r#"
+        local c,p=state.motorist,state.originalDriver
+        assert(c.owner==1 and state.fleet.players[2].mode=="walk")
+        assert(not c.auto and not c.storyDriver and not p.rideId)
+        assert(not p.dead and humans.head(p.actor))
+        state.exitFeet=p.pos
+        state.lineUp(c,0,false)
+    "#).unwrap();
+    shoot_from_second_seat(&mut g);
+    g.luau("local c=state.motorist; assert(c.damage.total>0 and c.owner==1 and not c.auto and not c.panic)").unwrap();
+    traffic_ticks(&mut g,70);
+    g.luau("local p=state.originalDriver; assert(not p.dead and humans.head(p.actor) and vector.magnitude(p.pos-state.exitFeet)>.9)").unwrap();
+}
+
+#[test]
+fn a_threatened_driver_accelerates_and_takes_less_care_around_a_stopped_car() {
+    let drive=|under_fire:bool| {
+        let mut g=traffic_game();
+        traffic_ticks(&mut g,90);
+        g.luau(r#"
+            local c=state.motorist
+            local forward=vector.create(-math.sin(c.yaw),0,-math.cos(c.yaw))
+            state.stopped=state.combat.cast:car("obstruction",{pos=c.pos+forward*18,yaw=c.yaw})
+            state.lineUp(c,-2.3,false)
+        "#).unwrap();
+        if under_fire { shoot_from_second_seat(&mut g); } else { traffic_ticks(&mut g,1); }
+        let mut peak=0_f64;
+        for _ in 0..75 {
+            traffic_ticks(&mut g,3);
+            let speed:f64=g.luau("return math.abs(state.motorist.speed)").unwrap().parse().unwrap();
+            peak=peak.max(speed);
+        }
+        let damage:f64=g.luau("return state.stopped.damage.total").unwrap().parse().unwrap();
+        (peak,damage)
+    };
+    let (calm_speed,calm_damage)=drive(false);
+    let (fleeing_speed,fleeing_damage)=drive(true);
+    eprintln!("Stopped-car scenario: peak speeds {calm_speed:.2}/{fleeing_speed:.2} m/s and damage {calm_damage:.3}/{fleeing_damage:.3} (calm/panic)");
+    assert!(fleeing_speed>calm_speed+1.5,"peak speeds {fleeing_speed} fleeing, {calm_speed} calm");
+    assert!(fleeing_damage>calm_damage+0.025,"parked car damage {fleeing_damage} fleeing, {calm_damage} calm");
+}
+
+#[test]
+fn an_airborne_grenade_only_frightens_the_driver_when_it_actually_passes_the_car() {
+    let mut g=traffic_game();
+    traffic_ticks(&mut g,12);
+    g.luau(r#"
+        local c=state.motorist
+        state.lineUp(c,-2.3,false)
+        state.fleet.players[2].weapon="launcher"
+        local forward=vector.create(-math.sin(c.yaw),0,-math.cos(c.yaw))
+        world.spawn("cube",{tag="city",solid=true,pos=c.pos+forward*12+vector.create(-2.3,1.2,0),size=vector.create(4,3,.3)})
+    "#).unwrap();
+    shoot_from_second_seat(&mut g);
+    g.luau("assert(#state.combat.projectiles==1 and not state.motorist.panic)").unwrap();
+    for _ in 0..45 {
+        traffic_ticks(&mut g,1);
+        if g.luau("return state.motorist.panic~=nil").unwrap()=="true" { break; }
+    }
+    g.luau(r#"
+        local c=state.motorist
+        assert(c.panic and not c.wrecked and c.damage.total==0)
+        assert(#state.combat.projectiles==1,"a passing grenade should alarm the driver before it explodes")
+    "#).unwrap();
+}
+
+#[test]
+fn shots_through_an_open_sightline_hit_the_driver_while_door_metal_takes_the_hit() {
+    let mut g=traffic_game();
+    g.luau(r#"
+        local c=state.motorist
+        world.place(state.fleet.players[2].body,c.pos+vector.create(-5,.85,0))
+    "#).unwrap();
+    traffic_ticks(&mut g,8);
+    g.luau(r#"
+        local f,c=state.fleet,state.motorist
+        local p=f.drivers.people[tostring(c.index)]
+        assert(p and p.rideId==c.index and p.actor==c.storyDriver)
+        state.testDriver=p
+        state.driverShot=function(height)
+            local right=vector.create(math.cos(c.yaw),0,-math.sin(c.yaw))
+            local start=p.pos-right*4.8
+            local seat=f.players[2]
+            world.place(seat.body,start+vector.create(0,.85,0))
+            seat.view=c.yaw-math.pi/2
+            seat.pitch=math.atan2(height-1.25,4.8)
+        end
+        state.driverShot(.64)
+    "#).unwrap();
+    shoot_from_second_seat(&mut g);
+    g.luau(r#"
+        local c,p=state.motorist,state.testDriver
+        assert(c.damage.total>0 and p.rideId==c.index and not p.dead,"the lower door should shield its occupant")
+    "#).unwrap();
+    traffic_ticks(&mut g,24);
+    g.luau("state.driverShot(1.15)").unwrap();
+    shoot_from_second_seat(&mut g);
+    g.luau(r#"
+        local c,p=state.motorist,state.testDriver
+        assert(p.dead and not p.rideId and not c.storyDriver and not c.auto,"the side window gives a clear shot at its driver")
+        assert(p.corpse==p.actor and state.combat.players[2].defeats==1,"the seated character keeps their ragdoll when hit")
+    "#).unwrap();
+}
+
+#[test]
+fn a_living_driver_gets_out_before_their_burning_car_explodes() {
+    let mut g=traffic_game();
+    traffic_ticks(&mut g,16);
+    g.luau(r#"
+        local c=state.motorist
+        state.testDriver=state.fleet.drivers.people[tostring(c.index)]
+        assert(state.testDriver.rideId==c.index)
+        c.damage.total=.81
+        state.lineUp(c,0,false)
+    "#).unwrap();
+    shoot_from_second_seat(&mut g);
+    g.luau("assert(state.motorist.burnRemaining>0 and not state.testDriver.dead)").unwrap();
+    traffic_ticks(&mut g,155);
+    g.luau(r#"
+        local c,p=state.motorist,state.testDriver
+        assert(c.burnRemaining>0 and not c.wrecked and not c.auto)
+        assert(not p.rideId and not p.dead and humans.head(p.actor) and vector.magnitude(p.pos-c.pos)>3)
+    "#).unwrap();
+}
+
+#[test]
+fn threatened_traffic_rolls_through_its_usual_stop() {
+    let run=|threatened:bool| {
+        let mut game=traffic_game();
+        let mut stopped=false;
+        for _ in 0..110 {
+            traffic_ticks(&mut game,6);
+            if game.luau("local c=state.motorist; return c.driver.waiting>0 and math.abs(c.speed)<.7").unwrap()=="true" {
+                stopped=true;
+                break;
+            }
+        }
+        assert!(stopped,"driver missed the first routine stop");
+        game.luau("state.stopAt=state.motorist.pos; state.lineUp(state.motorist,-2.3,false)").unwrap();
+        if threatened { shoot_from_second_seat(&mut game); } else { traffic_ticks(&mut game,1); }
+        traffic_ticks(&mut game,80);
+        game.luau("return vector.magnitude(state.motorist.pos-state.stopAt)").unwrap().parse::<f64>().unwrap()
+    };
+    let calm=run(false);
+    let fleeing=run(true);
+    assert!(calm<1. && fleeing>calm+3.,"intersection travel after 1.35s: {calm:.2} m calm, {fleeing:.2} m frightened");
+}

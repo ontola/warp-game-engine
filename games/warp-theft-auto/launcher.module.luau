@@ -30,7 +30,7 @@ function launcher.fire(shots,id,player,seat,aimPoint,aimDir,range)
 	local cap=table.clone(fuse)
 	cap.tag,cap.solid,cap.pos,cap.size="launcher-fuse",false,v(0,.052,0),v(.034,.026,.04)
 	world.spawn("sphere",cap,entity)
-	table.insert(shots,{owner=id,entity=entity,pos=start,dir=dir,velocity=velocity,remaining=flight})
+	table.insert(shots,{owner=id,source=seat.pos,entity=entity,pos=start,dir=dir,velocity=velocity,remaining=flight})
 	player.shotFlash,player.launcherCooldown=.12,cooldown
 	sound.play("arcade_launcher",{at=start,db=-6})
 	return true
@@ -48,7 +48,7 @@ function launcher.advance(state,dt,trace,detonate)
 		-- The aimed point lies exactly on a surface. Accumulated integration
 		-- roundoff can leave the last sweep a fraction of a millimetre short.
 		local reach=if step==shot.remaining then distance+.002 else distance
-		local target,point,solid=trace(state,shot.pos,dir,shot.pos,reach,true)
+		local target,point,solid=trace(state,shot,dir,reach)
 		shot.velocity+=gravity*step
 		shot.remaining-=step
 		shot.dir=dir

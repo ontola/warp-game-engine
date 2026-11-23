@@ -63,6 +63,60 @@ local function localPoint(car,point)
 	return v(cz*x+sz*y,-sz*x+cz*y,-sx*d.y+cx*z)
 end
 
+-- The Toyama's glazing outlines, in the same axle-centred coordinates as
+-- the contact profile. The two sides mirror each other about x=-.005.
+local panes = {}
+local function pane(center, rim)
+	for i,a in rim do
+		table.insert(panes,{a=center,u=a-center,b=rim[i%#rim+1]-center})
+	end
+end
+pane(v(0,.812,-.608),{v(-.55,1.01,-.225),v(0,1.046,-.252),v(.55,1.01,-.225),
+	v(.70,.615,-.849),v(.50,.616,-.958),v(0,.620,-1.009),v(-.50,.616,-.958),v(-.70,.615,-.849)})
+pane(v(0,.869,1.322),{v(-.51,1.031,.98),v(0,1.046,1.018),v(.51,1.031,.98),
+	v(.634,.725,1.478),v(.51,.727,1.57),v(.27,.73,1.609),v(-.27,.73,1.609),v(-.51,.727,1.57),v(-.634,.725,1.478)})
+pane(v(.654,.825,-.127),{v(.727,.637,.226),v(.739,.604,-.546),v(.684,.75,-.518),
+	v(.594,.979,-.101),v(.572,1.011,.294)})
+pane(v(.649,.844,.685),{v(.605,.955,.832),v(.723,.671,1.07),v(.725,.641,.314),
+	v(.572,1.011,.352),v(.587,.991,.729)})
+
+function models.cabinOpening(car,origin,entry,contact)
+	local hit=localPoint(car,entry)
+	if hit.y<-.01 or hit.y>1.15 or hit.z< -1.10 or hit.z>1.66 then return false end
+	local side=if hit.x<-.005 then -1 else 1
+	-- The lower opening is exposed only once the corresponding door is off.
+	if math.abs(hit.x)>.56 and hit.y<.67 then
+		local front=hit.z>-.74 and hit.z<.20
+		local rear=hit.z>.31 and hit.z<.89
+		local door=(if side<0 then 2 else 3)+(if rear then 2 else 0)
+		if (front or rear) and bit32.btest(car.missingParts or 0,bit32.lshift(1,door)) then return true end
+	end
+	if hit.y<.52 then return false end
+	local target=localPoint(car,contact)
+	local dir=vector.normalize(target-localPoint(car,origin))
+	local offset=target-hit
+	-- Only test the window at the first hull contact. A ray entering through
+	-- the bonnet or a pillar cannot use a distant window to reach the cabin.
+	local start=hit-dir*.12
+	local length=math.min(.48,vector.dot(offset,dir)+.12)
+	start=v(side*(start.x+.005),start.y,start.z)
+	dir=v(side*dir.x,dir.y,dir.z)
+	for _,tri in panes do
+		local h=vector.cross(dir,tri.b)
+		local det=vector.dot(tri.u,h)
+		if math.abs(det)<.000001 then continue end
+		local d=start-tri.a
+		local u=vector.dot(d,h)/det
+		if u<0 or u>1 then continue end
+		local q=vector.cross(d,tri.u)
+		local w=vector.dot(dir,q)/det
+		if w<0 or u+w>1 then continue end
+		local t=vector.dot(tri.b,q)/det
+		if t>=0 and t<=length then return true end
+	end
+	return false
+end
+
 function models.closestPoint(car,worldPoint,radius)
 	if car.kind~="car" then return nil end
 	if radius then
@@ -115,7 +169,7 @@ function models.explode(car)
 	car.wrecked,car.burnRemaining,car.wreckFireRemaining=true,nil,WRECK_SECONDS
 	car.damage=car.damage or damage.new()
 	car.damage.total,car.damage.disabled=1,true
-	car.auto,car.throttle=nil,0
+	car.auto,car.driver,car.panic,car.throttle=nil,nil,nil,0
 	if car.voice then sound.stop(car.voice); car.voice=nil end
 	charred.apply(car)
 	detachment.explode(car)
