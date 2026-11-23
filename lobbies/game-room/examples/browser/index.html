@@ -107,6 +107,15 @@ html[data-empty][data-key-hint] #club-notice strong{animation:nod .9s ease}
 @keyframes back-hint{0%{opacity:0;visibility:visible;transform:translate(-50%,-12px)}8%,85%{opacity:1;visibility:visible;transform:translate(-50%,0)}100%{opacity:0;visibility:hidden}}
 #back-hint kbd,#key-hint kbd,#join-hint kbd{font:800 .85em Outfit,system-ui;padding:4px 10px;border-radius:8px;background:var(--violet);color:#0d1020;white-space:nowrap}
 #back-hint span,#key-hint span,#join-hint span{color:var(--muted)}
+/* Not fullscreen yet: a quiet button in the corner (the first click or key goes fullscreen by itself). */
+#fullscreen{position:fixed;right:16px;bottom:16px;z-index:2;display:none;align-items:center;gap:10px;padding:10px 16px;border-radius:14px;cursor:pointer;
+  font:700 clamp(14px,1.5vw,16px) Outfit,system-ui;color:#fff;background:rgba(13,16,32,.78);border:1px solid rgba(255,255,255,.14);backdrop-filter:blur(8px);
+  opacity:.9;transition:opacity .4s}
+#fullscreen svg{width:18px;height:18px}
+#fullscreen kbd{font:800 .8em Outfit,system-ui;padding:3px 8px;border-radius:7px;background:rgba(255,255,255,.14);color:var(--muted)}
+#fullscreen:hover{opacity:1}
+html[data-windowed] #fullscreen{display:flex}
+html[data-windowed][data-calm] #fullscreen{opacity:.35}
 #warp-log{display:none;position:fixed;left:8px;bottom:8px;white-space:pre-wrap;max-width:90vw;max-height:40vh;overflow:hidden;pointer-events:none;font:12px monospace;color:#ddd;text-shadow:0 0 3px #000;z-index:3}
 #warp-games{display:none!important}
 body.debug #warp-log{display:block}
@@ -155,6 +164,7 @@ body.debug #warp-games{display:flex!important}
     <footer><button type="button" data-run>Run story</button><button type="button" data-reset>Restore template</button><button type="button" data-open>Open file</button><button type="button" data-save>Save .luau</button><input type="file" accept=".luau,.lua,text/plain" hidden></footer>
   </form>
 </dialog>
+<button id="fullscreen" type="button" aria-label="Play fullscreen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>Fullscreen<kbd>F11</kbd></button>
 <div id="warp-log"></div>
 <script src="qrcode.js"></script>
 <script type="module">
@@ -250,6 +260,37 @@ async function showDirectGames(reason) {
       links.hidden = false;
     }
   } catch { /* Keep the original graphics or loading error on screen. */ }
+}
+// Fullscreen: browsers only allow it from a click or a key (a gamepad
+// button does not count), so the first click or key on the page goes
+// fullscreen, once. After that, or for pad-only players, the corner
+// button does it. In fullscreen, Escape stays the room's (keyboard lock,
+// Chrome and Edge): holding it leaves fullscreen.
+{
+  const root = document.documentElement, button = document.getElementById('fullscreen');
+  const can = document.fullscreenEnabled && !matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches;
+  let asked = false, calm;
+  const go = () => root.requestFullscreen({ navigationUI: 'hide' }).then(() => navigator.keyboard?.lock?.(['Escape']).catch(() => {})).catch(() => {});
+  const update = () => {
+    root.toggleAttribute('data-windowed', can && !document.fullscreenElement);
+    root.removeAttribute('data-calm'); clearTimeout(calm); calm = setTimeout(() => root.setAttribute('data-calm', ''), 8000);
+  };
+  const key = button.querySelector('kbd');
+  if (/Android|iPhone|iPad/.test(navigator.userAgent)) key.remove();
+  else if (/Mac/.test(navigator.platform || navigator.userAgent)) key.textContent = '\u2303\u2318F';
+  if (can) {
+    update();
+    document.addEventListener('fullscreenchange', update);
+    button.addEventListener('click', e => { e.stopPropagation(); asked = true; go(); });
+    const first = e => {
+      if (asked || document.fullscreenElement || !e.isTrusted) return;
+      if (e.type === 'keydown' && ['Escape', 'F11', 'Tab', 'Meta', 'Control', 'Alt', 'Shift'].includes(e.key)) return;
+      asked = true; go();
+    };
+    addEventListener('keydown', first, true);
+    addEventListener('pointerdown', first, true);
+    addEventListener('mousemove', () => { if (root.hasAttribute('data-calm')) update(); }, { passive: true });
+  }
 }
 const android = /Android/i.test(navigator.userAgent);
 if (!navigator.gpu) showDirectGames(android
