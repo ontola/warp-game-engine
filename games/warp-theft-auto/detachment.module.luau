@@ -1,6 +1,7 @@
 -- A hit stresses the hardware closest to its actual contact point. Original
 -- panels and tires detach once; free pieces are shared by every local player.
 local util=require("kit/util")
+local charred=require("charred")
 local detachment={}
 local v=vector.create
 local UP,DOWN=v(0,1,0),v(0,-1,0)
@@ -10,6 +11,8 @@ detachment.wheelOffsets=WHEELS
 local NAMES={"bonnet","door-lf","door-rf","door-lr","door-rr","boot"}
 -- Half extents measured from the indexed triangles of each cooked panel.
 local HALF={v(.705,.17,.59),v(.205,.535,.57),v(.205,.535,.57),v(.155,.535,.475),v(.155,.535,.475),v(.675,.235,.315)}
+-- Mix large silhouettes and wheels early when several wrecks share the cap.
+local BLAST_ORDER={1,7,2,6,10,3,4,8,5,9}
 local TIRE_HALF=v(.118,.331,.331)
 local CENTERS={}
 local LIMIT,RESERVE=18,80
@@ -40,6 +43,41 @@ local function closestPart(car,p,amount)
 	return if math.abs(p.z-a.z)<math.abs(p.z-b.z) then front else front+2
 end
 
+local function missing(car,id)
+	if id>6 then return bit32.btest(car.missingWheels or 0,bit32.lshift(1,id-7)) end
+	return bit32.btest(car.missingParts or 0,bit32.lshift(1,id))
+end
+
+local function queuePart(car,id,center,amount,blast)
+	if id>6 then
+		car.missingWheels=bit32.bor(car.missingWheels or 0,bit32.lshift(1,id-7))
+		world.set(car.wheels[id-6],{visible=false})
+	else
+		car.missingParts=bit32.bor(car.missingParts or 0,bit32.lshift(1,id))
+		car.damageDirty=true
+	end
+	car.pendingParts=car.pendingParts or {}
+	table.insert(car.pendingParts,{id=id,center=center,amount=amount,blast=blast})
+end
+
+-- Claim each original part once. A normal hit earlier in this tick may have
+-- already claimed the hinge without spawning the loose mesh yet.
+function detachment.explode(car)
+	if not car.model or not car.wheels or car.debrisExploded then return false end
+	car.debrisExploded,car.blastDebrisPending=true,true
+	if car.pendingParts then
+		for _,part in car.pendingParts do
+			part.blast=true
+		end
+	end
+	for _,id in BLAST_ORDER do
+		if missing(car,id) then continue end
+		local center=partCenter(car,id)
+		if center then queuePart(car,id,center,1,true) end
+	end
+	return true
+end
+
 function detachment.hit(car,localPoint,amount)
 	if not car.model or amount<=0 then return false end
 	local id=closestPart(car,localPoint,amount)
@@ -58,10 +96,8 @@ function detachment.hit(car,localPoint,amount)
 			if surfacePart and car.partStress[surfacePart] then id,best=surfacePart,d2 end
 		end
 	end
-	if not id then return false end
+	if not id or missing(car,id) then return false end
 	local wheel=id>6
-	local mask=bit32.lshift(1,if wheel then id-7 else id)
-	if bit32.band(if wheel then car.missingWheels or 0 else car.missingParts or 0,mask)~=0 then return false end
 	local center=partCenter(car,id)
 	if not center then return false end
 	car.partStress=car.partStress or {}
@@ -70,15 +106,7 @@ function detachment.hit(car,localPoint,amount)
 	-- Light taps can crease the shell. One exceptional impact, or several
 	-- hits to the same attachment, breaks the selected piece loose.
 	if stress<(if wheel then .94 else .82) then return false end
-	if wheel then
-		car.missingWheels=bit32.bor(car.missingWheels or 0,mask)
-		world.set(car.wheels[id-6],{visible=false})
-	else
-		car.missingParts=bit32.bor(car.missingParts or 0,mask)
-		car.damageDirty=true
-	end
-	car.pendingParts=car.pendingParts or {}
-	table.insert(car.pendingParts,{id=id,center=center,amount=math.clamp(amount,.15,1)})
+	queuePart(car,id,center,math.clamp(amount,.15,1),false)
 	return true
 end
 
@@ -91,6 +119,28 @@ local function rotate(point,angles)
 	return v(cy*x+sy*z,cx*y-sx*point.z,-sy*x+cy*z)
 end
 
+function detachment.worldPoint(car,point)
+	return car.pos+UP*.33+rotate(point,car.rotation or v(0,car.yaw,0))
+end
+
+local function inheritedVelocity(car,dt)
+	if car.prevPos then return util.clamp_length((car.pos-car.prevPos)/dt,40) end
+	return util.forward(car.yaw)*car.speed
+end
+
+local function scatter(car,item,outward)
+	-- Deterministic variation separates the wheels and panels without using
+	-- the shared city RNG. Add the impulse to the incoming world velocity.
+	local spread=((car.index*5+item.part*11)%13)/12
+	local planar=util.flat(outward)
+	local radial=if vector.magnitude(planar)>.01 then vector.normalize(planar) else util.forward(car.yaw)
+	local outwardSpeed=if item.wheel then 8.4 else 6.5
+	item.vel+=radial*(outwardSpeed+spread*4)+UP*(5.3+2.8*spread)
+	local tumble=vector.normalize(v(radial.z,.35-spread,-radial.x))
+	item.spin=tumble*(6+spread*5)
+	if item.wheel then item.spin+=v(math.clamp(car.speed/.331,-24,24)+8,0,0) end
+end
+
 local function release(fleet,car,part,dt)
 	local list=fleet.debris
 	if #list>=LIMIT then world.remove(table.remove(list,1).entity) end
@@ -98,16 +148,20 @@ local function release(fleet,car,part,dt)
 	local id,center=part.id,part.center
 	local wheel=id>6
 	local rotation=car.rotation or v(0,car.yaw,0)
-	local pos=car.pos+UP*.33+rotate(center,rotation)
-	local path=if wheel then "assets/cars/"..(if center.x<0 then "wheel-left" else "wheel-right")..".gltf" else car.model.."#part-"..NAMES[id]
+	local pos=detachment.worldPoint(car,center)
+	local path=if wheel then charred.wheel(center.x,car.charred) else car.model.."#part-"..NAMES[id]
 	local entity=world.spawn(path,{pos=pos,rot=rotation,tag="vehicle-debris",solid=false})
 	local outward=if id==1 or id==6 then v(0,.36,math.sign(center.z)) else v(math.sign(center.x),.23,0)
-	local inherited=if car.prevPos then util.clamp_length((car.pos-car.prevPos)/dt,40) else util.forward(car.yaw)*car.speed
-	local velocity=inherited+rotate(outward,rotation)*(1.8+3.3*part.amount)+UP*(.7+part.amount)
-	local spin=if wheel then v(math.clamp(car.speed/.331,-28,28)+3,0,.8)
-		else v(2.4+part.amount*2,(car.index%3-1)*1.7,math.sign(center.x)*4.2)
-	table.insert(list,{entity=entity,part=id,wheel=wheel,door=id>=2 and id<=5,pos=pos,rot=rotation,vel=velocity,
-		spin=spin,life=0,nextProbe=0})
+	local item={entity=entity,source=car.body,part=id,wheel=wheel,door=id>=2 and id<=5,pos=pos,rot=rotation,
+		vel=inheritedVelocity(car,dt),spin=util.ZERO,life=0,nextProbe=0}
+	if part.blast then
+		scatter(car,item,rotate(center,rotation))
+	else
+		item.vel+=rotate(outward,rotation)*(1.8+3.3*part.amount)+UP*(.7+part.amount)
+		item.spin=if wheel then v(math.clamp(car.speed/.331,-28,28)+3,0,.8)
+			else v(2.4+part.amount*2,(car.index%3-1)*1.7,math.sign(center.x)*4.2)
+	end
+	table.insert(list,item)
 end
 
 local function supportHeight(item)
@@ -167,10 +221,42 @@ end
 function detachment.tick(fleet,dt)
 	fleet.debris=fleet.debris or {}
 	local list=fleet.debris
+	local pending,maxParts=nil,0
 	for _,car in fleet.vehicles do
-		if not car.pendingParts then continue end
-		for _,part in car.pendingParts do release(fleet,car,part,dt) end
-		car.pendingParts=nil
+		if car.blastDebrisPending then
+			car.blastDebrisPending=nil
+			for _,item in list do
+				if item.source~=car.body then continue end
+				local delta=item.pos-car.pos
+				if vector.dot(delta,delta)>4.5^2 then continue end
+				if car.charred then charred.piece(item.entity) end
+				item.rest,item.settleRoll,item.wall,item.floor=nil,nil,nil,nil
+				item.life,item.nextProbe=0,0
+				scatter(car,item,delta)
+			end
+		end
+		if car.pendingParts then
+			pending=pending or {}
+			table.insert(pending,car)
+			maxParts=math.max(maxParts,#car.pendingParts)
+		end
+	end
+	if pending then
+		-- Interleave cars bursting on the same tick. Even a chain explosion
+		-- creates at most LIMIT loose entities before the next rendered frame.
+		local claimed=0
+		for i=1,maxParts do
+			for _,car in pending do
+				local part=car.pendingParts[i]
+				if part then
+					release(fleet,car,part,dt)
+					claimed+=1
+					if claimed>=LIMIT then break end
+				end
+			end
+			if claimed>=LIMIT then break end
+		end
+		for _,car in pending do car.pendingParts=nil end
 	end
 	for i=#list,1,-1 do
 		local piece=list[i]

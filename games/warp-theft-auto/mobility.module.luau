@@ -36,7 +36,7 @@ end
 local function nearest(m, p)
 	local best, distance = nil, BOARD
 	for i, car in m.vehicles do
-		if car.owner or car.storyDriver or math.abs(car.speed) > FAST then continue end
+		if car.owner or car.storyDriver or car.wrecked or math.abs(car.speed) > FAST then continue end
 		local d = vector.magnitude(p.pos-car.pos)
 		if d < distance then best, distance = i, d end
 	end

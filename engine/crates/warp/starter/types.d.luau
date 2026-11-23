@@ -144,6 +144,9 @@ declare fx: {
     warm_explosions: () -> (),
     explosion: (pos: Vec, radius: number, lightRange: number?) -> (),
     gib_mist: (pos: Vec, intensity: number) -> (),
+    -- One upright flame rooted at pos, in metres and seconds, or one rising smoke puff.
+    flame: (pos: Vec, width: number, height: number, life: number) -> (),
+    exhaust_smoke: (pos: Vec, radius: number) -> (),
 	-- Pieces flying out from pos: each at 25-100 % of speed (m/s), living
 	-- 50-100 % of life (s) and shrinking. flat: in the ground plane only;
 	-- stretch: seconds of velocity as length (streaks); gravity: m/s^2 down.

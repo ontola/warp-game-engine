@@ -1,6 +1,7 @@
 local util = require("kit/util")
 local damage = require("kit/car_damage")
 local detachment = require("detachment")
+local charred = require("charred")
 local v = vector.create
 local models = {}
 local PAINT = { "sedan-ochre", "sedan", "sedan-pearl", "sedan-vermilion" }
@@ -11,6 +12,8 @@ models.wheelOffsets=OFFSET
 
 -- Match the grid boundaries declared by this model's glTF warpCrushGrid.
 local CRUSH=damage.profile(.98,2.21,2.19,.48,1.04,1.16)
+local IGNITION, BURN_SECONDS = .82, 6
+local FIRE_INTERVAL, FIRE_RANGE, VISIBLE_FIRES = .10, 110, 4
 
 local paints={ochre=PAINT[1],teal=PAINT[2],pearl=PAINT[3],vermilion=PAINT[4]}
 
@@ -20,7 +23,10 @@ models.contactProfile="toyama"
 function models.prepareContacts()
 	local paths={}
 	for _,name in PAINT do table.insert(paths,BASE..name..".gltf") end
+	table.insert(paths,charred.body)
 	world.warm_dents(paths,8)
+	world.warm(charred.wheel(-1,true))
+	world.warm(charred.wheel(1,true))
 	vehicles.contact_profile(models.contactProfile,-.15,{
 		{z=-2.21,width=1.00,top=.21}, {z=-2.10,width=1.30,top=.29},
 		{z=-2.00,width=1.52,top=.40}, {z=-1.86,width=1.65,top=.48},
@@ -65,11 +71,11 @@ function models.closestPoint(car,worldPoint,radius)
 	return vehicles.closest_point(car.native,models.contactProfile,worldPoint)
 end
 
-function models.raycast(fleet,origin,direction,maxDistance,ignoreCar)
+function models.raycast(fleet,origin,direction,maxDistance,ignoreCar,secondIgnore)
 	local best,limit=nil,maxDistance
 	local cars=fleet.vehicles or fleet
 	for _,car in cars do
-		if car.kind~="car" or car==ignoreCar then continue end
+		if car.kind~="car" or car==ignoreCar or car==secondIgnore then continue end
 		local d=car.pos+v(0,.78,0)-origin
 		local along=math.clamp(vector.dot(d,direction),0,limit)
 		local offset=d-direction*along
@@ -81,11 +87,17 @@ function models.raycast(fleet,origin,direction,maxDistance,ignoreCar)
 	return nil
 end
 
-function models.hit(car,worldPoint,amount)
-	if car.kind~="car" or not (amount>0) then return false end
+local function ignite(car,owner)
+	if car.burnRemaining or car.wrecked or car.damage.total<IGNITION then return end
+	car.burnRemaining,car.fireOwner=BURN_SECONDS,owner or 0
+end
+
+function models.hit(car,worldPoint,amount,owner)
+	if car.kind~="car" or car.wrecked or not (amount>0) then return false end
 	car.damage=car.damage or damage.new()
 	local p=localPoint(car,worldPoint)
 	local changed=damage.hit(car.damage,CRUSH,p,amount)
+	ignite(car,owner)
 	local dented=damage.dent(car.damage,CRUSH,p,amount)
 	local old=car.missingParts or 0
 	detachment.hit(car,p,amount)
@@ -93,6 +105,85 @@ function models.hit(car,worldPoint,amount)
 	if dented or old~=(car.missingParts or 0) then vehicles.dent_query(car.native,models.contactProfile,car.damage.dents or {},car.body,car.missingParts or 0) end
 	car.damageDirty=true
 	return true
+end
+
+-- The hull, query surface and loose-parts mask all switch on the same tick.
+-- This guard also consumes overlapping grenades and a fuse that expires alongside one.
+function models.explode(car)
+	if car.kind~="car" or car.wrecked then return false end
+	car.wrecked,car.burnRemaining=true,nil
+	car.damage=car.damage or damage.new()
+	car.damage.total,car.damage.disabled=1,true
+	car.auto,car.throttle=nil,0
+	if car.voice then sound.stop(car.voice); car.voice=nil end
+	charred.apply(car)
+	detachment.explode(car)
+	local mask=car.missingParts or 0
+	local dents=car.damage.dents or {}
+	vehicles.dent_query(car.native,models.contactProfile,dents,car.body,mask)
+	world.dent(car.body,if car.dentActive then dents else nil,mask)
+	car.damageDirty=true
+	return true
+end
+
+-- One emitter per car, shared by all views. Its flame roots follow the bonnet
+-- while the old smoke stays in world space as the car drives away.
+local function emitFire(car,pulse)
+	local intensity=1-car.burnRemaining/BURN_SECONDS
+	local phase=pulse*.96+car.index*2.3
+	local dx=math.sin(phase)*.18
+	local z=-1.42+.16*math.cos(phase)
+	local height=1.2+intensity*1.15
+	local width=.54+intensity*.30
+	local life=math.clamp(2/(math.abs(car.speed)+1),.14,.40)
+	local a=detachment.worldPoint(car,v(-.23+dx,.61,z))
+	local b=detachment.worldPoint(car,v(.23+dx,.59,z+.14))
+	fx.flame(a,width,height,life)
+	fx.flame(b,width*.80,height*(.78+.12*math.sin(phase)),life)
+	if (pulse+car.index)%3==0 then
+		fx.exhaust_smoke((a+b)*.5+v(0,.45,0),.45+intensity*.38)
+	end
+end
+
+function models.tickFires(fleet,dt,onExpired)
+	fleet.fireFxIn=math.max(0,(fleet.fireFxIn or 0)-dt)
+	local emit=fleet.fireFxIn==0
+	if emit then fleet.fireFxIn=FIRE_INTERVAL end
+	local visible,expired
+	for _,car in fleet.vehicles do
+		if car.kind~="car" or car.wrecked or not car.damage then continue end
+		-- Bring previously damaged cars into the lifecycle after a live edit.
+		if not car.burnRemaining then ignite(car) end
+		if not car.burnRemaining then continue end
+		car.burnRemaining=math.max(0,car.burnRemaining-dt)
+		if car.burnRemaining<=BURN_SECONDS*.5 then charred.apply(car) end
+		if car.burnRemaining==0 then
+			expired=expired or {}
+			table.insert(expired,car)
+		elseif emit then
+			local best=math.huge
+			for _,seat in fleet.players do
+				if seat.bot then continue end
+				local d=seat.pos-car.pos
+				best=math.min(best,vector.dot(d,d))
+			end
+			if best<FIRE_RANGE*FIRE_RANGE then
+				visible=visible or {}
+				table.insert(visible,{car=car,distance=best})
+			end
+		end
+	end
+	if visible then
+		fleet.firePulse=(fleet.firePulse or 0)+1
+		table.sort(visible,function(a,b)
+			return if a.distance==b.distance then a.car.index<b.car.index else a.distance<b.distance
+		end)
+		for i=1,math.min(#visible,VISIBLE_FIRES) do emitFire(visible[i].car,fleet.firePulse) end
+	end
+	if expired then
+		table.sort(expired,function(a,b) return a.index<b.index end)
+		for _,car in expired do if not car.wrecked then onExpired(car) end end
+	end
 end
 
 function models.streamDamage(fleet,dt)

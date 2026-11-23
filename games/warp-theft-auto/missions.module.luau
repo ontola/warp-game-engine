@@ -99,11 +99,16 @@ end
 -- Check the remaining objectives only when combat reports a casualty. A
 -- vehicle can end a passenger's route or invalidate a contract target.
 local function resolveCasualties(m,ctx,cast)
-	local shots,roadDeaths=m.shotPeople,m.checkRoadDeaths
-	m.shotPeople,m.checkRoadDeaths=nil,nil
-	if not shots and not roadDeaths then return false end
+	local shots,roadDeaths,wrecks=m.shotPeople,m.checkRoadDeaths,m.checkWrecks
+	m.shotPeople,m.checkRoadDeaths,m.checkWrecks=nil,nil,nil
+	if not shots and not roadDeaths and not wrecks then return false end
 	for i=m.step,#ctx.definition.steps do
 		local step=ctx.definition.steps[i]
+		local car=wrecks and step.car and cast.cars[step.car]
+		if car and car.wrecked then
+			finish(m,"failed",car.name.." was destroyed.")
+			return false
+		end
 		local actor=step.person and cast.people[step.person]
 		if actor and roadDeaths and actor.roadDeath then
 			finish(m,"failed",actor.name.." was hit by a vehicle.")

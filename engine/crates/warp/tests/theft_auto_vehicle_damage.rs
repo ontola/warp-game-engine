@@ -98,3 +98,54 @@ fn scripted_fleet_damage_stays_bounded_across_split_screen() {
         assert(world.count()+96<=world.capacity())
     "#).unwrap();
 }
+
+#[test]
+fn ordinary_damage_starts_a_shared_fire_that_finishes_after_everyone_leaves() {
+    let mut game = city();
+    game.luau(r#"
+        local car=state.fleet.vehicles[1]
+        car.damage.total=.78
+        local seat=state.fleet.players[1]
+        world.place(seat.body,car.pos+vector.create(0,.85,5.6))
+        seat.view,seat.pitch=0,-.14
+        state.fireBody,state.fireNative=car.body,car.native
+    "#).unwrap();
+    let fire = Controls { pressed: Buttons(Buttons::RIGHT_TRIGGER), ..Default::default() };
+    tick(&mut game, fire, 1);
+    game.luau(r#"
+        local car=state.fleet.vehicles[1]
+        assert(car.damage.total>.78 and car.damage.total<.82 and not car.burnRemaining)
+    "#).unwrap();
+    tick(&mut game, Controls::default(), 25);
+    tick(&mut game, fire, 1);
+    game.luau(r#"
+        local car=state.fleet.vehicles[1]
+        assert(car.burnRemaining>5.9 and car.fireOwner==1 and not car.wrecked)
+        world.place(state.fleet.players[1].body,vector.create(0,.85,-150))
+        world.place(state.fleet.players[2].body,car.pos+vector.create(3,.85,3))
+    "#).unwrap();
+    tick(&mut game, Controls::default(), 155);
+    game.luau(r#"
+        local f=state.fleet
+        local car=f.vehicles[1]
+        assert(f.firePulse>10 and car.burnRemaining>3 and car.burnRemaining<3.6)
+        assert(not car.wrecked and car.body==state.fireBody and car.native==state.fireNative)
+        state.lastFirePulse=f.firePulse
+        world.place(f.players[2].body,vector.create(2,.85,-150))
+    "#).unwrap();
+    tick(&mut game, Controls::default(), 55);
+    game.luau(r#"
+        local f=state.fleet
+        local car=f.vehicles[1]
+        assert(f.firePulse==state.lastFirePulse and not car.wrecked)
+        assert(car.burnRemaining<3 and car.charred and world.get(car.body).visible)
+    "#).unwrap();
+    tick(&mut game, Controls::default(), 160);
+    game.luau(r#"
+        local car=state.fleet.vehicles[1]
+        assert(car.wrecked and car.charred and not car.burnRemaining)
+        assert(car.damage.disabled and car.damage.total==1 and not car.voice)
+        assert(car.native==state.fireNative and car.body==state.fireBody and world.exists(car.body))
+        assert(car.missingParts==126 and car.missingWheels==15)
+    "#).unwrap();
+}

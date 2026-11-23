@@ -239,14 +239,14 @@ local function recordHit(state,owner,target,dir,blast,damage)
 	fx.hit(state.combat.effects,target.point,dir,lethal,game.tick()+owner,joints,damage)
 end
 
-local function blastBlocked(fleet,center,delta,distance,receiver)
+local function blastBlocked(fleet,center,delta,distance,receiver,sourceCar)
 	local limit=distance-.04
 	if limit<=0 then return false end
 	local ray=delta/distance
-	return cars.raycast(fleet,center,ray,limit,receiver)~=nil or sceneHit(fleet,center,ray,limit)~=nil
+	return cars.raycast(fleet,center,ray,limit,receiver,sourceCar)~=nil or sceneHit(fleet,center,ray,limit)~=nil
 end
 
-local function blastDamage(state,owner,center,radius,target,forward)
+local function blastDamage(state,owner,center,radius,target,forward,sourceCar,grenade)
 	local extent=v(radius,radius,radius)
 	local hits={}
 	local function candidate(kind,key,p,feet,actor,contact)
@@ -254,7 +254,7 @@ local function blastDamage(state,owner,center,radius,target,forward)
 		local distance=vector.magnitude(delta)
 		if distance>=radius then return end
 		local direct=target and target.kind==kind and target.key==key
-		if not direct and blastBlocked(state.fleet,center,delta,distance) then return end
+		if not direct and blastBlocked(state.fleet,center,delta,distance,nil,sourceCar) then return end
 		-- Growing Guns uses quadratic falloff. The compact visible flash and the
 		-- gameplay radius are independent, so the outer edge only grazes a target.
 		local damage=9*(1-distance/radius)^2
@@ -274,35 +274,64 @@ local function blastDamage(state,owner,center,radius,target,forward)
 	for _,hit in hits do recordHit(state,owner,hit,hit.dir,true,hit.damage) end
 	local carHits={}
 	for _,car in state.fleet.vehicles do
-		if car.kind~="car" then continue end
+		if car.kind~="car" or car==sourceCar or car.wrecked then continue end
 		local point=cars.closestPoint(car,center,radius)
 		if not point then continue end
 		local delta=point-center
 		local distance=vector.magnitude(delta)
 		if distance>=radius then continue end
-		if blastBlocked(state.fleet,center,delta,distance,car) then continue end
-		table.insert(carHits,{car=car,point=point,damage=(1-distance/radius)^2})
+		if blastBlocked(state.fleet,center,delta,distance,car,sourceCar) then continue end
+		table.insert(carHits,{car=car,point=point,damage=(1-distance/radius)^2,immediate=grenade and distance<=2.5})
 	end
 	-- Every visibility query sees the same pre-blast car shapes.
-	for _,hit in carHits do cars.hit(hit.car,hit.point,hit.damage) end
+	local immediate
+	for _,hit in carHits do
+		if hit.immediate then
+			immediate=immediate or {}
+			table.insert(immediate,hit.car)
+		else
+			cars.hit(hit.car,hit.point,hit.damage,owner)
+		end
+	end
+	return immediate
 end
 
-local function hitCrate(state,owner,id,forward,radius)
+-- The chassis containing the blast cannot shield its surroundings from itself.
+-- Consume its transition before applying damage to the rest of the street.
+local function explodeCar(state,car,owner,forward,grenade)
+	if not cars.explode(car) then return end
+	if state.story and state.story.status=="active" then state.story.checkWrecks=true end
+	local center=car.pos+v(0,.76,0)
+	explosions.play(center,6)
+	return blastDamage(state,owner,center,if grenade then launcher.blastRadius else 14,nil,forward,car,grenade)
+end
+
+local function hitCrate(state,owner,id,forward,radius,grenade)
 	local crate=state.combat.crates[id]
 	if not explosions.hit(crate,id) then return end
-	blastDamage(state,owner,crate.pos,radius,nil,forward)
+	local immediate=blastDamage(state,owner,crate.pos,radius,nil,forward,nil,grenade)
 	local shooter=state.combat.players[owner]
 	if shooter then sidearm.confirmHit(shooter,crate.pos) end
+	return immediate
 end
 
 local function detonate(state,shot,center,target)
+	local immediate
 	if target and target.kind=="crate" then
-		hitCrate(state,shot.owner,target.key,shot.dir,launcher.blastRadius)
-		return
+		immediate=hitCrate(state,shot.owner,target.key,shot.dir,launcher.blastRadius,true)
+	elseif target and target.kind=="car" and not target.car.wrecked then
+		-- The direct hit and the exploding vehicle produce a single blast.
+		immediate=explodeCar(state,target.car,shot.owner,shot.dir,true)
+		local player=state.combat.players[shot.owner]
+		if player then sidearm.confirmHit(player,target.point) end
+	else
+		if target and target.kind=="car" then center-=shot.dir*.06 end
+		explosions.play(center,launcher.effectRadius)
+		immediate=blastDamage(state,shot.owner,center,launcher.blastRadius,target,shot.dir,nil,true)
 	end
-	if target and target.kind=="car" then center-=shot.dir*.06 end
-	explosions.play(center,launcher.effectRadius)
-	blastDamage(state,shot.owner,center,launcher.blastRadius,target,shot.dir)
+	if immediate then
+		for _,car in immediate do explodeCar(state,car,shot.owner,shot.dir,false) end
+	end
 end
 
 local function shoot(state,id,player,seat,input,dt)
@@ -366,7 +395,7 @@ local function shoot(state,id,player,seat,input,dt)
 		if hit.kind=="crate" then
 			hitCrate(state,id,hit.key,hit.dir,14)
 		elseif hit.kind=="car" then
-			cars.hit(hit.car,hit.point,math.min(.65,hit.damage*.065))
+			cars.hit(hit.car,hit.point,math.min(.65,hit.damage*.065),id)
 			sidearm.confirmHit(player,hit.point)
 		else
 			recordHit(state,id,hit,hit.dir,false,hit.damage)
@@ -427,6 +456,7 @@ function combat.tick(state,dt,input)
 			-- A departing player's grenade still lands. A later occupant of this
 			-- seat should not receive the credit for its impact.
 			for _,shot in s.projectiles or {} do if shot.owner==id then shot.owner=0 end end
+			for _,car in fleet.vehicles do if car.fireOwner==id then car.fireOwner=nil end end
 			sidearm.remove(player)
 			sidearm.clearFlash(player)
 			s.players[id]=nil
@@ -434,6 +464,9 @@ function combat.tick(state,dt,input)
 	end
 	s.projectiles=s.projectiles or {}
 	launcher.advance(state,dt,targetOnRay,detonate)
+	cars.tickFires(fleet,dt,function(car)
+		explodeCar(state,car,car.fireOwner or 0,v(0,1,0),false)
+	end)
 	for _,info in players.list() do
 		local id=info.id
 		local seat=fleet.players[id]

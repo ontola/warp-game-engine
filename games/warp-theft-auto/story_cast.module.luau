@@ -105,7 +105,7 @@ end
 -- Both corner waypoints clear the car plus a person's standing radius.
 function Cast:approach(key,vehicle,seat,speed)
 	local p,car=self.people[key],resolveCar(self,vehicle)
-	if not p or p.dead or not car or car.kind~="car" then return false end
+	if not p or p.dead or not car or car.wrecked or car.kind~="car" then return false end
 	local side=if seat=="driver" then -1 else 1
 	local right,forward=util.right(car.yaw),util.forward(car.yaw)
 	local delta=p.pos-car.pos
@@ -130,7 +130,7 @@ end
 function Cast:ride(key,vehicle,seat)
 	local p,car=self.people[key],resolveCar(self,vehicle)
 	seat=seat or "passenger"
-	if not p or not car or car.kind~="car" or p.impact or (seat~="driver" and seat~="passenger") then return false end
+	if not p or not car or car.wrecked or car.kind~="car" or p.impact or (seat~="driver" and seat~="passenger") then return false end
 	if p.rideId then return p.rideId==car.index and p.seat==seat end
 	if seat=="driver" and (car.owner or car.storyDriver) or seat=="passenger" and car.storyPassenger then return false end
 	if seat=="driver" then car.storyDriver=p.actor else car.storyPassenger=p.actor end
@@ -163,7 +163,7 @@ end
 
 function Cast:drive(key,points,speed)
 	local car=resolveCar(self,key)
-	if not car or car.owner or not points or #points==0 then return false end
+	if not car or car.wrecked or car.owner or not points or #points==0 then return false end
 	local leg,pace=1,math.clamp(speed or 6,1,18)
 	car.arrived=false
 	car.auto=function(vehicle)
