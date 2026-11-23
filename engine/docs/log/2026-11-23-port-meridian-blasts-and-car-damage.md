@@ -1,0 +1,11 @@
+# Port Meridian explosions and vehicle damage
+
+On the Mancave RTX 5070 Ti, the renderer probe in `0ba21eae` projected two smoke plumes at the same screen size, one 18 m from the camera and one 3,200 m away. Across 9,366 plume/cloud overlap pixels, near smoke differed from the cloud-only reference by an average 0.16 levels on the RGB8 scale before the fix and 51.45 afterwards. Smoke beyond the opaque cloud differed by 0.15 afterwards. Both plumes use the cloud distances and transmittance from their own view.
+
+A real pistol shot into the starter crate at 22:00 in `7815b27e` gave 57.38% overexposed pixels in the close view with the original light and 7.29% with the local flash. Across the street the figures were 15.73% and 3.44%. By day, the close view's share of pixels brightened by over 40 RGB8 levels fell from 49.74% to 2.83%. Each comparison used the same camera, fire animation, time of day and shot.
+
+The gameplay probes fire both local players' weapons. Crate damage reaches 14 m and the launcher reaches 17 m, with Growing Guns' quadratic falloff. An exposed rival 3 m from a shot crate leaves seven fragments sampled at the current joints plus red mist. At 9 m the other rival takes a partial hit and survives. The existing 57 m aiming regression now uses the unobstructed centre line because the starter sedan shields the original curb-lane sightline.
+
+The fitted-hull test puts two targets behind one sedan. The line over the bonnet is clear and the passenger cabin provides cover. Vehicle ray and splash queries use the current crush shape. All cars in one blast test exposure before any of their panels deform.
+
+In the four-seat native rehearsal a moving sedan struck a parked sedan. Their front and rear damage persisted at the same entity and vehicle IDs through a Luau source reload at tick 165, with the simulation running to tick 800. In the 13-damaged-car stress case, the nearby cars used at most 72 panel entities across the views. All retained their numerical damage. In five optimized native importer runs across the four paints, median cooking time went from 128.0 ms to 262.6 ms. CPU cluster, vertex and index streams used 2,921,936 bytes before and 6,239,216 bytes after. The wire geometry stays in the existing Toyama asset.

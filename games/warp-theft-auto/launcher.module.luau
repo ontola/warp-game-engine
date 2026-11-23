@@ -1,5 +1,5 @@
 -- Each grenade is a fixed-tick arcade projectile shared by all local seats.
-local launcher={blastRadius=5.5}
+local launcher={blastRadius=17, effectRadius=5.5}
 local v=vector.create
 local speed,cooldown=35,.95
 local gravity=v(0,-21,0)

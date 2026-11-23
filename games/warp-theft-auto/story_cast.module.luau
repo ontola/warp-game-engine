@@ -178,12 +178,17 @@ function Cast:drive(key,points,speed)
 	return true
 end
 
-function Cast:hit(key,push)
+function Cast:hit(key,push,gibbed)
 	local p=self.people[key]
 	if not p then return false end
 	p.wasHit,p.route,p.arrived=true,nil,false
 	if p.rideId then
 		if not self:dismount(key) then releaseSeat(p,getmetatable(self).fleet.vehicles[p.rideId]) end
+	end
+	if gibbed then
+		humans.set(p.actor,{visible=false})
+		p.gibbed,p.externalPose,p.impact=true,true,{stage="gibbed"}
+		return true
 	end
 	if p.impact and p.impact.stage=="down" then return true end
 	if not humans.ragdoll(p.actor,push or v(0,1,-2)) then return false end

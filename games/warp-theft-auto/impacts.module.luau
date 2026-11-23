@@ -320,9 +320,18 @@ function impacts.visitResidents(pop, origin, endpoint, visit)
 	end
 end
 
-function impacts.shootResident(pop, fleet, id, feet, push)
+function impacts.shootResident(pop, fleet, id, feet, push, gibbed)
 	local c=pop.residents[id]
 	if not c or c.shotUntil then return false end
+	if gibbed then
+		local actor=pop.pedestrians.active[id]
+		if actor then humans.set(actor,{visible=false}) end
+		c.pos,c.active,c.shotUntil=feet,false,pop.elapsed+20
+		c.impact,c.externalPose,c.previousFeet=nil,nil,nil
+		pop.impactResidents[id]=nil
+		pop.selectionIn=0
+		return true
+	end
 	local home=c.pos
 	c.pos=feet
 	local actor=pop.pedestrians.active[id]
@@ -419,12 +428,7 @@ local function sendObstacles(boxes,roots)
 	humans.obstacles(obstacles)
 end
 
-local preparedFleet
 function impacts.tick(pop,fleet,dt)
-	if preparedFleet~=fleet then
-		models.prepareContacts()
-		preparedFleet=fleet
-	end
 	pop.impactResidents=pop.impactResidents or {}
 	local boxes,grid={},{}
 	for i,car in fleet.vehicles do
@@ -473,6 +477,7 @@ function impacts.tick(pop,fleet,dt)
 	end
 	for _,seat in fleet.players do track(seat) end
 	for actor,p in fleet.storyPeople or EMPTY do
+		if p.gibbed then continue end
 		if not p.rideId then
 			person(pop,p,actor,false,dt,boxes,grid)
 			track(p)

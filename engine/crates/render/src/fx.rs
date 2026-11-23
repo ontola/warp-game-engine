@@ -252,7 +252,7 @@ impl Puff {
 
 /// A point light that flashes and fades (Godot's blast lights).
 #[derive(Clone, Copy, Debug)]
-pub struct LightPop { pub pos: Vec3, pub birth: f32, pub kind: u8, pub radius: f32, pub color: Vec3 }
+pub struct LightPop { pub pos: Vec3, pub birth: f32, pub kind: u8, pub radius: f32, pub color: Vec3, pub light_range: Option<f32> }
 
 /// Godot TRANS_EXPO EASE_OUT.
 fn expo_out(t: f32) -> f32 { if t >= 1.0 { 1.0 } else { 1.0 - 2f32.powf(-10.0 * t) } }
@@ -384,7 +384,7 @@ impl Effects {
     /// A full blast at `time` (seconds on the clock passed to `flush`):
     /// smoke, fireball, flame tongues, embers, heat shell and lights.
     /// `color` tints embers (Godot passes the bullet colour).
-    fn full_explosion(&mut self, time: f32, pos: Vec3, radius: f32, color: Vec3) {
+    fn full_explosion(&mut self, time: f32, pos: Vec3, radius: f32, color: Vec3, light_range: Option<f32>) {
         let r = radius.max(0.5);
         // Consume the same recipe RNG in either mode: enabling volume smoke
         // must not change the subsequent fire, embers or their trajectories.
@@ -420,8 +420,8 @@ impl Effects {
             self.puffs.push(Puff { center_kind: pos.extend(HEAT).to_array(), ax: [r * 2.2, 0.0, 0.0, 0.0], timing: [time, duration, 0.0, 0.0],
                 extra: [strength, 0.0, 0.0, 0.0], body: [0.0, 0.0, 0.0, 1.0], ..Default::default() });
         }
-        self.pops.push(LightPop { pos, birth: time, kind: 0, radius: r, color });
-        self.pops.push(LightPop { pos, birth: time, kind: 1, radius: r, color });
+        self.pops.push(LightPop { pos, birth: time, kind: 0, radius: r, color, light_range });
+        self.pops.push(LightPop { pos, birth: time, kind: 1, radius: r, color, light_range });
         self.changed = true;
     }
 
@@ -621,8 +621,17 @@ impl Effects {
                 (e, c, range)
             };
             if energy <= 0.0 { continue; }
-            out.push(LocalLight { position: p.pos, direction: Vec3::NEG_Y, intensity_cd: (color * energy * self.light_scale).min(Vec3::splat(MAX_CD)), range_m: range.min(200.0),
-                inner_cos: -0.99, outer_cos: -1.0, source_radius_m: (r * 0.3).clamp(0.2, 1.0), falloff });
+            // With a specified light radius, concentrate the flash on nearby
+            // surfaces. Both sources keep the same fixed reach throughout their decay.
+            let (power, reach, falloff) = match p.light_range {
+                Some(reach) => {
+                    let relative_reach = if p.kind == 0 { 1.0 } else { 0.7 };
+                    (energy * 0.22, reach * relative_reach, 2.0)
+                }
+                None => (energy, range.min(200.0), falloff),
+            };
+            out.push(LocalLight { position: p.pos, direction: Vec3::NEG_Y, intensity_cd: (color * power * self.light_scale).min(Vec3::splat(MAX_CD)), range_m: reach,
+                inner_cos: -0.99, outer_cos: -1.0, source_radius_m: (r * 0.3).clamp(0.2, 1.0).min(reach * 0.5), falloff });
         }
         out
     }
@@ -654,7 +663,7 @@ impl Effects {
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct Uniform { view_proj: [[f32; 4]; 4], inverse_view_proj: [[f32; 4]; 4], depth_vp: [[f32; 4]; 4], view: [[f32; 4]; 4], camera_near: [f32; 4], size: [f32; 4], clock: [f32; 4], smoke: [f32; 4], depth_from_output: [[f32;4];4], ambient: [f32;4], sunlight: [f32;4], fog: [f32;4], horizon: [f32;4], sun_vp: [[f32;4];4], fog_scattering: [f32;4], sun_direction: [f32;4], sky_mean: [f32;4] }
+struct Uniform { view_proj: [[f32; 4]; 4], inverse_view_proj: [[f32; 4]; 4], depth_vp: [[f32; 4]; 4], view: [[f32; 4]; 4], camera_near: [f32; 4], size: [f32; 4], clock: [f32; 4], smoke: [f32; 4], depth_from_output: [[f32;4];4], ambient: [f32;4], sunlight: [f32;4], fog: [f32;4], horizon: [f32;4], sun_vp: [[f32;4];4], fog_scattering: [f32;4], sun_direction: [f32;4], sky_mean: [f32;4], sky_volume: [f32;4] }
 
 // The budget counts full-resolution pixel layers, so approaching a plume or
 // overlapping more plumes lowers raymarch resolution before work is submitted.
@@ -889,13 +898,13 @@ fn composite_shader_source() -> &'static str { include_str!("shaders/fx_composit
 
 impl FxRenderer {
     fn new(gpu: &Gpu) -> Self {
-        let entries: Vec<_> = (0..8).map(|binding| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, count: None,
+        let entries: Vec<_> = (0..11).map(|binding| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, count: None,
             ty: match binding {
                 0 => wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
                 1 | 2 => wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
-                3 => wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                3 | 8 | 9 => wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
                 4 | 7 => wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
-                6 => wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D3, multisampled: false },
+                6 | 10 => wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D3, multisampled: false },
                 _ => wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
             } }).collect();
         let layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("fx"), entries: &entries });
@@ -1001,7 +1010,7 @@ impl FxRenderer {
         let light = crate::Lighting::default();
         let mut sample = Effects::default();
         sample.set_baked_smoke(baked);
-        sample.full_explosion(0., Vec3::new(0., -1., -12.), 6., Vec3::ONE);
+        sample.full_explosion(0., Vec3::new(0., -1., -12.), 6., Vec3::ONE, None);
         let saved_source = std::mem::take(&mut self.source);
         let saved_time = self.time;
         self.set(gpu, 0.12, Some(&sample.puffs));
@@ -1019,7 +1028,7 @@ impl FxRenderer {
                     label: Some("explosion startup warmup"),
                 });
                 self.render_output(gpu, &mut enc, index, &color, &depth, camera, Mat4::IDENTITY,
-                    projection, projection, 1., if minimal { 1. } else { 0. }, &light, Vec3::ONE, Vec3::ONE, 1., None)?;
+                    projection, projection, 1., if minimal { 1. } else { 0. }, &light, Vec3::ONE, Vec3::ONE, 1., None, None)?;
                 gpu.queue.submit([enc.finish()]);
             }
             // Web's first-visible-frame queue callback also covers these earlier submits.
@@ -1050,15 +1059,15 @@ impl FxRenderer {
     /// nothing is live.
     #[allow(clippy::too_many_arguments)]
     pub fn render(&mut self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, index: usize, input: &wgpu::Texture, depth: &wgpu::TextureView,
-        camera: Camera, view: Mat4, output_vp: Mat4, depth_vp: Mat4, white: f32, light: &crate::Lighting, ambient: Vec3, horizon: Vec3, sun_visibility: f32, shadow: Option<(&wgpu::TextureView, Mat4)>) -> Result<Option<wgpu::Texture>, String> {
-        self.render_output(gpu,enc,index,input,depth,camera,view,output_vp,depth_vp,white,0.0,light,ambient,horizon,sun_visibility,shadow)
+        camera: Camera, view: Mat4, output_vp: Mat4, depth_vp: Mat4, white: f32, light: &crate::Lighting, ambient: Vec3, horizon: Vec3, sun_visibility: f32, shadow: Option<(&wgpu::TextureView, Mat4)>, sky: Option<&crate::sky_volume::FxSky>) -> Result<Option<wgpu::Texture>, String> {
+        self.render_output(gpu,enc,index,input,depth,camera,view,output_vp,depth_vp,white,0.0,light,ambient,horizon,sun_visibility,shadow,sky)
     }
 
     /// Minimum profiles draw gameplay effects in place, without scene copies,
     /// heat refraction or an HDR intermediate. Exposure zero retains the HDR path.
     #[allow(clippy::too_many_arguments)]
     pub fn render_output(&mut self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,index:usize,input:&wgpu::Texture,depth:&wgpu::TextureView,
-        camera:Camera,view:Mat4,output_vp:Mat4,depth_vp:Mat4,white:f32,exposure:f32,light:&crate::Lighting,ambient:Vec3,horizon:Vec3,sun_visibility:f32,shadow:Option<(&wgpu::TextureView,Mat4)>)->Result<Option<wgpu::Texture>,String> {
+        camera:Camera,view:Mat4,output_vp:Mat4,depth_vp:Mat4,white:f32,exposure:f32,light:&crate::Lighting,ambient:Vec3,horizon:Vec3,sun_visibility:f32,shadow:Option<(&wgpu::TextureView,Mat4)>,sky:Option<&crate::sky_volume::FxSky>)->Result<Option<wgpu::Texture>,String> {
         let ldr=exposure>0.0;
         // Heat first (it refracts the plain scene), then billows back to front, then embers.
         let mut counts=self.draw_order.prepare(&self.source,self.time,camera.pos);
@@ -1127,7 +1136,8 @@ impl FxRenderer {
             sun_vp: shadow.map_or(Mat4::IDENTITY,|s|s.1).to_cols_array_2d(),
             fog_scattering: light.fog_scattering_albedo.extend(light.fog_phase_g).to_array(),
             sun_direction: light.sun_dir.extend(sun_visibility.clamp(0.0,1.0)).to_array(),
-            sky_mean: ambient.max(Vec3::ZERO).extend(0.0).to_array() };
+            sky_mean: ambient.max(Vec3::ZERO).extend(0.0).to_array(),
+            sky_volume: sky.map_or([-1., 0., 0., 0.], |s| [s.nearest_cloud_m, s.aerial_far_km, s.aerial_enabled as u8 as f32, 0.]) };
         gpu.queue.write_buffer(&t.uniform, 0, bytemuck::bytes_of(&uniform));
         gpu.queue.write_buffer(&t.order, 0, bytemuck::cast_slice(&self.draw_order.ids));
         if !ldr {enc.copy_texture_to_texture(input.as_image_copy(), t.output.as_image_copy(), input.size());}
@@ -1135,7 +1145,10 @@ impl FxRenderer {
         let bind = t.binds.get(gpu, &self.layout, "cached fx view", &[
             (0, t.uniform.as_entire_binding()), (1, self.puffs.as_entire_binding()), (2, t.order.as_entire_binding()),
             (3, wgpu::BindingResource::TextureView(&background)), (4, wgpu::BindingResource::TextureView(depth)),
-            (5, wgpu::BindingResource::Sampler(&self.sampler)), (6, wgpu::BindingResource::TextureView(&self.smoke_view)), (7, wgpu::BindingResource::TextureView(shadow.map_or(depth,|s|s.0)))]);
+            (5, wgpu::BindingResource::Sampler(&self.sampler)), (6, wgpu::BindingResource::TextureView(&self.smoke_view)), (7, wgpu::BindingResource::TextureView(shadow.map_or(depth,|s|s.0))),
+            (8, wgpu::BindingResource::TextureView(sky.map_or(&background, |s| &s.cloud))),
+            (9, wgpu::BindingResource::TextureView(sky.map_or(&background, |s| &s.depth))),
+            (10, wgpu::BindingResource::TextureView(sky.map_or(&self.smoke_view, |s| &s.aerial)))]);
         let direct_view=ldr.then(||input.create_view(&Default::default()));
         let pipelines=self.ldr.as_ref().map(|(_,p)|p);
         let output_view=direct_view.as_ref().unwrap_or(&t.output_view);
@@ -1250,10 +1263,33 @@ mod tests {
     }
 
     #[test]
+    fn local_blast_light_keeps_the_same_fire_and_smoke_and_lights_the_impact() {
+        for budget in [ExplosionBudget::LOW, ExplosionBudget::MINIMUM] {
+            let mut arena = Effects::with_explosion_budget(budget);
+            let mut local = Effects::with_explosion_budget(budget);
+            arena.explosion(0.0, Vec3::ZERO, 5.0, Vec3::ONE);
+            local.explosion_with_light_range(0.0, Vec3::ZERO, 5.0, Vec3::ONE, Some(12.0));
+            arena.advance(0.0);
+            local.advance(0.0);
+            assert_eq!(arena.puffs, local.puffs);
+            let original = arena.lights(0.0);
+            let lights = local.lights(0.0);
+            assert_eq!(original.len(), lights.len());
+            assert!(lights.iter().any(|l| l.range_m == 12.0));
+            for (old, new) in original.iter().zip(lights) {
+                assert!(new.validated().is_ok());
+                assert_eq!(new.falloff, 2.0);
+                assert!(new.range_m <= 12.0 && new.range_m < old.range_m);
+                assert!(new.intensity_cd.x > 0.0 && new.intensity_cd.x < old.intensity_cd.x);
+            }
+        }
+    }
+
+    #[test]
     fn fireball_light_has_stable_reach_and_a_soft_short_tail() {
         for radius in [0.5, 6.5, 24.0, 50.0] {
             let mut fx = Effects::default();
-            fx.pops.push(LightPop { pos: Vec3::ZERO, birth: 0.0, kind: 1, radius, color: Vec3::ONE });
+            fx.pops.push(LightPop { pos: Vec3::ZERO, birth: 0.0, kind: 1, radius, color: Vec3::ONE, light_range: None });
             let life = (0.25_f32 + radius * 0.02).clamp(0.30, 0.75);
             let first = fx.lights(0.0)[0];
             let mut previous = first.intensity_cd.length();
@@ -1322,7 +1358,7 @@ mod tests {
         let module = naga::front::wgsl::parse_str(shader_source()).unwrap_or_else(|e| panic!("{}", e.emit_to_string(shader_source())));
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module).unwrap();
         assert_eq!(std::mem::size_of::<Puff>(), 112);
-        assert_eq!(std::mem::size_of::<Uniform>(), 560);
+        assert_eq!(std::mem::size_of::<Uniform>(), 576);
         assert_eq!(std::mem::size_of::<CompositeUniform>(),96);
         let source=composite_shader_source();
         let module=naga::front::wgsl::parse_str(source).unwrap_or_else(|e|panic!("{}",e.emit_to_string(source)));

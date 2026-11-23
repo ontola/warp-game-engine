@@ -16,7 +16,12 @@ use glam::{Mat4, Vec3};
 use std::collections::HashSet;
 use std::path::Path;
 
+mod crush_grid;
+pub struct ModelPart { pub mesh: usize, pub min: Vec3, pub max: Vec3, pub hinge: Vec3 }
+
 pub struct Model {
+    /// Optional local sections, row-major along Z, then X.
+    pub crush_sections: Vec<(u8, ModelPart)>,
     /// The whole model as one scene mesh, in model space.
     pub mesh: usize,
     /// Axis-aligned bounds in model space.
@@ -76,6 +81,12 @@ pub struct Document {
     pub materials: Vec<u32>,
 }
 
+fn policy(scene: &Scene, doc: &Document, part: &Part<'_>) -> SimplificationPolicy {
+    if !doc.preserve_shading.contains(&part.material) { SimplificationPolicy::Geometry }
+    else if scene.materials[part.material as usize].layer >= 0 { SimplificationPolicy::TexturedGeometry }
+    else { SimplificationPolicy::ShadingNormals }
+}
+
 /// Load a glTF file into `scene` (materials, textures and one mesh).
 pub fn load(scene: &mut Scene, path: &Path) -> Result<Model, String> {
     let doc = read(scene, path)?;
@@ -86,16 +97,18 @@ pub fn load(scene: &mut Scene, path: &Path) -> Result<Model, String> {
     }).collect();
     if parts.is_empty() { return Err(format!("{}: no triangle meshes", path.display())); }
     let triangles = parts.iter().map(|p| p.indices.len() / 3).sum();
-    let mesh = scene.add_mesh(&ClusterMesh::build_with_policy(&parts, |part| {
-        if !doc.preserve_shading.contains(&part.material) {
-            SimplificationPolicy::Geometry
-        } else if scene.materials[part.material as usize].layer >= 0 {
-            SimplificationPolicy::TexturedGeometry
-        } else {
-            SimplificationPolicy::ShadingNormals
+    let mesh = scene.add_mesh(&ClusterMesh::build_with_policy(&parts, |part| policy(scene, &doc, part)));
+    let mut cuts = None;
+    for node in &doc.nodes {
+        let Some(json) = &node.extras else { continue; };
+        let extras: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        if let Some(grid) = extras.get("warpCrushGrid") {
+            if cuts.is_some() { return Err("set warpCrushGrid on one mesh node only".into()); }
+            cuts = Some(serde_json::from_value::<[f32; 4]>(grid.clone()).map_err(|e| format!("warpCrushGrid: {e}"))?);
         }
-    }));
-    Ok(Model { mesh, min, max, triangles, materials: doc.materials })
+    }
+    let crush_sections = match cuts { Some(grid) => crush_grid::build(scene, &doc, grid)?, None => Vec::new() };
+    Ok(Model { mesh, min, max, triangles, materials: doc.materials, crush_sections })
 }
 
 /// Read a glTF file node by node, adding its materials and textures to

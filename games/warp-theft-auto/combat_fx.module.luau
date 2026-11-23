@@ -12,7 +12,7 @@ local ROOM = {tag="interior_detail", all=true}
 
 -- Shared by all local seats and story/roaming encounters. When full, replace the oldest
 -- of the same kind so persistent stains never crowd out the next visible hit.
-local limits = {drop=16, shard=7, splat=8}
+local limits = {drop=24, shard=28, splat=12}
 
 function effects.warm()
 	for _, model in {DROP, SHARD, SPLAT} do world.warm(model) end
@@ -50,9 +50,25 @@ local function facing(velocity)
 	return v(-math.asin(math.clamp(dir.y, -1, 1)), math.atan2(dir.x, dir.z), 0)
 end
 
-function effects.hit(ctx, pos, ray, lethal, seed)
+-- Fitted residents leave pieces at the joints of their current pose. The crowd
+-- stand-ins use proportional anchors until their rig becomes resident.
+local joints = {
+	{"hips",v(0,.90,0)}, {"chest",v(0,1.28,0)}, {"head",v(0,1.63,0)},
+	{"elbow_l",v(-.28,1.05,0)}, {"elbow_r",v(.28,1.05,0)},
+	{"knee_l",v(-.12,.47,0)}, {"knee_r",v(.12,.47,0)},
+}
+
+function effects.fragmentOrigins(actor, feet)
+	local origins={}
+	for i,joint in joints do
+		origins[i]=(actor and humans.joint(actor,joint[1])) or feet+joint[2]
+	end
+	return origins
+end
+
+function effects.hit(ctx, pos, ray, lethal, seed, origins, damage)
 	ctx.serial += 1
-	local bits = math.floor(seed or ctx.serial * 719 + pos.x * 239 + pos.z * 631) % 2147483647
+	local bits = math.floor((seed or 0) + ctx.serial * 719 + pos.x * 239 + pos.z * 631) % 2147483647
 	local function draw(a, b)
 		bits = (48271 * math.max(1, bits)) % 2147483647
 		return a + (b-a) * bits / 2147483647
@@ -61,6 +77,14 @@ function effects.hit(ctx, pos, ray, lethal, seed)
 	local side = vector.cross(UP, axis)
 	side = if vector.magnitude(side) > .01 then vector.normalize(side) else v(1,0,0)
 	local floorY = ground(pos)
+	if origins then
+		-- Keep the shared particle pass bounded when several players detonate at once.
+		if ctx.mistTick~=game.tick() then ctx.mistTick,ctx.mists=game.tick(),0 end
+		if ctx.mists<3 then
+			fx.gib_mist(pos,math.clamp(damage*.32,.35,2.8))
+			ctx.mists+=1
+		end
+	end
 	for i=1, if lethal then 8 else 5 do
 		local velocity = axis*draw(2.2,5.5) + side*draw(-2,2) + UP*draw(.3,2.7)
 		local origin = pos + axis*.06
@@ -77,12 +101,17 @@ function effects.hit(ctx, pos, ray, lethal, seed)
 		drop.velocity, drop.floor = velocity, floorY
 	end
 	if lethal then
-		for i=1, 4 do
-			local radius = draw(.085,.18)
+		for i=1, if origins then #origins else 4 do
+			local radius = if origins then draw(.20,.35) else draw(.085,.18)
 			local size = v(radius*draw(.7,1.1), radius*draw(1.1,1.8), radius)
 			local rot = v(draw(-2,2),draw(-3,3),draw(-2,2))
-			local shard = spawn(ctx, "shard", SHARD, pos, rot, size, draw(3.3,4.7))
+			local at=if origins then origins[i] else pos
+			local shard = spawn(ctx, "shard", SHARD, at, rot, size, draw(3.3,4.7))
 			shard.velocity = axis*draw(1.2,3.5) + side*draw(-2.2,2.2) + UP*draw(1.5,3.8)
+			if origins then
+				shard.velocity+=axis*draw(1.8,4.2)+(at-pos)*draw(2.8,4.8)
+				shard.blast=true
+			end
 			shard.spin, shard.floor = v(draw(-10,10),draw(-10,10),draw(-10,10)), floorY
 		end
 	end
@@ -112,7 +141,28 @@ local function update(item, kind, dt)
 	end
 	if not item.resting then
 		item.velocity += DOWN*(10.8*dt)
-		item.pos += item.velocity*dt
+		local step = item.velocity*dt
+		if item.blast then
+			-- The city walls are static. Probe ahead along a short ballistic arc
+			-- and use its contact plane between probes.
+			if item.age >= (item.probeAt or 0) then
+				local horizon=math.max(.10,dt)
+				local sweep=item.velocity*horizon+DOWN*(5.4*horizon*horizon)
+				local hit=world.raycast(item.pos,sweep,vector.magnitude(sweep),CITY)
+				item.wall=if hit and hit.normal.y<.8 then hit else nil
+				item.probeAt=item.age+horizon
+			end
+			local wall=item.wall
+			if wall and vector.dot(step,wall.normal)<0 then
+				local separation=vector.dot(item.pos+step-wall.point,wall.normal)
+				if separation<.02 then
+					step+=wall.normal*(.025-separation)
+					item.velocity=(item.velocity-1.35*wall.normal*vector.dot(item.velocity,wall.normal))*.60
+					item.wall,item.probeAt=nil,0
+				end
+			end
+		end
+		item.pos += step
 		if kind == "drop" then
 			if item.floor and item.pos.y <= item.floor+.02 then return false end
 			item.rot = facing(item.velocity)

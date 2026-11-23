@@ -74,6 +74,44 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
         c.world.fleet.as_mut().ok_or_else(|| error("call vehicles.reset before step"))?.step(dt);
         Ok(())
     })?)?;
+    let c = core.clone();
+    t.set("crush_query", lua.create_function(move |_, (id, name, lo, hi, side, end): (u32, String, Value, Value, Value, Value)| {
+        let lo=vec3(&lo,"low grid hinge")?;
+        let hi=vec3(&hi,"high grid hinge")?;
+        let side=vec3(&side,"side scales")?;
+        let end=vec3(&end,"end scales")?;
+        let mut c=lock(&c);
+        sim(&c,"vehicles.crush_query")?;
+        c.world.fleet.as_mut().ok_or_else(|| error("call vehicles.reset first"))?
+            .crush_query(id, &name, kern::crush::Grid([lo.x,hi.x,lo.z,hi.z]), [side.x,side.z,end.x,end.z]).map_err(|e| error(&e))
+    })?)?;
+    let c = core.clone();
+    t.set("raycast", lua.create_function(move |_, (id, name, o, d, limit): (u32, String, Value, Value, f32)| {
+        let o = vec3(&o, "ray origin")?;
+        let d = vec3(&d, "ray direction")?;
+        if !o.is_finite() || !d.is_finite() || !limit.is_finite() || limit < 0. { return Err(error("vehicles.raycast needs a finite ray and nonnegative range")); }
+        Ok(lock(&c).world.fleet.as_ref().and_then(|f| f.query_contact(id, &name)).and_then(|h| h.raycast(o, d, limit)))
+    })?)?;
+    let c = core.clone();
+    t.set("closest_point", lua.create_function(move |_, (id, name, p): (u32, String, Value)| {
+        let p = vec3(&p, "query point")?;
+        if !p.is_finite() { return Err(error("vehicles.closest_point needs a finite point")); }
+        Ok(lock(&c).world.fleet.as_ref().and_then(|f| f.query_contact(id, &name)).map(|h| vec(h.closest_point(p))))
+    })?)?;
+    let c = core.clone();
+    t.set("impacts", lua.create_function(move |lua, ()| {
+        let c = lock(&c);
+        let out = lua.create_table()?;
+        if let Some(fleet) = &c.world.fleet {
+            for (&id, &(point, delta_v)) in fleet.impacts() {
+                let row = lua.create_table()?;
+                row.set("point", vec(point))?;
+                row.set("deltaV", delta_v)?;
+                out.raw_set(id, row)?;
+            }
+        }
+        Ok(out)
+    })?)?;
     t.set("get", lua.create_function(move |lua, id: u32| {
         let c = lock(&core);
         let Some(p) = c.world.fleet.as_ref().and_then(|f| f.pose(id)) else { return Ok(None) };

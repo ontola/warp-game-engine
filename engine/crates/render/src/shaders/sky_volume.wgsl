@@ -408,6 +408,9 @@ fn clouds(@builtin(global_invocation_id) id: vec3<u32>) {
     let seg = shell_segment(h0, d.y);
     var result = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     var front = NO_CLOUD_KM;
+    // The two spare depth channels enclose the contributing part of this ray.
+    var first_km = NO_CLOUD_KM;
+    var last_km = 0.0;
     if seg.y > 0.0 && seg.x < tmax {
         let t0 = seg.x;
         let t1 = min(seg.y, tmax);
@@ -476,6 +479,10 @@ fn clouds(@builtin(global_invocation_id) id: vec3<u32>) {
             radiance += transmittance * source * (1.0 - step) / sigma;
             let before = transmittance;
             transmittance *= step;
+            if before - transmittance > 1e-5 {
+                first_km = min(first_km, max(t0, t - dt * 0.5) * 0.001);
+                last_km = min(t1, t + dt * 0.5) * 0.001;
+            }
             weighted += (before - transmittance) * t;
             weight += before - transmittance;
         }
@@ -484,7 +491,7 @@ fn clouds(@builtin(global_invocation_id) id: vec3<u32>) {
         if 1.0 - transmittance < 1e-3 { front = NO_CLOUD_KM; }
     }
     textureStore(cloud_out, vec2<i32>(id.xy), result);
-    textureStore(cloud_depth_out, vec2<i32>(id.xy), vec4<f32>(front, 0.0, 0.0, 0.0));
+    textureStore(cloud_depth_out, vec2<i32>(id.xy), vec4<f32>(front, first_km, last_km, 0.0));
 }
 
 @compute @workgroup_size(8, 8)

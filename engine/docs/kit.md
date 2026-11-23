@@ -102,7 +102,7 @@ extra?)`, `kart:speed01()`.
 
 ## kit/crowd
 
-`require("kit/crowd").new(pool, radius)` shares a fitted Warp Humans pool among cameras. Give each candidate a stable positive integer ID, feet `pos`, human `yaw`, and optional `active` and `pose`. IDs can have gaps as areas unload. Call `crowd:select(candidates, observerPositions)` periodically to allocate the nearest people in turns across observers. An optional third argument `rank(candidate, observerIndex, squaredDistance)` prioritizes candidates per view. Return a lower number for a higher priority or `nil` to exclude a person from that view’s selection. Call `crowd:update(candidates)` each tick to animate the selected people. The game owns their routes and schedules.
+`require("kit/crowd").new(pool, radius)` shares a fitted Warp Humans pool among cameras. Give each candidate a stable positive integer ID, feet `pos`, human `yaw`, and optional `active` and `pose`. IDs can have gaps as areas unload. Call `crowd:select(candidates, observerPositions)` periodically to allocate the nearest people in turns across observers. An optional third argument `rank(candidate, observerIndex, squaredDistance)` prioritizes candidates per view. Return a lower number for a higher priority or `nil` to exclude a person from that viewâ€™s selection. Call `crowd:update(candidates)` each tick to animate the selected people. The game owns their routes and schedules.
 
 A third argument to `crowd.new(pool, radius, seed)` assigns stable appearances. Set `distant` in the pool's TOML to reserve low-detail residents. At each selection, call `humans.distant(pool, streetRows, crowd.active, seconds)` with a dense array of candidates, their next feet position in `nextPos`, and their next heading in `nextYaw`. The renderer interpolates one shared set of unskinned bodies between these snapshots. A fitted resident keeps the same body dimensions, garment dyes, skin and hair. `crowd:promote(id, candidates, observers)` fits a resident for an immediate interaction. Set `externalPose` while another system drives that actor's pose.
 
@@ -238,3 +238,11 @@ have.
 python3 engine/tools/vibe-eval/vibe-eval.py make --only sumo,tag \
   --agent 'claude -p "$(cat {prompt})" --model sonnet --permission-mode acceptEdits'
 ```
+
+### Local vehicle damage
+
+`require("kit/car_damage")` models front, rear, left and right zones in vehicle-local metres (forward −Z). Define the half width, distances to both bumpers, and the three inner crush boundaries with `damage.profile(.98, 2.21, 2.19, .48, 1.04, 1.16)`. Keep one plain `damage.new()` state per vehicle. `damage.hit(state, profile, localPoint, severity)` accumulates a normalized impact. Corner hits affect two zones. `damage.controls(state, controls, signedSpeed)` applies the resulting loss of power and steering.
+
+A static glTF opts into deformation by putting `"warpCrushGrid":[-0.48,0.48,-1.04,1.16]` in the extras of one mesh node. The four ordered boundaries are local left X, right X, front Z and rear Z. Import cooks nine indexed section meshes with the original paint, UVs, normals and LOD policy. The whole model remains independently drawable. Spawn `assets/model.gltf#crush0` through `#crush8` under the body and use the translation and scale returned by `damage.cellPose(profile, state.zones, column, row)` for each section. Row 0 is the front and column 0 is the left. Empty cells are valid. Negative scale and mirrored axes require reorienting the source model before authoring its profile.
+
+Warp Theft Auto keeps eight detailed damaged bodies nearest the players, with 96 world entities reserved. Every car retains its numerical damage at distance. For local gameplay queries, `vehicles.crush_query` refits the named contact skin to the same folds on each damaging hit. `vehicles.raycast` and `vehicles.closest_point` use that shape. The road solver and pedestrian support use the stable driving chassis. `vehicles.impacts()` reports the largest hard contact on each car during the latest `vehicles.step`, with a world point and normal change in speed (m/s).

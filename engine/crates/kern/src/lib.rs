@@ -8,6 +8,7 @@
 //! difference, not dumps.
 
 pub mod collide;
+pub mod crush;
 pub mod parenting;
 
 use serde_json::Value;

@@ -674,6 +674,9 @@ fn explosions_share_the_world_clock_and_leave_entity_slots_free() {
     assert!(g.core().world.explosions.is_none());
     g.luau("fx.explosion(vector.create(3, 2, -5), 6)").unwrap();
     assert!(g.luau("fx.explosion(vector.create(0, 0, 0), -2)").is_err());
+    for invalid in ["0", "-1", "0/0", "1/0", "501"] {
+        assert!(g.luau(&format!("fx.explosion(vector.create(0, 0, 0), 5, {invalid})")).is_err());
+    }
     assert!(g.luau("fx.explosion(vector.create(0/0, 1, 1), 6)").is_err());
     assert!(g.luau("fx.explosion(vector.create(1, 1, 1), 1/0)").is_err());
     ticks(&mut g, 1, Controls::default());
@@ -687,6 +690,15 @@ fn explosions_share_the_world_clock_and_leave_entity_slots_free() {
     }
     ticks(&mut g, 600, Controls::default());
     assert!(g.core().world.explosions.as_ref().unwrap().is_empty());
+    g.luau("fx.explosion(vector.create(3, 2, -5), 6, 12); fx.gib_mist(vector.create(3, 2, -5), 1)").unwrap();
+    assert!(g.luau("fx.gib_mist(vector.create(0, 0, 0), 0/0)").is_err());
+    ticks(&mut g, 1, Controls::default());
+    {
+        let c = g.core();
+        let lights = c.world.explosions.as_ref().unwrap().lights(c.tick as f32 / c.tick_rate);
+        assert!(lights.iter().any(|light| light.range_m == 12.0));
+        assert!(c.world.entities.is_empty());
+    }
     g.luau("fx.explosion(vector.create(3, 2, -5), 6); world.clear()").unwrap();
     assert!(g.core().world.explosions.as_ref().unwrap().is_empty());
 }

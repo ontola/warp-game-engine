@@ -6,7 +6,7 @@ local sites = {v(10.7,.625,-10.8), v(159,.625,65), v(165,.625,-105)}
 local respawnTime = 15
 
 function explosions.play(pos, radius)
-    fx.explosion(pos, radius)
+    fx.explosion(pos, radius, radius*2.4)
     local size = math.round(math.clamp(radius,2,24))
     sound.play("explosion_bang", {at=pos, radius=size, db=0})
     local rumbleDb = -10 + 3*math.clamp((size-6)/18,0,1)
@@ -24,10 +24,11 @@ function explosions.placeCrates()
 end
 
 function explosions.hit(crate, id)
-    if crate.respawnAt then return end
+    if not crate or crate.respawnAt then return false end
     crate.respawnAt = game.time() + respawnTime
     world.set(id, {visible=false, solid=false})
     explosions.play(crate.pos, 5)
+    return true
 end
 
 -- A player can walk or park on the empty site while the crate is gone.

@@ -6531,7 +6531,7 @@ impl Renderer {
             // Never write heat/smoke back into TAA or DLSS history.
             // Blast effects (fire, smoke, embers, heat) over the resolved HDR:
             // here, or after the sprites and GPU particles (Graphics::fx_over_sprites).
-            macro_rules! blast_fx { ($resolved:expr) => {{ let resolved = $resolved; {
+            macro_rules! blast_fx { ($resolved:expr, $sky:expr) => {{ let resolved = $resolved; {
                 let mut fx = self.fx.0.lock().unwrap();
                 match fx.as_mut() {
                     Some(fx) => {
@@ -6539,27 +6539,28 @@ impl Renderer {
                             .max(light.fx_white_floor.max(0.0) * 1.2 * 2f32.powf(light.ev100));
                         let time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| { names.push("fx"); (qs, timestamp_pair(&mut ts)) });
                         if let Some((qs, i)) = time { enc.write_timestamp(qs, i); }
-                        let out = fx.render(gpu, &mut enc, vi, &resolved, &depth_v, *cam, view_m, proj * view_m, vp, white, light, Vec3::from_slice(&self.sky_sh[0][..3]) * 0.282095, self.sky_horizon, camera_sun_visibility[vi], Some((&shadow_v, svp)))?;
+                        let out = fx.render(gpu, &mut enc, vi, &resolved, &depth_v, *cam, view_m, proj * view_m, vp, white, light, Vec3::from_slice(&self.sky_sh[0][..3]) * 0.282095, self.sky_horizon, camera_sun_visibility[vi], Some((&shadow_v, svp)), $sky)?;
                         if let Some((qs, i)) = time { enc.write_timestamp(qs, i + 1); }
                         out
                     }
                     None => None,
                 }
             } }} }
-            let fx_output = if self.fx_over_sprites { None } else { blast_fx!(&resolved) };
-            let resolved = fx_output.unwrap_or(resolved);
-            // Opt-in aerial perspective and clouds, into a separate output.
-            let resolved = match sky_volume.as_ref() {
+            // Compose the weather over the opaque scene first. Transparent effects
+            // sample the resulting cloud volume at their own depth.
+            let (resolved, fx_sky) = match sky_volume.as_ref() {
                 Some(settings) => {
                     let time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| { names.push("sky volume"); (qs, timestamp_pair(&mut ts)) });
                     if let Some((qs, i)) = time { enc.write_timestamp(qs, i); }
                     let out = self.sky_volume.render(gpu, &mut enc, settings, crate::sky_volume::ViewInput { index: vi, input: &resolved,
                         depth: &depth_v, depth_size: (w, h), camera: cam.pos, depth_vp: vp, view_proj: proj * view_m, light, reset: layout_changed })?;
                     if let Some((qs, i)) = time { enc.write_timestamp(qs, i + 1); }
-                    out
+                    (out.0, Some(out.1))
                 }
-                None => resolved,
+                None => (resolved, None),
             };
+            let fx_output = if self.fx_over_sprites { None } else { blast_fx!(&resolved, fx_sky.as_ref()) };
+            let resolved = fx_output.unwrap_or(resolved);
             // Opt-in in-scattering from local lights, into a separate output.
             let resolved = match light.volumetric.as_ref() {
                 Some(medium) => {
@@ -6619,7 +6620,7 @@ impl Renderer {
                 }
             };
             let resolved = particle_draw.unwrap_or(resolved);
-            let resolved = if self.fx_over_sprites { blast_fx!(&resolved).unwrap_or(resolved) } else { resolved };
+            let resolved = if self.fx_over_sprites { blast_fx!(&resolved, fx_sky.as_ref()).unwrap_or(resolved) } else { resolved };
             let exhaust_output = if debug_options.exhaust_enabled {
                 let exhaust_time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| {
                     names.push("exhaust"); (qs, timestamp_pair(&mut ts))

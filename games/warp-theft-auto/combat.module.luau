@@ -7,6 +7,7 @@ local explosions=require("explosions")
 local impacts=require("impacts")
 local sidearm=require("sidearm")
 local launcher=require("launcher")
+local cars=require("vehicles")
 local catalog=require("weapon_catalog")
 local combat={}
 local v=vector.create
@@ -98,6 +99,23 @@ local function characterBounds(p,feet,actor)
 	return feet,if p.pose=="sit" then 1.25 else 1.94
 end
 
+-- A car's model profile is narrower at the bonnet and the boot than its overall
+-- bounds. Resolve the ordinary solid geometry, skipping a sedan's coarse box.
+local function sceneHit(fleet,origin,ray,distance)
+	local hit=world.raycast(origin,ray,distance)
+	local ignore={}
+	while hit and world.get(hit.id).tag=="vehicle" do
+		local sedan=false
+		for _,car in fleet.vehicles do
+			if car.body==hit.id and car.kind=="car" then sedan=true; break end
+		end
+		if not sedan then break end
+		table.insert(ignore,hit.id)
+		hit=world.raycast(origin,ray,distance,{ignore=ignore})
+	end
+	return hit
+end
+
 local function targetOnRay(state,origin,ray,from,distance,projectile,limited)
 	local target
 	local story=state.story
@@ -114,9 +132,15 @@ local function targetOnRay(state,origin,ray,from,distance,projectile,limited)
 		end
 	end)
 	local limit=if target then math.max(0,target.along-.001) else distance
+	if limit<=0 then return target,if target then target.point else origin end
+	local car,carPoint,carDistance=cars.raycast(state.fleet,origin,ray,limit)
+	if car then
+		target={kind="car",key=car.index,car=car,along=carDistance,point=carPoint}
+		limit=math.max(0,carDistance-.001)
+	end
 	local cover
 	if limit>0 then
-		cover=if projectile or limited then world.raycast(origin,ray,limit) else sidearm.sceneryHit(origin,ray,limit)
+		cover=if projectile or limited then sceneHit(state.fleet,origin,ray,limit) else sidearm.sceneryHit(origin,ray,limit)
 	end
 	if cover then
 		local crate=state.combat.crates[cover.id]
@@ -126,15 +150,21 @@ local function targetOnRay(state,origin,ray,from,distance,projectile,limited)
 	return target,if target then target.point else origin+ray*distance
 end
 
-local function hitTarget(state,target,ray,blast,damage)
+local function hitTarget(state,target,ray,blast,damage,gibbed)
 	local s,story,cast=state.combat,state.story,state.storyCast
 	local key=target.key
-	local push=if blast then ray*4+v(0,1.5,0) else ray*2+v(0,.3,0)
+	local push=if blast then ray*(2+math.min(7,damage))+v(0,1.4,0) else ray*2+v(0,.3,0)
+	if blast and target.kind~="rival" then
+		local person=target.person
+		person.blastWounds=(person.blastWounds or 0)+damage
+		if person.blastWounds<1 then return true,false end
+		person.blastWounds=nil
+	end
 	if target.kind=="resident" then
-		return impacts.shootResident(state.population,state.fleet,key,target.feet,push),true
+		return impacts.shootResident(state.population,state.fleet,key,target.feet,push,gibbed),true
 	elseif target.kind=="cast" then
 		local p=cast.people[key]
-		if not cast:hit(key,push) then return false,false end
+		if not cast:hit(key,push,gibbed) then return false,false end
 		p.shot=true
 		if story and story.status=="active" then
 			story.shotPeople=story.shotPeople or {}
@@ -143,8 +173,8 @@ local function hitTarget(state,target,ray,blast,damage)
 		return true,true
 	end
 	local enemy=s.enemies[key]
-	local lethal=blast or enemy.health<=damage
-	if lethal and not s.cast:hit(key,push) then return false,false end
+	local lethal=enemy.health<=damage
+	if lethal and not s.cast:hit(key,push,gibbed) then return false,false end
 	enemy.health=if lethal then 0 else enemy.health-damage
 	if lethal then
 		enemy.respawnIn=12
@@ -154,7 +184,9 @@ local function hitTarget(state,target,ray,blast,damage)
 end
 
 local function recordHit(state,owner,target,dir,blast,damage)
-	local hit,lethal=hitTarget(state,target,dir,blast,damage)
+	local gibbed=blast and damage>=3
+	local joints=if gibbed then fx.fragmentOrigins(target.actor,target.feet) else nil
+	local hit,lethal=hitTarget(state,target,dir,blast,damage,gibbed)
 	if not hit then return end
 	local player=state.combat.players[owner]
 	if player then
@@ -162,19 +194,17 @@ local function recordHit(state,owner,target,dir,blast,damage)
 		if lethal then player.defeats+=1 end
 		sidearm.confirmHit(player,target.point)
 	end
-	fx.hit(state.combat.effects,target.point,dir,lethal,game.tick()+owner)
+	fx.hit(state.combat.effects,target.point,dir,lethal,game.tick()+owner,joints,damage)
 end
 
-local function detonate(state,shot,center,target)
-	local s=state.combat
-	if target and target.kind=="crate" then
-		explosions.hit(s.crates[target.key],target.key)
-		local shooter=s.players[shot.owner]
-		if shooter then sidearm.confirmHit(shooter,center) end
-	else
-		explosions.play(center,launcher.blastRadius)
-	end
-	local radius=launcher.blastRadius
+local function blastBlocked(fleet,center,delta,distance,receiver)
+	local limit=distance-.04
+	if limit<=0 then return false end
+	local ray=delta/distance
+	return cars.raycast(fleet,center,ray,limit,receiver)~=nil or sceneHit(fleet,center,ray,limit)~=nil
+end
+
+local function blastDamage(state,owner,center,radius,target,forward)
 	local extent=v(radius,radius,radius)
 	local hits={}
 	visitPeople(state,center-extent,center+extent,function(kind,key,p,feet,actor)
@@ -182,15 +212,49 @@ local function detonate(state,shot,center,target)
 		local contact=pos+v(0,height*.5,0)
 		local delta=contact-center
 		local distance=vector.magnitude(delta)
-		if distance>radius then return end
+		if distance>=radius then return end
 		local direct=target and target.kind==kind and target.key==key
-		if not direct and distance>.04 and world.raycast(center,delta,distance-.04) then return end
-		table.insert(hits,{kind=kind,key=key,feet=feet,point=contact,dir=if distance>.01 then delta/distance else shot.dir})
+		if not direct and blastBlocked(state.fleet,center,delta,distance) then return end
+		-- Growing Guns uses quadratic falloff. The compact visible flash and the
+		-- gameplay radius are independent, so the outer edge only grazes a target.
+		local damage=9*(1-distance/radius)^2
+		table.insert(hits,{kind=kind,key=key,feet=feet,actor=actor,person=p,point=contact,
+			dir=if distance>.01 then delta/distance else forward,damage=damage})
 	end)
-	-- Ragdolls promote crowd rigs. Resolve collected candidates in a stable order
-	-- after the population visit so mutation cannot skip another nearby actor.
+	-- Applying damage may release crowd rigs. Finish visiting before changing them.
 	table.sort(hits,function(a,b) return if a.kind==b.kind then a.key<b.key else a.kind<b.kind end)
-	for _,hit in hits do recordHit(state,shot.owner,hit,hit.dir,true,0) end
+	for _,hit in hits do recordHit(state,owner,hit,hit.dir,true,hit.damage) end
+	local carHits={}
+	for _,car in state.fleet.vehicles do
+		if car.kind~="car" then continue end
+		local point=cars.closestPoint(car,center,radius)
+		if not point then continue end
+		local delta=point-center
+		local distance=vector.magnitude(delta)
+		if distance>=radius then continue end
+		if blastBlocked(state.fleet,center,delta,distance,car) then continue end
+		table.insert(carHits,{car=car,point=point,damage=(1-distance/radius)^2})
+	end
+	-- Every visibility query sees the same pre-blast car shapes.
+	for _,hit in carHits do cars.hit(hit.car,hit.point,hit.damage) end
+end
+
+local function hitCrate(state,owner,id,forward,radius)
+	local crate=state.combat.crates[id]
+	if not explosions.hit(crate,id) then return end
+	blastDamage(state,owner,crate.pos,radius,nil,forward)
+	local shooter=state.combat.players[owner]
+	if shooter then sidearm.confirmHit(shooter,crate.pos) end
+end
+
+local function detonate(state,shot,center,target)
+	if target and target.kind=="crate" then
+		hitCrate(state,shot.owner,target.key,shot.dir,launcher.blastRadius)
+		return
+	end
+	if target and target.kind=="car" then center-=shot.dir*.06 end
+	explosions.play(center,launcher.effectRadius)
+	blastDamage(state,shot.owner,center,launcher.blastRadius,target,shot.dir)
 end
 
 local function shoot(state,id,player,seat,input,dt)
@@ -252,7 +316,9 @@ local function shoot(state,id,player,seat,input,dt)
 	sidearm.flash(player,tracePoint,spec.color,left,right)
 	for _,hit in contacts do
 		if hit.kind=="crate" then
-			explosions.hit(state.combat.crates[hit.key],hit.key)
+			hitCrate(state,id,hit.key,hit.dir,14)
+		elseif hit.kind=="car" then
+			cars.hit(hit.car,hit.point,math.min(.65,hit.damage*.065))
 			sidearm.confirmHit(player,hit.point)
 		else
 			recordHit(state,id,hit,hit.dir,false,hit.damage)
