@@ -147,8 +147,9 @@ browser, or `?quality=mobile` or `?quality=low` anywhere (`?quality=full` turns
 it off). It also switches the Game Room to its low tier (`Options::low`). The
 3D view starts at 540 lines (or `?render=H`, which on a phone is the start
 rather than a fixed height) and adaptive quality lowers it from there, and
-every frame drops GI (its gather pass), contact and reflection occlusion,
-traced reflections, bloom and lens flare. The page logs "phone preset" when
+every frame drops contact and reflection occlusion, traced reflections,
+bloom and lens flare. GI stays on: without it a character in a dark corner
+of the room has no light at all and turns black. The page logs "phone preset" when
 it is on. `--bare` builds `examples/warp_web.rs`
 (crate `warp`) instead: the games and those buttons, no room. What is
 left to do is in [browser-handoff.md](browser-handoff.md).

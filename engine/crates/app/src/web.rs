@@ -278,7 +278,7 @@ struct Shell {
     /// Lowers the 3D view's resolution while frames miss the game's target
     /// (60 fps unless it names one), as the native shell does.
     quality: Option<crate::quality::AdaptiveQuality>,
-    /// The phone preset ([`mobile`]): a lower resolution and no GI, bloom,
+    /// The phone preset ([`mobile`]): a lower resolution and no bloom,
     /// contact occlusion or traced reflections.
     mobile: bool,
 }
@@ -300,10 +300,11 @@ pub fn mobile() -> bool {
 /// Where adaptive quality starts on a phone: about half of a 1080p panel.
 const MOBILE_BASE_HEIGHT: u32 = 540;
 
-/// The phone preset's lighting: no GI (its gather pass), contact and
-/// reflection occlusion, traced reflections, bloom or lens flare.
+/// The phone preset's lighting: no contact and reflection occlusion, traced
+/// reflections, bloom or lens flare. GI stays: its volume is the only light
+/// a character gets away from the lamps, which turned it pitch black in the
+/// Game Room's dark corners (tablet playtest).
 fn mobile_light(mut light: render::Lighting) -> render::Lighting {
-    light.gi = 0.0;
     light.contact_occlusion = 0.0;
     light.reflection_occlusion = 0.0;
     light.traced_reflections = 0.0;
@@ -400,7 +401,7 @@ pub fn run(cfg: crate::Config, game: Box<dyn Game>) {
     devices.pointer_enabled = cfg.pointer;
     let shell = Shell { cfg, game, devices, window: None, live: Rc::new(RefCell::new(None)), acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), failed: false, announced: false, hidden_editor:None, switched: Some((next_presentation(), Instant::now())), exited: false, times: Vec::new(),
         render_height: query_param("render").and_then(|h| h.parse().ok()), quality: None, mobile: mobile() };
-    if shell.mobile { log("phone preset: lower resolution, no GI, bloom or contact occlusion (?quality=full turns it off)"); }
+    if shell.mobile { log("phone preset: lower resolution, no bloom or contact occlusion (?quality=full turns it off)"); }
     match EventLoop::new() {
         Ok(events) => events.spawn_app(shell),
         Err(e) => log(&format!("event loop: {e}")),
