@@ -33,7 +33,7 @@ local COOL_LIGHT = finish("#e1f4f7", nil, .85)
 local PRINTS = {finish("#528982", 28), finish("#cc865e", 28)}
 local CRATES = {finish("#c8aa75", 27), finish("#a68e68", 27), finish("#b47c5b", 27)}
 local QUAY_SIGN = finish("#32656b", 11)
-local GLASS = {color="#c6d6cf", glass=.045, roughness=.055}
+local GLASS = {color="#58615e", glass=.09, roughness=.055}
 
 -- Warp creates a renderer mesh on first use of a shape/material combination.
 -- Register the finite swatches at startup without creating any room entities.

@@ -391,12 +391,13 @@ fn pm_opening(s: SurfaceIn, size: vec3<f32>, archetype: u32, variant: u32,
     if glazed {
         let cosine=clamp(abs(dot(s.dir,s.n)),0.0,1.0);
         // Coated shopfront glass. Combine both faces of a thin pane,
-        // including internal reflections: R = 2F/(1+F), T = 1-R.
-        let fresnel=.16+.84*pow(1.0-cosine,5.0);
+        // including internal reflections: R = 2F/(1+F) before absorption.
+        let fresnel=.125+.875*pow(1.0-cosine,5.0);
         let reflection=lod*(2.0*fresnel)/(1.0+fresnel);
         let ray=reflect(s.dir,s.n);
         let reflected=pm_reflected_city(s,ray,aa,pm_window_environment(s,ray,aa));
-        let transmission=1.0-reflection;
+        // The smoke tint absorbs light coming through the pane.
+        let transmission=.80*(1.0-reflection);
         out.albedo*=transmission;
         out.emission=out.emission*transmission+reflected*reflection/max(light.anim.y,.001);
         // The opaque material models the room behind the pane. Its rough
