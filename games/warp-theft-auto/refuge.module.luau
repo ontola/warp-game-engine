@@ -91,6 +91,8 @@ function refuge.plan(pop,c,from,source,id)
 			local point=pos+dir*reach
 			local score=vector.magnitude(point-source)+reach*.15
 			if score>bestScore then best,bestDir,bestReach,bestScore=point,dir,reach,score end
+			-- A clear run directly away needs no detour search.
+			if i==1 and reach>=budget then break end
 		end
 		if not best or (previous and bestScore<vector.magnitude(pos-source)) then break end
 		table.insert(points,best)
