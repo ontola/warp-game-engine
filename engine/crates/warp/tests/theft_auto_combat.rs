@@ -139,6 +139,78 @@ fn free_roam_rivals_take_visible_hits_from_each_seat_and_return() {
 }
 
 #[test]
+fn walking_shooters_keep_both_hands_on_their_own_weapon_through_aim_and_recoil() {
+    let mut game = city();
+    line_up(&mut game);
+    check(&mut game, r#"
+        state.fleet.players[2].weapon="launcher"
+        state.fleet.players[1].pitch=.22
+        state.fleet.players[2].pitch=-.21
+        state.checkHold=function(id,spacing)
+            local p=state.combat.players[id]
+            local actor=state.population.avatars[id]
+            local wrist=humans.joint(actor,"hand_r")
+            local left=humans.joint(actor,"hand_l")
+            local yaw,pitch=p.turn.y,-p.turn.x
+            local v=vector.create
+            local leftAxis=v(math.cos(yaw),0,-math.sin(yaw))
+            local forward=v(math.sin(yaw)*math.cos(pitch),math.sin(pitch),math.cos(yaw)*math.cos(pitch))
+            local up=vector.cross(forward,leftAxis)
+            local offset=leftAxis*spacing.x+up*spacing.y+forward*spacing.z
+            assert(vector.magnitude(left-wrist-offset)<.022,"off-hand grip drift")
+            assert(vector.magnitude(wrist+forward*.048-up*.015-world.get(p.prop).pos)<.025,"weapon left main hand")
+        end
+    "#);
+    tick(&mut game,[Controls::default();2],16);
+    check(&mut game, r#"
+        state.checkHold(1,vector.create(.072,-.012,.045))
+        state.checkHold(2,vector.create(.083,.028,.245))
+        state.checkMuzzle=function(id,tag)
+            local p=state.combat.players[id]
+            local forward=vector.create(math.sin(p.turn.y)*math.cos(p.turn.x),-math.sin(p.turn.x),math.cos(p.turn.y)*math.cos(p.turn.x))
+            local muzzle=-math.huge
+            for _,partId in world.find(tag) do
+                local part=world.get(partId)
+                if part.parent==p.prop then
+                    local half=if part.shape=="capsule" then part.size.y else part.size.z*.5
+                    muzzle=math.max(muzzle,vector.dot(part.world_pos-world.get(p.prop).pos,forward)+half)
+                end
+            end
+            local tip=vector.dot(p.tip-world.get(p.prop).pos,forward)
+            assert(math.abs(tip-muzzle)<.003,"muzzle flash must start at the end of the rendered barrel")
+        end
+        state.checkMuzzle(2,"launcher-part")
+        assert(state.combat.players[1].turn.x>.75)
+        state.carry=humans.joint(state.population.avatars[1],"hand_r").y
+    "#);
+    tick(&mut game,[aim(),Controls::default()],36);
+    check(&mut game, r#"
+        local p=state.combat.players[1]
+        state.checkHold(1,vector.create(.072,-.012,.045))
+        assert(-p.turn.x>.15 and humans.joint(state.population.avatars[1],"hand_r").y>state.carry+.20)
+        assert(state.combat.players[2].turn.x>.36)
+        state.aimPitch=-p.turn.x
+    "#);
+    let strafe=Controls { mv:[1.0,0.0],..aim() };
+    tick(&mut game,[shoot(),aim()],1);
+    tick(&mut game,[strafe,aim()],3);
+    check(&mut game, r#"
+        assert(-state.combat.players[1].turn.x>state.aimPitch+.07)
+        assert((state.combat.players[2].kick or 0)==0)
+        state.checkHold(1,vector.create(.072,-.012,.045))
+    "#);
+    tick(&mut game,[strafe,aim()],33);
+    check(&mut game, r#"
+        assert(state.fleet.players[1].speed>1 and state.combat.players[1].kick<.005)
+        state.checkHold(1,vector.create(.072,-.012,.045))
+        state.checkHold(2,vector.create(.083,.028,.245))
+        state.fleet.players[2].weapon="sniper"
+    "#);
+    tick(&mut game,[strafe,aim()],2);
+    check(&mut game, r#"state.checkMuzzle(2,"growing-gun-part")"#);
+}
+
+#[test]
 fn a_contract_uses_the_same_gun_and_a_bystander_in_front_intercepts_the_shot() {
     let mut game = city();
     let story = r#"return {
@@ -197,7 +269,8 @@ fn an_unfitted_resident_can_be_shot_at_its_rendered_position_and_stays_down() {
             if not c.building and not c.impact then
                 state.bystander=id
                 c.path,c.action,c.pos=nil,"idle",vector.create(8,0,-37)
-                c.nextPos=c.pos
+                -- The distant sample walks across, perpendicular to the shot.
+                c.nextPos=c.pos+vector.create(1.2,0,0)
                 humans.remove(actor)
                 pop.pedestrians.active[id]=nil
                 break
@@ -219,8 +292,15 @@ fn an_unfitted_resident_can_be_shot_at_its_rendered_position_and_stays_down() {
         assert(#world.find("combat-splat")>0 and gun.hitFlash>0 and gun.hitPoint)
         assert(vector.magnitude(gun.hitPoint-c.pos)<2 and gun.trace and world.exists(gun.trace))
         state.lastTrace=gun.trace
+        state.firstHips=humans.joint(c.corpse,"hips")
     "#);
-    tick(&mut game,[Controls::default();2],16);
+    tick(&mut game,[Controls::default();2],3);
+    check(&mut game,r#"
+        local c=state.population.residents[state.bystander]
+        local travel=humans.joint(c.corpse,"hips")-state.firstHips
+        assert(travel.x>.065 and travel.x<.24,"lost distant walk velocity: "..tostring(travel))
+    "#);
+    tick(&mut game,[Controls::default();2],13);
     check(&mut game,r#"
         local gun=state.combat.players[1]
         assert(not world.exists(state.lastTrace) and not gun.trace and gun.hitFlash==0 and not gun.hitPoint)

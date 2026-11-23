@@ -33,6 +33,7 @@ function launcher.fire(shots,id,player,seat,aimPoint,aimDir,range)
 	table.insert(shots,{owner=id,entity=entity,pos=start,dir=dir,velocity=velocity,remaining=flight})
 	player.shotFlash,player.launcherCooldown=.12,cooldown
 	sound.play("arcade_launcher",{at=start,db=-6})
+	return true
 end
 
 function launcher.advance(state,dt,trace,detonate)
@@ -44,7 +45,10 @@ function launcher.advance(state,dt,trace,detonate)
 		local delta=(shot.velocity+gravity*(step*.5))*step
 		local distance=vector.magnitude(delta)
 		local dir=if distance>.00001 then delta/distance else shot.dir
-		local target,point,solid=trace(state,shot.pos,dir,shot.pos,distance,true)
+		-- The aimed point lies exactly on a surface. Accumulated integration
+		-- roundoff can leave the last sweep a fraction of a millimetre short.
+		local reach=if step==shot.remaining then distance+.002 else distance
+		local target,point,solid=trace(state,shot.pos,dir,shot.pos,reach,true)
 		shot.velocity+=gravity*step
 		shot.remaining-=step
 		shot.dir=dir

@@ -1212,7 +1212,7 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
         ("set", f!(core, move |_, (id, opts): (u32, Table)| {
             let mut c = lock(&core);
             sim(&c, "humans.set")?;
-            let o = options(&opts, &["pos", "yaw", "pose", "t", "tired", "coil", "visible"], "humans.set")?;
+            let o = options(&opts, &["pos", "yaw", "pose", "t", "tired", "coil", "visible", "grip", "support", "pitch"], "humans.set")?;
             let Some(p) = c.humans.people.get_mut(&id) else { return Ok(false) };
             let mut up = false;
             for (k, v) in o {
@@ -1221,6 +1221,9 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
                     "visible" => p.set_visible(boolean(&v, "humans.set visible")?),
                     "yaw" => p.yaw = number(&v, "humans.set yaw")?,
                     "t" => p.t = number(&v, "humans.set t")?.clamp(0.0, 1.0),
+                    "grip" => p.hold.grip = vec3(&v, "humans.set grip")?,
+                    "support" => p.hold.support = vec3(&v, "humans.set support")?,
+                    "pitch" => p.hold.pitch = number(&v, "humans.set pitch")?.clamp(-1.45, 1.45),
                     "tired" => p.tired = number(&v, "humans.set tired")?.clamp(0.0, 1.0),
                     "coil" => p.coil = number(&v, "humans.set coil")?.clamp(-1.0, 1.0),
                     "pose" => {
@@ -1290,6 +1293,15 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             let mut c = lock(&core);
             sim(&c, "humans.ragdoll_hit")?;
             c.humans.ragdoll_hit(id, point, velocity).map_err(rt)
+        })),
+        ("ragdoll_impact", f!(core, move |_, (id, point, kick, carried): (u32, Value, Value, Option<Value>)| {
+            let point = vec3(&point, "ragdoll contact")?;
+            let kick = vec3(&kick, "ragdoll impact velocity")?;
+            let carried = carried.map(|v| vec3(&v, "ragdoll carried velocity")).transpose()?;
+            let mut c = lock(&core);
+            sim(&c, "humans.ragdoll_impact")?;
+            let rate = c.tick_rate;
+            c.humans.ragdoll_impact(id, point, kick, carried, rate).map_err(rt)
         })),
         ("ragdoll", f!(core, move |_, (id, push, spin): (u32, Option<Value>, Option<Value>)| {
             let mut c = lock(&core);

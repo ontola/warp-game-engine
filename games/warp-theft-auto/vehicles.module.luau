@@ -13,6 +13,7 @@ models.wheelOffsets=OFFSET
 -- Match the grid boundaries declared by this model's glTF warpCrushGrid.
 local CRUSH=damage.profile(.98,2.21,2.19,.48,1.04,1.16)
 local IGNITION, BURN_SECONDS = .82, 6
+local WRECK_SECONDS, SMOLDER_SECONDS = 24, 10
 local FIRE_INTERVAL, FIRE_RANGE, VISIBLE_FIRES = .10, 110, 4
 
 local paints={ochre=PAINT[1],teal=PAINT[2],pearl=PAINT[3],vermilion=PAINT[4]}
@@ -111,7 +112,7 @@ end
 -- This guard also consumes overlapping grenades and a fuse that expires alongside one.
 function models.explode(car)
 	if car.kind~="car" or car.wrecked then return false end
-	car.wrecked,car.burnRemaining=true,nil
+	car.wrecked,car.burnRemaining,car.wreckFireRemaining=true,nil,WRECK_SECONDS
 	car.damage=car.damage or damage.new()
 	car.damage.total,car.damage.disabled=1,true
 	car.auto,car.throttle=nil,0
@@ -145,22 +146,55 @@ local function emitFire(car,pulse)
 	end
 end
 
+-- The blast exposes the engine bay and passenger compartment. Keep the flame
+-- roots on the current chassis pose while each emitted puff rises in world space.
+local function emitWreckFire(car,pulse)
+	local remaining=car.wreckFireRemaining
+	local phase=pulse*.81+car.index*1.9
+	local sway=math.sin(phase)
+	local bay=detachment.worldPoint(car,v(-.18+.11*sway,.22,-1.37+.13*math.cos(phase)))
+	if remaining>SMOLDER_SECONDS then
+		local heat=(remaining-SMOLDER_SECONDS)/(WRECK_SECONDS-SMOLDER_SECONDS)
+		local life=math.clamp(2/(math.abs(car.speed)+1),.14,.46)
+		fx.flame(bay,.12+.56*heat,.14+(1.74+.17*sway)*heat,life)
+		if heat>.25 then
+			local cabin=detachment.worldPoint(car,v(.29,.37,.09+.15*sway))
+			fx.flame(cabin,.35*heat,1.13*heat,life)
+		end
+	end
+	local cadence=if remaining>4 then 3 else 5
+	if (pulse+car.index)%cadence==0 then
+		fx.exhaust_smoke(bay+v(0,.34,0),.22+1.70*math.sqrt(remaining/WRECK_SECONDS))
+	end
+end
+
 function models.tickFires(fleet,dt,onExpired)
 	fleet.fireFxIn=math.max(0,(fleet.fireFxIn or 0)-dt)
 	local emit=fleet.fireFxIn==0
 	if emit then fleet.fireFxIn=FIRE_INTERVAL end
 	local visible,expired
 	for _,car in fleet.vehicles do
-		if car.kind~="car" or car.wrecked or not car.damage then continue end
-		-- Bring previously damaged cars into the lifecycle after a live edit.
-		if not car.burnRemaining then ignite(car) end
-		if not car.burnRemaining then continue end
-		car.burnRemaining=math.max(0,car.burnRemaining-dt)
-		if car.burnRemaining<=BURN_SECONDS*.5 then charred.apply(car) end
-		if car.burnRemaining==0 then
-			expired=expired or {}
-			table.insert(expired,car)
-		elseif emit then
+		if car.kind~="car" or not car.damage then continue end
+		if car.wrecked then
+			if not car.wreckFireRemaining then continue end
+			car.wreckFireRemaining-=dt
+			if car.wreckFireRemaining<=0 then
+				car.wreckFireRemaining=nil
+				continue
+			end
+		else
+			-- Bring previously damaged cars into the lifecycle after a live edit.
+			if not car.burnRemaining then ignite(car) end
+			if not car.burnRemaining then continue end
+			car.burnRemaining=math.max(0,car.burnRemaining-dt)
+			if car.burnRemaining<=BURN_SECONDS*.5 then charred.apply(car) end
+			if car.burnRemaining==0 then
+				expired=expired or {}
+				table.insert(expired,car)
+				continue
+			end
+		end
+		if emit then
 			local best=math.huge
 			for _,seat in fleet.players do
 				if seat.bot then continue end
@@ -178,7 +212,10 @@ function models.tickFires(fleet,dt,onExpired)
 		table.sort(visible,function(a,b)
 			return if a.distance==b.distance then a.car.index<b.car.index else a.distance<b.distance
 		end)
-		for i=1,math.min(#visible,VISIBLE_FIRES) do emitFire(visible[i].car,fleet.firePulse) end
+		for i=1,math.min(#visible,VISIBLE_FIRES) do
+			local car=visible[i].car
+			if car.wrecked then emitWreckFire(car,fleet.firePulse) else emitFire(car,fleet.firePulse) end
+		end
 	end
 	if expired then
 		table.sort(expired,function(a,b) return a.index<b.index end)

@@ -23,6 +23,8 @@ function prop.make(hand,rotation)
 	for _,part in parts do
 		local opts=table.clone(part[2])
 		opts.tag,opts.pos,opts.size,opts.solid="launcher-part",part[3],part[4],false
+		-- Warp's capsule spans two local metres along Y. The artwork lists full lengths.
+		if part[1]=="capsule" then opts.size*=v(1,.5,1) end
 		if part[5] then opts.rot=v(part[5],0,0) end
 		world.spawn(part[1],opts,root)
 	end
@@ -30,7 +32,8 @@ function prop.make(hand,rotation)
 end
 
 function prop.tip(hand,dir,up)
-	return hand + dir*.438 + up*.085
+	local tube=parts[1]
+	return hand + dir*(tube[3].z+tube[4].y*.5) + up*tube[3].y
 end
 
 return prop

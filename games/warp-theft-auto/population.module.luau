@@ -160,9 +160,10 @@ local function updateAvatars(pop, seats)
 			pop.avatars[id] = model
 		end
 		if model and not seat.impact then
-			local aim=seat.mode=="walk" and seat.aiming
-			humans.set(model,{pos=seat.seatedPos or seat.pos,yaw=seat.seatedYaw or (if aim then seat.view else seat.yaw)+math.pi,
-				pose=if seat.seatedPos then "sit" elseif aim then "aim" else "walk",visible=seat.mode=="walk" or seat.seatedPos~=nil})
+			-- Combat places the held prop and both wrists together for a walking player.
+			local armed=seat.mode=="walk" and not seat.bot
+			humans.set(model,{pos=seat.seatedPos or seat.pos,yaw=seat.seatedYaw or (if armed then nil else seat.yaw+math.pi),
+				pose=if seat.seatedPos then "sit" elseif not armed then "walk" else nil,visible=seat.mode=="walk" or seat.seatedPos~=nil})
 		end
 		if not seat.bot then
 			table.insert(people,seat)

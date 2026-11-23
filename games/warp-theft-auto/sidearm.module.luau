@@ -45,7 +45,7 @@ end
 
 function sidearm.remove(ctx)
 	if ctx.prop then world.remove(ctx.prop); ctx.prop=nil end
-	ctx.tip,ctx.turn,ctx.propWeapon,ctx.propSpec=nil,nil,nil,nil
+	ctx.tip,ctx.turn,ctx.propWeapon,ctx.propSpec,ctx.holder=nil,nil,nil,nil,nil
 end
 
 function sidearm.clearFlash(ctx)
@@ -55,15 +55,52 @@ function sidearm.clearFlash(ctx)
 	if ctx.rightTrace then world.remove(ctx.rightTrace); ctx.rightTrace=nil end
 end
 
-function sidearm.follow(ctx,avatar,seat,ray,spec)
-	local wrist=avatar and seat.mode=="walk" and not seat.impact and humans.joint(avatar,"hand_r")
+-- A shot adds velocity to a damped spring. Rapid follow-up shots blend into
+-- the existing kick. Keeping the shoulder up briefly gives hip fire a recovery.
+function sidearm.recoil(ctx,spec)
+	local kick=if spec.id=="launcher" then .22 elseif spec.id=="pistol" then .15
+		else math.clamp(.058+.034*spec.damage+.011*(spec.pellets-1),.07,.24)
+	ctx.kickSpeed=math.min((ctx.kickSpeed or 0)+kick*50,13)
+	ctx.hipHold=.42
+	if ctx.holder then
+		local heading=ctx.turn.y
+		humans.hit(ctx.holder,v(-math.sin(heading),0,-math.cos(heading))*(kick*1.3))
+	end
+end
+
+function sidearm.follow(ctx,avatar,seat,ray,spec,dt,pressed)
+	if not avatar or seat.mode~="walk" or seat.impact then sidearm.remove(ctx); return end
+	local pistol=spec.id=="pistol"
+	local launcher=spec.id=="launcher"
+	local raised=seat.aiming or pressed or (ctx.hipHold or 0)>0
+	ctx.hipHold=math.max(0,(ctx.hipHold or 0)-dt)
+	local ready=util.damp(ctx.ready or 0,if raised then 1 else 0,if raised then 19 else 8,dt)
+	ctx.ready=ready
+	local targetYaw=if raised then seat.view else seat.yaw
+	if raised and ray then targetYaw=math.atan2(-ray.x,-ray.z) end
+	local yaw=ctx.holdYaw or seat.yaw
+	ctx.holdYaw=yaw+util.angle_diff(targetYaw,yaw)*(1-math.exp(-17*dt))
+	local heading=ctx.holdYaw+math.pi
+
+	-- Exact fixed-step response of a critically damped angular spring.
+	local kick,speed=ctx.kick or 0,ctx.kickSpeed or 0
+	local damping=20
+	local decay=math.exp(-damping*dt)
+	local travel=(speed+damping*kick)*dt
+	ctx.kick,ctx.kickSpeed=(kick+travel)*decay,(speed-damping*travel)*decay
+	local rest=if pistol then -.83 elseif launcher then -.39 else -.47
+	local look=if ray then math.asin(math.clamp(ray.y,-1,1)) else seat.pitch
+	local pitch=rest+(look-rest)*ready+ctx.kick
+	local grip=if pistol then v(.046+.095*ready,-.11+.12*ready,.39+.02*ready)
+		elseif launcher then v(.03+.05*ready,-.19+.245*ready,.28-.06*ready)
+		else v(.09+.025*ready,-.15+.13*ready,.30-.03*ready)
+	grip-=v(0,0,ctx.kick*.28)
+	local support=if pistol then v(.072,-.012,.045) elseif launcher then v(.083,.028,.245) else growingProp.support(spec)
+	humans.set(avatar,{pose="hold",yaw=heading,grip=grip,support=support,pitch=pitch,t=ready})
+	local wrist=humans.joint(avatar,"hand_r")
 	if not wrist then sidearm.remove(ctx); return end
-	local yaw=seat.yaw
-	local down=.78
-	local dir=ray or v(-math.sin(yaw)*math.cos(down),-math.sin(down),-math.cos(yaw)*math.cos(down))
-	-- The local slide extends toward +Z. YXZ is the world entity rotation order.
-	local heading=math.atan2(dir.x,dir.z)
-	local rotation=v(-math.asin(math.clamp(dir.y,-1,1)),heading,0)
+	local dir=v(math.sin(heading)*math.cos(pitch),math.sin(pitch),math.cos(heading)*math.cos(pitch))
+	local rotation=v(-pitch,heading,0)
 	local right=v(math.cos(heading),0,-math.sin(heading))
 	local up=vector.cross(dir,right)
 	local hand=wrist+dir*.048-up*.015
@@ -80,7 +117,7 @@ function sidearm.follow(ctx,avatar,seat,ray,spec)
 	if growing then ctx.tip=growingProp.tip(hand,dir,up,spec)
 	elseif weapon=="launcher" then ctx.tip=launcherProp.tip(hand,dir,up)
 	else ctx.tip=hand+(dir*.292+up*.084)*SCALE end
-	ctx.turn=rotation
+	ctx.turn,ctx.holder=rotation,avatar
 end
 
 local function streakTo(tip,point,color)
@@ -221,6 +258,7 @@ function sidearm.discharge(player,seat,spec,gun,dt)
 		seat.pistolCooldown=.28
 		sound.play("arcade_pistol",{at=seat.pos,db=-7})
 	end
+	sidearm.recoil(player,spec)
 	player.shotFlash=.10/(spec.velocity or 1)
 	player.shotNumber=(player.shotNumber or 0)+1
 	return true
