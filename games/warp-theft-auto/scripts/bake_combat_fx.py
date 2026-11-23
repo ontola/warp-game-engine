@@ -17,7 +17,7 @@ def unit(point):
     return tuple(x / length for x in point) if length else (0, 1, 0)
 
 
-def mesh(name, points, normals, indices, color, roughness, texture=None):
+def mesh(name, points, normals, indices, color, roughness, texture=None, surface=None):
     blob = bytearray()
     views, accessors = [], []
 
@@ -36,6 +36,8 @@ def mesh(name, points, normals, indices, color, roughness, texture=None):
             "NORMAL": accessor(normals, 5126, "3f", "VEC3")}
     pbr = dict(baseColorFactor=[*(x**2.2 for x in color), 1], metallicFactor=0, roughnessFactor=roughness)
     material = {"pbrMetallicRoughness": pbr}
+    if surface is not None:
+        material["extras"] = {"warpSurface": surface}
     doc = dict(asset=dict(version="2.0", generator="Warp bake_combat_fx.py"), scene=0, scenes=[{"nodes": [0]}],
                nodes=[{"mesh": 0}], materials=[material], bufferViews=views, accessors=accessors)
     if texture:
@@ -109,8 +111,40 @@ def splat():
          (image, [(0,0),(0,1),(1,1),(1,0)]))
 
 
+def muzzle():
+    # Growing Guns combines an axial plume, hot core and radial star. One closed,
+    # texture-free mesh keeps that silhouette visible from every split-screen view.
+    points, normals, indices = [], [], []
+
+    def jet(rings, sides, angle):
+        first = len(points)
+        for row, (cx, cy, z, radius) in enumerate(rings):
+            for side in range(sides):
+                phi = math.tau * side / sides + angle
+                x, y = math.cos(phi), math.sin(phi)
+                points.append((cx + radius*x, cy + radius*y, z))
+                normals.append(unit((x, y, .2)))
+                if row:
+                    a = first + (row-1)*sides + side
+                    b = first + (row-1)*sides + (side+1) % sides
+                    indices.extend((a,b,b+sides, a,b+sides,a+sides))
+        for side in range(1,sides-1):
+            indices.extend((first, first+side+1, first+side))
+            end = len(points)-sides
+            indices.extend((end, end+side, end+side+1))
+
+    jet([(0,0,0,.035), (0,0,.13,.14), (.025,-.012,.34,.10),
+         (.014,.023,.57,.07), (-.026,.01,1,.003)], 8, .15)
+    for phi, reach, length in [(0,.27,.39), (1.47,.22,.47), (3.09,.29,.34), (4.76,.26,.40)]:
+        x, y = math.cos(phi)*reach, math.sin(phi)*reach
+        jet([(0,0,.04,.05), (x*.38,y*.38,.15,.065), (x*.72,y*.72,.25,.036),
+             (x,y,length,.003)], 5, phi)
+    mesh("muzzle-flash",points,normals,indices,(1,.48,.12),1,surface=221)
+
+
 if __name__ == "__main__":
     OUTPUT.mkdir(parents=True, exist_ok=True)
     drop()
     shard()
     splat()
+    muzzle()

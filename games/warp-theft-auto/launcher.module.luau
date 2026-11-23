@@ -3,8 +3,8 @@ local launcher={blastRadius=17, effectRadius=5.5}
 local v=vector.create
 local speed,cooldown=35,.95
 local gravity=v(0,-21,0)
-local shell={color="#bf7644",emissive=.45,roughness=.65}
-local fuse={color="#ffe7a0",emissive=3,roughness=1}
+local shell={color="#785444",roughness=.65}
+local fuse={color="#ffba62",emissive=.40,roughness=1}
 
 function launcher.warm()
 	world.warm("sphere",shell)
@@ -25,10 +25,10 @@ function launcher.fire(shots,id,player,seat,aimPoint,aimDir,range)
 	local flight=distance/speed
 	local velocity=dir*speed-gravity*(flight*.5)
 	local o=table.clone(shell)
-	o.tag,o.solid,o.pos,o.size="launcher-projectile",false,start,v(.27,.27,.30)
+	o.tag,o.solid,o.pos,o.size="launcher-projectile",false,start,v(.11,.11,.17)
 	local entity=world.spawn("sphere",o)
 	local cap=table.clone(fuse)
-	cap.tag,cap.solid,cap.pos,cap.size="launcher-fuse",false,v(0,.16,0),v(.10,.08,.10)
+	cap.tag,cap.solid,cap.pos,cap.size="launcher-fuse",false,v(0,.052,0),v(.034,.026,.04)
 	world.spawn("sphere",cap,entity)
 	table.insert(shots,{owner=id,entity=entity,pos=start,dir=dir,velocity=velocity,remaining=flight})
 	player.shotFlash,player.launcherCooldown=.12,cooldown
