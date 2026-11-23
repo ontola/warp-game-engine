@@ -19,6 +19,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
   the guide or [status](../status.md) instead.
 - When a change alters how something works, update the guide for that part
   in the same commit. The log is not a substitute for that.
+- [Port Meridian storefront reflections](2026-11-23-port-meridian-storefront-glass.md)
 - [Port Meridian ground-floor LOD and doorway measurements](2026-11-22-port-meridian-interior-lod.md)
 - [Port Meridian car lighting and pedestrian hits](2026-11-22-port-meridian-car-light-and-crowd-hits.md)
 - [Port Meridian objective markers and street combat](2026-11-22-port-meridian-combat.md)
