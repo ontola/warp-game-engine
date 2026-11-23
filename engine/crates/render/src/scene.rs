@@ -11,7 +11,10 @@ pub const ALPHA_TEST: u32 = 1;
 /// An opaque untextured proxy carries its ordinary negative material layer
 /// offset by this amount. This preserves the procedural surface number and
 /// all material flags without an additional WebGPU binding.
-pub const LOD_PROXY_LAYER_BIAS: i32 = -65536;
+/// Far below any game's own negative layers: Spellstorm packs aux offsets
+/// into them (`-2 - (kind | aux << 3)`), which passed -65536 and made its
+/// walls, floors and wizards dithered-away "proxies".
+pub const LOD_PROXY_LAYER_BIAS: i32 = -(1 << 30);
 pub const TERRAIN: u32 = 2;
 pub const ROAD: u32 = 4;
 pub const TWO_SIDED: u32 = 8;

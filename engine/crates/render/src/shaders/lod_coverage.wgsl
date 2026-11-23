@@ -1,7 +1,7 @@
 // Match scene::LOD_PROXY_LAYER_BIAS. A marked, untextured material retains
 // its original surface kind. The per-instance hit-flash byte instead holds
 // the proxy's coverage, shared by every face of the shell at this pixel.
-const LOD_PROXY_LAYER_BIAS: i32 = -65536;
+const LOD_PROXY_LAYER_BIAS: i32 = -1073741824;
 fn lod_proxy(layer: i32) -> bool { return layer < LOD_PROXY_LAYER_BIAS; }
 fn source_layer(layer: i32) -> i32 {
     return select(layer, layer - LOD_PROXY_LAYER_BIAS, lod_proxy(layer));
