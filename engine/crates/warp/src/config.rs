@@ -71,6 +71,8 @@ pub struct HumanPool {
     /// sRGB skin and shirt colours ("#7d8f6a"); default: seeded.
     pub skin: Option<String>,
     pub shirt: Option<String>,
+    /// Fit the fingers curled around a held prop.
+    pub gripping: bool,
     /// Standing height range in metres.
     pub height: [f32; 2],
     /// Age range in years (adults); default: seeded, 18 to 78 with the
@@ -80,7 +82,7 @@ pub struct HumanPool {
 }
 
 impl Default for HumanPool {
-    fn default() -> Self { HumanPool { count: 8, reserved: 0, distant: 0, variety: 4, style: "person".into(), skin: None, shirt: None, height: [1.6, 1.9], age: None, seed: 1 } }
+    fn default() -> Self { HumanPool { count: 8, reserved: 0, distant: 0, variety: 4, style: "person".into(), skin: None, shirt: None, gripping: false, height: [1.6, 1.9], age: None, seed: 1 } }
 }
 
 impl Default for GameToml {

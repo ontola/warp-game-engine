@@ -101,8 +101,8 @@ local function visitPeople(state,minimum,maximum,visit)
 		local p=s.cast.people[route.key]
 		if p and not p.dead and s.enemies[route.key].health>0 then visit("rival",route.key,p,p.pos,p.actor) end
 	end
-	impacts.visitResidents(state.population,minimum,maximum,function(id,c,feet,actor)
-		visit("resident",id,c,feet,actor)
+	impacts.visitResidents(state.population,minimum,maximum,function(id,c,feet,actor,velocity)
+		visit("resident",id,c,feet,actor,velocity)
 	end)
 end
 
@@ -134,16 +134,22 @@ end
 local function targetOnRay(state,origin,ray,from,distance,projectile,limited)
 	local target
 	local story=state.story
-	visitPeople(state,origin,origin+ray*(distance+2),function(kind,key,p,feet,actor)
+	visitPeople(state,origin,origin+ray*(distance+2),function(kind,key,p,feet,actor,velocity)
 		local pos,height=characterBounds(p,feet,actor)
 		local range=if projectile then distance+2 else distance
 		if not projectile and kind=="cast" and story and key==story.contractPerson then
 			range=if limited then math.min(range,story.contractRange) else story.contractRange
 		end
-		local along,point=sidearm.intersect(origin,ray,from,pos,range,height)
+		local along,point
+		if actor and p.impact and p.impact.stage=="down" then
+			along=humans.ragdoll_raycast(actor,origin,ray,range)
+			if along then point=origin+ray*along end
+		else
+			along,point=sidearm.intersect(origin,ray,from,pos,range,height)
+		end
 		if along and (not (projectile or limited) or along<=distance) and (not target or along<target.along or
 			(along==target.along and kind==target.kind and key<target.key)) then
-			target={kind=kind,key=key,along=along,point=point,feet=feet,actor=actor,person=p,head=not p.impact and point.y>=pos.y+height*.82}
+			target={kind=kind,key=key,along=along,point=point,feet=feet,actor=actor,person=p,velocity=velocity,head=not p.impact and point.y>=pos.y+height*.82}
 		end
 	end)
 	corpses.visit(state.population,origin,origin+ray*distance,function(id,_,feet,actor)
@@ -171,21 +177,30 @@ local function targetOnRay(state,origin,ray,from,distance,projectile,limited)
 	return target,if target then target.point else origin+ray*distance
 end
 
+local function flinch(target,dir,damage)
+	if not target.actor then return end
+	if target.person.impact and target.person.impact.stage=="down" then
+		humans.ragdoll_hit(target.actor,target.point,dir*math.clamp(damage*3.5,.3,12))
+	else
+		humans.hit(target.actor,dir*math.clamp(damage*.55,.12,1.1))
+	end
+end
+
 local function hitTarget(state,target,ray,blast,damage,gibbed)
 	local s,story,cast=state.combat,state.story,state.storyCast
 	local key=target.key
-	local push=if blast then ray*(2+math.min(7,damage))+v(0,1.4,0) else ray*2+v(0,.3,0)
+	local push=if blast then ray*(2+math.min(7,damage))+v(0,1.4,0) else ray*math.clamp(3.5*damage,.3,12)
 	if blast and target.kind~="rival" then
 		local person=target.person
 		person.blastWounds=(person.blastWounds or 0)+damage
-		if person.blastWounds<1 then return true,false end
+		if person.blastWounds<1 then flinch(target,ray,damage); return true,false end
 		person.blastWounds=nil
 	end
 	if target.kind=="resident" then
-		return impacts.shootResident(state.population,state.fleet,key,target.feet,push,gibbed),true
+		return impacts.shootResident(state.population,state.fleet,key,target.feet,push,gibbed,target.point,target.velocity),true
 	elseif target.kind=="cast" then
 		local p=cast.people[key]
-		if not cast:kill(key,push,gibbed) then return false,false end
+		if not cast:kill(key,push,gibbed,target.point) then return false,false end
 		p.shot=true
 		if story and story.status=="active" then
 			story.shotPeople=story.shotPeople or {}
@@ -195,7 +210,8 @@ local function hitTarget(state,target,ray,blast,damage,gibbed)
 	end
 	local enemy=s.enemies[key]
 	local lethal=enemy.health<=damage
-	if lethal and not s.cast:kill(key,push,gibbed) then return false,false end
+	if lethal and not s.cast:kill(key,push,gibbed,target.point) then return false,false end
+	if not lethal then flinch(target,ray,damage) end
 	enemy.health=if lethal then 0 else enemy.health-damage
 	if lethal then
 		enemy.respawnIn,enemy.waitClear=45,true
@@ -249,7 +265,7 @@ end
 local function blastDamage(state,owner,center,radius,target,forward,sourceCar,grenade)
 	local extent=v(radius,radius,radius)
 	local hits={}
-	local function candidate(kind,key,p,feet,actor,contact)
+	local function candidate(kind,key,p,feet,actor,contact,velocity)
 		local delta=contact-center
 		local distance=vector.magnitude(delta)
 		if distance>=radius then return end
@@ -258,12 +274,12 @@ local function blastDamage(state,owner,center,radius,target,forward,sourceCar,gr
 		-- Growing Guns uses quadratic falloff. The compact visible flash and the
 		-- gameplay radius are independent, so the outer edge only grazes a target.
 		local damage=9*(1-distance/radius)^2
-		table.insert(hits,{kind=kind,key=key,feet=feet,actor=actor,person=p,point=contact,
+		table.insert(hits,{kind=kind,key=key,feet=feet,actor=actor,person=p,point=contact,velocity=velocity,
 			dir=if distance>.01 then delta/distance else forward,damage=damage})
 	end
-	visitPeople(state,center-extent,center+extent,function(kind,key,p,feet,actor)
+	visitPeople(state,center-extent,center+extent,function(kind,key,p,feet,actor,velocity)
 		local pos,height=characterBounds(p,feet,actor)
-		candidate(kind,key,p,feet,actor,pos+v(0,height*.5,0))
+		candidate(kind,key,p,feet,actor,pos+v(0,height*.5,0),velocity)
 	end)
 	corpses.visit(state.population,center-extent,center+extent,function(id,body,feet,actor)
 		local contact=humans.ragdoll_closest(actor,center)
@@ -342,20 +358,21 @@ local function shoot(state,id,player,seat,input,dt)
 	local gun=sidearm.magazine(player,spec)
 	player.aiming,player.onTarget=enabled and seat.aiming==true,false
 	if not enabled then
+		player.ready,player.hipHold,player.kick,player.kickSpeed,player.holdYaw=nil,nil,nil,nil,nil
 		sidearm.remove(player)
 		return
 	end
 	local origin,ray
 	if player.aiming then origin,ray=sidearm.ray(id)
 	elseif pressed or player.shotFlash>0 then origin,ray=sidearm.hipRay(seat) end
-	sidearm.follow(player,state.population.avatars[id],seat,ray,spec)
+	sidearm.follow(player,state.population.avatars[id],seat,ray,spec,dt,pressed)
 	if not ray or (not player.aiming and not pressed) then return end
 	local isLauncher=spec.kind=="launcher"
 	local target,point=targetOnRay(state,origin,ray,seat.pos,spec.range,isLauncher,spec.kind=="hitscan")
 	player.onTarget=target~=nil
 	if not pressed then return end
 	if isLauncher then
-		launcher.fire(state.combat.projectiles,id,player,seat,point,ray,spec.range)
+		if launcher.fire(state.combat.projectiles,id,player,seat,point,ray,spec.range) then sidearm.recoil(player,spec) end
 		return
 	end
 	if not sidearm.discharge(player,seat,spec,gun,dt) then return end

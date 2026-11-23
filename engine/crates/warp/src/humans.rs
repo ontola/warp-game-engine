@@ -633,9 +633,11 @@ impl Humans {
                 for k in 0..pool.cfg.variety.max(1) {
                     // Spread over the pool's age range, in no order.
                     let age = pool.cfg.age.map(|[lo, hi]| lo + (hi - lo) * (hash(pool.cfg.seed ^ 0xa9e, k as u64) % 1000) as f32 / 999.);
-                    let model = if pool.cfg.distant > 0 {
-                        rig.character.warp_human_street(&pool.street_look(name, k), skin)?
-                    } else { rig.character.warp_human_person(&pool.person(name, k), skin, age)? };
+                    let street = pool.cfg.distant > 0;
+                    let person = if street { pool.street_look(name, k) } else { pool.person(name, k) };
+                    let model = rig.character.warp_human_anatomical(
+                        &person, skin, if street { None } else { age }, pool.cfg.gripping, !street,
+                    )?;
                     pool.models.push(model);
                 }
             }

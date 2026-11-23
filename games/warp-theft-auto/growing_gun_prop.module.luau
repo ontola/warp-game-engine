@@ -21,6 +21,12 @@ local function proportions(spec)
 	return .20+1.20*accuracy^10, .24+.31*damage, .072+.088*damage, damage
 end
 
+-- The off hand holds the underside of the receiver, or the longer front grip.
+function prop.support(spec)
+	local length,body = proportions(spec)
+	return v(.055,.018,math.min(.34,.143+body*.5+(if length>.55 then .12 else -.018)))
+end
+
 -- The rear wrist socket is shared by the visible mesh and its muzzle flash.
 function prop.tip(hand,dir,up,spec)
 	local length,body,high = proportions(spec)

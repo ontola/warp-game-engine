@@ -147,5 +147,25 @@ fn ordinary_damage_starts_a_shared_fire_that_finishes_after_everyone_leaves() {
         assert(car.damage.disabled and car.damage.total==1 and not car.voice)
         assert(car.native==state.fireNative and car.body==state.fireBody and world.exists(car.body))
         assert(car.missingParts==126 and car.missingWheels==15)
+        assert(car.wreckFireRemaining>23 and state.fleet.firePulse==state.lastFirePulse)
+        world.place(state.fleet.players[2].body,car.pos+vector.create(5,.85,5))
     "#).unwrap();
+
+    // The distant blast has passed. A returning observer sees fresh wreck
+    // effects until the same shared timer runs out, without a second explosion.
+    tick(&mut game, Controls::default(), 300);
+    let effects = |game: &LuaGame| game.core().world.explosions.as_ref().unwrap().len();
+    assert!(effects(&game) >= 4);
+    game.luau(r#"
+        local car=state.fleet.vehicles[1]
+        assert(car.wreckFireRemaining>18 and car.wreckFireRemaining<19)
+        assert(state.fleet.firePulse>state.lastFirePulse)
+    "#).unwrap();
+    tick(&mut game, Controls::default(), 720);
+    game.luau("assert(state.fleet.vehicles[1].wreckFireRemaining < 7)").unwrap();
+    assert!(effects(&game) > 0);
+    tick(&mut game, Controls::default(), 650);
+    game.luau("assert(not state.fleet.vehicles[1].wreckFireRemaining and state.fleet.vehicles[1].charred)").unwrap();
+    assert_eq!(effects(&game), 0);
+    assert_eq!(game.core().world.explosions.as_ref().unwrap().explosion_stats().full, 1);
 }

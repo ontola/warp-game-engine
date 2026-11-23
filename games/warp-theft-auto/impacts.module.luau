@@ -314,7 +314,8 @@ function impacts.visitResidents(pop, origin, endpoint, visit)
 			for _,row in streetCells[cell(x,z)] or EMPTY do
 				local c=pop.residents[row.id]
 				if not c.shotUntil and c.active~=false and not pop.pedestrians.active[row.id] then
-					visit(row.id,c,row.a+(row.b-row.a)*age)
+					local sweep=row.b-row.a
+					visit(row.id,c,row.a+sweep*age,nil,if age<1 then sweep/.4 else util.ZERO)
 				end
 			end
 		end
@@ -331,7 +332,7 @@ local function residentDeath(pop,fleet,id,c,actor,gibbed)
 	return corpses.retain(pop,fleet,c,actor,"resident",gibbed)
 end
 
-function impacts.shootResident(pop, fleet, id, feet, push, gibbed)
+function impacts.shootResident(pop, fleet, id, feet, push, gibbed, point, velocity)
 	local c=pop.residents[id]
 	if not c or c.shotUntil or c.dead then return false end
 	local home=c.pos
@@ -346,10 +347,13 @@ function impacts.shootResident(pop, fleet, id, feet, push, gibbed)
 				actor=pop.pedestrians:promote(id,pop.residents,observers)
 			end
 		end
-		-- Keep an already fallen pose intact when a collision becomes fatal.
-		if actor and not (c.impact and c.impact.stage=="down") then
-			if humans.ragdoll(actor,push) then c.impact={stage="down",elapsed=0,home=home}
-			else humans.remove(actor); actor=nil end
+		if actor then
+			local down=c.impact and c.impact.stage=="down"
+			-- Road contacts already applied their impulse in the chassis solver.
+			local falling=if point then humans.ragdoll_impact(actor,point,push,velocity)
+				else down or humans.ragdoll(actor,push)
+			if not falling then humans.remove(actor); actor=nil
+			elseif not down then c.impact={stage="down",elapsed=0,home=home} end
 		end
 	end
 	return residentDeath(pop,fleet,id,c,actor,gibbed)

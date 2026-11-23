@@ -36,6 +36,13 @@ impl StreetMaterials {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BindPose {
+    Donor,
+    AnatomicalUpperBody,
+    AnatomicalBody,
+}
+
 struct Bone {
     joint: usize,
     transform: Affine3A,
@@ -128,7 +135,7 @@ impl Character {
         person: &Instance,
         skin: Option<[f32; 3]>,
     ) -> Result<Self, String> {
-        self.fit_human(person, skin, None, false, false, false)
+        self.fit_human(person, skin, None, BindPose::Donor, false, false)
     }
 
     /// Keep the hm08 upper body in its native relaxed pose for a live two-hand
@@ -138,7 +145,7 @@ impl Character {
         person: &Instance,
         skin: Option<[f32; 3]>,
     ) -> Result<Self, String> {
-        self.fit_human(person, skin, None, true, true, true)
+        self.fit_human(person, skin, None, BindPose::AnatomicalUpperBody, true, true)
     }
 
     /// A person with their own anatomy: the full resting skeleton uses hm08
@@ -153,13 +160,20 @@ impl Character {
         skin: Option<[f32; 3]>,
         age: Option<f32>,
     ) -> Result<Self, String> {
-        self.fit_human(person, skin, age, true, false, true)
+        self.warp_human_anatomical(person, skin, age, false, true)
     }
 
     /// Full anatomical body on its own rig, with the shared cloth, eye,
     /// face and groom atlas. No private face bake or strand pool per pedestrian.
     pub fn warp_human_street(&self, person: &Instance, skin: Option<[f32; 3]>) -> Result<Self, String> {
-        self.fit_human(person, skin, None, true, false, false)
+        self.warp_human_anatomical(person, skin, None, false, false)
+    }
+
+    /// Fit to the person's own joints, with optional curled fingers and close-up face detail.
+    pub fn warp_human_anatomical(
+        &self, person: &Instance, skin: Option<[f32; 3]>, age: Option<f32>, gripping: bool, close_face: bool,
+    ) -> Result<Self, String> {
+        self.fit_human(person, skin, age, BindPose::AnatomicalBody, gripping, close_face)
     }
 
     /// Give each surface its own material record while preserving its atlas
@@ -238,20 +252,18 @@ impl Character {
         ))
     }
 
-    // `native`: the upper body keeps hm08's own joints and pose. `gripping`:
-    // the fingers curl around a weapon.
     fn fit_human(
         &self,
         person: &Instance,
         skin: Option<[f32; 3]>,
         age: Option<f32>,
-        native: bool,
+        bind_pose: BindPose,
         gripping: bool,
         close_face: bool,
     ) -> Result<Self, String> {
         // A person's limbs are turned from this rig's bind onto the captures
         // (the `warp` crate's humans); a player's legs play the rig's own clips.
-        let retargeted = native && !gripping;
+        let retargeted = bind_pose == BindPose::AnatomicalBody;
         let scale = person.body_scale();
         let mut fitted_joints = if retargeted { self.warp_human_joints(person)? } else { self.joints.clone() };
         // Ground standing people at the shoe sole. Combat and donor
@@ -271,7 +283,7 @@ impl Character {
                             .ok_or_else(|| format!("Warp Human rig missing {name}"))
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                if retargeted || (native && keep_upper) {
+                if retargeted || (bind_pose == BindPose::AnatomicalUpperBody && keep_upper) {
                     let normal = Mat3::from(upper_body.matrix3).inverse().transpose();
                     return Ok(joints
                         .iter()
@@ -804,6 +816,18 @@ mod fit_tests {
         assert!(legs.windows(2).all(|p| p[1].0 > p[0].0 + 0.04 && p[1].1 > p[0].1 + 0.035));
 
         let person = Instance::person(91, Vec3::ZERO, 0.0, &Constraints { height_m: Some(1.53), ..Default::default() });
+        let open = rig.warp_human_street(&person, None).unwrap();
+        let held = rig.warp_human_anatomical(&person, None, None, true, false).unwrap();
+        assert_eq!(open.joints, held.joints, "curling the fingers changed the bind pose");
+        assert_eq!(open.surfaces.len(), held.surfaces.len());
+        let mut curled = false;
+        for (a, b) in open.surfaces.iter().zip(&held.surfaces) {
+            assert_eq!(a.indices, b.indices);
+            assert_eq!(a.vertices.len(), b.vertices.len());
+            curled |= a.vertices.iter().zip(&b.vertices).any(|(a, b)| a.pos != b.pos);
+        }
+        assert!(curled, "the fitted grip produced the open-hand mesh");
+
         let combat = rig.warp_human_player(&person, None).unwrap();
         for name in ["Hips", "LeftUpLeg", "LeftLeg", "LeftFoot", "LeftToeBase"] {
             assert!(at(&combat, name).distance(at(&rig, name)) < 1e-5, "{name} no longer matches the authored clip");

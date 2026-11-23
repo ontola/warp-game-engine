@@ -186,16 +186,28 @@ function Cast:drive(key,points,speed)
 	return true
 end
 
-function Cast:hit(key,push,gibbed)
-	if gibbed then return self:kill(key,push,true) end
+function Cast:hit(key,push,gibbed,point)
+	if gibbed then return self:kill(key,push,true,point) end
 	local p=self.people[key]
 	if not p or p.dead then return false end
 	p.wasHit,p.route,p.arrived=true,nil,false
+	local carried
 	if p.rideId then
-		if not self:dismount(key) then releaseSeat(p,getmetatable(self).fleet.vehicles[p.rideId]) end
+		local car=getmetatable(self).fleet.vehicles[p.rideId]
+		if point then
+			-- Fall from the actual passenger pose. Boarding or dismounting can
+			-- place a character several metres away in a single simulation tick.
+			local moved=if car and car.prevPos then car.pos-car.prevPos else util.ZERO
+			carried=if vector.dot(moved,moved)<=9 then moved/game.dt() else util.ZERO
+			releaseSeat(p,car)
+		elseif not self:dismount(key) then releaseSeat(p,car) end
 	end
-	if p.impact and p.impact.stage=="down" then return true end
-	if not humans.ragdoll(p.actor,push or v(0,1,-2)) then return false end
+	push=push or v(0,1,-2)
+	local down=p.impact and p.impact.stage=="down"
+	if point then
+		if not humans.ragdoll_impact(p.actor,point,push,carried) then return false end
+	elseif not down and not humans.ragdoll(p.actor,push) then return false end
+	if down then return true end
 	p.impact={stage="down",elapsed=0,home=p.pos}
 	p.externalPose=true
 	return true
@@ -212,11 +224,11 @@ function Cast:adoptDeath(key,gibbed)
 	return corpses.retain(systems.population,systems.fleet,p,p.actor,systems.fitter.pool,gibbed or p.gibbed)
 end
 
-function Cast:kill(key,push,gibbed)
+function Cast:kill(key,push,gibbed,point)
 	local p=self.people[key]
 	if not p or p.dead then return false end
 	if not gibbed then
-		if not self:hit(key,push) then return false end
+		if not self:hit(key,push,false,point) then return false end
 	elseif p.rideId then
 		releaseSeat(p,getmetatable(self).fleet.vehicles[p.rideId])
 	end

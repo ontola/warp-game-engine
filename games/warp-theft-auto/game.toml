@@ -12,6 +12,7 @@ steps = 3600000
 memory_mb = 96
 
 [humans.local]
+gripping = true
 count = 4
 reserved = 4
 variety = 4
