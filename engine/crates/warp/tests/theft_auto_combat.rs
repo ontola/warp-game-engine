@@ -218,12 +218,14 @@ fn a_shot_can_reach_a_distant_walker_across_a_city_block() {
     let mut game=city();
     check(&mut game,r#"
         local p=state.fleet.players[1]
-        world.place(p.body,vector.create(3.5,.85,17))
+        -- The marked curb lane is occupied by the starter sedan at (3.7, 0, 11).
+        -- This fixture needs an unobstructed 57 m sightline down the centre.
+        world.place(p.body,vector.create(.15,.85,17))
         p.view,p.pitch=0,0
         local pop=state.population
         for id,c in pop.street do
             if c.active and not pop.pedestrians.active[id] then
-                c.path,c.delta,c.action,c.pos=nil,nil,"idle",vector.create(3.5,0,-40)
+                c.path,c.delta,c.action,c.pos=nil,nil,"idle",vector.create(.15,0,-40)
                 c.nextPos,c.night=c.pos,true
                 state.distantTarget=id
                 break
@@ -403,9 +405,20 @@ fn simultaneous_shots_detonate_visible_cargo_once_and_keep_the_city_running() {
         for id,crate in state.combat.crates do
             if crate.pos.x < 11 then state.cargo=id end
         end
-        local pos=state.combat.crates[state.cargo].pos
+        -- Isolate the sightlines above the junction. Use the actual cargo entity,
+        -- two ordinary rivals and both seat triggers.
+        local pos=vector.create(0,42.625,0)
+        state.combat.crates[state.cargo].pos=pos
+        world.place(state.cargo,pos)
+        world.spawn("cube",{pos=vector.create(0,41.9,0),size=vector.create(30,.2,30),solid=true,tag="city"})
+        for key,offset in {rook=vector.create(3,0,0),vex=vector.create(0,0,-9)} do
+            local p=state.combat.cast.people[key]
+            p.pos,p.route,p.arrived=pos+offset-vector.create(0,.625,0),nil,false
+            world.place(p.body,p.pos+vector.create(0,.85,0))
+            humans.set(p.actor,{pos=p.pos,pose="idle"})
+        end
         for _,seat in state.fleet.players do
-            world.place(seat.body,vector.create(pos.x,.85,pos.z+5))
+            world.place(seat.body,pos+vector.create(0,.225,5))
             seat.view,seat.pitch=0,-.13
         end
         state.wall=world.spawn("cube",{tag="city",solid=true,pos=pos+vector.create(0,0,2.5),size=vector.create(2,3,.4)})
@@ -420,7 +433,15 @@ fn simultaneous_shots_detonate_visible_cargo_once_and_keep_the_city_running() {
         local c=state.combat.crates[state.cargo]
         assert(not world.get(state.cargo).visible and not world.get(state.cargo).solid)
         assert(c.respawnAt-game.time()>14)
-        assert(state.combat.players[1].defeats==0 and state.combat.players[2].defeats==0)
+        local s=state.combat
+        assert(s.players[1].defeats+s.players[2].defeats==1)
+        assert(s.cast.people.rook.gibbed and s.enemies.rook.health==0)
+        assert(s.enemies.vex.health>0 and s.enemies.vex.health<2)
+        assert(not s.cast.people.vex.gibbed)
+        local burst=s.effects.live.shard
+        assert(#burst==7 and burst[1].blast and burst[7].blast)
+        assert(vector.magnitude(burst[3].pos-burst[7].pos)>.75)
+        assert(#s.effects.live.splat>=2 and #s.effects.live.drop>=8)
     "#);
     assert_eq!(game.core().world.explosions.as_ref().unwrap().explosion_stats().full, 1);
     check(&mut game, r#"
@@ -435,6 +456,45 @@ fn simultaneous_shots_detonate_visible_cargo_once_and_keep_the_city_running() {
     "#);
     tick(&mut game, [Controls::default();2], 32);
     check(&mut game, "assert(world.get(state.cargo).visible and world.get(state.cargo).solid)");
+}
+
+#[test]
+fn parked_car_takes_panel_damage_from_gunfire_and_nearby_cargo() {
+    let mut game=city();
+    check(&mut game,r#"
+        local car=state.fleet.vehicles[1]
+        local seat=state.fleet.players[1]
+        world.place(seat.body,car.pos+vector.create(0,.85,5.6))
+        seat.view,seat.pitch=0,-.14
+        state.carCover=world.spawn("cube",{pos=car.pos+vector.create(0,1.3,3.2),size=vector.create(2.3,2.6,.2),solid=true,tag="city"})
+    "#);
+    let fire=Controls {pressed:Buttons(Buttons::RIGHT_TRIGGER),..Default::default()};
+    tick(&mut game,[fire,Controls::default()],1);
+    check(&mut game,"local d=state.fleet.vehicles[1].damage; assert(not d or d.total==0); world.remove(state.carCover)");
+    tick(&mut game,[Controls::default();2],24);
+    tick(&mut game,[fire,Controls::default()],1);
+    check(&mut game,r#"
+        local car=state.fleet.vehicles[1]
+        assert(car.damage and car.damage.zones.rear>0 and car.damage.total>0)
+        state.bulletDamage=car.damage.total
+        for id,crate in state.combat.crates do
+            if crate.pos.x<11 then
+                local pos=car.pos+vector.create(-3.4,.625,1.7)
+                crate.pos=pos
+                world.place(id,pos)
+                local seat=state.fleet.players[1]
+                world.place(seat.body,pos+vector.create(0,.225,5))
+                seat.view,seat.pitch=0,-.13
+                break
+            end
+        end
+    "#);
+    tick(&mut game,[Controls::default();2],24);
+    tick(&mut game,[fire,Controls::default()],1);
+    check(&mut game,r#"
+        local d=state.fleet.vehicles[1].damage
+        assert(d.total>state.bulletDamage and d.zones.left>0)
+    "#);
 }
 
 #[test]
@@ -638,4 +698,41 @@ fn a_sniper_card_uses_its_contact_multiplier_and_a_spread_shot_draws_a_bounded_f
     "#);
     tick(&mut game,[Controls::default();2],12);
     check(&mut game,"assert(#world.find('sidearm-trace')==0)");
+}
+#[test]
+fn blast_passes_over_the_bonnet_but_the_cabin_protects_a_bystander() {
+    let mut game = city();
+    check(&mut game,r#"
+        local v=vector.create
+        local fleet, combat=state.fleet,state.combat
+        local floor=v(0,42,0)
+        local car=combat.cast:car("blast-cover",{pos=floor,yaw=0})
+        local center=floor+v(-3,1.24,-2.06)
+        world.spawn("cube",{tag="city",solid=true,pos=floor-v(0,.10,0),size=v(25,.2,25)})
+        for id,crate in combat.crates do
+            if crate.pos.x<11 then
+                crate.pos=center; world.place(id,center); state.testCargo=id
+            end
+        end
+        for key,z in {rook=-2.06,vex=2.06} do
+            local p=combat.cast.people[key]
+            p.pos,p.route,p.arrived=floor+v(3,.27,z),nil,false
+            world.place(p.body,p.pos+v(0,.85,0))
+            humans.set(p.actor,{pos=p.pos,pose="idle"})
+            local delta=p.pos+v(0,.97,0)-center
+            local legacy=world.raycast(center,delta,vector.magnitude(delta))
+            assert(legacy and legacy.id==car.body,"both paths cross the coarse bounds")
+            assert((vehicles.raycast(car.native,"toyama",center,delta,vector.magnitude(delta))~=nil)==(key=="vex"))
+        end
+        local seat=fleet.players[1]
+        world.place(seat.body,center+v(0,-.39,5))
+        seat.view,seat.pitch=0,0
+    "#);
+    let fire=Controls { pressed:Buttons(Buttons::RIGHT_TRIGGER), ..Default::default() };
+    tick(&mut game,[fire,Controls::default()],1);
+    check(&mut game,r#"
+        assert(state.combat.crates[state.testCargo].respawnAt,"the shot must hit the cargo")
+        assert(state.combat.enemies.rook.health<=0,"open air over the bonnet must transmit the blast")
+        assert(state.combat.enemies.vex.health==2,"the closed cabin must block the blast")
+    "#);
 }
