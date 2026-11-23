@@ -397,8 +397,10 @@ keyboard mapping is in `app::input`.
   and include `profile=name` on its obstacle. Describe 2 to 20 ordered
   cross-sections with local `z`, full `width`, `top`, and optional `roofWidth`.
   All lengths use metres relative to the chassis origin. Cars share one cooked
-  surface for each name. The
-  box remains its proximity and standing-clearance bound. Pass up to 64 per tick. Only boxes near an active rig allocate
+  surface for each name. A moving chassis and its nearby ragdolls advance together
+  in up to four substeps per fixed tick, based on the distance travelled by the
+  contact skin. This lets the solver follow the bumper, bonnet and windscreen.
+  The box remains its proximity and standing-clearance bound. Pass up to 64 per tick. Only boxes near an active rig allocate
   physics bodies. An empty list clears them. `humans.recover(id)` waits for
   a settled body and clear space, returning nil while either is pending.
   On success it returns the landed feet, starts `rise` at t=0 and releases

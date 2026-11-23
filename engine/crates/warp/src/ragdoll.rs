@@ -17,6 +17,7 @@ const ACTIVE: usize = 24;
 /// After this time, tolerate the last small movements of a supported resting rig.
 const SETTLE: f32 = 4.0;
 const HZ: f32 = 60.0;
+const SHIN_RADIUS: f32 = 0.075;
 
 /// The part each capture bone rides: hips, chest, head, the arms (upper,
 /// lower with the hand), the legs (thigh, shin with the foot).
@@ -144,7 +145,7 @@ impl Dolls {
         for (a, b, c) in [(Bone::ThighL, Bone::CalfL, Bone::FootL), (Bone::ThighR, Bone::CalfR, Bone::FootR)] {
             let upper = segs.len();
             segs.push(seg(at(a), at(b), 0.09, Some(0), at(a)));
-            segs.push(seg(at(b), at(c), 0.075, Some(upper), at(b)));
+            segs.push(seg(at(b), at(c), SHIN_RADIUS, Some(upper), at(b)));
         }
         let ground = model.translation.y;
         let floor = phys.add_floor_for(ground, bit);
@@ -260,14 +261,32 @@ impl Dolls {
         self.acc += dt;
         let steps = ((self.acc + 1e-6) * HZ).floor().clamp(0., 4.) as usize;
         for remaining in (1..=steps).rev() {
-            let fraction = 1.0 / remaining as f32;
+            // At city-road speeds a chassis can travel several shin radii in
+            // one simulation tick. Advance the contact skin and the limbs together
+            // so the solver sees the rising bonnet before the windscreen.
+            let mut travel = 0.0_f32;
             for (id, (body, _)) in &self.colliders {
-                let (target, rotation) = self.obstacles[id].target();
+                let obstacle = &self.obstacles[id];
+                let (target, turn) = obstacle.target();
                 if let Some((pos, rot)) = phys.pose(*body) {
-                    phys.move_kinematic(*body, pos.lerp(target, fraction), rot.slerp(rotation, fraction));
+                    let arc = rot.angle_between(turn) * obstacle.shape.half.length();
+                    travel = travel.max((pos.distance(target) + arc) / remaining as f32);
                 }
             }
-            phys.step();
+            let substeps = (travel / SHIN_RADIUS).ceil().clamp(1., 4.) as usize;
+            let fixed_dt = phys.world.integration_parameters.dt;
+            phys.world.integration_parameters.dt = fixed_dt / substeps as f32;
+            for substep in (1..=substeps).rev() {
+                let fraction = 1. / ((remaining - 1) * substeps + substep) as f32;
+                for (id, (body, _)) in &self.colliders {
+                    let (target, rotation) = self.obstacles[id].target();
+                    if let Some((pos, rot)) = phys.pose(*body) {
+                        phys.move_kinematic(*body, pos.lerp(target, fraction), rot.slerp(rotation, fraction));
+                    }
+                }
+                phys.step();
+            }
+            phys.world.integration_parameters.dt = fixed_dt;
             for d in self.dolls.values_mut() {
                 if let Some(rig) = d.rig.as_mut() { rig.update(phys); }
             }
