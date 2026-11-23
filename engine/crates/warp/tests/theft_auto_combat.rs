@@ -855,3 +855,101 @@ fn a_settled_corpse_accepts_a_second_seats_shot_and_only_fragments_once() {
         assert(state.fragmentSerial==c.effects.serial,"consumed corpse produced another hit")
     "#);
 }
+
+#[test]
+fn a_direct_grenade_wrecks_the_car_on_contact_and_releases_its_parts_once() {
+    let mut game=city();
+    let idle=[Controls::default();2];
+    let fire=Controls {pressed:Buttons(Buttons::RIGHT_TRIGGER),..Default::default()};
+    check(&mut game,r#"
+        local v=vector.create
+        local car=state.fleet.vehicles[1]
+        local seat=state.fleet.players[1]
+        world.place(seat.body,car.pos+v(0,.85,5.6))
+        seat.weapon,seat.view,seat.pitch="launcher",0,-.14
+        state.originalBody=car.body
+        local protected=assert(state.combat.cast:car("protected",{pos=car.pos+v(3.3,0,0),paint="pearl"}))
+        state.protected=protected.index
+        world.spawn("cube",{tag="city",solid=true,pos=car.pos+v(1.6,1,0),size=v(.16,2.2,6)})
+    "#);
+    tick(&mut game,[fire,Controls::default()],1);
+    check(&mut game,"assert(#state.combat.projectiles==1 and not state.fleet.vehicles[1].wrecked)");
+    for _ in 0..24 {
+        tick(&mut game,idle,1);
+        if game.luau("return #state.combat.projectiles==0").unwrap()=="true" { break; }
+    }
+    check(&mut game,r#"
+        local car=state.fleet.vehicles[1]
+        assert(car.wrecked and not car.burnRemaining and car.damage.disabled,"direct grenade must bypass the fuse")
+        assert(car.body==state.originalBody and world.exists(car.body))
+        assert(not state.fleet.vehicles[state.protected].wrecked,"wall must block the close grenade")
+        assert(state.fleet.vehicles[2].damage.total>0,"wreck blocked its own blast")
+        assert(state.combat.players[1].hitFlash>0)
+        assert(car.missingParts==126 and car.missingWheels==15)
+    "#);
+    assert_eq!(game.core().world.explosions.as_ref().unwrap().explosion_stats().full,1);
+    tick(&mut game,idle,2);
+    check(&mut game,r#"
+        assert(#state.fleet.debris==10)
+        for _,d in state.fleet.debris do assert(world.exists(d.entity) and vector.magnitude(d.vel)>1) end
+    "#);
+}
+
+#[test]
+fn a_pistol_can_ignite_a_damaged_car_before_its_delayed_blast() {
+    let mut game=city();
+    let idle=[Controls::default();2];
+    let fire=Controls {pressed:Buttons(Buttons::RIGHT_TRIGGER),..Default::default()};
+    check(&mut game,r#"
+        local car=state.fleet.vehicles[1]
+        car.damage.total=.80
+        local seat=state.fleet.players[2]
+        world.place(seat.body,car.pos+vector.create(0,.85,5.6))
+        seat.weapon,seat.view,seat.pitch="pistol",0,-.14
+    "#);
+    tick(&mut game,[Controls::default(),fire],1);
+    check(&mut game,r#"
+        local car=state.fleet.vehicles[1]
+        assert(car.burnRemaining and car.burnRemaining>5 and car.fireOwner==2)
+        assert(not car.wrecked and car.missingParts==nil)
+    "#);
+    tick(&mut game,idle,240);
+    check(&mut game,"local car=state.fleet.vehicles[1]; assert(car.burnRemaining>0 and not car.wrecked)");
+    tick(&mut game,idle,135);
+    check(&mut game,r#"
+        local car=state.fleet.vehicles[1]
+        assert(car.wrecked and car.missingParts==126 and car.missingWheels==15)
+        assert(car.damage.disabled and not car.burnRemaining and #state.fleet.debris==10)
+    "#);
+}
+
+#[test]
+fn a_grenade_beside_a_story_car_detonates_it_and_ends_its_race() {
+    let mut game=city();
+    game.apply_story(r#"return {id="racecar",title="Race car",
+        cast={{kind="car",key="coupe",name="Blue Coupe",pos=vector.create(1,0,-25)}},
+        steps={{op="enter",car="coupe",text="Get in."}}}"#).unwrap();
+    check(&mut game,r#"
+        local v=vector.create
+        local car=state.storyCast.cars.coupe
+        local box=car.pos+v(2.55,.625,0)
+        for id,crate in state.combat.crates do
+            if crate.pos.x<11 then
+                crate.pos=box
+                world.place(id,box)
+                state.targetCrate=id
+            end
+        end
+        local seat=state.fleet.players[1]
+        world.place(seat.body,box+v(0,.225,5))
+        seat.weapon,seat.view,seat.pitch="launcher",0,-.13
+    "#);
+    let fire=Controls{pressed:Buttons(Buttons::RIGHT_TRIGGER),..Default::default()};
+    tick(&mut game,[fire,Controls::default()],1);
+    tick(&mut game,[Controls::default();2],24);
+    check(&mut game,r#"
+        assert(state.combat.crates[state.targetCrate].respawnAt)
+        assert(state.storyCast.cars.coupe.wrecked and state.storyCast.cars.coupe.charred)
+        assert(state.story.status=="failed" and state.story.objective=="Blue Coupe was destroyed.")
+    "#);
+}

@@ -1,7 +1,7 @@
 """Bake the Toyama's authored panels into standard named glTF nodes.
 
 Reorder only the body's existing index streams, once for all paint variants.
-Positions, normals, materials and the separately drawn wheels stay byte-identical.
+The wreck descriptors reuse those geometry buffers and carry only new materials.
 Run with --check to verify the shipped files against Sideways' CC BY source.
 """
 import argparse
@@ -185,6 +185,33 @@ def add_inserts(meshes, views, accessors):
     return data
 
 
+def wreck_descriptor(model):
+    # The same shell, crushed geometry and detachable parts can all share one
+    # set of burn materials, irrespective of the paint the vehicle started with.
+    doc = {k: v for k, v in model.items() if k not in ("images", "textures", "samplers")}
+    materials = []
+    for original in model["materials"]:
+        name = original["name"]
+        material = {"name": name, "doubleSided": original.get("doubleSided", False)}
+        if name == "Body_Glass":
+            material["alphaMode"] = "BLEND"
+            color, rough, metal = [.024, .030, .030, .54], .56, .02
+        else:
+            if name == "Body_Paint":
+                color, rough, metal = [.047, .039, .033, 1], .90, .09
+            elif name in ("Body_Chrome", "Body_Alloy"):
+                color, rough, metal = [.077, .071, .064, 1], .78, .32
+            else:
+                color, rough, metal = [.021, .020, .019, 1], .95, .02
+            material["extras"] = {**original.get("extras", {}), "warpSurface": 220}
+        material["pbrMetallicRoughness"] = {
+            "baseColorFactor": color, "roughnessFactor": rough, "metallicFactor": metal,
+        }
+        materials.append(material)
+    doc["materials"] = materials
+    return (json.dumps(doc, separators=(",", ":")) + "\n").encode()
+
+
 def bake():
     glb = SOURCE.read_bytes()
     size = struct.unpack_from("<I", glb, 12)[0]
@@ -235,6 +262,11 @@ def bake():
         doc["meshes"], doc["accessors"], doc["bufferViews"] = meshes, accessors, views
         doc["buffers"] = [doc["buffers"][0], {"uri":"toyama-inserts.bin","byteLength":len(inserts)}]
         yield path, (json.dumps(doc, separators=(",", ":"))+"\n").encode()
+        if path.name == "sedan.gltf":
+            yield CARS / "wreck.gltf", wreck_descriptor(doc)
+    for side in ("left", "right"):
+        wheel = json.loads((CARS / f"wheel-{side}.gltf").read_bytes())
+        yield CARS / f"wreck-wheel-{side}.gltf", wreck_descriptor(wheel)
 
 
 if __name__ == "__main__":

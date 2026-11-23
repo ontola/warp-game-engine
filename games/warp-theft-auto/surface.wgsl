@@ -480,7 +480,7 @@ fn pm_opening(s: SurfaceIn, size: vec3<f32>, archetype: u32, variant: u32,
 }
 
 fn pm_ground_floor(s: SurfaceIn, aa: f32) -> SurfaceOut {
-    // Kinds 20–22 are the original, unparameterized ground floors.
+    // Kinds 20â€“22 are the original, unparameterized ground floors.
     let encoded=select(s.kind-20u,s.kind-64u,s.kind>=64u);
     let archetype=encoded%3u;
     let variant=encoded/3u;
@@ -576,9 +576,28 @@ fn pm_interior(s: SurfaceIn, aa: f32) -> SurfaceOut {
     return out;
 }
 
+// Smooth patches of ash cling to the chassis while it moves and loose panels tumble.
+fn pm_scorch_noise(p: vec2<f32>) -> f32 {
+    let cell=floor(p);
+    let f=fract(p);
+    let w=f*f*(3.0-2.0*f);
+    return mix(mix(pm_hash(cell),pm_hash(cell+vec2<f32>(1,0)),w.x),
+               mix(pm_hash(cell+vec2<f32>(0,1)),pm_hash(cell+vec2<f32>(1,1)),w.x),w.y);
+}
+
+fn pm_scorch(s: SurfaceIn, aa: f32) -> SurfaceOut {
+    let p=vec2<f32>(s.local.z+.53*s.local.x,s.local.y+.81*s.local.x);
+    let patches=pm_scorch_noise(p*3.2);
+    let flecks=(pm_scorch_noise(p*18.0)-.5)*(1.0-smoothstep(.022,.10,aa));
+    let ash=smoothstep(.23,.83,patches+.43*flecks);
+    let color=s.tint*mix(.44,1.47,ash);
+    return SurfaceOut(color,s.n,mix(.97,s.rough,ash),s.metal*ash,vec3<f32>(0));
+}
+
 fn game_surface(s: SurfaceIn) -> SurfaceOut {
     let aa=clamp(max(length(s.dx),length(s.dy))*0.56,0.012,0.5);
     var out=SurfaceOut(s.tint,s.n,s.rough,s.metal,vec3<f32>(0.0));
+    if s.kind==220u { return pm_scorch(s,aa); }
     if s.kind==31u {
         // The diffuser follows the street lighting transition at sunset and dawn.
         let dusk=1.0-smoothstep(-.057,.224,light.sun_dir.y);

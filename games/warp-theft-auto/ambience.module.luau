@@ -12,7 +12,7 @@ end
 -- Car voices stay attached to their emitters across every listener's view.
 function ambience.tick(fleet)
 	for _, car in fleet.vehicles do
-		local audible = (car.owner or car.auto) and inEarshot(car.pos, fleet.players, if car.voice then 58 else 50)
+		local audible = not car.wrecked and (car.owner or car.auto) and inEarshot(car.pos, fleet.players, if car.voice then 58 else 50)
 		if audible then
 			local engine = car.kind == "car"
 			if not car.voice then car.voice = sound.play(if engine then "motor" else "rotor", { at = car.pos, db = if engine then -1 else -4 }) end
