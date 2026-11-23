@@ -38,6 +38,10 @@ const SMOKE_SIZE: u32 = 48;
 const SMOKE_FRAMES: u32 = 32;
 // Playback duration in fx.wgsl; the source bake contains 2.6 seconds of motion.
 const SMOKE_LIFETIME: f32 = 4.6;
+pub(crate) fn baked_smoke_fits(max_3d_dimension: u32) -> bool {
+    // All three axes share the device's 3D dimension limit. Frames are stacked along z.
+    [SMOKE_SIZE, SMOKE_SIZE, SMOKE_SIZE * SMOKE_FRAMES].into_iter().all(|n| n <= max_3d_dimension)
+}
 const SMOKE_BYTES: &[u8] = include_bytes!("../../../assets/fx/explosion-smoke.rg8");
 /// Heat shells only for blasts at least this big (Godot BLAST_DISTORTION_MIN_RADIUS).
 pub const DISTORTION_MIN_RADIUS: f32 = 5.0;
@@ -623,15 +627,27 @@ impl Effects {
         out
     }
 
-    /// Drop finished effects and send the live ones (only when changed).
-    pub fn flush(&mut self, gpu: &Gpu, renderer: &crate::Renderer, time: f32) -> Result<(), String> {
+    /// Admit queued explosions and expire completed effects on the game clock.
+    /// Fixed-step hosts can call this while running without a renderer.
+    pub fn advance(&mut self, time: f32) {
         self.emit_pending(time);
         let before = self.puffs.len();
         self.puffs.retain(|p| p.end() > time);
         self.pops.retain(|p| time - p.birth < 2.0);
         // Oldest go first when over budget.
         if self.puffs.len() > MAX_PUFFS { let extra = self.puffs.len() - MAX_PUFFS; self.puffs.drain(..extra); }
-        let changed = std::mem::take(&mut self.changed) || self.puffs.len() != before;
+        self.changed |= self.puffs.len() != before;
+    }
+
+    /// A replacement renderer needs a first copy of any live puffs.
+    pub fn renderer_replaced(&mut self) {
+        self.changed |= !self.puffs.is_empty();
+    }
+
+    /// Send the live effects once when changed and animate them at render time.
+    pub fn flush(&mut self, gpu: &Gpu, renderer: &crate::Renderer, time: f32) -> Result<(), String> {
+        self.advance(time);
+        let changed = std::mem::take(&mut self.changed);
         renderer.set_effects(gpu, time, changed.then_some(&self.puffs[..]))
     }
 }
@@ -968,6 +984,54 @@ impl FxRenderer {
         }
     }
 
+    /// Exercise the actual gameplay pipelines against a tiny private view. Some drivers
+    /// compile on first draw, even after creating their pipeline objects succeeds.
+    pub(crate) fn warm_explosion(&mut self, gpu: &Gpu, baked: bool, minimal: bool) -> Result<(), String> {
+        let format = if minimal { wgpu::TextureFormat::Rgba8Unorm } else { wgpu::TextureFormat::Rgba16Float };
+        let texture = |label, format, usage| gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label), size: wgpu::Extent3d { width: 16, height: 16, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format, usage, view_formats: &[],
+        });
+        let color = texture("explosion warmup color", format, wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
+        let depth = texture("explosion warmup depth", wgpu::TextureFormat::Depth32Float,
+            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT).create_view(&Default::default());
+        let camera = Camera { pos: Vec3::ZERO, target: Vec3::NEG_Z, fov_y: 1., near: 0.05 };
+        let projection = Mat4::perspective_infinite_reverse_rh(camera.fov_y, 1., camera.near);
+        let light = crate::Lighting::default();
+        let mut sample = Effects::default();
+        sample.set_baked_smoke(baked);
+        sample.full_explosion(0., Vec3::new(0., -1., -12.), 6., Vec3::ONE);
+        let saved_source = std::mem::take(&mut self.source);
+        let saved_time = self.time;
+        self.set(gpu, 0.12, Some(&sample.puffs));
+        let index = self.targets.len();
+        let result = (|| {
+            // Warm both direct HDR and adaptive smoke compositing. Seed the temporary
+            // view's normal hysteresis for the second pass so the targets stay tiny.
+            let adaptive = baked && self.adaptive_smoke;
+            for soft in [false, true] {
+                if soft {
+                    if !adaptive { break; }
+                    self.targets[index].as_mut().expect("warmup view").quality.divisor = 2;
+                }
+                let mut enc = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("explosion startup warmup"),
+                });
+                self.render_output(gpu, &mut enc, index, &color, &depth, camera, Mat4::IDENTITY,
+                    projection, projection, 1., if minimal { 1. } else { 0. }, &light, Vec3::ONE, Vec3::ONE, 1., None)?;
+                gpu.queue.submit([enc.finish()]);
+            }
+            // Web's first-visible-frame queue callback also covers these earlier submits.
+            #[cfg(not(target_arch = "wasm32"))]
+            gpu.device.poll(wgpu::PollType::wait_indefinitely()).map_err(|e| e.to_string())?;
+            Ok(())
+        })();
+        self.targets.truncate(index);
+        self.set(gpu, saved_time, Some(&saved_source));
+        result
+    }
+
     pub(crate) fn quality_stats(&self) -> Vec<SmokeQualityStats> {
         self.targets.iter().flatten().map(|target|target.quality_stats.clone()).collect()
     }
@@ -1145,6 +1209,13 @@ impl FxSlot {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn packed_smoke_frames_must_fit_the_devices_3d_depth_limit() {
+        assert!(!super::baked_smoke_fits(256));
+        assert!(!super::baked_smoke_fits(1535));
+        assert!(super::baked_smoke_fits(1536));
+    }
+
     #[test]
     fn ground_dust_decelerates_without_replacing_live_puffs() {
         let mut fx=super::Effects::default();

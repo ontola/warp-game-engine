@@ -8,6 +8,7 @@ use render::sky::{DayTime, LiveSettings, WeatherLook};
 pub enum SkyChoice {
     Gradient,
     Preset(LiveSettings),
+    Clock { previous: f32, hour: f32, weather: WeatherLook },
 }
 
 impl SkyChoice {
@@ -28,6 +29,7 @@ impl SkyChoice {
         match self {
             Self::Gradient => "gradient".into(),
             Self::Preset(s) => format!("{}:{}", s.time.key(), s.atmosphere.key()),
+            Self::Clock { weather, .. } => format!("clock:{}", weather.key()),
         }
     }
 }

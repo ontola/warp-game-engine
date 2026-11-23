@@ -9,6 +9,7 @@ use rapier3d::glamx;
 use rapier3d::prelude::*;
 
 pub mod ragdoll;
+pub mod vehicle;
 mod static_set;
 pub use static_set::StaticSet;
 
@@ -20,6 +21,10 @@ fn from_q(q: glamx::Quat) -> Quat { Quat::from_array(q.to_array()) }
 /// A dynamic body.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Body(RigidBodyHandle);
+
+/// Support under a dynamic body. A kinematic surface retains its owner even at rest.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum Support { Ground, Parked, Moving }
 
 /// A static collider (level geometry).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -80,6 +85,36 @@ impl Physics {
             .friction(0.8)
             .build();
         Static(self.world.colliders.insert(c))
+    }
+
+    /// Horizontal support for one ragdoll. Its collision bit keeps other
+    /// floors and people at different elevations independent.
+    pub fn add_floor_for(&mut self, height: f32, collision_bit: u32) -> Static {
+        let groups = InteractionGroups::new(Group::ALL, Group::from_bits_retain(collision_bit), InteractionTestMode::And);
+        let collider = ColliderBuilder::new(SharedShape::halfspace(glamx::Vec3::Y))
+            .translation(glamx::Vec3::Y * height).collision_groups(groups).friction(0.8).build();
+        Static(self.world.colliders.insert(collider))
+    }
+
+    /// A solid obstacle whose owner supplies its world pose each tick. Rapier
+    /// infers contact velocity from consecutive poses and moves dynamic bodies.
+    pub fn add_kinematic_box(&mut self, b: &YawBox) -> Body {
+        self.add_kinematic_shape(b.center, Quat::from_rotation_y(b.yaw), SharedShape::cuboid(b.half.x, b.half.y, b.half.z))
+    }
+
+    fn add_kinematic_shape(&mut self, position: Vec3, rotation: Quat, shape: SharedShape) -> Body {
+        let body = RigidBodyBuilder::kinematic_position_based()
+            .pose(Pose3::from_parts(to(position), to_q(rotation))).ccd_enabled(true).build();
+        let handle = self.world.bodies.insert(body);
+        let collider = ColliderBuilder::new(shape).friction(0.65).build();
+        self.world.colliders.insert_with_parent(collider, handle, &mut self.world.bodies);
+        Body(handle)
+    }
+
+    pub fn move_kinematic(&mut self, body: Body, pos: Vec3, rot: Quat) {
+        if let Some(rb) = self.world.bodies.get_mut(body.0) {
+            rb.set_next_kinematic_position(Pose3::from_parts(to(pos), to_q(rot)));
+        }
     }
 
     /// Remove one static collider (a destroyed piece of level).
@@ -206,6 +241,37 @@ impl Physics {
             }
         }
         None
+    }
+
+    /// Prefer a moving contact over a parked or fixed one if supports overlap.
+    pub fn support(&self, body: Body) -> Option<Support> {
+        let mut result = None;
+        for &own in self.world.bodies.get(body.0)?.colliders() {
+            for pair in self.world.contact_pairs_with(own) {
+                let first = pair.collider1 == own;
+                let other = &self.world.colliders[if first { pair.collider2 } else { pair.collider1 }];
+                let kind = match other.parent().map(|h| &self.world.bodies[h]) {
+                    None => Support::Ground,
+                    Some(rb) if rb.is_fixed() => Support::Ground,
+                    Some(rb) if rb.is_kinematic() => {
+                        if rb.linvel().length_squared() > 1e-6 || rb.angvel().length_squared() > 1e-6 { Support::Moving }
+                        else { Support::Parked }
+                    }
+                    Some(_) => continue,
+                };
+                let sign = if first { -1. } else { 1. };
+                if pair.manifolds().iter().any(|m| m.data.normal.y * sign > 0.35 && m.points.iter().any(|c| c.dist <= 0.005)) {
+                    result = result.max(Some(kind));
+                }
+            }
+        }
+        result
+    }
+
+    /// A resting limb must stop turning as well as translating.
+    pub fn motion_below(&self, body: Body, linear: f32, angular: f32) -> bool {
+        self.world.bodies.get(body.0).is_some_and(|b| b.is_sleeping() ||
+            (b.linvel().length_squared() < linear * linear && b.angvel().length_squared() < angular * angular))
     }
 
     pub fn velocity(&self, b: Body) -> Option<Vec3> { self.world.bodies.get(b.0).map(|rb| from(rb.linvel())) }

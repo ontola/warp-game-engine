@@ -47,7 +47,7 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_CUTOUT_LINEAR_RGB` | Alpha-cutout textures mip in sRGB instead of linear RGB. |
 | `KERN_GRASS_LEAF_BRDF`, `KERN_GRASS_SUN_OCCLUSION` | Plain grass lighting, no grass self-shadow from the sun. |
 | `KERN_GRASS_DEPTH_PREPASS` | No depth prepass for transition grass. |
-| `KERN_MEADOW_INDEXED`, `KERN_MEADOW_OCCLUSION` | Unindexed meadow geometry; no meadow occlusion. |
+| `KERN_MEADOW_INDEXED`, `KERN_MEADOW_OCCLUSION` | `KERN_MEADOW_INDEXED=0` selects unindexed meadow geometry. `KERN_MEADOW_OCCLUSION=0` skips hierarchical depth culling. Bounded mown lawns with a draw range of 24 m or less skip it by default and keep the normal depth test. `KERN_MEADOW_OCCLUSION=1` forces hierarchical culling for those lawns too. |
 | `KERN_VOXEL_SURFACE`, `KERN_VOXEL_PASS`, `KERN_VOXEL_EMPTY_CEILING` | Voxel forest without its surface pass, separate voxel shade pass, or empty-space ceiling. |
 | `KERN_REUSE_SUN_TEXTURE`, `KERN_ZERO_SUN_FAST_PATH` | Recreate the sun texture; shade a sunless scene the long way. |
 | `KERN_WIND_FREEZE` | Trees keep moving in the wind at every distance (`off` works too). Default: frozen to the rest pose between 60 and 90 m, so distant crowns match cached sun shadows; `start,end` in metres sets the band. |
@@ -83,7 +83,7 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_SUN_VOXEL_M` | per scene | Voxel cell size in the sun map. |
 | `KERN_SUN_LEVELS` | 8 (clipmap), 4 with `KERN_SUN_CLIPMAP=0` | Sun clipmap levels round each camera (1 to 8; level k covers 24 m times 2^k, with `KERN_SUN_CLIPMAP` counted from a first level that grows with height). |
 | `KERN_SUN_CLOSE` | on | `0` keeps the doubling ladder (24 m first level) in scenes with skin. By default such a scene's clipmap, seen from the ground, has levels of 3, 12, 24 m and doubling to 768 m, so a face a metre away gets 3 mm sun texels. |
-| `KERN_SUN_STAGGER` | on | `0` redraws every clipmap level every frame. By default level 1 redraws every other frame, level 2 every fourth and the rest every eighth; with `KERN_SUN_CLIPMAP` a level also redraws when it moves. |
+| `KERN_SUN_STAGGER` | on | `0` redraws every clipmap level every frame. Normally level 1 refreshes every other frame, level 2 every fourth and the rest every eighth. In scenes using the 3 m close ladder, a shadow caster entering, moving within or leaving a view’s 12 m map also refreshes that map on intervening frames. The tiled cache updates damaged tiles. With `KERN_SUN_CLIPMAP`, a level also refreshes when its projection moves. |
 | `KERN_SUN_CACHE_GUARD_METRES` | 0 | Guard band around the cached sun map (0 to 128 m). |
 | `KERN_FOLIAGE_SUN_LOD`, `KERN_FOLIAGE_SUN_PAGE_METRES` | 0.5, fine pages | Paged foliage sun (only with `KERN_PAGED_FOLIAGE_SUN=1`). |
 | `KERN_VOXEL_SELF_SHADOW_COARSER` | unset | Coarser voxel self-shadow mip. |

@@ -31,6 +31,105 @@ fn write(path: &Path, text: &str) {
 }
 
 #[test]
+fn story_errors_leave_the_running_story_and_tick_hook_intact() {
+    let dir = folder("story-editor");
+    write(&dir.join("main.luau"), r#"
+        return {
+            init=function() state.title="Original"; state.count=0 end,
+            tick=function() state.count+=1 end,
+            apply_story=function(data)
+                if type(data.title)~="string" then return nil,"missing title" end
+                state.title=data.title
+                return data.title
+            end,
+        }
+    "#);
+    let mut g = game(&dir);
+    assert!(g.apply_story("return {").is_err());
+    assert_eq!(g.apply_story("return {title=false}").unwrap_err(), "missing title");
+    assert!(g.apply_story("world.clear(); return {title='Lost'}").is_err());
+    assert!(g.apply_story_data(json!({"nested":[null]})).is_err());
+    assert_eq!(state(&g)["state"]["title"], "Original");
+    assert_eq!(g.command_line("story local name='Harbor'; return {title=name..' taxi'}").unwrap(), "Harbor taxi");
+    ticks(&mut g, 1, Controls::default());
+    assert_eq!(state(&g)["state"]["title"], "Harbor taxi");
+    assert_eq!(state(&g)["state"]["count"], 1);
+    assert!(g.errors().is_empty());
+}
+
+#[test]
+fn luau_can_retire_one_vehicle_without_displacing_surviving_drivers() {
+    let dir = folder("retire-vehicle");
+    write(&dir.join("main.luau"), "return {}");
+    let mut g = game(&dir);
+    g.luau(r#"
+        vehicles.reset()
+        local a=vehicles.spawn(vector.create(0,0,0))
+        local b=vehicles.spawn(vector.create(5,0,0))
+        assert(vehicles.remove(a) and not vehicles.remove(a))
+        assert(vehicles.get(a)==nil and vehicles.get(b)~=nil)
+    "#).unwrap();
+}
+
+#[test]
+fn a_crowd_shares_its_pool_between_separated_observers() {
+    let dir = folder("crowd");
+    write(&dir.join("game.toml"), "[humans.ambient]\ncount = 3\nvariety = 1");
+    write(&dir.join("main.luau"), r#"
+local crowd = require("kit/crowd")
+local v = vector.create
+return { init = function()
+    -- A person already using this pool belongs to a different system.
+    local bystander = humans.spawn("ambient", {pos = v(0,0,0)})
+    local c = crowd.new("ambient", 12)
+    local residents = {{pos = v(1,0,0)}, {pos = v(2,0,0)}, {pos = v(31,0,0)}}
+    c:select(residents, {v(0,0,0), v(30,0,0)})
+    local first = c.active[1]
+    assert(first and c.active[3] and not c.active[2])
+    c:update(residents)
+    c:select(residents, {v(0,0,0), v(0,0,0)})
+    assert(c.active[1] == first and c.active[2] and not c.active[3])
+    c:select(residents, {})
+    assert(humans.room("ambient") == 2)
+    assert(humans.set(bystander, {visible = false}) and humans.set(bystander, {visible = true}))
+    assert(humans.head(bystander) ~= nil)
+    state.passed = true
+end }
+"#);
+    let g = game(&dir);
+    let result = state(&g);
+    assert_eq!(result["errors"], json!([]), "{result}");
+    assert_eq!(result["state"]["passed"], true);
+}
+
+#[test]
+fn luau_clouds_use_the_native_layer_and_validate_a_whole_weather_change() {
+    let dir = folder("sky-clouds");
+    write(&dir.join("main.luau"), "return {}");
+    let mut g = game(&dir);
+    assert!(g.core().light.sky_volume.is_none());
+
+    g.luau("sky.clouds(true)").unwrap();
+    assert_eq!(g.core().light.sky_volume, Some(render::sky_volume::SkyVolume::default()));
+    g.luau("sky.clouds({coverage=0.6, wind_x=200, wind_z=0, steps=32, aerial=false}); sky.set('night:haze')").unwrap();
+    let weather = g.core().light.sky_volume.unwrap();
+    let layer = weather.clouds.unwrap();
+    assert!(!weather.aerial);
+    assert_eq!((layer.coverage, layer.wind.to_array(), layer.steps), (0.6, [200.0, 0.0], 32));
+    assert_eq!(layer.base_m, render::sky_volume::Clouds::default().base_m);
+
+    for bad in ["{coverage=2}", "{steps=20.5}", "{wind_x=200,wind_z=1}", "{coverge=0.4}"] {
+        assert!(g.luau(&format!("sky.clouds({bad})")).is_err());
+        assert_eq!(g.core().light.sky_volume, Some(weather));
+    }
+    g.luau("sky.clouds(false)").unwrap();
+    assert!(g.core().light.sky_volume.is_none());
+    g.luau("sky.clouds({})").unwrap();
+    g.restart();
+    assert!(g.core().light.sky_volume.is_none());
+}
+
+#[test]
 fn the_repo_copy_of_hello_warp_is_the_starter() {
     let dir = repo().join("games/hello-warp");
     for (rel, text) in warp::starter::FILES {
@@ -565,6 +664,31 @@ fn effects_fly_out_and_are_gone_after_their_life() {
     assert_eq!(g.command_line("lua #world.find('fx')").unwrap(), "0");
     assert_eq!(g.command_line("lua world.get(state.box).pos.z").unwrap(), "3");
     assert_eq!(g.command_line("lua world.get(state.box).rot.y").unwrap(), "1.5");
+}
+
+#[test]
+fn explosions_share_the_world_clock_and_leave_entity_slots_free() {
+    let dir = folder("explosion");
+    write(&dir.join("main.luau"), "return { init = function() fx.warm_explosions(); fx.warm_explosions() end }");
+    let mut g = game(&dir);
+    assert!(g.core().world.explosions.is_none());
+    g.luau("fx.explosion(vector.create(3, 2, -5), 6)").unwrap();
+    assert!(g.luau("fx.explosion(vector.create(0, 0, 0), -2)").is_err());
+    assert!(g.luau("fx.explosion(vector.create(0/0, 1, 1), 6)").is_err());
+    assert!(g.luau("fx.explosion(vector.create(1, 1, 1), 1/0)").is_err());
+    ticks(&mut g, 1, Controls::default());
+    {
+        let c = g.core();
+        let effects = c.world.explosions.as_ref().unwrap();
+        assert_eq!(effects.explosion_stats().full, 1);
+        assert!(effects.len() > 0 && effects.len() <= render::fx::ExplosionBudget::LOW.live_puffs);
+        assert!(effects.lights(0.0).iter().any(|light| light.position == glam::Vec3::new(3., 2., -5.)));
+        assert!(c.world.entities.is_empty());
+    }
+    ticks(&mut g, 600, Controls::default());
+    assert!(g.core().world.explosions.as_ref().unwrap().is_empty());
+    g.luau("fx.explosion(vector.create(3, 2, -5), 6); world.clear()").unwrap();
+    assert!(g.core().world.explosions.as_ref().unwrap().is_empty());
 }
 
 #[test]

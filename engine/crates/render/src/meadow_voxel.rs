@@ -189,7 +189,7 @@ mod tests {
             }
         }).collect();
         MeadowGeometry {
-            vertices, variant_patch_metres: 0.0, lod_ranges: [[[0, 6]; LODS]; VARIANTS], lod_errors: [[0.0; LODS]; VARIANTS],
+            vertices, mown_turf: false, variant_patch_metres: 0.0, lod_ranges: [[[0, 6]; LODS]; VARIANTS], lod_errors: [[0.0; LODS]; VARIANTS],
             branch_pivots: [[[0.0; 4]; BRANCHES]; VARIANTS], max_tuft_radius: 1.0,
             max_tuft_height: 1.0, max_anchor_radius: 1.0, max_blade_radius: 1.0,
         }

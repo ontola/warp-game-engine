@@ -4434,6 +4434,7 @@ dependencies = [
  "glam 0.31.1",
  "kern",
  "rapier3d",
+ "serde",
 ]
 
 [[package]]
@@ -5544,6 +5545,7 @@ version = "0.1.0"
 dependencies = [
  "gdcompat",
  "kern",
+ "physics",
  "rapier3d",
  "script",
  "serde",

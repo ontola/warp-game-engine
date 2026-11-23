@@ -19,6 +19,20 @@ current defaults, in [renderer switches](../renderer-switches.md).
   the guide or [status](../status.md) instead.
 - When a change alters how something works, update the guide for that part
   in the same commit. The log is not a substitute for that.
+- [Port Meridian weapon wheel and Growing Guns loadouts](2026-11-23-port-meridian-weapon-wheel.md)
+- [Growing Guns explosions in Port Meridian](2026-11-23-port-meridian-explosions.md)
+- [Shared city and woodland trees in Warp Theft Auto](2026-11-23-port-meridian-shared-trees.md)
+- [West Cape, woodland culling and download costs](2026-11-23-port-meridian-west-cape.md)
+- [Port Meridian planting, GPU cost and download sizes](2026-11-23-port-meridian-planting-and-downloads.md)
+- [Port Meridian shopfront tint](2026-11-23-port-meridian-window-tint.md)
+- [Port Meridian storefront reflections](2026-11-23-port-meridian-storefront-glass.md)
+- [Port Meridian ground-floor LOD and doorway measurements](2026-11-22-port-meridian-interior-lod.md)
+- [Port Meridian car lighting and pedestrian hits](2026-11-22-port-meridian-car-light-and-crowd-hits.md)
+- [Port Meridian objective markers and street combat](2026-11-22-port-meridian-combat.md)
+- [Port Meridian crowds, daylight and Luau stories](2026-11-22-port-meridian-stories.md)
+- [Port Meridian lawns, cloud shadows and four-player frame times](2026-11-22-warp-theft-auto-lawns-weather.md)
+- [Port Meridian interiors, residents and four-player frame times](2026-11-22-warp-theft-auto-interiors.md)
+- [Warp Theft Auto in four views at 1080p and 4K](2026-11-22-warp-theft-auto.md)
 - [Warp Human face texture memory](2026-11-22-warp-human-skin-memory.md)
 - [Terrain Fly patch selection, forest streaming and sun shadows](2026-11-21-terrain-fly-performance.md)
 - [Voxel rasterization and brick culling](2026-11-21-voxel-render-cull.md)

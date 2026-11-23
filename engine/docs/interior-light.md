@@ -90,7 +90,7 @@ same cell as the wall's inner face. Two things keep it out of the room:
   door state. The fallback for a point no probe sees uses only probes that
   reach it.
 
-One volume per scene, up to 65,536 probes.
+A single-grid bake supports up to 65,536 probes. Scenes with separated rooms can reserve independent slots through `Scene::reserve_irradiance_atlas` and upload packed transport for each occupied room.
 
 Lamps: `room_bake::bake_lights` bakes each local light's bounce on its own;
 add the sets of the lit lamps into the emission when a switch flips
@@ -288,6 +288,34 @@ for probes that count (not those behind a wall): shade +1.4 ms at 4K
 (`interior_rooms`, room 2, RTX 5070 Ti: 10.4 against 11.9 ms).
 `KERN_PROBE_GRADIENTS=0` turns it off.
 
+## Streamed ground floors in Luau
+
+Enable `room_lighting = true` in `game.toml`. When the game streams in a room, pass its world-space bounds, static entity IDs and ceiling fixtures to the engine. Remove it on leaving. Up to four separate rooms share the renderer.
+
+```lua
+lights.room(id, {
+    min = lowerCorner, max = upperCorner, entities = pieces,
+    panels = {{pos = ceilingPosition, width = 1.5, depth = .6,
+        color = "#fff0d9", intensity = 1250, range = 18}},
+})
+-- After the last visitor leaves
+lights.room(id, nil)
+```
+
+Warp Theft Auto uses a GPU preview for distant doors and windows. The material intersects the view ray with the room envelope and a few boxes representing furnishings. It gets the room footprint, orientation and palette from the same seeded layout as the detailed room. It needs no room lights, reflection probe, actors or furniture entities. When a walker approaches, the game registers the full room with `lights.room` and reduces the proxy's GPU coverage as the walker gets closer. Each viewport can reveal a different amount of the same room. The proxy shell contributes neither shadow casters nor bake geometry while it overlaps the furnished room.
+
+Set the room bounds to its interior extent, reaching the middle of a wall at a doorway or glazed opening. This places the outside face beyond the reflection probe while the inside face can reflect the lit room.
+
+Panel sizes and range are metres. Intensity is candela along the downward axis. Place each emitter just below its visible fixture. A room supports up to eight panels. Enable `light.set({exposure = "auto"})` for eye adaptation.
+
+On entry, Warp traces 64 paths from the room centre through the actual windows, doorway and furnishings. Their sky, sun and fixture contributions reach up to two diffuse bounces. This first sample lights the room immediately while its spatial grid is built. All split-screen views share that grid.
+
+- Native games bake one room at a time on a background worker with up to two cooking threads. The final grid contains up to 2,166 probes, including padding. It uses the full probe-placement, bounce and wall-separation passes.
+- Browser games refine up to 147 probes per room on the main thread. Each frame advances at most four probes in total, taking turns across active rooms. The engine checks a 0.75 ms time budget after each probe. The final grid replaces the first sample when complete. Leaving a room cancels its pending work.
+- The full renderer lights ceiling panels directly with clustered shadows and samples the grid for their diffuse return. It also captures a local reflection probe. On the compact renderer, each grid probe stores the direct illuminance of panels visible from that point alongside their bounced light.
+
+Skinned characters blend between the outdoor and indoor fields across half a metre on either side of the doorway. Static surfaces sample the room at their world position. When the sun moves far enough to require a new bake, the previous spatial field stays visible until its replacement is ready.
+
 ## Look scene
 
 ```
@@ -301,9 +329,8 @@ Other variants (`none`, `vis`, `diffuse`, `sun`, `sep`) show the older
 
 ## Not yet
 
-- No Luau call yet: games written in Luau cannot ask for a room bake.
-- The CPU bake (web, baked files) is slower with the direct sky's second
-  estimate: 1.3 s -> 5 s for 14,000 probes on this machine.
+- For offline CPU bakes, the second direct-sky estimate increased the time for
+  a 14,000-probe grid from 1.3 to 5 seconds on the test machine.
 - Gradients are uploaded only with probe visibility (DDGI); grids without
   it interpolate trilinearly and now show the unsmoothed probes.
 - Probes are 0.5 m apart, so the bake has no contact darkening of its own.

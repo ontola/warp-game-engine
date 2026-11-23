@@ -281,7 +281,10 @@ fn pose_vertex(position:vec4<f32>,direction:vec4<f32>,pivot:vec4<f32>,tags:vec4<
         // As each shoulder lowers, let the wrist settle beside the thigh.
         let tuck=1.-smoothstep(0.18,0.78,-angle);
         let zones=1.-clamp(abs(vec3<f32>(rest.y)-vec3<f32>(0.78,0.57,0.48))/vec3<f32>(0.12,0.13,0.11),vec3<f32>(0.),vec3<f32>(1.));
-        let width=1.+dot(zones*zones*(3.-2.*zones),vec3<f32>(0.13,0.12,0.10)*(2.*vec3<f32>(a.size_phase.zw,a.identity.x)-1.));
+        let sections=vec2<u32>(a.size_phase.zw*16777216.)&vec2<u32>(4095u);
+        let packed=sections.x|(sections.y<<12u);
+        let regions=(unpack4x8unorm(packed).xyz*255.-128.)*(0.15/127.);
+        let width=1.+dot(zones*zones*(3.-2.*zones),regions);
         let head=select(smoothstep(0.825,0.860,select(rest.y,center.y,bin==1u)),face3.w,anatomical);
         let breadth=mix(width,1.,head);
         let skull=mix(1.,a.size_phase.y/a.size_phase.x,head);

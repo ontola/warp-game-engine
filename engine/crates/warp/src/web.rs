@@ -18,6 +18,46 @@ thread_local! {
     static ROOM_LOG: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
+
+#[derive(Default)]
+struct StoryEdit {
+    pending: Option<serde_json::Value>,
+    reply: Option<Result<String, String>>,
+}
+
+thread_local! {
+    static STORY_EDIT: std::cell::RefCell<StoryEdit> = Default::default();
+}
+
+pub fn reset_story_edit() { STORY_EDIT.with(|s| *s.borrow_mut() = StoryEdit::default()); }
+
+pub fn queue_story(definition: &str) -> Result<(), String> {
+    if definition.len() > 128 * 1024 { return Err("Story exceeds 128 KiB".into()); }
+    let definition = serde_json::from_str(definition).map_err(|e| format!("Story data: {e}"))?;
+    STORY_EDIT.with(|s| {
+        let mut edit = s.borrow_mut();
+        if edit.pending.is_some() { return Err("A story is already starting".into()); }
+        edit.reply = None;
+        edit.pending = Some(definition);
+        Ok(())
+    })
+}
+
+pub(crate) fn update_story(game: &mut crate::LuaGame) {
+    let edit = STORY_EDIT.with(|s| s.borrow_mut().pending.take());
+    if let Some(definition) = edit {
+        let result = game.apply_story_data(definition);
+        STORY_EDIT.with(|s| s.borrow_mut().reply = Some(result));
+    }
+}
+
+pub fn story_reply() -> Option<String> {
+    STORY_EDIT.with(|s| s.borrow_mut().reply.take().map(|result| match result {
+        Ok(title) => serde_json::json!({ "title": title }).to_string(),
+        Err(error) => serde_json::json!({ "error": error }).to_string(),
+    }))
+}
+
 pub(crate) fn room_log(line: &str) { ROOM_LOG.with(|l| l.borrow_mut().push(line.to_string())); }
 
 /// The lines games wrote for the room log (`game.log`) since the last call.

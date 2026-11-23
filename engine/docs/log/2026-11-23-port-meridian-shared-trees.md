@@ -1,0 +1,11 @@
+# Shared trees in Warp Theft Auto
+
+Game `f73c2d9f`, browser shelf `f73c2d9f-20261123105548`. The game uses lightweight glTF trees while the engine's articulated vegetation renderer is developed separately. The published game at seed 1948 has 52 city trees sharing one street-tree model, 27 shrub beds, and 720 woodland trees in 48 placements of the mixed-species stand. The two lawns use the existing GPU meadow. The 27 former city pines now use the city's broadleaf model. Their planting sites, yaw and scale still come from the same seed. Each uses the standard street-tree trunk collider.
+
+Only `world.module.luau` and `population.module.luau` changed in the game payload. The two compressed modules together occupy 10,975 bytes. Both models and the WebAssembly host keep their published bytes. The earlier native city had two preview pine variants with 311 and 315 scene part placements per tree. The 27 converted sites now reference a single shared model once per tree.
+
+The native planting regression checks 52 city tree placements, 48 woodland stands and zero growth requests after the game starts. It also checks meadow coverage, clearance on paths and tree grates. The four-player room and forest transition probe ran at seeds 1948 and 53154. Peak initialization was 1,625 entities, with a maximum of 1,538 during the transitions, against the game's 1,800-entity budget. The densest tested four-forest group had 395 active trunk colliders.
+
+Public Edge network measurements included response headers. A cold profile transferred 19,679,593 bytes. A profile primed by visiting the previous public shelf transferred 38,589 bytes for the upgrade. Reopening the new shelf transferred 250 bytes. Both returning profiles transferred zero engine bytes. All 84 published files and the 55 decoded response bodies consumed by the browser matched their expected hashes. The running public game reported zero placed, shown, cooking or failed Warp Vegetation plants.
+
+The public WebGPU build rendered the downtown street trees, both groves and a helicopter view. Keyboard travel crossed the city boundary. The Windows game-only install verified all 51 runtime files against the frozen release and passed 120 ticks with four occupied seats. The browser and Windows builds used their existing engine binaries.

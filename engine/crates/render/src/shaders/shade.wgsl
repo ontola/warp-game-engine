@@ -1,5 +1,5 @@
 fn material_kind(m: Material) -> i32 {
-    return select(-1, -2 - m.layer, (m.flags & 32768u) != 0u && (m.flags & 2u) == 0u);
+    return select(-1, -2 - source_layer(m.layer), (m.flags & 32768u) != 0u && (m.flags & 2u) == 0u);
 }
 fn styled_light(kind: i32, flags: u32, p: vec3<f32>, n: vec3<f32>, base: vec3<f32>, rad: vec3<f32>, shadow: f32) -> StyledLight {
     return game_lighting(LightingSample(kind, flags, p, n, base, rad, light.sun_dir.xyz, light.sun_dir.w, shadow, light.anim.x));
@@ -1447,7 +1447,42 @@ var<private> irradiance_coverage: f32;
 fn unpack_emission(word: u32) -> vec3<f32> {
     return vec3<f32>(f32(word&511u),f32((word>>9u)&511u),f32((word>>18u)&511u))*exp2(f32(word>>27u)-24.0);
 }
-fn irradiance_sample(p: vec3<f32>, n: vec3<f32>) -> IrradianceSample { return irradiance_sample_at(p, p, n); }
+// Mode 8 contains a directory of separately streamed world-space mode-7
+// grids. The sample, its wall planes and its probes all use the same space.
+// A moving skinned mesh can straddle an open doorway. The room's authored
+// wall plane is a streaming boundary, while the diffuse field changes over
+// the extent of a body. Keep fixed room surfaces on their exact side.
+var<private> irradiance_receiver_radius: f32;
+var<private> irradiance_boundary_weight: f32;
+fn irradiance_grid_at(p: vec3<f32>) -> u32 {
+    irradiance_boundary_weight = 1.0;
+    let root=u32(gi.params.w);
+    if !FEATURE_IRRADIANCE || root==0u { return 0u; }
+    if aux_word(root+7u)!=8u { return root; }
+    let rooms=aux_word(root);
+    var best=0.0;
+    var found=0u;
+    for (var i=0u; i<rooms; i++) {
+        let at=root+8u+8u*i;
+        let grid=aux_word(at+3u);
+        if grid==0u { continue; }
+        let low=vec3<f32>(aux_f32(at),aux_f32(at+1u),aux_f32(at+2u));
+        let high=vec3<f32>(aux_f32(at+4u),aux_f32(at+5u),aux_f32(at+6u));
+        if irradiance_receiver_radius <= 0.0 {
+            if all(p>=low) && all(p<=high) { return grid; }
+        } else if p.y >= low.y && p.y <= high.y {
+            let sides=min(p.xz-low.xz,high.xz-p.xz);
+            let w=smoothstep(-irradiance_receiver_radius,irradiance_receiver_radius,min(sides.x,sides.y));
+            if w>best { best=w; found=grid; }
+        }
+    }
+    irradiance_boundary_weight=best;
+    return found;
+}
+
+fn irradiance_sample(p: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
+    return irradiance_sample_at(irradiance_grid_at(p),p,p,n);
+}
 // How far open space joins the probe at grid point `at` to `x` within its
 // neighbourhood (room_bake::bake_reach: one bit per voxel of the cells
 // around the grid point, four voxels per cell, stored after the offsets),
@@ -1537,12 +1572,11 @@ fn probe_sees(index: u32, probe: vec3<f32>, x: vec3<f32>) -> f32 {
 // tests (backface, separation planes) at `surface`: a lookup point moved
 // along the surface (jitter) must not validate probes behind a wall the
 // move crossed.
-fn irradiance_sample_at(p: vec3<f32>, surface: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
+fn irradiance_sample_at(o: u32, p: vec3<f32>, surface: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
     // Plane tests blend over 15 cm, but only 2 cm for a moved lookup: its
     // weights reach probes the blend would let through at a corner.
     let soft=select(0.15,0.02,any(p!=surface));
     let ddgi=gi.trace.w>0.5;
-    let o = u32(gi.params.w);
     if !FEATURE_IRRADIANCE || o == 0u { return IrradianceSample(vec4<f32>(0.0),vec3<f32>(0.0)); }
     let transport = aux_word(o + 7u) >= 2u;
     let sun_transport = aux_word(o + 7u) == 3u;
@@ -1553,7 +1587,7 @@ fn irradiance_sample_at(p: vec3<f32>, surface: vec3<f32>, n: vec3<f32>) -> Irrad
     let f = (p - origin) / cell;
     let last = vec3<f32>(dims - vec3<u32>(1u));
     let outside = max(max(-f, f - last), vec3<f32>(0.0));
-    let weight = clamp(1.0 - max(outside.x, max(outside.y, outside.z)) * 2.0, 0.0, 1.0);
+    let weight = irradiance_boundary_weight * clamp(1.0 - max(outside.x, max(outside.y, outside.z)) * 2.0, 0.0, 1.0);
     if weight <= 0.0 { return IrradianceSample(vec4<f32>(0.0),vec3<f32>(0.0)); }
     let fc = clamp(f, vec3<f32>(0.0), last);
     let cell0 = min(floor(fc), last - 1.0);
@@ -1700,8 +1734,9 @@ fn jittered_irradiance(p: vec3<f32>, px: vec2<i32>, visibility_n: vec3<f32>, n: 
     // next cell holds the adjoining wall's probes and those beyond it, which
     // showed as a bright dotted line along every edge of a room; in open
     // space the move still blurs the cell steps.
-    var q = p + irradiance_jitter(px, visibility_n);
-    let o = u32(gi.params.w);
+    let o = irradiance_grid_at(p);
+    if o == 0u { return IrradianceSample(vec4<f32>(0.0),vec3<f32>(0.0)); }
+    var q = p + irradiance_jitter(o, px, visibility_n);
     if FEATURE_IRRADIANCE && o != 0u && aux_word(o + 7u) >= 4u && gi.trace.w <= 0.5 {
         let origin = vec3<f32>(aux_f32(o), aux_f32(o + 1u), aux_f32(o + 2u));
         let cell = aux_f32(o + 3u);
@@ -1720,8 +1755,8 @@ fn jittered_irradiance(p: vec3<f32>, px: vec2<i32>, visibility_n: vec3<f32>, n: 
         }
     }
     irradiance_coverage = 1.0;
-    let moved = irradiance_sample_at(q, p, n);
-    if moved.value.w < 0.0 { return irradiance_sample(p, n); }
+    let moved = irradiance_sample_at(o, q, p, n);
+    if moved.value.w < 0.0 { return irradiance_sample_at(o, p, p, n); }
     if gi.trace.w > 0.5 && any(q != p) {
         // DDGI: the moved lookup speaks for p only with the share of its
         // weight whose probes see p; renormalised, a move through a wall
@@ -1730,19 +1765,23 @@ fn jittered_irradiance(p: vec3<f32>, px: vec2<i32>, visibility_n: vec3<f32>, n: 
         // The rest comes from the unmoved lookup, chosen stochastically
         // (TAA averages it). On an open wall the share is 1: the blur stays
         // symmetric and cell boundaries leave no trace.
-        if trace_hash(px, light.fog_sampling.x * 16.0 + 29.0).x >= irradiance_coverage { return irradiance_sample(p, n); }
+        if trace_hash(px, light.fog_sampling.x * 16.0 + 29.0).x >= irradiance_coverage { return irradiance_sample_at(o, p, p, n); }
     }
     return moved;
 }
 
-fn irradiance_jitter(px: vec2<i32>, n: vec3<f32>) -> vec3<f32> {
-    let o = u32(gi.params.w);
+fn irradiance_jitter(o: u32, px: vec2<i32>, n: vec3<f32>) -> vec3<f32> {
     if !FEATURE_IRRADIANCE || o == 0u || light.fog_sampling.y < 0.5 { return vec3<f32>(0.0); }
     let cell = aux_f32(o + 3u);
     let xi = trace_hash(px, light.fog_sampling.x * 16.0 + 11.0) * 2.0 - 1.0;
     let t1 = normalize(select(cross(n, vec3<f32>(0.0, 1.0, 0.0)), cross(n, vec3<f32>(1.0, 0.0, 0.0)), abs(n.y) > 0.9));
     let t2 = cross(n, t1);
-    return (t1 * xi.x + t2 * xi.y) * (0.35 * cell);
+    // Streamed rooms can use metre-scale cells and a single coarse preview.
+    // Keep the temporal footprint near the receiving surface instead of
+    // randomly sampling across a doorway or an entire ceiling panel.
+    var radius = 0.35 * cell;
+    if aux_word(u32(gi.params.w) + 7u) == 8u { radius = min(radius, 0.18); }
+    return (t1 * xi.x + t2 * xi.y) * radius;
 }
 
 fn sky_irradiance(n: vec3<f32>) -> vec3<f32> {
@@ -3029,7 +3068,7 @@ fn terrain_coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
     for (var k = 0u; k < 3u; k++) { local += pos_of(vi[k]) * w[k]; }
     let corner = array<vec2<f32>, 3>(vec2<f32>(vertex_f32(vi[0] + 6u), vertex_f32(vi[0] + 7u)),
         vec2<f32>(vertex_f32(vi[1] + 6u), vertex_f32(vi[1] + 7u)), vec2<f32>(vertex_f32(vi[2] + 6u), vertex_f32(vi[2] + 7u)));
-    let si = SurfaceIn(u32(max(-2 - m.layer, 0)), vis.x, p, local, n, dir, vec3<f32>(b0, b1, b2),
+    let si = SurfaceIn(u32(max(-2 - source_layer(m.layer), 0)), vis.x, p, local, n, dir, vec3<f32>(b0, b1, b2),
         corner[0], corner[1], corner[2], fp.dx, fp.dy, m.tint, m.roughness, m.metal, m.scale, light.anim.x);
     field_sun = 1.0;
     let so = field_surface(si, m.layer);
@@ -3164,6 +3203,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     let terrain_class = (material(cl.material).flags & 2u) != 0u && ((material(cl.material).flags >> 16u) & 0x3fffu) == 0u;
     if SHADE_CLASS != 0u && terrain_class != (SHADE_CLASS == 1u) { return; }
     let inst = instance_at(vis.x);
+    irradiance_receiver_radius = select(0.0, 0.5, (inst.flags & 64u) != 0u);
     let packed = tri_word(cl.first_tri + tri);
     var vi: array<u32, 3>;
     for (var k = 0u; k < 3u; k++) {
@@ -3489,7 +3529,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         for (var k = 0u; k < 3u; k++) { local += pos_of(vi[k]) * w[k]; }
         let corner = array<vec2<f32>, 3>(vec2<f32>(vertex_f32(vi[0] + 6u), vertex_f32(vi[0] + 7u)),
             vec2<f32>(vertex_f32(vi[1] + 6u), vertex_f32(vi[1] + 7u)), vec2<f32>(vertex_f32(vi[2] + 6u), vertex_f32(vi[2] + 7u)));
-        let si = SurfaceIn(u32(max(-2 - m.layer, 0)), vis.x, p, local, n, dir, vec3<f32>(b0, b1, b2),
+        let si = SurfaceIn(u32(max(-2 - source_layer(m.layer), 0)), vis.x, p, local, n, dir, vec3<f32>(b0, b1, b2),
             corner[0], corner[1], corner[2], fp.dx, fp.dy, m.tint, rough_m, metal, m.scale, light.anim.x);
         // TERRAIN + SURFACE: the engine's procedural terrain, not the game's.
         var so: SurfaceOut;
@@ -3728,7 +3768,14 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         // capture, box-projected, at the roughness's mip, with the specular
         // occlusion; screen-space reflections replace it where they hit.
         let probe = probe_reflection(p, refl, rough);
-        if probe.a > 0.0 { env = mix(env, probe.rgb * spec_contact, probe.a); }
+        if probe.a > 0.0 {
+            // At high roughness the reflected lobe approaches the hemisphere.
+            // The room-centre capture can see a sunlit opening behind this
+            // receiver. Anchor its broadest lobe to the local diffuse field.
+            let broad = smoothstep(0.55, 1.0, rough) * max(room.w, 0.0);
+            let local = mix(probe.rgb * spec_contact, ambient / PI, broad);
+            env = mix(env, local, probe.a);
+        }
         if coat <= 0.0 && rough < gi.trace.y && !stochastic {
             let traced = traced_reflection(p, visibility_n, refl, rough, px, size, dist);
             env = mix(env, traced.rgb, traced.a);
@@ -3824,7 +3871,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     rad = style.radiance;
     // Hit flash (instance bits 16..23): the body itself lights up white,
     // nearly evenly; a slight facing term keeps its form readable.
-    let flash = f32((inst.flags >> 16u) & 0xffu) / 255.0;
+    let flash = select(f32(instance_byte(inst.flags)) / 255.0, 0.0, lod_proxy(m.layer));
     if flash > 0.0 {
         let facing = clamp(dot(n, -dir), 0.0, 1.0);
         let white = vec3<f32>(1.0, 0.97, 0.92) * light.anim.z * (0.8 + 0.2 * facing);
@@ -3952,11 +3999,14 @@ fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool) {
         textureStore(out_hdr,px,vec4<f32>(visible_background_radiance(dir),1.0));return;
     }
     let vis=visible[id>>7u];let cl=clusters[vis.y];let inst=instance_at(vis.x);
+    irradiance_receiver_radius = select(0.0, 0.5, (inst.flags & 64u) != 0u);
     let packed=tri_word(cl.first_tri+(id&127u));
     var points:array<vec3<f32>,3>;var normals:array<vec3<f32>,3>;var uvs:array<vec2<f32>,3>;
+    var local_points:array<vec3<f32>,3>;
     for(var k=0u;k<3u;k++) {
         let v=cluster_vert(cl.first_vert+((packed>>(8u*k))&255u))*8u;
         let pos=vec4<f32>(vertex_f32(v),vertex_f32(v+1u),vertex_f32(v+2u),1.0);
+        local_points[k]=pos.xyz;
         points[k]=wind_position(member_slot(vis.x),inst.r1.w,vec3<f32>(dot(inst.r0,pos),dot(inst.r1,pos),dot(inst.r2,pos)));
         normals[k]=vec3<f32>(vertex_f32(v+3u),vertex_f32(v+4u),vertex_f32(v+5u));
         uvs[k]=vec2<f32>(vertex_f32(v+6u),vertex_f32(v+7u));
@@ -3969,17 +4019,22 @@ fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool) {
     var n=normalize(wind_normal(member_slot(vis.x),xform_dir(inst,authored)));
     if dot(n,dir)>0.0 {n=-n;}
     let m=material(cl.material);var base=m.tint;
+    var surface_emit = vec3<f32>(0.0);
     var sun_vis = 1.0;
     if terrain_lighting {
         let geometric_n = safe_normalize(cross(e1, e2));
         let plane_n = faceForward(geometric_n, dir, geometric_n);
-        if (m.flags & 32770u) == 32770u {
+        if (m.flags & 32768u) != 0u {
             set_pixel_footprint(ndc, p, plane_n, distance(p, view.cam.xyz));
-            let si = SurfaceIn(0u, vis.x, p, p, n, dir, vec3<f32>(b0,b1,b2), uvs[0],uvs[1],uvs[2],
+            let local = local_points[0]*b0 + local_points[1]*b1 + local_points[2]*b2;
+            let si = SurfaceIn(u32(max(-2 - source_layer(m.layer), 0)), vis.x, p, local, n, dir, vec3<f32>(b0,b1,b2), uvs[0],uvs[1],uvs[2],
                                fp.dx, fp.dy, m.tint, m.roughness, m.metal, m.scale, light.anim.x);
-            let ground = field_surface(si, m.layer);
-            base = ground.albedo;
-            n = ground.normal;
+            var surface: SurfaceOut;
+            if (m.flags & 2u) != 0u { surface = field_surface(si, m.layer); }
+            else { surface = game_surface(si); }
+            base = surface.albedo;
+            n = surface.normal;
+            surface_emit = surface.emission;
         } else if m.layer == -3 && (m.flags & (4608u | 32768u)) == 0u {
             let bark = bark_surface(p, n, m.scale);
             base = bark.albedo;
@@ -3989,21 +4044,35 @@ fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool) {
             sun_vis = shadow_detail_receiver(p, n, plane_n);
             if world_visibility.params.w > 0.5 { sun_vis = min(sun_vis, world_terrain_baked_sun(p)); }
         }
+        sun_vis *= cloud_sun_transmittance(p, light.sun_dir.xyz, light.clouds, light.cloud_motion);
     }
     if m.layer>=0 && !(terrain_lighting && (m.flags&32770u)==32770u) {let uv=uvs[0]*b0+uvs[1]*b1+uvs[2]*b2;
         base*=textureSampleLevel(albedo,samp,uv,m.layer,max(log2(max(distance(p,view.cam.xyz)*0.03,1.0)),albedo_lod_floor(m.layer))).rgb;}
-    let ambient=sky_irradiance(n);
+    var ambient=sky_irradiance(n);
+    if FEATURE_IRRADIANCE && gi.params.w > 0.0 {
+        let cached=irradiance_sample(p+n*0.05,n);
+        let room=cached.value;
+        if room.w>0.0 {
+            var corrected=room.rgb;
+            if aux_word(u32(gi.params.w)+7u)>=1u {
+                corrected=ambient*clamp(room.x,0.0,1.0) + sky_irradiance(vec3<f32>(0.0,1.0,0.0))*room.y
+                    + light.sun_color.rgb*light.sun_dir.w*max(room.z,0.0) + cached.emission*light.anim.y;
+            }
+            ambient=mix(ambient,corrected,room.w);
+        }
+    }
     var rad=base*(ambient+light.sun_color.rgb*light.sun_dir.w*sun_vis*max(dot(n,light.sun_dir.xyz),0.0))/3.14159265;
     for(var index=0u;index<incident_light_count(p);index++) {
         if dot(n,incident_light_position(index)-p)<=0.0 {continue;}
         let sample=incident_light_sample(index,p,n);
         rad+=base*sample.irradiance*max(dot(n,sample.direction),0.0)/PI;
     }
+    rad += surface_emit * light.anim.y;
     if (m.flags&1024u)!=0u {rad+=base*abs(m.scale)*light.anim.y;}
     if (m.flags&4096u)!=0u {rad=base*m.scale*light.anim.y;}
     let style = styled_light(material_kind(m), m.flags, p, n, base, rad, 1.0);
     rad = style.radiance;
-    let flash=f32((inst.flags>>16u)&255u)/255.0;
+    let flash=select(f32(instance_byte(inst.flags)) / 255.0, 0.0, lod_proxy(m.layer));
     rad=mix(rad,vec3<f32>(1.0,0.97,0.92)*light.anim.z*(0.8+0.2*max(dot(n,-dir),0.0)),flash*0.9);
     let glow=game_glow(p,vis.x,cl.material);rad=rad*(1.0-glow.a)+glow.rgb;
     rad=apply_distance_fog(rad,distance(p,view.cam.xyz),dir);

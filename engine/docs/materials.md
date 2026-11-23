@@ -66,6 +66,16 @@ game's surfaces apart. SpaceRacer and Spellstorm use it, and the `warp`
 runtime hot reloads it from a game's `surface.wgsl`. Its result then takes
 the weathering layers like any other material.
 
+## Shading on simplified glTF meshes
+
+Set `"extras": {"warpPreserveShading": true}` on a glTF material when broad
+glossy panels show distorted reflections as the camera pulls back. For
+primitives using that material, Warp considers authored vertex normals
+alongside position when building lower-detail geometry. Textured materials
+also preserve UV seams. The mesh still
+simplifies with distance. Leave the field unset to use the default geometric
+error metric.
+
 ## Artist lighting and image effects
 
 A game folder can contain either or both of these WGSL files. Warp reads

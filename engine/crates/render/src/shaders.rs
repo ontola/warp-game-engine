@@ -13,9 +13,10 @@
 use std::path::PathBuf;
 
 /// The built-in copies of every file that can be read from disk.
-pub(crate) const SHARED_NAMES: [&str; 25] = ["game_lighting_types.wgsl", "game_lighting.wgsl", "cloud_weather.wgsl", "game_surface.wgsl", "terrain_field.wgsl", "forest_field.wgsl", "terrain_surface.wgsl", "wind_common.wgsl", "terrain_trace.wgsl", "meadow_field.wgsl", "meadow_canopy.wgsl", "foliage_volume.wgsl", "surface_fog.wgsl", "shade.wgsl",
+pub(crate) const SHARED_NAMES: [&str; 26] = ["lod_coverage.wgsl", "game_lighting_types.wgsl", "game_lighting.wgsl", "cloud_weather.wgsl", "game_surface.wgsl", "terrain_field.wgsl", "forest_field.wgsl", "terrain_surface.wgsl", "wind_common.wgsl", "terrain_trace.wgsl", "meadow_field.wgsl", "meadow_canopy.wgsl", "foliage_volume.wgsl", "surface_fog.wgsl", "shade.wgsl",
     "world_visibility.wgsl", "foliage_sun_pages.wgsl", "car_material.wgsl", "grass_lighting.wgsl", "incident_lights.wgsl", "headlights.wgsl", "clustered_lights.wgsl", "rsm.wgsl", "froxel_fog.wgsl", "car_lamps.wgsl", "procedural_surface.wgsl"];
-const BUILT_IN: [(&str, &str); 29] = [
+const BUILT_IN: [(&str, &str); 30] = [
+    ("lod_coverage.wgsl", include_str!("shaders/lod_coverage.wgsl")),
     ("game_lighting_types.wgsl", include_str!("shaders/game_lighting_types.wgsl")),
     ("game_lighting.wgsl", include_str!("shaders/game_lighting.wgsl")),
     ("surface_fog.wgsl", include_str!("shaders/surface_fog.wgsl")),
@@ -189,6 +190,30 @@ pub fn stamp() -> Option<std::time::SystemTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_lighting_runs_the_games_surface_hook() {
+        // Only the game hook reads this private marker. Shader reflection therefore
+        // catches a compact material path that silently draws flat tints.
+        let mut snapshot = Snapshot::read(None).unwrap();
+        let slot = BUILT_IN.iter().position(|(name, _)| *name == "game_surface.wgsl").unwrap();
+        snapshot.files[slot] = format!("var<private> surface_marker: vec3<f32>;\n{}",
+            built_in("game_surface.wgsl").replace("SurfaceOut(s.tint,", "SurfaceOut(surface_marker,"));
+        let source = snapshot.shade();
+        let module = naga::front::wgsl::parse_str(&source)
+            .unwrap_or_else(|error| panic!("{}", error.emit_to_string(&source)));
+        let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+            .validate(&module).unwrap_or_else(|error| panic!("{}", error.emit_to_string(&source)));
+        let marker = module.global_variables.iter().find(|(_, var)| var.name.as_deref() == Some("surface_marker")).unwrap().0;
+        let compact = module.entry_points.iter().position(|point| point.name == "shade_compact").unwrap();
+        assert!(!info.get_entry_point(compact)[marker].is_empty());
+        // Both lighting paths must consume the streamed room's diffuse field.
+        // This global is written only while selecting/sampling an irradiance grid.
+        let room = module.global_variables.iter().find(|(_, var)| var.name.as_deref() == Some("irradiance_boundary_weight")).unwrap().0;
+        let full = module.entry_points.iter().position(|point| point.name == "shade").unwrap();
+        assert!(!info.get_entry_point(compact)[room].is_empty());
+        assert!(!info.get_entry_point(full)[room].is_empty());
+    }
 
     #[test]
     fn shared_volume_optics_have_no_resource_bindings_and_preserve_cell_layout() {

@@ -65,7 +65,10 @@ fn meadow_ground_at(xz:vec2<f32>)->MeadowGround {
     result.height=dot(vec3<f32>(aa.x,bb.x,cc.x),weights);
     result.road=dot(vec3<f32>(aa.y,bb.y,cc.y),weights);
     result.road_gradient=road_gradient;
-    result.road_plane_safe=meadow_road_plane_safe(f,meadow.field.z,meadow.support.x);
+    // A baked clearance plane can extend across neighbouring triangles. Natural
+    // fields with a zero certificate keep their original within-triangle test.
+    result.road_plane_safe=meadow_ground[a].w>=meadow.support.x
+        || meadow_road_plane_safe(f,meadow.field.z,meadow.support.x);
     result.up=inverseSqrt(1.0+dot(slope,slope));result.slope=slope;result.valid=true;return result;
 }
 fn meadow_write4(offset:u32,value:vec4<f32>) {
@@ -232,7 +235,8 @@ fn meadow_generate_cell(cell:vec2<i32>,page:bool)->MeadowCandidate {
     // Full-angle yaw removes repeated axis-aligned patch edges. Existing
     // anchor/blade radial bounds cover every angle, including road trimming.
     let yaw=meadow_random(cell,3u,seed)*MEADOW_TAU;
-    let pigment=meadow_material_tint(xz,cell,seed);
+    let natural_pigment=meadow_material_tint(xz,cell,seed);
+    let pigment=select(natural_pigment,mix(vec3<f32>(1.0),natural_pigment,0.32),meadow_recipe[0].w>0.5);
     result.plant.yaw=vec4<f32>(cos(yaw),sin(yaw),ground.slope);
     // World-cell identity has already seeded placement/wind. These formerly
     // unused render words carry the edge plane in both serialized layouts.

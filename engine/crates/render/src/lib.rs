@@ -105,6 +105,7 @@ pub mod shade_features;
 pub mod shaders;
 pub mod atmosphere;
 pub mod sky;
+pub mod daylight;
 pub mod radiance_cache;
 pub mod radiance_cache_gpu;
 pub mod headlights;
@@ -292,8 +293,8 @@ mod shader_tests {
 
     #[test]
     fn composed_transparency_shader_validates() {
-        for refraction in [false, true] {
-            let src = crate::transparency::with_refraction(&crate::transparency::shader_source(), refraction);
+        for (refraction, room) in [(false, false), (true, false), (false, true), (true, true)] {
+            let src = crate::transparency::with_refraction(&crate::transparency::shader_source(), refraction, room);
             let module = naga::front::wgsl::parse_str(&src).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&src)));
             let mut validator = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all());
             validator.validate(&module).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&src)));

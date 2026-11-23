@@ -1,0 +1,33 @@
+title = "Warp Theft Auto"
+id = "warp-theft-auto"
+players = 1
+split = true
+room_lighting = true
+tick_rate = 60
+seed = 1948
+fresh_seed = true
+sky = "afternoon:clear"
+max_entities = 1800
+steps = 3600000
+memory_mb = 96
+
+[humans.local]
+count = 4
+reserved = 4
+variety = 4
+height = [1.63, 1.87]
+seed = 45
+
+[humans.resident]
+count = 40
+distant = 768
+variety = 9
+age = [22, 77]
+seed = 51
+
+[humans.rival]
+count = 2
+variety = 2
+age = [24, 50]
+shirt = "#9b3043"
+seed = 347

@@ -100,6 +100,16 @@ person), `speed` (kart). Extras: `platformer:bounce(speed?)`,
 `walker:push(impulse)`, `walker:stick(input)`, `kart:boost(seconds,
 extra?)`, `kart:speed01()`.
 
+## kit/crowd
+
+`require("kit/crowd").new(pool, radius)` shares a fitted Warp Humans pool among cameras. Give each candidate a stable positive integer ID, feet `pos`, human `yaw`, and optional `active` and `pose`. IDs can have gaps as areas unload. Call `crowd:select(candidates, observerPositions)` periodically to allocate the nearest people in turns across observers. An optional third argument `rank(candidate, observerIndex, squaredDistance)` prioritizes candidates per view. Return a lower number for a higher priority or `nil` to exclude a person from that view’s selection. Call `crowd:update(candidates)` each tick to animate the selected people. The game owns their routes and schedules.
+
+A third argument to `crowd.new(pool, radius, seed)` assigns stable appearances. Set `distant` in the pool's TOML to reserve low-detail residents. At each selection, call `humans.distant(pool, streetRows, crowd.active, seconds)` with a dense array of candidates, their next feet position in `nextPos`, and their next heading in `nextYaw`. The renderer interpolates one shared set of unskinned bodies between these snapshots. A fitted resident keeps the same body dimensions, garment dyes, skin and hair. `crowd:promote(id, candidates, observers)` fits a resident for an immediate interaction. Set `externalPose` while another system drives that actor's pose.
+
+## kit/daycycle
+
+`require("kit/daycycle").new(startHour, secondsPerDay, weather)` creates a game-time clock. Call `daycycle.tick(clock, dt)` once per simulation tick. All views share its `hour`, `phase` and `daylight`. It switches between six sky presets and warms the next atmospheric bake before the transition.
+
 ## kit/camera
 
 ```lua

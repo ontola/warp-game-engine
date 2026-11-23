@@ -44,6 +44,7 @@ fn pack_optics(refraction: crate::scene::Refraction) -> u32 {
     ior | (thickness << 16)
 }
 
+#[derive(Clone, Copy)]
 struct SortTriangle {
     owner: u32,
     center: Vec3,
@@ -89,15 +90,11 @@ pub(crate) struct Transparency {
     source: String,
     view_layout: wgpu::BindGroupLayout,
     geometry_layout: wgpu::BindGroupLayout,
-    triangles: wgpu::Buffer,
-    sort_triangles: Vec<SortTriangle>,
-    // Only owners of blended geometry: do not mirror a whole forest on CPU.
-    owners: Mutex<HashMap<u32, GpuInstance>>,
-    // One reusable order buffer per view avoids rewriting a preceding view's
-    // indices before its commands execute at the shared queue submission.
-    orders: Mutex<Vec<OrderBuffer>>,
+    geometry: Mutex<BlendGeometry>,
+    draws: Mutex<DrawGeometry>,
     motion_targets: Mutex<Vec<Option<wgpu::TextureView>>>,
     refraction: Option<Refraction>,
+    room_reflections: bool,
 }
 
 struct Pipelines {
@@ -123,8 +120,9 @@ pub(crate) fn shader_source() -> String {
 }
 
 /// The forward source with the refraction group, or with its stub.
-pub(crate) fn with_refraction(source: &str, refraction: bool) -> String {
-    format!("{source}\n{}", if refraction {
+pub(crate) fn with_refraction(source: &str, refraction: bool, room_reflections: bool) -> String {
+    let room = if room_reflections { "return probe_reflection(p, r, rough);" } else { "return vec4<f32>(0.0);" };
+    format!("{source}\nfn glass_room_reflection(p: vec3<f32>, r: vec3<f32>, rough: f32) -> vec4<f32> {{ {room} }}\n{}", if refraction {
         include_str!("shaders/transparency_refraction.wgsl")
     } else {
         include_str!("shaders/transparency_refraction_off.wgsl")
@@ -132,10 +130,10 @@ pub(crate) fn with_refraction(source: &str, refraction: bool) -> String {
 }
 
 /// Native glass and glass with DLSS motion metadata from one composed source.
-fn pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, front: Option<&wgpu::PipelineLayout>) -> Pipelines {
+fn pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, front: Option<&wgpu::PipelineLayout>, room_reflections: bool) -> Pipelines {
     let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("transparent car surfaces"),
-        source: wgpu::ShaderSource::Wgsl(with_refraction(source, front.is_some()).into()),
+        source: wgpu::ShaderSource::Wgsl(with_refraction(source, front.is_some(), room_reflections).into()),
     });
     let front = front.map(|front_layout| gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("refracting glass front depth"),
@@ -207,57 +205,130 @@ fn pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, front: Opti
     Pipelines { draw, front }
 }
 
-fn source_triangles(
-    scene: &Scene,
-) -> (Vec<Triangle>, Vec<SortTriangle>, HashMap<u32, GpuInstance>) {
+type MeshKey = (u32, u32);
+struct MeshTriangles {
+    triangles: Vec<Triangle>,
+    sorting: Vec<SortTriangle>,
+}
+struct BlendGeometry {
+    templates: HashMap<MeshKey, MeshTriangles>,
+    owners: HashMap<u32, GpuInstance>,
+    topology_changed: bool,
+}
+struct DrawGeometry {
+    triangles: wgpu::Buffer,
+    sorting: Vec<SortTriangle>,
+    orders: Vec<OrderBuffer>,
+}
+
+fn mesh_triangles(scene: &Scene, start: u32, count: u32) -> MeshTriangles {
     let mut triangles = Vec::new();
     let mut sorting = Vec::new();
-    let mut owners = HashMap::new();
-    for (owner, instance) in scene.instances.iter().enumerate() {
-        // Zero-cluster owners (virtual branches pack templates in first_cluster).
-        if instance.cluster_count == 0 { continue; }
-        let start = instance.first_cluster as usize;
-        let end = start + instance.cluster_count as usize;
-        for cluster in &scene.clusters[start..end] {
-            if cluster.own_error != 0.0 {
-                continue;
-            }
-            let Some(blend) = scene.blended_materials.get(&cluster.material) else {
-                continue;
-            };
-            for triangle in cluster.first_tri..cluster.first_tri + cluster.tri_count {
-                let packed = scene.tris[triangle as usize];
-                let indices = std::array::from_fn(|corner| {
-                    scene.cluster_verts
-                        [cluster.first_vert as usize + ((packed >> (corner * 8)) & 255) as usize]
-                });
-                let center = indices
-                    .iter()
-                    .map(|&index| Vec3::from(scene.vertices[index as usize].pos))
-                    .sum::<Vec3>()
-                    / 3.0;
-                let emissive = scene.materials[cluster.material as usize].flags & crate::scene::EMISSIVE != 0;
-                let refraction = blend.refraction.filter(|_| !blend.additive && !emissive);
-                triangles.push(Triangle {
-                    vertices: indices,
-                    owner: owner as u32,
-                    material: cluster.material,
-                    alpha: blend.alpha,
-                    flags: u32::from(blend.double_sided) * DOUBLE_SIDED
-                        | u32::from(blend.additive) * ADDITIVE
-                        | u32::from(refraction.is_some()) * REFRACTS,
-                    optics: refraction.map_or(0, pack_optics),
-                });
-                sorting.push(SortTriangle {
-                    owner: owner as u32,
-                    center: if blend.object_sort { Vec3::ZERO } else { center },
-                    refracts: refraction.is_some(),
-                });
-                owners.insert(owner as u32, *instance);
+    let start = start as usize;
+    let end = start + count as usize;
+    for cluster in &scene.clusters[start..end] {
+        if cluster.own_error != 0.0 {
+            continue;
+        }
+        let Some(blend) = scene.blended_materials.get(&cluster.material) else {
+            continue;
+        };
+        for triangle in cluster.first_tri..cluster.first_tri + cluster.tri_count {
+            let packed = scene.tris[triangle as usize];
+            let indices = std::array::from_fn(|corner| {
+                scene.cluster_verts
+                    [cluster.first_vert as usize + ((packed >> (corner * 8)) & 255) as usize]
+            });
+            let center = indices
+                .iter()
+                .map(|&index| Vec3::from(scene.vertices[index as usize].pos))
+                .sum::<Vec3>()
+                / 3.0;
+            let emissive = scene.materials[cluster.material as usize].flags & crate::scene::EMISSIVE != 0;
+            let refraction = blend.refraction.filter(|_| !blend.additive && !emissive);
+            triangles.push(Triangle {
+                vertices: indices,
+                owner: 0,
+                material: cluster.material,
+                alpha: blend.alpha,
+                flags: u32::from(blend.double_sided) * DOUBLE_SIDED
+                    | u32::from(blend.additive) * ADDITIVE
+                    | u32::from(refraction.is_some()) * REFRACTS,
+                optics: refraction.map_or(0, pack_optics),
+            });
+            sorting.push(SortTriangle {
+                owner: 0,
+                center: if blend.object_sort { Vec3::ZERO } else { center },
+                refracts: refraction.is_some(),
+            });
+        }
+    }
+    MeshTriangles { triangles, sorting }
+}
+
+impl BlendGeometry {
+    fn new(scene: &Scene) -> Self {
+        // Warmed meshes can have no live instances yet. Compile their glass
+        // once so slot reuse can add and remove owners without a scene rebuild.
+        let mut keys = std::collections::BTreeSet::new();
+        keys.extend(scene.meshes.iter().map(|m| (m.first_cluster, m.cluster_count)));
+        keys.extend(scene.instances.iter().map(|i| (i.first_cluster, i.cluster_count)));
+        let mut templates = HashMap::new();
+        for (start, count) in keys {
+            if count == 0 { continue; }
+            let mesh = mesh_triangles(scene, start, count);
+            if !mesh.triangles.is_empty() { templates.insert((start, count), mesh); }
+        }
+        let mut geometry = Self { templates, owners: HashMap::new(), topology_changed: false };
+        geometry.update(0, &scene.instances);
+        geometry
+    }
+
+    fn update(&mut self, first: usize, instances: &[GpuInstance]) {
+        for (i, instance) in instances.iter().enumerate() {
+            let owner = (first + i) as u32;
+            let mesh = (instance.first_cluster, instance.cluster_count);
+            if self.templates.contains_key(&mesh) {
+                let prev = self.owners.insert(owner, *instance);
+                if prev.is_none_or(|p| (p.first_cluster, p.cluster_count) != mesh) { self.topology_changed = true; }
+            } else if self.owners.remove(&owner).is_some() {
+                self.topology_changed = true;
             }
         }
     }
-    (triangles, sorting, owners)
+
+    fn assemble(&self) -> (Vec<Triangle>, Vec<SortTriangle>) {
+        let mut triangles = Vec::new();
+        let mut sorting = Vec::new();
+        let mut owners: Vec<_> = self.owners.keys().copied().collect();
+        owners.sort_unstable();
+        for owner in owners {
+            let instance = self.owners[&owner];
+            let mesh = &self.templates[&(instance.first_cluster, instance.cluster_count)];
+            triangles.extend(mesh.triangles.iter().map(|t| Triangle { owner, ..*t }));
+            sorting.extend(mesh.sorting.iter().map(|t| SortTriangle { owner, ..*t }));
+        }
+        (triangles, sorting)
+    }
+
+    fn upload(&mut self, gpu: &Gpu) -> DrawGeometry {
+        let (triangles, sorting) = self.assemble();
+        self.topology_changed = false;
+        let empty = Triangle::zeroed();
+        let buffer = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("transparent triangles"),
+            contents: if triangles.is_empty() { bytemuck::bytes_of(&empty) } else { bytemuck::cast_slice(&triangles) },
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        DrawGeometry { triangles: buffer, sorting, orders: Vec::new() }
+    }
+}
+
+#[cfg(test)]
+fn source_triangles(scene: &Scene) -> (Vec<Triangle>, Vec<SortTriangle>, HashMap<u32, GpuInstance>) {
+    let geometry = BlendGeometry::new(scene);
+    let (triangles, sorting) = geometry.assemble();
+    (triangles, sorting, geometry.owners)
 }
 
 fn sorted_indices(
@@ -310,7 +381,7 @@ fn visible_in_view(instance: &GpuInstance, view_index: usize, excluded_categorie
 
 /// The transparent view group (group 1 of transparency.wgsl): the view
 /// uniforms, shadows, sky and fog the glass is lit with.
-pub(crate) fn view_bindings() -> Vec<(u32, wgpu::BindingType)> {
+pub(crate) fn view_bindings(room_reflections: bool) -> Vec<(u32, wgpu::BindingType)> {
     let uniform = wgpu::BindingType::Buffer {
         ty: wgpu::BufferBindingType::Uniform,
         has_dynamic_offset: false,
@@ -321,7 +392,7 @@ pub(crate) fn view_bindings() -> Vec<(u32, wgpu::BindingType)> {
         view_dimension,
         multisampled: false,
     };
-    vec![
+    let mut entries = vec![
         (0, uniform),
         (2, uniform),
         (
@@ -377,12 +448,16 @@ pub(crate) fn view_bindings() -> Vec<(u32, wgpu::BindingType)> {
                 wgpu::TextureViewDimension::D3,
             ),
         ),
-    ]
+    ];
+    if room_reflections {
+        entries.push((27, texture(wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::CubeArray)));
+    }
+    entries
 }
 
 impl Transparency {
     pub(crate) fn triangle_count(&self) -> u32 {
-        self.sort_triangles.len() as u32
+        self.draws.lock().unwrap().sorting.len() as u32
     }
 
     pub(crate) fn new(
@@ -390,16 +465,16 @@ impl Transparency {
         scene: &Scene,
         scene_layout: &wgpu::BindGroupLayout,
     ) -> Option<Self> {
-        let (triangles, sort_triangles, owners) = source_triangles(scene);
-        if triangles.is_empty() {
-            return None;
-        }
+        if scene.blended_materials.is_empty() { return None; }
+        let mut geometry = BlendGeometry::new(scene);
+        if geometry.templates.is_empty() { return None; }
         // A browser's WebGPU may offer fewer sampled textures per stage than
         // glass reads (16 against 17): the scene draws without it there.
-        let refracts = refraction_requested(scene) && sort_triangles.iter().any(|t| t.refracts);
-        if crate::frame::transparency_sampled_textures(refracts) > gpu.limits.max_sampled_textures_per_shader_stage {
-            return None;
-        }
+        let limit = gpu.limits.max_sampled_textures_per_shader_stage;
+        if crate::frame::transparency_sampled_textures(false) > limit { return None; }
+        let refracts = refraction_requested(scene) && crate::frame::transparency_sampled_textures(true) <= limit
+            && geometry.templates.values().any(|m| m.sorting.iter().any(|t| t.refracts));
+        let room_reflections = crate::frame::transparency_sampled_textures(refracts) < limit;
         let read_buffer = wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Storage { read_only: true },
             has_dynamic_offset: false,
@@ -411,7 +486,7 @@ impl Transparency {
             multisampled: false,
         };
         let all = wgpu::ShaderStages::VERTEX_FRAGMENT;
-        let entries = view_bindings();
+        let entries = view_bindings(room_reflections);
         let view_layout = gpu
             .device
             .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -475,26 +550,18 @@ impl Transparency {
                 immediate_size: 0,
             });
         let source = shader_source();
-        let pipelines = pipelines(gpu, &layout, &source, refraction.as_ref().map(|r| &r.front_layout));
-        let triangles = gpu
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("transparent source triangles"),
-                contents: bytemuck::cast_slice(&triangles),
-                usage: wgpu::BufferUsages::STORAGE,
-            });
+        let pipelines = pipelines(gpu, &layout, &source, refraction.as_ref().map(|r| &r.front_layout), room_reflections);
+        let draws = geometry.upload(gpu);
         Some(Self {
             pipelines,
             layout,
             source,
             view_layout,
             geometry_layout,
-            triangles,
-            sort_triangles,
-            owners: Mutex::new(owners),
-            orders: Mutex::new(Vec::new()),
+            geometry: Mutex::new(geometry),
+            draws: Mutex::new(draws),
             motion_targets: Mutex::new(Vec::new()),
-            refraction,
+            refraction, room_reflections,
         })
     }
 
@@ -504,7 +571,7 @@ impl Transparency {
         if source == self.source {
             return Ok(None);
         }
-        let pipelines = crate::shaders::checked(gpu, || pipelines(gpu, &self.layout, &source, self.refraction.as_ref().map(|r| &r.front_layout)))?;
+        let pipelines = crate::shaders::checked(gpu, || pipelines(gpu, &self.layout, &source, self.refraction.as_ref().map(|r| &r.front_layout), self.room_reflections))?;
         Ok(Some(Reload { pipelines, source }))
     }
     pub(crate) fn commit_reload(&mut self, reload: Reload) {
@@ -513,14 +580,7 @@ impl Transparency {
     }
 
     pub(crate) fn update_instances(&self, first: usize, instances: &[GpuInstance]) {
-        let mut owners = self.owners.lock().unwrap();
-        for (&owner, value) in owners.iter_mut() {
-            if let Some(offset) = (owner as usize).checked_sub(first) {
-                if let Some(instance) = instances.get(offset) {
-                    *value = *instance;
-                }
-            }
-        }
+        self.geometry.lock().unwrap().update(first, instances);
     }
 
     pub(crate) fn render(
@@ -537,15 +597,21 @@ impl Transparency {
         motion: bool,
         excluded_categories: u32,
     ) {
-        let owners=self.owners.lock().unwrap();
-        let indices = sorted_indices(&self.sort_triangles, &owners, camera, view_index, excluded_categories);
-        drop(owners);
-        let mut orders = self.orders.lock().unwrap();
+        let mut geometry = self.geometry.lock().unwrap();
+        let mut draws = self.draws.lock().unwrap();
+        if geometry.topology_changed { *draws = geometry.upload(gpu); }
+        let DrawGeometry { triangles, sorting, orders } = &mut *draws;
+        let indices = sorted_indices(sorting, &geometry.owners, camera, view_index, excluded_categories);
+        drop(geometry);
+        if indices.is_empty() {
+            if let Some(layer) = self.motion_targets.lock().unwrap().get_mut(view_index) { *layer = None; }
+            return;
+        }
         while orders.len() <= view_index {
             let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("transparent view order"),
                 // Refraction draws the list up to three times (see PHASE_*).
-                size: (self.sort_triangles.len() as u64 * 4 * if self.refraction.is_some() { 3 } else { 1 }).max(4),
+                size: (sorting.len() as u64 * 4 * if self.refraction.is_some() { 3 } else { 1 }).max(4),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
@@ -555,7 +621,7 @@ impl Transparency {
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: self.triangles.as_entire_binding(),
+                        resource: triangles.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
@@ -571,7 +637,7 @@ impl Transparency {
         // then a copy of the HDR, then that surface bent over the copy, then
         // glass nearer than it.
         let refracting: Vec<u32> = self.refraction.as_ref().map_or_else(Vec::new, |_| {
-            indices.iter().copied().filter(|&i| self.sort_triangles[i as usize].refracts).collect()
+            indices.iter().copied().filter(|&i| sorting[i as usize].refracts).collect()
         });
         let entries: Vec<u32> = if refracting.is_empty() {
             indices.iter().map(|&i| i | PHASE_ALL << 30).collect()
@@ -612,7 +678,7 @@ impl Transparency {
             label: Some("transparent view"),
             layout: &self.view_layout,
             entries: &bindings
-                .iter()
+                .iter().filter(|(binding, _)| *binding != 27 || self.room_reflections)
                 .map(|(binding, resource)| wgpu::BindGroupEntry {
                     binding: *binding,
                     resource: resource.clone(),
@@ -813,6 +879,37 @@ mod tests {
         assert_eq!(sorting.iter().map(|t| t.refracts).collect::<Vec<_>>(), [true, false, false]);
         assert_eq!(triangles[0].optics, pack_optics(Refraction::WINDOW));
         assert_eq!(triangles[0].alpha, 0.3);
+    }
+
+    #[test]
+    fn warmed_glass_follows_reused_slots_without_loading_distant_instances() {
+        use crate::scene::{Material, Refraction};
+        let mut scene = Scene::default();
+        let material = Material { tint: [1.0; 3], layer: -1, roughness: 0.04, flags: 0, scale: 1.0, metal: 0.0 };
+        let wall = scene.add_material(material);
+        let glass = scene.add_material(material);
+        scene.set_material_blend(glass, 0.045, true);
+        scene.set_material_refraction(glass, Refraction::WINDOW);
+        let cube = scene.add_mesh(&crate::primitives::cube(wall).mesh());
+        let pane = scene.add_mesh(&crate::primitives::quad(glass).mesh());
+        scene.add_instance(cube, glam::Affine3A::IDENTITY);
+        let mut geometry = BlendGeometry::new(&scene);
+        assert!(geometry.assemble().0.is_empty());
+        scene.add_instance(pane, glam::Affine3A::IDENTITY);
+        let mut active = scene.instances[1];
+        geometry.update(0, &[active]);
+        let (triangles, _) = geometry.assemble();
+        assert_eq!(triangles.len(), 2);
+        assert!(triangles.iter().all(|t| t.owner == 0 && t.optics == pack_optics(Refraction::WINDOW)));
+        geometry.topology_changed = false;
+        active.rows[0][3] = 9.0;
+        geometry.update(0, &[active]);
+        assert!(!geometry.topology_changed);
+        assert_eq!(geometry.owners[&0].rows[0][3], 9.0);
+        geometry.update(0, &scene.instances[..1]);
+        assert!(geometry.topology_changed && geometry.assemble().0.is_empty());
+        geometry.update(0, &[active]);
+        assert_eq!(geometry.assemble().0.len(), 2);
     }
 
     #[test]

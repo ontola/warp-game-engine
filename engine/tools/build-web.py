@@ -80,7 +80,7 @@ paint();
 '''
 
 # Luau games the --warp build serves by default, and folders it leaves out.
-WARP_GAMES = ['neon-siege', 'stack-together', 'neon-trails', 'hello-warp', 'relay-keepers', 'dead-miles']
+WARP_GAMES = ['neon-siege', 'stack-together', 'neon-trails', 'hello-warp', 'relay-keepers', 'dead-miles', 'warp-theft-auto']
 SKIP = {'scripts', 'tests', 'docs', 'build'}
 TEXTURES = ['grass_ground', 'forest_leaves_02', 'forest_ground_04', 'rock_face_03', 'gravel_ground_01', 'mossy_rock']
 
@@ -108,6 +108,7 @@ parser.add_argument('--glb', action='append', default=[], help='a GLB to copy in
 parser.add_argument('--warp', action='store_true', help='build the Game Room with Luau games (lobbies/game-room/examples/browser/main.rs)')
 parser.add_argument('--bare', action='store_true', help='with --warp: the games without the room (examples/warp_web.rs)')
 parser.add_argument('--games', default=','.join(WARP_GAMES), help='games/ folders to serve with --warp (comma separated)')
+parser.add_argument('--luau-only', action='store_true', help='only include the selected Luau games on the browser shelf')
 args = parser.parse_args()
 if args.warp:
     args.package, args.example = ('warp', 'warp_web') if args.bare else ('game-room', 'browser')
@@ -170,7 +171,8 @@ def copy_games(names):
         if not (src / 'main.luau').exists():
             sys.exit(f'games/{name}: not a Luau game (no main.luau)')
         files = sorted(str(p.relative_to(src)).replace(os.sep, '/') for p in src.rglob('*')
-                       if p.is_file() and p.relative_to(src).parts[0] not in SKIP and p.suffix not in ('.md',)
+                       if p.is_file() and p.relative_to(src).parts[0] not in SKIP
+                       and (p.suffix != '.md' or p.stem.upper() in {'CREDITS', 'LICENSE', 'NOTICE'})
                        # Store media (clip, cover, screenshots) and editor types: not played.
                        and p.relative_to(src).parts[:2] != ('assets', 'gamenight') and not p.name.endswith('.d.luau'))
         for rel in files:
@@ -190,7 +192,7 @@ def copy_games(names):
                          'players': f'{lo}-{hi}' if lo != hi else str(lo), 'min_players': lo, 'max_players': hi, 'has_cover': cover.exists(),
                          # Bots the game brings itself (game.toml): they fill seats people leave empty.
                          'bots': tomllib.loads((src / 'game.toml').read_text()).get('bots', 0) if (src / 'game.toml').exists() else 0})
-    for name, game in RUST_GAMES.items():
+    for name, game in ({} if args.luau_only else RUST_GAMES).items():
         # A Rust game built into the engine (examples/browser/builtin.rs):
         # its files, files.json relative to its root, and its shelf entry.
         src = ROOT / game['root']
@@ -256,6 +258,7 @@ if not args.no_build:
         shutil.copy(ROOT / 'lobbies/game-room/assets/splitscreen-club-icon.png', OUT)
         # qrcode-generator 1.4.4 (MIT, Kazuhiko Arase): the loading screen's QR code.
         shutil.copy(ROOT / 'lobbies/game-room/examples/browser/qrcode.js', OUT)
+        shutil.copytree(ROOT / 'lobbies/game-room/examples/browser/stories', OUT / 'stories', dirs_exist_ok=True)
     (OUT / 'assets').mkdir(exist_ok=True)
     if args.example == 'terrain_fly':
         for name in TEXTURES:

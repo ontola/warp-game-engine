@@ -35,6 +35,9 @@ thread_local! {
     /// Whether the page shows later loading itself ([`quiet_progress`]),
     /// and whether that is in effect (from the first frame on).
     static QUIET: std::cell::Cell<(bool, bool)> = const { std::cell::Cell::new((false, false)) };
+    /// Changes as soon as a switch is requested. Only that scene's first GPU
+    /// completion may dismiss the loading card.
+    static PRESENTATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// The screen's refresh rate as the page's animation frames come
     /// ([`probe_refresh`]), and whether the shell has used it yet.
     static REFRESH: std::cell::Cell<(Option<f32>, bool)> = const { std::cell::Cell::new((None, false)) };
@@ -116,8 +119,17 @@ pub fn progress(fraction: Option<f32>, step: &str) {
     show_progress(fraction, step);
 }
 
+fn next_presentation() -> u64 {
+    PRESENTATION.with(|current| {
+        let next = current.get().wrapping_add(1);
+        current.set(next);
+        next
+    })
+}
+
 /// The game stopped with an error: shown in the box even when quiet.
 fn stopped(step: &str) {
+    next_presentation();
     web_sys::console::log_1(&step.into());
     show_progress(Some(1.0), step);
 }
@@ -241,8 +253,8 @@ struct Shell {
     /// The scene upload was announced (see [`Shell::frame`]).
     announced: bool,
     hidden_editor: Option<bool>,
-    /// When the last [`switch`] happened, until its first frame is drawn.
-    switched: Option<Instant>,
+    /// Presentation and start time until its first visible frame has been submitted.
+    switched: Option<(u64, Instant)>,
     /// The running game has left once ([`on_exit`]): wait for the switch.
     exited: bool,
     /// Per frame: time since the last frame, ticks, the game's draw, and the
@@ -292,7 +304,7 @@ fn mobile_light(mut light: render::Lighting) -> render::Lighting {
 /// canvas, the GPU device, the input devices and everything the engine has
 /// compiled: a switch costs only the new game's scene upload.
 pub fn switch(cfg: crate::Config, game: Box<dyn Game>) {
-    NEXT.with(|n| *n.borrow_mut() = Some((Parked { cfg, game, renderer: None }, None)));
+    resume(Parked::new(cfg, game), None);
 }
 
 /// A game set aside by [`switch_keeping`], with its scene still on the GPU:
@@ -317,12 +329,13 @@ pub type Keep = Box<dyn FnOnce(Parked)>;
 /// paused game while the lobby is on screen, so either comes back at once
 /// with [`resume`].
 pub fn switch_keeping(cfg: crate::Config, game: Box<dyn Game>, keep: impl FnOnce(Parked) + 'static) {
-    NEXT.with(|n| *n.borrow_mut() = Some((Parked::new(cfg, game), Some(Box::new(keep)))));
+    resume(Parked::new(cfg, game), Some(Box::new(keep)));
 }
 
 /// Bring a [`Parked`] game back on screen with its scene as it was, handing
 /// the one it replaces to `keep` (when given) the same way.
 pub fn resume(parked: Parked, keep: Option<Box<dyn FnOnce(Parked)>>) {
+    next_presentation();
     NEXT.with(|n| *n.borrow_mut() = Some((parked, keep)));
 }
 
@@ -373,7 +386,7 @@ pub fn run(cfg: crate::Config, game: Box<dyn Game>) {
     probe_refresh();
     let mut devices = Devices::new(cfg.keyboard);
     devices.pointer_enabled = cfg.pointer;
-    let shell = Shell { cfg, game, devices, window: None, live: Rc::new(RefCell::new(None)), acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), failed: false, announced: false, hidden_editor:None, switched: None, exited: false, times: Vec::new(),
+    let shell = Shell { cfg, game, devices, window: None, live: Rc::new(RefCell::new(None)), acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), failed: false, announced: false, hidden_editor:None, switched: Some((next_presentation(), Instant::now())), exited: false, times: Vec::new(),
         render_height: query_param("render").and_then(|h| h.parse().ok()), quality: None, mobile: mobile() };
     if shell.mobile { log("phone preset: lower resolution, no GI, bloom or contact occlusion (?quality=full turns it off)"); }
     match EventLoop::new() {
@@ -434,16 +447,18 @@ impl Shell {
         let mut live = self.live.borrow_mut();
         let Some(live) = live.as_mut() else { return Ok(()) };
         if let Some((next, keep)) = NEXT.with(|n| n.borrow_mut().take()) {
+            let generation = PRESENTATION.with(|p| p.get());
             // The old game's scene goes with its renderer, kept or dropped;
             // a new game builds its own on its first draw, a resumed one
             // brings its renderer back.
+            if next.renderer.is_none() { show_progress(Some(0.95), "Preparing graphics"); }
             let old = Parked { cfg: std::mem::replace(&mut self.cfg, next.cfg), game: std::mem::replace(&mut self.game, next.game), renderer: std::mem::replace(&mut live.renderer, next.renderer) };
             if let Some(keep) = keep { keep(old); }
             self.devices.keyboard_enabled = self.cfg.keyboard;
             self.devices.pointer_enabled = self.cfg.pointer;
             self.exited = false;
             self.acc = 0.0;
-            self.switched = Some(Instant::now());
+            self.switched = Some((generation, Instant::now()));
             self.times.clear();
             // Each game starts at full resolution, chasing its own target.
             if let Some(q) = &mut self.quality { q.set_enabled(false); q.set_enabled(true); q.idle(); q.set_target_fps(chase(self.game.target_fps()), None); }
@@ -493,7 +508,7 @@ impl Shell {
         // The first scene upload blocks for seconds: show it first.
         if live.renderer.is_none() && !self.announced {
             self.announced = true;
-            progress(Some(0.9), "Getting the world ready");
+            progress(Some(0.9), "Preparing graphics");
             return Ok(());
         }
         let t_draw = Instant::now();
@@ -549,8 +564,19 @@ impl Shell {
             }
         }
         if self.switched.is_none() { stats(&mut self.times, &self.cfg.title, [dt * 1000.0, tick_ms, draw_ms, ms(t_out)]); }
-        if self.frames == 1 { progress(None, "Ready"); QUIET.with(|q| q.set((q.get().0, q.get().0))); }
-        if let Some(at) = self.switched.take() { progress(None, "Ready"); log(&format!("{}: first frame {:.0} ms after the switch", self.cfg.title, at.elapsed().as_secs_f32() * 1000.0)); }
+        // A 1x1 canvas can precede the first layout. Ready means the actual
+        // scene reached the GPU, including cold driver compilation and the
+        // final color submission. Later frames never wait for this callback.
+        if size[0] > 1 && size[1] > 1 && let Some((generation, at)) = self.switched.take() {
+            let title = self.cfg.title.clone();
+            live.gpu.queue.on_submitted_work_done(move || {
+                if PRESENTATION.with(|p| p.get()) == generation {
+                    progress(None, "Ready");
+                    QUIET.with(|q| q.set((q.get().0, q.get().0)));
+                    log(&format!("{title}: first frame completed in {:.0} ms", at.elapsed().as_secs_f32() * 1000.0));
+                }
+            });
+        }
         if self.frames <= 4 || self.frames.is_power_of_two() && self.frames >= 64 {
             log(&format!("frame {} after {:.1} s, wasm memory {} MB", self.frames, self.started.elapsed().as_secs_f32(), memory_mb()));
         }
@@ -618,7 +644,11 @@ async fn setup(window: Arc<Window>) -> Result<Live, String> {
         }
         if first.swap(true, Relaxed) { log(&format!("GPU error: {text}")) } else { log_pinned(&format!("First GPU error: {text}")) }
     }));
-    gpu.device.set_device_lost_callback(|reason, message| log_pinned(&format!("GPU device lost ({reason:?}): {message}")));
+    gpu.device.set_device_lost_callback(|reason, message| {
+        let error = format!("GPU device lost ({reason:?}): {message}");
+        log_pinned(&error);
+        stopped(&error);
+    });
     let out = Output::new(&gpu, config.format.add_srgb_suffix())?;
     Ok(Live { surface, config, gpu, out, renderer: None })
 }

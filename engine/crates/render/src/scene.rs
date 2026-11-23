@@ -8,6 +8,10 @@ use std::collections::HashMap;
 
 /// Material flags.
 pub const ALPHA_TEST: u32 = 1;
+/// An opaque untextured proxy carries its ordinary negative material layer
+/// offset by this amount. This preserves the procedural surface number and
+/// all material flags without an additional WebGPU binding.
+pub const LOD_PROXY_LAYER_BIAS: i32 = -65536;
 pub const TERRAIN: u32 = 2;
 pub const ROAD: u32 = 4;
 pub const TWO_SIDED: u32 = 8;
@@ -626,6 +630,9 @@ pub struct Scene {
     pub grass_ranges: Vec<crate::grass::GrassRange>,
     /// GPU-generated ground cover: terrain/settings/recipes once, no CPU tuft stream.
     pub meadow: Option<crate::meadow_data::MeadowField>,
+    /// Optional bounds enclosing authored meadow coverage in world metres.
+    /// Each rectangle is [min_x, min_z, max_x, max_z]. An empty list uses the full field.
+    pub meadow_footprints: Vec<[f32; 4]>,
     /// Shared CPU residency / per-view GPU fade policy for source grass.
     pub grass_detail: crate::vegetation_detail::DistanceProfile,
     /// Optional world-fixed terrain-following grass density field.
@@ -694,6 +701,8 @@ pub struct Scene {
     /// Indoor irradiance probes in `aux` (`reserve_irradiance_volume`): the
     /// word offset of their header and the grid.
     pub irradiance_volume: Option<(usize, crate::irradiance_volume::Grid)>,
+    /// Spatially separate, streamed room grids in the same aux buffer.
+    pub irradiance_atlas: Option<crate::irradiance_volume::Atlas>,
     /// Per-probe visibility maps in `aux` (`reserve_probe_visibility`): the
     /// offset of `room_bake::VISIBILITY_SIDE`^2 words per probe.
     pub probe_visibility: Option<usize>,
@@ -830,6 +839,24 @@ impl Scene {
             self.clusters.push(c);
         }
         self.meshes.push(MeshRef { first_cluster, cluster_count: m.clusters.len() as u32, sphere: m.sphere });
+        self.meshes.len() - 1
+    }
+
+    /// Reuse all vertices and triangle indices with a new material assignment.
+    /// Only the cluster descriptors contain material IDs and need a second copy.
+    pub fn mesh_with_materials(&mut self, mesh: usize, replacements: &[(u32, u32)]) -> usize {
+        let source = &self.meshes[mesh];
+        let first = source.first_cluster as usize;
+        let count = source.cluster_count;
+        let sphere = source.sphere;
+        let start = self.clusters.len();
+        self.clusters.extend_from_within(first..first + count as usize);
+        for cluster in &mut self.clusters[start..] {
+            if let Some((_, to)) = replacements.iter().find(|(from, _)| *from == cluster.material) {
+                cluster.material = *to;
+            }
+        }
+        self.meshes.push(MeshRef { first_cluster: start as u32, cluster_count: count, sphere });
         self.meshes.len() - 1
     }
 
@@ -1018,13 +1045,28 @@ impl Scene {
     /// until `Renderer::set_irradiance_volume`. Call after the game's own
     /// `aux` data is in place; one volume per scene.
     pub fn reserve_irradiance_volume(&mut self, grid: crate::irradiance_volume::Grid) -> Result<(), String> {
-        if self.irradiance_volume.is_some() { return Err("the scene already has an irradiance volume".into()); }
+        if self.irradiance_volume.is_some() || self.irradiance_atlas.is_some() { return Err("the scene already has an irradiance volume".into()); }
         let words = crate::irradiance_volume::pack(&grid, &vec![Default::default(); grid.count()])?;
         // Offset 0 means "no volume" to the shader.
         if self.aux.is_empty() { self.aux.push(0); }
         if self.aux.len() + words.len() >= 1 << 24 { return Err("aux too large for an irradiance volume offset".into()); }
         self.irradiance_volume = Some((self.aux.len(), grid));
         self.aux.extend(words);
+        Ok(())
+    }
+
+    /// Reserve independent room-bake slots sharing one shader spatial
+    /// lookup. Empty slots leave the outdoor lighting untouched.
+    pub fn reserve_irradiance_atlas(&mut self, slots: usize, probes_per_slot: usize) -> Result<(), String> {
+        if self.irradiance_volume.is_some() || self.irradiance_atlas.is_some() {
+            return Err("the scene already has an irradiance volume".into());
+        }
+        let offset = self.aux.len().max(1);
+        let atlas = crate::irradiance_volume::Atlas::new(offset, slots, probes_per_slot)?;
+        if offset + atlas.words() >= 1 << 24 { return Err("aux too large for an irradiance atlas".into()); }
+        self.aux.resize(offset + atlas.words(), 0);
+        self.aux[offset..offset + crate::irradiance_volume::HEADER_WORDS].copy_from_slice(&atlas.header());
+        self.irradiance_atlas = Some(atlas);
         Ok(())
     }
 

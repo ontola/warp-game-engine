@@ -64,7 +64,7 @@ mod tests {
         let vertices: Vec<_> = (0..VARIANTS * LODS).flat_map(|_| [a,b,c,a,c,d].map(|position|
             GpuMeadowVertex { position, normal: [0.0, 1.0, 0.0, 0.0],
                 color: [0.1, 0.2, 0.1, 0.9], anchor: [0.0; 4] })).collect();
-        MeadowGeometry { vertices, variant_patch_metres: 0.0,
+        MeadowGeometry { vertices, mown_turf: false, variant_patch_metres: 0.0,
             lod_ranges: std::array::from_fn(|v| std::array::from_fn(|l| [((v * LODS + l) * 6) as u32, 6])),
             lod_errors: [[0.0; LODS]; VARIANTS], branch_pivots: [[[0.0; 4]; 4]; VARIANTS],
             max_tuft_radius: 0.2, max_tuft_height: 0.1, max_anchor_radius: 0.1, max_blade_radius: 1.0 }

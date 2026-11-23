@@ -1,5 +1,4 @@
-# Reusable audio regression presets. This fixture belongs to the engine tests,
-# not to any game's car roster or runtime configuration.
+# Built-in road engine voices for sound patches. Games can register their own models.
 [base]
 name = "Four-cylinder reference"
 cylinders = 4

@@ -1,0 +1,77 @@
+{
+  "size": [
+    1920,
+    1080
+  ],
+  "steps": [
+    {
+      "ticks": 45
+    },
+    {
+      "press": [
+        "NORTH"
+      ],
+      "player": 1,
+      "ticks": 1
+    },
+    {
+      "mv": [
+        0,
+        1
+      ],
+      "player": 1,
+      "ticks": 105
+    },
+    {
+      "cmd": "lua local h=state.fleet.vehicles[8]; world.place(state.fleet.players[3].body,h.pos+vector.create(2.8,.85,0))",
+      "ticks": 1
+    },
+    {
+      "press": [
+        "NORTH"
+      ],
+      "player": 2,
+      "ticks": 1
+    },
+    {
+      "hold": [
+        "SOUTH"
+      ],
+      "player": 2,
+      "ticks": 242
+    },
+    {
+      "mv": [
+        -1,
+        0
+      ],
+      "player": 2,
+      "ticks": 60
+    },
+    {
+      "cmd": "lua world.place(state.fleet.players[4].body,vector.create(-85,.85,71))",
+      "ticks": 30
+    },
+    {
+      "expect": "/state/fleet/players/2/mode",
+      "equals": "fly"
+    },
+    {
+      "expect": "/state/fleet/players/1/mode",
+      "equals": "drive"
+    },
+    {
+      "capture": "four-seats.png"
+    },
+    {
+      "bench": 12
+    },
+    {
+      "bench": 90
+    },
+    {
+      "expect": "/errors",
+      "equals": []
+    }
+  ]
+}

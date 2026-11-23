@@ -88,7 +88,7 @@ mod tests {
     use super::*;
     use crate::analysis::rms;
 
-    const VOICES: &str = include_str!("../tests/fixtures/engine_voices.toml");
+    const VOICES: &str = include_str!("road-engines.toml");
 
     fn steady(id: &str, rpm: f32, secs: f32) -> (Vec<f32>, f32) {
         let sounds = Sounds::parse(VOICES).unwrap();

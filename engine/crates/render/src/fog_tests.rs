@@ -189,7 +189,7 @@ fn calls(body: &naga::Block, target: Handle<Function>) -> bool {
 fn opaque_transparent_and_volume_fog_share_visible_background() {
     let sources = [
         (crate::wind::shade_source(), "shade"),
-        (crate::transparency::with_refraction(&crate::transparency::shader_source(), true), "transparent_color"),
+        (crate::transparency::with_refraction(&crate::transparency::shader_source(), true, true), "transparent_color"),
         (crate::grass::shader_source(), "grass_color"),
         (crate::far_grass::shader_source(), "fg_lighting"),
         (crate::voxel_forest::shader_source(), "volume_radiance"),
