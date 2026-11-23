@@ -1,5 +1,6 @@
 -- Decode author data before the mission creates a person, car or marker.
 local city = require("world")
+local weapons = require("weapon_catalog")
 local schema = {}
 local v = vector.create
 local function plain(t) return type(t)=="table" and getmetatable(t)==nil end
@@ -36,6 +37,8 @@ local function value(t,kind)
 	elseif kind=="text" then return if text(t,140) then t else nil
 	elseif kind=="pos" then return position(t)
 	elseif kind=="angle" then return if finite(t) then t%(2*math.pi) else nil
+	elseif kind=="weapon" then return if weapons.exists(t) then t else nil
+	elseif kind=="weaponParams" then return weapons.parameters(t)
 	elseif kind=="look" then return if number(t,0,71) and t%1==0 then t else nil
 	elseif kind=="paint" then return if t=="ochre" or t=="teal" or t=="pearl" or t=="vermilion" then t else nil
 	elseif kind=="seat" then return if t=="driver" or t=="passenger" then t else nil
@@ -91,6 +94,7 @@ local actions={
 	checkpoint={car="key?",pos="pos",radius="radius?"},
 	contract={person="key",range="range?"},
 	explosion={pos="pos",radius="radius?"},
+	equip={weapon="weapon",params="weaponParams?"},
 }
 for _, spec in actions do spec.op="key"; spec.text="text" end
 
@@ -124,6 +128,9 @@ function schema.validate(raw)
 		if type(op)~="string" or not actions[op] then return nil,path.." has an unknown action" end
 		local a,err=read(step,actions[op],path)
 		if not a then return nil,err end
+		if a.params and weapons.get(a.weapon).kind~="hitscan" then
+			return nil,path..".params needs a Growing Guns weapon"
+		end
 		if a.person and kinds[a.person]~="person" then return nil,path.." references an unknown person" end
 		if a.car and kinds[a.car]~="car" then return nil,path.." references an unknown car" end
 		if op=="pickup" or op=="ride" then

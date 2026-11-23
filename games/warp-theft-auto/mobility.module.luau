@@ -4,6 +4,7 @@ local util = require("kit/util")
 local city = require("world")
 local cape = require("west-cape")
 local models = require("vehicles")
+local weapons = require("weapon_catalog")
 local v = vector.create
 local mobility = {}
 local HIP = v(0,.85,0)
@@ -102,7 +103,7 @@ end
 local function walk(p,inp,dt)
 	p.view -= inp.look_x or 0
 	p.pitch = math.clamp(p.pitch+(inp.look_y or 0),-.7,.35)
-	p.walk.speed = if inp.held and (inp.held.right_shoulder or inp.held.left_shoulder) then 6.5 else 3.8
+	p.walk.speed = if inp.held and inp.held.right_shoulder then 6.5 else 3.8
 	p.walk:update(inp,dt,p.view)
 	p.pos = world.get(p.body).pos-HIP
 	p.yaw, p.speed = p.walk.yaw, vector.magnitude(util.flat(p.walk.vel))
@@ -118,7 +119,7 @@ local function cameraFor(p, inp, dt)
 		local hit=world.raycast(focus,offset,vector.magnitude(offset),QUERY)
 		local eye=if hit then focus+vector.normalize(offset)*math.max(.12,hit.distance-.14) else focus+offset
 		local ray=forward*math.cos(p.pitch)+v(0,math.sin(p.pitch),0)
-		p.cam:look(eye,eye+ray*15,dt,49)
+		p.cam:look(eye,eye+ray*15,dt,weapons.get(p.weapon,p).aimFov or 49)
 		return
 	end
 	local drive, fly = p.mode=="drive", p.mode=="fly"

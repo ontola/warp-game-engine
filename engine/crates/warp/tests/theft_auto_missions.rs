@@ -168,3 +168,34 @@ fn authored_explosion_plays_once_then_finishes() {
     assert_eq!(game.core().world.explosions.as_ref().unwrap().explosion_stats().full, 1);
     assert!(game.apply_story(&script.replace("radius=5", "radius=-1")).is_err());
 }
+
+#[test]
+fn a_story_can_equip_and_rebuild_one_players_growing_gun() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../games/warp-theft-auto");
+    let mut g = LuaGame::load(&dir,&Overrides {seed:Some(1948),players:Some(2),..Default::default()},None).unwrap();
+    g.echo = false;
+    let idle = [Controls::default();2];
+    g.tick(&idle);
+    let source = include_str!("../../../../games/warp-theft-auto/story_loadout.module.luau");
+    assert_eq!(g.apply_story(source).unwrap(),"Custom loadout");
+    g.tick(&idle);
+    eval(&mut g,r#"
+        local p=state.fleet.players[1]
+        assert(p.weapon=="shotgun" and p.weaponBuilds.shotgun.pellets==4)
+        assert(p.weaponBuilds.shotgun.magazine==8 and p.weaponBuilds.shotgun.spread==.05)
+        assert(not state.fleet.players[2].weaponBuilds and state.fleet.players[2].weapon~="shotgun")
+    "#);
+    for bad in ["{pellets=1.5}", "{magazine=-2}", "{spread=0/0}", "{automatic=7}", "{typo=1}"] {
+        let invalid = source.replace("{pellets=4, magazine=8, spread=.05}",bad);
+        assert!(g.apply_story(&invalid).is_err(),"{bad}");
+    }
+    assert!(g.apply_story(&source.replace("\"shotgun\"","\"launcher\"")).is_err());
+    eval(&mut g,"assert(state.fleet.players[1].weaponBuilds.shotgun.magazine==8)");
+    g.apply_story(&source.replace("params=params,", "")).unwrap();
+    g.tick(&idle);
+    eval(&mut g,r#"
+        local p=state.fleet.players[1]
+        assert(p.weapon=="shotgun" and not p.weaponBuilds.shotgun)
+    "#);
+    assert!(g.errors().is_empty(), "{:?}",g.logs());
+}

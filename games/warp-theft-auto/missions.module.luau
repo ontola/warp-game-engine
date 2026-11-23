@@ -3,6 +3,7 @@
 local missions={validate=require("story_schema").validate}
 local util=require("kit/util")
 local explosions=require("explosions")
+local weapons=require("weapon_catalog")
 missions.warm=require("sidearm").warm
 
 local function unequip(m)
@@ -155,6 +156,9 @@ function missions.tick(m,fleet,cast,dt,input)
 		local rider=cast.people[a.person]
 		local car=rider.rideId and fleet.vehicles[rider.rideId]
 		done=car~=nil and math.abs(car.speed)<1.4 and distance(car.pos,a.pos)<=m.radius and cast:dismount(a.person)
+	elseif a.op=="equip" then
+		weapons.equip(seat,a.weapon,a.params)
+		done=true
 	elseif a.op=="explosion" then
 		explosions.play(a.pos,a.radius or 5)
 		done=true

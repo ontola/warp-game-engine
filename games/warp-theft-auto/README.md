@@ -24,10 +24,11 @@ A new round generates a new city seed. Pass `--seed 1948` to replay a layout. Th
 | Action | Keyboard and mouse | Controller |
 | --- | --- | --- |
 | Walk and look | WASD, mouse | Left and right sticks |
-| Sprint | Shift | RB or LB |
+| Sprint | Shift | RB |
 | Stories | R, arrows and Space | X, D-pad and A |
 | Edit a Luau story in the browser | F2 | |
-| Aim and fire the arcade pistol on foot | Hold right mouse to aim, left-click or tap Space to fire | LT and RT |
+| Weapon wheel on foot | Hold Q, point with the mouse or use the left/right arrows, release Q to equip | Hold LB, point with the right stick or use the D-pad, release LB |
+| Aim and fire the equipped weapon on foot | Hold right mouse to aim, left-click or tap Space to fire | LT and RT |
 | Take a vehicle or get out | F | Y / North |
 | Accelerate or brake and reverse | W / S | RT / LT or left stick |
 | Steer and handbrake | A / D, Space | Left stick, A |
@@ -38,7 +39,9 @@ Walk through the entrance under the lit strip to enter any office, hotel or dock
 
 Take a parked car or wait alongside a traffic car at a stop. Slow down to get out. A helicopter must land first. On the map, white marks your position and heading, coral marks other players, teal marks available helicopters, and gold marks the current job.
 
-Every on-foot player carries a pistol. Click the city to capture the mouse. Left-click, tap Space or press RT to fire. Hold the right mouse button or LT for the shoulder view. The free-roam pistol reaches 75 metres, far enough to shoot across a city block. The crosshair turns coral over a person in range. A brief streak shows the shot, and a cross at the impact point confirms a hit. You can shoot passing pedestrians, people inside buildings, and story characters. Shooting someone needed by a delivery story can fail that mission.
+Every player starts with the pistol equipped. The wheel also contains a grenade launcher, the stock Growing Guns rifle, and its Shotgun, Uzi and Sniper upgrades. Hold the trigger to repeat Growing Guns shots. Their magazines refill after the last round. Aiming the sniper narrows the field of view. Each player can change weapons independently while the city keeps moving. The launcher fires a visible projectile that arcs through the scene and triggers a Growing Guns explosion on impact.
+
+Click the city to capture the mouse. Left-click, tap Space or press RT to fire. Hold the right mouse button or LT for the shoulder view. The free-roam pistol reaches 75 metres, far enough to shoot across a city block. The crosshair turns coral over a person in range. A brief streak shows the shot, and a cross at the impact point confirms a hit. You can shoot passing pedestrians, people inside buildings, and story characters. Shooting someone needed by a delivery story can fail that mission.
 
 Rook and Vex patrol across the starting intersection under red chevrons. They take two hits and return after 12 seconds. Players in different seats can hit the same person or complete a contract together.
 
@@ -51,6 +54,14 @@ The first **Harbor Transfer** takes a car to the Ferry Terminal, a helicopter to
 Press **R** or controller **X** to choose a shared mission. **Last Ferry** has Mara walk to the curb, ride in your car and walk to the ferry after you drop her off. **Exchange Street Sprint** seats you in a designated pearl sedan and times five checkpoint crossings. **The Silver Jack Contract** gives the mission owner a named target to track and shoot. Choose **Harbor dispatch** to return to the original delivery jobs.
 
 In the browser, click **Luau stories** or press **F2**. Pick a template, edit its Luau source and choose **Run story**. The city and the other players keep their positions. A successful edit begins the new story at its first step. Each template stores its draft in this browser. **Save .luau** downloads a script you can share, and **Open file** loads one from your device. **Restore template** brings back the shipped source.
+
+To try weapon editing immediately, open **F2**, select **Custom loadout**, change a value and choose **Run story**. A story can equip its owner with a Growing Guns preset and change its parameters while the city is running. This action gives the player a four-projectile shotgun.
+
+```lua
+{op="equip", weapon="shotgun", params={pellets=4, magazine=8, spread=0.05}, text="Collect the dockside special."},
+```
+
+The Growing Guns preset IDs are `rifle`, `shotgun`, `uzi` and `sniper`. Each accepts `pellets`, `spread` (radians), `interval` and `reload` (seconds), `magazine`, `damage` (in base-rifle hits), `range`, `automatic`, `headshot` (multiplier), `aimFov` (degrees) and the synth’s `velocity` setting. The fitted model reads the same parameters as the firing and sound code. The weapon wheel remembers a player’s custom build. An equip step without `params` restores the preset. Use `pistol` or `launcher` to equip the city weapons. The data and synth patches come from Growing Guns. Run `python games/warp-theft-auto/scripts/sync_growing_guns.py --check` to verify them against the original game.
 
 A story is a Luau program that returns a table. Give the story an ID and title, define a cast of named people and cars, then return its ordered steps. You can generate coordinates and dialogue using locals, loops and functions. For example, these steps make a courier follow a route you generate:
 
