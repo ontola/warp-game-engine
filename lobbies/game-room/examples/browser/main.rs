@@ -483,6 +483,7 @@ pub(crate) mod page {
                     h.dirty = true;
                 }),
                 "next" => next_game(),
+                "previous" => previous_game(),
                 "close_overlay" => resume(),
                 "leave_party" => with(|h| leave_party(h, msg["player_id"].as_str().unwrap_or_default())),
                 // Moved on the couch (the room's mouse menu): whoever sat there swaps.
