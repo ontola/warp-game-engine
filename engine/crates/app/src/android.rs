@@ -263,7 +263,7 @@ pub fn run(cfg: crate::Config, game: Box<dyn Game>) {
     let mobile = mobile();
     if mobile { log("phone preset: lower resolution, no GI, bloom or contact occlusion (quality=full turns it off)"); }
     let shell = Shell { cfg, game, devices, acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), announced: false, switched: None, exited: false,
-        times: Vec::new(), render_height: query_param("render").and_then(|h| h.parse().ok()), quality: None, mobile };
+        times: Vec::new(), render_height: query_param("render").and_then(|h| h.parse().ok()), quality: None, mobile, profiling: false, gpu_passes: Vec::new(), gpu_total: 0.0 };
     SHELL.with(|s| *s.borrow_mut() = Some(shell));
 }
 
@@ -460,6 +460,20 @@ fn surface_for(instance: &wgpu::Instance, window: &NativeWindow) -> Result<wgpu:
     }.map_err(|e| e.to_string())
 }
 
+/// The window's size can change without an event reaching us in time (it
+/// comes up portrait and turns landscape): follow it every frame, as the
+/// browser shell follows its canvas.
+fn follow_window(gfx: &mut Gfx) {
+    let Some((surface, config, w)) = gfx.surface.as_mut() else { return };
+    let size = window_size(w);
+    if [config.width, config.height] != size {
+        log(&format!("window {}x{} (was {}x{})", size[0], size[1], config.width, config.height));
+        config.width = size[0];
+        config.height = size[1];
+        surface.configure(&gfx.gpu.device, config);
+    }
+}
+
 fn window_size(w: &NativeWindow) -> [u32; 2] { [w.width().max(1) as u32, w.height().max(1) as u32] }
 
 /// The first window: the GPU, its surface and the presenter.
@@ -590,6 +604,7 @@ fn draw_loading() {
     let _ = GFX.try_with(|g| {
         let Ok(mut g) = g.try_borrow_mut() else { return };
         let Some(gfx) = g.as_mut() else { return };
+        follow_window(gfx);
         let Some((surface, config, _)) = gfx.surface.as_ref() else { return };
         let size = [config.width as f32, config.height as f32];
         let (fraction, step) = LOADING.with(|l| l.borrow().clone());
@@ -637,6 +652,10 @@ struct Shell {
     render_height: Option<u32>,
     quality: Option<crate::quality::AdaptiveQuality>,
     mobile: bool,
+    /// GPU timestamps are on, and the last frame's pass times.
+    profiling: bool,
+    gpu_passes: Vec<(&'static str, f64)>,
+    gpu_total: f64,
 }
 
 impl Shell {
@@ -668,8 +687,10 @@ impl Shell {
             self.acc = 0.0;
             self.switched = Some(Instant::now());
             self.times.clear();
+            self.profiling = false;
             if let Some(q) = &mut self.quality { q.set_enabled(false); q.set_enabled(true); q.idle(); q.set_target_fps(self.game.target_fps(), None); }
         }
+        follow_window(live);
         let Some((_, config, _)) = live.surface.as_ref() else { return Ok(()) };
         let size = [config.width, config.height];
         self.devices.poll();
@@ -743,12 +764,20 @@ impl Shell {
         };
         live.out.draw(&live.gpu, renderer, &draw, size, split, &view, height)?;
         live.gpu.queue.present(texture);
+        // GPU pass times (timestamps, when the GPU has them), with the frame stats.
+        if !self.profiling { self.profiling = renderer.set_async_gpu_profiling(&live.gpu, true).is_ok(); }
+        if let Some(sample) = renderer.drain_gpu_profiles(&live.gpu).samples.pop() { self.gpu_passes = sample.gpu_ms; self.gpu_total = sample.covered_union_ms; }
         self.frames += 1;
         if self.switched.is_none() && (self.render_height.is_none() || self.mobile) && quality.frame(f64::from(dt) * 1000.0, Instant::now()) {
             let next = quality.render_height(base(self.cfg.max_render_height));
             log(&format!("{}: 3D view now {} lines high (chasing {:.0} fps)", self.cfg.title, next.min(size[1]), quality.target_fps()));
         }
-        if self.switched.is_none() { stats(&mut self.times, &self.cfg.title, [dt * 1000.0, tick_ms, draw_ms, ms(t_out)]); }
+        if self.switched.is_none() && stats(&mut self.times, &self.cfg.title, [dt * 1000.0, tick_ms, draw_ms, ms(t_out)]) {
+            let mut passes = self.gpu_passes.clone();
+            passes.sort_by(|a, b| b.1.total_cmp(&a.1));
+            let top: Vec<String> = passes.iter().take(8).map(|(n, ms)| format!("{n} {ms:.1}")).collect();
+            log(&format!("{}: GPU {:.1} ms at {}x{} out, 3D {} lines: {}", self.cfg.title, self.gpu_total, size[0], size[1], height.unwrap_or(size[1]), top.join(", ")));
+        }
         if self.frames == 1 { log(&format!("first frame {:.1} s after start", self.started.elapsed().as_secs_f32())); QUIET.with(|q| q.set((q.get().0, q.get().0))); }
         if let Some(at) = self.switched.take() { log(&format!("{}: first frame {:.0} ms after the switch", self.cfg.title, at.elapsed().as_secs_f32() * 1000.0)); }
         Ok(())
@@ -773,10 +802,10 @@ fn draw_banner(hud: &mut HudDrawList, size: [u32; 2]) {
     text(hud, 0xBA77E2, &line, 0.0, 24.0 * s + (ph - font) * 0.45, font, [255, 255, 255, 255], w, FontFace::Body, clip);
 }
 
-/// Every 300 frames, the frame times in logcat.
-fn stats(times: &mut Vec<[f32; 4]>, title: &str, sample: [f32; 4]) {
+/// Every 300 frames, the frame times in logcat (returns true then).
+fn stats(times: &mut Vec<[f32; 4]>, title: &str, sample: [f32; 4]) -> bool {
     times.push(sample);
-    if times.len() < 300 { return; }
+    if times.len() < 300 { return false; }
     let pick = |k: usize, q: f32| {
         let mut v: Vec<f32> = times.iter().map(|t| t[k]).collect();
         v.sort_by(f32::total_cmp);
@@ -785,4 +814,5 @@ fn stats(times: &mut Vec<[f32; 4]>, title: &str, sample: [f32; 4]) {
     log(&format!("{}: frame every {:.1} ms (p95 {:.1}); ticks {:.1}, draw {:.1}, encode {:.1} ms (medians), {} MB",
         title, pick(0, 0.5), pick(0, 0.95), pick(1, 0.5), pick(2, 0.5), pick(3, 0.5), memory_mb()));
     times.clear();
+    true
 }
