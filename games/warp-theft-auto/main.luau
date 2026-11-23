@@ -1,4 +1,5 @@
 local city = require("world")
+local cape = require("west-cape")
 local mobility = require("mobility")
 local interiors = require("interiors")
 local traffic = require("traffic")
@@ -50,7 +51,11 @@ local function tick(dt, input)
 	daycycle.tick(state.clock, dt)
 	stories.input(state, input)
 	mobility.tick(state.fleet, dt, input)
-	interiors.update(state.interiors, state.city.buildings, state.fleet.players)
+	-- Runtime stories can move all four players between the city and woods in
+	-- one tick. Release the previous rooms and trunks before filling either pool.
+	local wanted, views = interiors.release_unused(state.interiors,state.city.buildings,state.fleet.players)
+	cape.update(state.city.cape,state.fleet.players)
+	interiors.load_visible(state.interiors,state.city.buildings,wanted,views)
 	population.tick(state.population, state.city, state.fleet.players, dt, state.clock.hour, state.interiors)
 	if state.storyCast then state.storyCast:tick(dt) end
 	impacts.tick(state.population, state.fleet, dt)

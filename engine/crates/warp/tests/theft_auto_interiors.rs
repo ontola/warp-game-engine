@@ -234,6 +234,27 @@ fn multiplayer_visitors_share_rooms_and_release_them_on_departure() {
 }
 
 #[test]
+fn live_party_moves_release_rooms_and_trunks_in_the_same_tick() {
+    let mut game = start(4, 53154);
+    let idle = [Controls::default(); 4];
+    for _ in 0..2 {
+        eval(&mut game, r#"
+            local pos={{-685,-91},{-735,-61},{-901,84},{-936,120}}
+            for i,p in state.fleet.players do
+                world.place(p.body,vector.create(pos[i][1],.85,pos[i][2]))
+            end
+        "#);
+        run(&mut game, 1, &idle);
+        eval(&mut game, "assert(state.interiors.count==0 and next(state.city.cape.active)~=nil)");
+        for (i, kind) in ["office", "hotel", "warehouse", "other"].iter().enumerate() {
+            stage(&mut game, i + 1, kind, 0., 2.);
+        }
+        run(&mut game, 1, &idle);
+        eval(&mut game, "assert(state.interiors.count==4 and next(state.city.cape.active)==nil)");
+    }
+}
+
+#[test]
 fn facade_coverage_is_reversible_and_follows_the_rendered_view() {
     let mut game = start(2, 1948);
     let still = [Controls::default(); 2];

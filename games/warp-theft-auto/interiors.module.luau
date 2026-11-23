@@ -123,7 +123,7 @@ local function lightRoom(b, pieces)
 		entities = pieces, panels = panels})
 end
 
-function interiors.update(stream, buildings, seats)
+function interiors.release_unused(stream, buildings, seats)
 	local wanted, views = {}, {}
 	-- View indices are reassigned when the roster changes. Player IDs survive
 	-- those changes and cannot be used as bits in the renderer's view mask.
@@ -152,6 +152,10 @@ function interiors.update(stream, buildings, seats)
 			stream.count -= 1
 		end
 	end
+	return wanted, views
+end
+
+function interiors.load_visible(stream, buildings, wanted, views)
 	for id in wanted do
 		local b = buildings[id]
 		if not stream.active[id] then

@@ -127,10 +127,12 @@ end
 function cape.update(c,players)
     if not c then return end
     local changed=false
-    for id=1,4 do
-        local p=players[id]
+    for id in c.viewerCells do
+        if not players[id] then c.viewerCells[id]=nil; changed=true end
+    end
+    for id,p in players do
         local key=nil
-        if p and p.pos.y<canopyTop+4 and p.pos.x< -490 and p.pos.x> -1020 then key=grid(p.pos.x,p.pos.z) end
+        if p.pos.y<canopyTop+4 and p.pos.x< -490 and p.pos.x> -1020 then key=grid(p.pos.x,p.pos.z) end
         if c.viewerCells[id]~=key then c.viewerCells[id]=key; changed=true end
     end
     if not changed then return end

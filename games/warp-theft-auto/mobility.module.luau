@@ -151,7 +151,6 @@ function mobility.release_car(m,car)
 end
 
 function mobility.tick(m,dt,input)
-	cape.update(m.layout.cape,m.players)
 	local ids = {}
 	for id in m.players do table.insert(ids,id) end
 	table.sort(ids)
