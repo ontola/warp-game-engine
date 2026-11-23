@@ -283,6 +283,8 @@ struct Shell {
     /// The phone preset ([`mobile`]): a lower resolution and no bloom,
     /// contact occlusion or traced reflections.
     mobile: bool,
+    /// The page held the pointer lock last frame.
+    lock_seen: bool,
 }
 
 /// Phones get a cheaper preset: an Android, iPhone or iPad browser, or
@@ -415,7 +417,7 @@ pub fn run(cfg: crate::Config, game: Box<dyn Game>) {
     let mut devices = Devices::new(cfg.keyboard);
     devices.pointer_enabled = cfg.pointer;
     let shell = Shell { cfg, game, devices, window: None, live: Rc::new(RefCell::new(None)), acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), failed: false, announced: false, hidden_editor:None, switched: Some((next_presentation(), Instant::now())), exited: false, back: Default::default(), times: Vec::new(),
-        render_height: query_param("render").and_then(|h| h.parse().ok()), quality: None, mobile: mobile() };
+        render_height: query_param("render").and_then(|h| h.parse().ok()), quality: None, mobile: mobile(), lock_seen: false };
     if shell.mobile { log("phone preset: lower resolution, no bloom or contact occlusion (?quality=full turns it off)"); }
     match EventLoop::new() {
         Ok(events) => events.spawn_app(shell),
@@ -491,7 +493,15 @@ impl Shell {
             self.times.clear();
             // Each game starts at full resolution, chasing its own target.
             if let Some(q) = &mut self.quality { q.set_enabled(false); q.set_enabled(true); q.idle(); q.set_target_fps(chase(self.game.target_fps()), None); }
-            if let Some(w) = &self.window { w.set_title(&self.cfg.title); }
+            if let Some(w) = &self.window {
+                w.set_title(&self.cfg.title);
+                // The next game (or the room) starts with a free, visible
+                // mouse: a pointer the old game locked stays hidden otherwise.
+                let _ = w.set_cursor_grab(CursorGrabMode::None);
+                w.set_cursor_visible(true);
+            }
+            self.devices.mouse_captured = false;
+            self.devices.reset_mouse();
         }
         // The canvas takes its size from the page's layout, which can settle
         // after the device is made: follow it every frame.
@@ -505,6 +515,16 @@ impl Shell {
             }
         }
         let size = [live.config.width, live.config.height];
+        // The browser let go of the pointer lock itself (Escape, a switch to
+        // the room, another tab): show the cursor again.
+        // (The lock arrives a little after the request: only once seen.)
+        let locked = self.devices.mouse_captured && web_sys::window().and_then(|w| w.document()).is_some_and(|d| d.pointer_lock_element().is_some());
+        if self.devices.mouse_captured && self.lock_seen && !locked {
+            if let Some(w) = &self.window { let _ = w.set_cursor_grab(CursorGrabMode::None); w.set_cursor_visible(true); }
+            self.devices.mouse_captured = false;
+            self.devices.reset_mouse();
+        }
+        self.lock_seen = locked;
         self.devices.poll();
         let t_tick = Instant::now();
         while self.acc >= step && steps < 6 {
