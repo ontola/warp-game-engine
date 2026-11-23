@@ -604,8 +604,10 @@ mod page {
         app::web::progress(Some(0.2), "Building the Game Room");
         let t0 = web_time::Instant::now();
         let mut options = game_room::stage::Options::default();
-        // `?quality=low` (phones, the app's host mode): the room's cheap tier.
-        options.low = warp::web::param("quality").as_deref() == Some("low");
+        // The room's cheap tier wherever the shell's phone preset is on: a
+        // phone or tablet browser, `?quality=low` or `?quality=mobile`
+        // (`?quality=full` turns both off).
+        options.low = app::web::mobile();
         // The light baked ahead (game-room bake-light): a page bakes on one
         // thread, which takes most of a minute. Without it, fewer rays.
         match app::web::fetch("room-light.bin").await {

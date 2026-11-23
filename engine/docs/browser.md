@@ -126,7 +126,8 @@ encode; `?render=H` fixes the 3D view's height to tell GPU from CPU. As
 natively, the lower rungs also drop contact occlusion and then bloom.
 
 Phones get a cheaper preset (`app::web::mobile`): an Android, iPhone or iPad
-browser, or `?quality=mobile` anywhere (`?quality=full` turns it off). The
+browser, or `?quality=mobile` or `?quality=low` anywhere (`?quality=full` turns
+it off). It also switches the Game Room to its low tier (`Options::low`). The
 3D view starts at 540 lines (or `?render=H`, which on a phone is the start
 rather than a fixed height) and adaptive quality lowers it from there, and
 every frame drops GI (its gather pass), contact and reflection occlusion,
