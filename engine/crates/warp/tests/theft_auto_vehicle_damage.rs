@@ -17,7 +17,7 @@ fn tick(game: &mut LuaGame, input: Controls, n: usize) {
 }
 
 #[test]
-fn a_real_crash_crushes_both_body_ends_and_streams_their_panels() {
+fn a_real_crash_dents_both_body_ends_and_streams_only_the_hit_meshes() {
     let mut game = city();
     game.luau(r#"
         local v=vector.create
@@ -25,6 +25,8 @@ fn a_real_crash_crushes_both_body_ends_and_streams_their_panels() {
         assert(car.damage.total==0)
         local other=state.combat.cast:car("parked-test",{pos=car.pos+v(0,0,-22),yaw=0,paint="pearl"})
         state.crashOther=other.index
+        local twin=state.combat.cast:car("unhit-test",{pos=other.pos+v(-8,0,0),yaw=0,paint="pearl"})
+        state.crashTwin=twin.index
         local origin=other.pos+v(0,1.1,5)
         assert(vehicles.raycast(other.native,"toyama",origin,v(0,0,-1),10))
         assert(not vehicles.raycast(other.native,"toyama",origin+v(0,.55,0),v(0,0,-1),10))
@@ -43,20 +45,20 @@ fn a_real_crash_crushes_both_body_ends_and_streams_their_panels() {
         local f=state.fleet; local a,b=f.vehicles[1],f.vehicles[state.crashOther]
         assert(a.damage.zones.front>.055 and b.damage.zones.rear>.055)
         assert(a.damage.zones.front>a.damage.zones.rear and b.damage.zones.rear>b.damage.zones.front)
-        assert(a.panels and b.panels and not world.get(b.body).visible)
-        assert(world.get(b.wheels[1]).visible and world.get(b.panels[8]).visible)
-        local panel=world.get(b.panels[7])
-        assert(panel.size.z<.96 and panel.pos.z>0)
+        assert(a.dentActive and b.dentActive and world.get(b.body).visible and world.get(b.wheels[1]).visible)
+        local dent=b.damage.dents[1]
+        assert(dent and dent.depth>.05 and #b.damage.dents<=8)
         local v=vector.create
-        local rear=vehicles.raycast(b.native,"toyama",b.pos+v(0,.7,5),v(0,0,-1),10)
-        assert(rear and rear>state.initialRear+.04)
-        local zip=vehicles.closest_point(b.native,"toyama",b.pos+v(0,.7,5))
-        assert(zip.z<b.pos.z+2.14)
-        -- A severely folded bumper no longer intercepts fire at its old outline.
-        local origin=a.pos+v(0,.8,-5)
-        vehicles.crush_query(a.native,"toyama",v(-.48,0,-1.04),v(.48,0,1.16),v(1,1,1),v(.31,1,1))
-        local shortened=vehicles.closest_point(a.native,"toyama",origin)
-        assert(vector.magnitude(origin-shortened)>3.5)
+        local twin=f.vehicles[state.crashTwin]
+        assert(twin.damage.total==0 and not twin.dentActive)
+        local probe=dent.center+v(0,.33,0)-dent.inward*2
+        local before=vehicles.raycast(twin.native,"toyama",twin.pos+probe,dent.inward,4)
+        local after=vehicles.raycast(b.native,"toyama",b.pos+probe,dent.inward,4)
+        assert(before and after and after>before+.035,"hit at actual contact must sink locally")
+        local far=v(if dent.center.x<0 then .59 else -.59,.65,5)
+        local d1=vehicles.raycast(b.native,"toyama",b.pos+far,v(0,0,-1),8)
+        local d2=vehicles.raycast(twin.native,"toyama",twin.pos+far,v(0,0,-1),8)
+        assert(d1 and d2 and math.abs(d1-d2)<.12,"opposite end of the bumper should keep its shape")
         state.savedDamage=b.damage.total
         -- The same parked car keeps its damage after both cameras leave.
         for _,p in f.players do
@@ -67,11 +69,11 @@ fn a_real_crash_crushes_both_body_ends_and_streams_their_panels() {
     tick(&mut game,Controls::default(),22);
     game.luau(r#"
         local b=state.fleet.vehicles[state.crashOther]
-        assert(not b.panels and world.get(b.body).visible and b.damage.total==state.savedDamage)
+        assert(not b.dentActive and world.get(b.body).visible and b.damage.total==state.savedDamage)
         world.place(state.fleet.players[1].body,b.pos+vector.create(3,.85,3))
     "#).unwrap();
     tick(&mut game,Controls::default(),22);
-    game.luau("local b=state.fleet.vehicles[state.crashOther]; assert(b.panels and not world.get(b.body).visible and b.damage.total==state.savedDamage)").unwrap();
+    game.luau("local b=state.fleet.vehicles[state.crashOther]; assert(b.dentActive and world.get(b.body).visible and b.damage.total==state.savedDamage)").unwrap();
 }
 
 #[test]
@@ -84,13 +86,15 @@ fn scripted_fleet_damage_stays_bounded_across_split_screen() {
             car.damage.total=.7
             car.damage.zones.front=.75
             car.damage.zones.right=.4
+            car.damage.dents={{center=vector.create(-.6,.4,-2),inward=vector.create(.1,0,1),radius=.85,depth=.32}}
+            if i==13 then car.missingParts=4 end
         end
     "#).unwrap();
     tick(&mut game,Controls::default(),20);
     game.luau(r#"
         local cars=0
-        for _,car in state.fleet.vehicles do if car.panels then cars+=1 end end
-        assert(cars==8 and #world.find("damage-panel")==72)
+        for _,car in state.fleet.vehicles do if car.dentActive then cars+=1 end end
+        assert(cars==8 and #world.find("damage-panel")==0 and #world.find("vehicle-detail")==0)
         assert(world.count()+96<=world.capacity())
     "#).unwrap();
 }

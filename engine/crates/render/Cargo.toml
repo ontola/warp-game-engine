@@ -9,6 +9,7 @@ description = "Kern's renderer: GPU-driven clusters with LOD, visibility buffer,
 dlss = ["dep:ash"]
 
 [dependencies]
+kern.workspace = true
 vfs = { path = "../vfs" }
 naga = { version = "30", features = ["wgsl-in"] }
 # std::time::Instant panics in a browser (wasm32); this is std's on native.

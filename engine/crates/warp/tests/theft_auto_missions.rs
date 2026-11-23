@@ -199,3 +199,40 @@ fn a_story_can_equip_and_rebuild_one_players_growing_gun() {
     "#);
     assert!(g.errors().is_empty(), "{:?}",g.logs());
 }
+
+#[test]
+fn road_deaths_fail_required_cast_only_and_never_award_a_contract_shot() {
+    let target = r#"{op="contract",person="arden",text="Find Arden."}"#;
+    let checkpoint = r#"{op="checkpoint",pos=vector.create(50,0,50),text="Drive to the meeting."}"#;
+    let passenger = r#"{op="pickup",person="arden",text="Collect Arden."}"#;
+    for (steps, required) in [
+        (target.to_owned(), true),
+        (format!("{checkpoint},{passenger}"), true),
+        (checkpoint.to_owned(), false),
+    ] {
+        let mut g = load();
+        g.apply_story(&format!(r#"return {{id="ride",title="Ride",cast={{
+            {{kind="person",key="arden",name="Arden",pos=vector.create(3.85,0,-25)}}
+        }},steps={{{steps}}}}}"#)).unwrap();
+        advance(&mut g, Controls::default(), 169);
+        advance(&mut g, press(Buttons::NORTH), 1);
+        eval(&mut g, "assert(state.fleet.players[1].vehicle==1)");
+        let gas = Controls { mv: [0.,1.], ..Default::default() };
+        for _ in 0..330 {
+            advance(&mut g, gas, 1);
+            if eval(&mut g, "return state.storyCast.people.arden.dead") == "true" { break; }
+        }
+        eval(&mut g, r#"
+            local p=state.storyCast.people.arden
+            assert(p.dead and p.roadDeath and not p.shot and p.corpse)
+            local shooter=state.combat.players[1]
+            assert(shooter.hits==0 and shooter.defeats==0 and shooter.shotFlash==0)
+            assert(not state.story.shotPeople)
+        "#);
+        assert_eq!(eval(&mut g, "return state.story.status"), if required { "failed" } else { "active" });
+        if required {
+            assert_eq!(eval(&mut g, "return state.story.objective"), "Arden was hit by a vehicle.");
+            eval(&mut g, "assert(not state.story.target and not state.story.contractPerson)");
+        }
+    }
+}

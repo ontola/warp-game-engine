@@ -106,6 +106,12 @@ impl Distant {
         if let Some(sample) = resident.checked_sub(1).and_then(|i| self.residents.get_mut(i)) { sample.fitted = fitted; }
     }
 
+    pub fn hide(&mut self, resident: usize) -> bool {
+        let Some(sample) = resident.checked_sub(1).and_then(|i| self.residents.get_mut(i)) else { return false };
+        sample.active = false;
+        true
+    }
+
     pub fn visible_pose(&self, resident: usize, alpha: f32) -> Option<(Vec3, usize)> {
         self.at(resident.checked_sub(1)?, self.fraction(alpha)).map(|(pos, _, look, _)| (pos, look))
     }

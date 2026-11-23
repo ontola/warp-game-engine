@@ -4,6 +4,7 @@ local util = require("kit/util")
 local city = require("world")
 local cape = require("west-cape")
 local models = require("vehicles")
+local detachment = require("detachment")
 local weapons = require("weapon_catalog")
 local v = vector.create
 local mobility = {}
@@ -187,6 +188,7 @@ function mobility.tick(m,dt,input)
 		end
 		if car.releaseWhenEmpty and not car.owner then mobility.release_car(m,car) end
 	end
+	detachment.tick(m,dt)
 	models.streamDamage(m,dt)
 	for _,id in ids do
 		local p = m.players[id]

@@ -3,6 +3,8 @@
 -- the helicopter's solid hull; neither wheels nor decorative rotor blades knock people over.
 local util = require("kit/util")
 local models = require("vehicles")
+local corpses = require("corpses")
+local road = require("road_contact")
 local v = vector.create
 local impacts = {}
 local RADIUS, HEIGHT, FALL_SPEED = .32, 1.70, 2.8
@@ -15,7 +17,7 @@ local function chassis(car, id, dt)
 	local pos, prev = car.pos+lift, (car.prevPos or car.pos)+lift
 	local oldYaw = car.prevYaw or car.yaw
 	local vel = (pos-prev)/dt
-	return {id=id, native=car.native, pos=pos, prevPos=prev, size=size, yaw=car.yaw, prevYaw=oldYaw,
+	return {id=id, native=car.native, owner=car.owner, missingWheels=car.missingWheels, pos=pos, prevPos=prev, size=size, yaw=car.yaw, prevYaw=oldYaw,
 		right=util.right(car.yaw), forward=util.forward(car.yaw), oldRight=util.right(oldYaw),
 		oldForward=util.forward(oldYaw), velocity=vel, speed=vector.magnitude(vel)}
 end
@@ -161,13 +163,6 @@ local function advance(pop,p,actor,seat,dt,boxes)
 			if seat or p.story then world.place(p.body,p.pos+HIP,p.yaw) end
 		end
 		if p.shot then return end
-		if p.shotUntil then
-			if hit.elapsed >= 4 then
-				p.impact,p.externalPose,p.previousFeet,p.active=nil,nil,nil,false
-				pop.selectionIn=0
-			end
-			return
-		end
 		-- Wait until the body and its immediate exit are clear of fast chassis.
 		-- A body can come to rest relative to the bonnet while it is still rolling.
 		local clear=hit.elapsed>=1.5
@@ -233,8 +228,13 @@ local function indexBox(grid,box)
 	end
 end
 
-local function person(pop,p,actor,seat,dt,boxes,grid)
+local function nearbyCars(grid,pos)
+	return grid[cell(math.floor(pos.x/CELL),math.floor(pos.z/CELL))]
+end
+
+local function person(pop,p,actor,seat,dt,boxes,grid,resident)
 	if p.impact and p.impact.stage=="down" then
+		if p.impact.elapsed>.30 then road.prone(pop,p,actor,seat,resident,nil,nearbyCars(grid,p.pos),dt) end
 		advance(pop,p,actor,seat,dt,boxes)
 		p.previousFeet=p.pos
 		return
@@ -244,14 +244,14 @@ local function person(pop,p,actor,seat,dt,boxes,grid)
 	-- Ordinary walking, sprinting and authored routes stay below this speed.
 	-- A teleported or newly streamed body starts from the new pose at rest.
 	if vector.magnitude(p.pos-before)>12*dt then before=p.pos end
-	local first,vehicle,out,fall=math.huge,nil,nil,false
-	local nearby=grid[cell(math.floor(p.pos.x/CELL),math.floor(p.pos.z/CELL))]
+	local first,vehicle,out,fall,speed=math.huge,nil,nil,false,0
+	local nearby=nearbyCars(grid,p.pos)
 	for _,box in nearby or EMPTY do
 		local t,offset,closing=contact(box,before,p.pos,dt)
 		if t then
 			local hard=closing>=FALL_SPEED
 			if not vehicle or (hard and not fall) or (hard==fall and (t<first or t==first and box.id<vehicle.id)) then
-				first,vehicle,out,fall=t,box,offset,hard
+				first,vehicle,out,fall,speed=t,box,offset,hard,closing
 			end
 		end
 	end
@@ -261,6 +261,7 @@ local function person(pop,p,actor,seat,dt,boxes,grid)
 		if humans.ragdoll(actor,(p.pos-before)/dt,util.ZERO) then
 			local home=if p.impact then p.impact.home else p.pos
 			p.impact={stage="down",elapsed=0,home=home,vehicle=vehicle.id}
+			road.bumper(pop,p,actor,seat,resident,vehicle,speed)
 			p.externalPose=true
 			if p.story then p.wasHit=true end
 			if seat then p.speed=0; p.walk.vel=util.ZERO; p.nearby=nil end
@@ -320,38 +321,38 @@ function impacts.visitResidents(pop, origin, endpoint, visit)
 	end
 end
 
+-- Remove the living representations before custody of the fitted rig moves
+-- to the corpse roster. Native removal normally reveals the last street LOD.
+local function residentDeath(pop,fleet,id,c,actor,gibbed)
+	if id<=pop.streetCount then humans.hide_distant("resident",id) end
+	pop.pedestrians.active[id]=nil
+	if pop.impactResidents then pop.impactResidents[id]=nil end
+	pop.selectionIn=0
+	return corpses.retain(pop,fleet,c,actor,"resident",gibbed)
+end
+
 function impacts.shootResident(pop, fleet, id, feet, push, gibbed)
 	local c=pop.residents[id]
-	if not c or c.shotUntil then return false end
-	if gibbed then
-		local actor=pop.pedestrians.active[id]
-		if actor then humans.set(actor,{visible=false}) end
-		c.pos,c.active,c.shotUntil=feet,false,pop.elapsed+20
-		c.impact,c.externalPose,c.previousFeet=nil,nil,nil
-		pop.impactResidents[id]=nil
-		pop.selectionIn=0
-		return true
-	end
+	if not c or c.shotUntil or c.dead then return false end
 	local home=c.pos
 	c.pos=feet
 	local actor=pop.pedestrians.active[id]
-	if not actor then
-		local observers={}
-		for _,seat in fleet.players do if not seat.bot then table.insert(observers,seat.pos) end end
-		actor=pop.pedestrians:promote(id,pop.residents,observers)
+	if not gibbed then
+		if not actor then
+			local observers={}
+			for _,seat in fleet.players do if not seat.bot then table.insert(observers,seat.pos) end end
+			actor=pop.pedestrians:promote(id,pop.residents,observers)
+			if not actor and corpses.freeLook(pop,fleet,"resident",c.look) then
+				actor=pop.pedestrians:promote(id,pop.residents,observers)
+			end
+		end
+		-- Keep an already fallen pose intact when a collision becomes fatal.
+		if actor and not (c.impact and c.impact.stage=="down") then
+			if humans.ragdoll(actor,push) then c.impact={stage="down",elapsed=0,home=home}
+			else humans.remove(actor); actor=nil end
+		end
 	end
-	c.shotUntil=pop.elapsed+20
-	if actor and humans.ragdoll(actor,push) then
-		c.impact={stage="down",elapsed=0,home=home}
-		c.externalPose=true
-		pop.impactResidents[id]=c
-	else
-		-- On a device with no compatible skin slot, release the distant stand-in
-		-- at the next snapshot. Damage and visible impact effects still register.
-		c.active=false
-	end
-	pop.selectionIn=0
-	return true
+	return residentDeath(pop,fleet,id,c,actor,gibbed)
 end
 
 local function promoteContacts(pop,fleet,dt,boxes,grid)
@@ -383,7 +384,7 @@ local function promoteContacts(pop,fleet,dt,boxes,grid)
 					local actor=pop.pedestrians:promote(row.id,pop.residents,observers)
 					if actor then
 						c.previousFeet=before
-						person(pop,c,actor,false,dt,boxes,grid)
+						person(pop,c,actor,false,dt,boxes,grid,row.id)
 						if c.impact then pop.impactResidents[row.id]=c end
 						pop.selectionIn=0
 					else
@@ -429,6 +430,7 @@ local function sendObstacles(boxes,roots)
 end
 
 function impacts.tick(pop,fleet,dt)
+	road.begin(pop)
 	pop.impactResidents=pop.impactResidents or {}
 	local boxes,grid={},{}
 	for i,car in fleet.vehicles do
@@ -444,10 +446,14 @@ function impacts.tick(pop,fleet,dt)
 	end
 	for id,actor in pop.pedestrians.active do
 		local c=pop.residents[id]
+		if c and c.shotUntil and c.impact and c.impact.stage=="down" and not c.dead then
+			residentDeath(pop,fleet,id,c,actor,false)
+			continue
+		end
 		if c and c.building and c.impact then
 			advance(pop,c,actor,false,dt,EMPTY)
 		elseif c and not c.building and c.active~=false then
-			person(pop,c,actor,false,dt,boxes,grid)
+			person(pop,c,actor,false,dt,boxes,grid,id)
 			if c.impact then pop.impactResidents[id]=c end
 		end
 	end
@@ -472,6 +478,7 @@ function impacts.tick(pop,fleet,dt)
 		end
 	end
 	local roots={}
+	corpses.tick(pop,fleet,roots)
 	local function track(p)
 		if p.impact and p.impact.stage=="down" then table.insert(roots,p.impact.hips or p.pos+HIP) end
 	end
@@ -487,6 +494,10 @@ function impacts.tick(pop,fleet,dt)
 		local c=pop.residents[id]
 		if c then track(c) end
 	end
+	corpses.visit(pop,nil,nil,function(id,record,feet,actor)
+		road.prone(pop,record,actor,false,nil,id,nearbyCars(grid,record.pos),dt)
+	end)
+	road.finish(pop)
 	if #roots>0 then sendObstacles(boxes,roots)
 	elseif pop.hadRagdolls then humans.obstacles({}) end
 	pop.hadRagdolls=#roots>0

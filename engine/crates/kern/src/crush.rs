@@ -107,3 +107,88 @@ mod tests {
         assert!(left.distance(center)<1e-6 && left.y>seam.y && left.z>seam.z);
     }
 }
+
+pub const MAX_DENTS: usize = 8;
+/// The continuous displacement limit also pads render and LOD culling spheres.
+pub const DENT_ENVELOPE: f32 = 0.68;
+
+/// A compact body-space impact. Axis points into the material. The non-spherical
+/// footprint and the shallow raised rim give the metal a local fold in silhouette.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Dent {
+    pub center: Vec3,
+    axis: Vec3,
+    diagonal: Vec3,
+    inv_radius: f32,
+    depth: f32,
+}
+
+impl Dent {
+    pub fn new(center: Vec3, inward: Vec3, radius: f32, depth: f32) -> Option<Self> {
+        if !center.is_finite() || !inward.is_finite() || !(0.12..=3.).contains(&radius) || !(0.0..=0.6).contains(&depth) { return None; }
+        let axis = inward.try_normalize()?;
+        let across = Vec3::Y.cross(axis).try_normalize().unwrap_or(Vec3::X);
+        let diagonal = (across * 0.91 + axis.cross(across) * 0.42).normalize();
+        Some(Self { center, axis, diagonal, inv_radius: radius.recip(), depth })
+    }
+
+    /// Compact polynomial field plus its analytic displacement Jacobian.
+    fn sample(self, point: Vec3, d: &mut Vec3, jac: &mut glam::Mat3) {
+        let p = (point - self.center) * self.inv_radius;
+        // Narrower through the panel and vertically. The far side and wheels stay local.
+        let a = self.axis.dot(p);
+        let g = p + self.axis * (0.8 * a) + Vec3::Y * (0.40 * p.y);
+        let q = p.dot(g);
+        if q >= 1. { return; }
+        let edge = 1. - q;
+        let x = self.diagonal.dot(p);
+        let skew = 1. + 0.36 * x;
+        let core = edge * edge * (1. - 2.35 * q);
+        let dc = -2. * edge * (1. - 2.35 * q) - 2.35 * edge * edge;
+        let shell = q * edge * edge;
+        let ridge = Vec3::Y * 0.42 + self.diagonal * 0.24;
+        let dq = g * (2. * self.inv_radius);
+        let depth = self.depth;
+        *d += (self.axis * core * skew + ridge * shell) * depth;
+        let gc = dq * (dc * skew) + self.diagonal * (0.36 * self.inv_radius * core);
+        let gs = dq * (edge * (1. - 3. * q));
+        for (col, c, s) in [(&mut jac.x_axis,gc.x,gs.x),(&mut jac.y_axis,gc.y,gs.y),(&mut jac.z_axis,gc.z,gs.z)] {
+            *col += (self.axis * c + ridge * s) * depth;
+        }
+    }
+}
+
+/// Apply all dents in rest space. The derivative of the saturating displacement
+/// is included in the cofactor normal, preserving the paint's authored shading.
+pub fn dent_vertex(point: Vec3, normal: Vec3, dents: &[Dent]) -> (Vec3, Vec3) {
+    let mut offset = Vec3::ZERO;
+    let mut deriv = glam::Mat3::ZERO;
+    for dent in dents { dent.sample(point, &mut offset, &mut deriv); }
+    if offset == Vec3::ZERO { return (point,normal); }
+    let e2 = DENT_ENVELOPE * DENT_ENVELOPE;
+    let k = (1. + offset.length_squared() / e2).sqrt().recip();
+    let column = |d: Vec3| d*k-offset*(offset.dot(d)*k*k*k/e2);
+    let dx=Vec3::X+column(deriv.x_axis);
+    let dy=Vec3::Y+column(deriv.y_axis);
+    let dz=Vec3::Z+column(deriv.z_axis);
+    let n=dy.cross(dz)*normal.x+dz.cross(dx)*normal.y+dx.cross(dy)*normal.z;
+    (point+offset*k,n.normalize_or(normal))
+}
+
+#[cfg(test)]
+mod dent_tests {
+    use super::*;
+    #[test]
+    fn local_dents_tilt_paint_normals_and_leave_the_other_corner_at_rest() {
+        let d=Dent::new(Vec3::new(-0.55,0.45,-1.93),Vec3::new(0.25,-0.12,1.),1.05,0.46).unwrap();
+        let p=d.center+Vec3::new(0.31,0.04,0.17);
+        let (m,n)=dent_vertex(p,Vec3::Y,&[d]);
+        let x=p+Vec3::X*0.0003; let z=p+Vec3::Z*0.0003;
+        let tx=dent_vertex(x,Vec3::Y,&[d]).0-m; let tz=dent_vertex(z,Vec3::Y,&[d]).0-m;
+        assert!(n.dot(tz.cross(tx).normalize())>0.999 && Vec3::Y.dot(n)<0.999);
+        assert!(m.z>p.z+0.1);
+        let far=d.center+Vec3::X*1.45;
+        assert_eq!(dent_vertex(far,Vec3::Y,&[d]),(far,Vec3::Y));
+        assert!(dent_vertex(p,Vec3::Y,&[d;MAX_DENTS]).0.distance(p)<=DENT_ENVELOPE);
+    }
+}

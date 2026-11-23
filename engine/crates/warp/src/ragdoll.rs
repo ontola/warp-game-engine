@@ -66,10 +66,22 @@ pub struct Doll {
     fall_inverse: Mat4,
     /// Where each part is now relative to the fall, once it froze.
     frozen: Option<[Mat4; PARTS]>,
+    /// Small reconstruction recipe shared by collision queries and waking.
+    segments: Vec<Segment>,
+    frames: [Quat; PARTS],
     age: f32,
     resting_on_obstacle: bool,
     /// The palette at the fall (model space).
     pub palette: Vec<Mat4>,
+}
+
+impl Doll {
+    fn world_delta(&self, i: usize) -> Mat4 {
+        match &self.rig {
+            Some(rig) => rig.delta(i, 1.),
+            None => self.frozen.as_ref().expect("inactive ragdoll has a frozen pose")[i],
+        }
+    }
 }
 
 /// A shared moving obstacle. Its bounds also reserve space for standing back up.
@@ -112,20 +124,22 @@ pub struct Dolls {
 }
 
 impl Dolls {
+    fn reserve_bit(&mut self) -> u32 {
+        if self.active() >= ACTIVE {
+            let oldest = self.dolls.iter().filter(|(_, d)| d.rig.is_some())
+                .max_by(|(ia, a), (ib, b)| a.age.total_cmp(&b.age).then_with(|| ib.cmp(ia))).map(|(&id, _)| id);
+            if let Some(id) = oldest { self.freeze(id); }
+        }
+        let used = self.dolls.values().filter(|d| d.rig.is_some()).fold(0u32, |m, d| m | d.bit);
+        1u32 << used.trailing_ones()
+    }
+
     /// Person `id` goes limp: `palette` (model space, rig joints) is how it
     /// stood, `model` where; `push` the blow (world, m/s).
     pub fn fall(&mut self, id: u32, joint: &[usize], bind: &[Vec3], palette: &[Mat4], model: Affine3A, push: Vec3, spin: Option<Vec3>) -> Result<(), String> {
         if !push.is_finite() || spin.is_some_and(|w| !w.is_finite()) { return Err("ragdoll motion must be finite".into()); }
         self.remove(id);
-        let active: Vec<u32> = self.dolls.iter().filter(|(_, d)| d.rig.is_some()).map(|(k, _)| *k).collect();
-        if active.len() >= ACTIVE {
-            if let Some(old) = active.iter().min_by(|a, b| self.dolls[*b].age.total_cmp(&self.dolls[*a].age)) {
-                let old = *old;
-                self.freeze(old);
-            }
-        }
-        let used: u32 = self.dolls.values().filter(|d| d.rig.is_some()).fold(0, |m, d| m | d.bit);
-        let bit = 1u32 << (0..32).find(|i| used & (1 << i) == 0).unwrap_or(0);
+        let bit = self.reserve_bit();
         let phys = self.phys.get_or_insert_with(|| Physics::new(Vec3::new(0.0, -20.0, 0.0), HZ));
         let world = Mat4::from(model);
         let at = |b: Bone| (world * palette[joint[b as usize]]).transform_point3(bind[b as usize]);
@@ -178,8 +192,60 @@ impl Dolls {
         }
         rig.update(phys);
         rig.update(phys);
-        self.dolls.insert(id, Doll { rig: Some(rig), floor: Some(floor), bit, fall: world, fall_inverse: world.inverse(), frozen: None, age: 0.0, resting_on_obstacle: false, palette: palette.to_vec() });
+        self.dolls.insert(id, Doll { rig: Some(rig), floor: Some(floor), bit, fall: world, fall_inverse: world.inverse(), frozen: None, segments: segs, frames, age: 0.0, resting_on_obstacle: false, palette: palette.to_vec() });
         Ok(())
+    }
+
+    pub fn hips(&self, id: u32) -> Option<Vec3> {
+        let d = self.dolls.get(&id)?;
+        let hips = &d.segments[0];
+        Some(d.world_delta(0).transform_point3((hips.start + hips.end) * 0.5))
+    }
+
+    pub fn raycast(&self, id: u32, origin: Vec3, dir: Vec3, limit: f32) -> Option<f32> {
+        let d = self.dolls.get(&id)?;
+        let dir = dir.try_normalize()?;
+        d.segments.iter().enumerate().filter_map(|(i, s)| s.raycast(d.world_delta(i), origin, dir, limit)).min_by(f32::total_cmp)
+    }
+
+    pub fn closest(&self, id: u32, point: Vec3) -> Option<(usize, Vec3)> {
+        let d = self.dolls.get(&id)?;
+        d.segments.iter().enumerate().map(|(i, s)| (i, s.closest(d.world_delta(i), point)))
+            .min_by(|a, b| a.1.distance_squared(point).total_cmp(&b.1.distance_squared(point)))
+    }
+
+    /// Recreate the same joint anchors and passive limits, then put the limbs
+    /// back in the stored world pose before the first solver or render sample.
+    fn wake(&mut self, id: u32) -> Result<(), String> {
+        let bit = self.reserve_bit();
+        let phys = self.phys.as_mut().expect("a frozen ragdoll has a world");
+        let d = self.dolls.get_mut(&id).expect("ragdoll to wake");
+        let mut rig = Ragdoll::spawn(phys, &d.segments, Vec3::ZERO, Vec3::ZERO, bit)?;
+        let result = (|| {
+            for i in 1..PARTS {
+                let parent = d.segments[i].parent.unwrap();
+                rig.set_angular_profile(phys, i, d.frames[parent], d.frames[i], profile(i))?;
+            }
+            rig.restore_deltas(phys, d.frozen.as_ref().expect("frozen pose"))
+        })();
+        if let Err(e) = result { rig.remove(phys); return Err(e); }
+        d.floor = Some(phys.add_floor_for(d.fall.w_axis.y, bit));
+        d.bit = bit;
+        d.frozen = None;
+        d.rig = Some(rig);
+        d.age = 0.;
+        d.resting_on_obstacle = false;
+        Ok(())
+    }
+
+    pub fn hit(&mut self, id: u32, point: Vec3, velocity: Vec3) -> Result<bool, String> {
+        if !point.is_finite() || !velocity.length_squared().is_finite() { return Err("invalid ragdoll hit".into()); }
+        let Some((index, contact)) = self.closest(id, point) else { return Ok(false); };
+        if velocity == Vec3::ZERO { return Ok(true); }
+        if self.dolls[&id].rig.is_none() { self.wake(id)?; }
+        let rig = self.dolls[&id].rig.as_ref().unwrap();
+        rig.impulse_at(self.phys.as_mut().unwrap(), index, contact, velocity);
+        Ok(true)
     }
 
     /// The body stays where it lies and leaves the physics world.

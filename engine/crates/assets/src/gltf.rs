@@ -17,9 +17,16 @@ use std::collections::HashSet;
 use std::path::Path;
 
 mod crush_grid;
+mod named_parts;
 pub struct ModelPart { pub mesh: usize, pub min: Vec3, pub max: Vec3, pub hinge: Vec3 }
 
 pub struct Model {
+    /// First vertex of the intact mesh and its optional authored part IDs.
+    pub vertex_start: usize,
+    pub vertex_count: usize,
+    pub vertex_parts: Vec<u8>,
+    /// Named meshes in centred coordinates, with their assembly offsets.
+    pub parts: Vec<(String, ModelPart)>,
     /// Optional local sections, row-major along Z, then X.
     pub crush_sections: Vec<(u8, ModelPart)>,
     /// The whole model as one scene mesh, in model space.
@@ -56,6 +63,8 @@ pub fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
 
 /// One triangle primitive of a node, in world (model) space.
 pub struct Primitive {
+    /// Interior trim visible only on the standalone named part.
+    pub detached_only: bool,
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
     /// The Warp material made for its glTF material (or the fallback).
@@ -91,13 +100,15 @@ fn policy(scene: &Scene, doc: &Document, part: &Part<'_>) -> SimplificationPolic
 pub fn load(scene: &mut Scene, path: &Path) -> Result<Model, String> {
     let doc = read(scene, path)?;
     let (mut min, mut max) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
-    let parts: Vec<Part> = doc.nodes.iter().flat_map(|n| &n.primitives).map(|p| {
+    let parts: Vec<Part> = doc.nodes.iter().flat_map(|n| &n.primitives).filter(|p| !p.detached_only).map(|p| {
         for v in &p.vertices { min = min.min(Vec3::from(v.pos)); max = max.max(Vec3::from(v.pos)); }
         Part { vertices: &p.vertices, indices: &p.indices, material: p.material }
     }).collect();
     if parts.is_empty() { return Err(format!("{}: no triangle meshes", path.display())); }
     let triangles = parts.iter().map(|p| p.indices.len() / 3).sum();
+    let vertex_start = scene.vertices.len();
     let mesh = scene.add_mesh(&ClusterMesh::build_with_policy(&parts, |part| policy(scene, &doc, part)));
+    let vertex_count = scene.vertices.len() - vertex_start;
     let mut cuts = None;
     for node in &doc.nodes {
         let Some(json) = &node.extras else { continue; };
@@ -108,7 +119,8 @@ pub fn load(scene: &mut Scene, path: &Path) -> Result<Model, String> {
         }
     }
     let crush_sections = match cuts { Some(grid) => crush_grid::build(scene, &doc, grid)?, None => Vec::new() };
-    Ok(Model { mesh, min, max, triangles, materials: doc.materials, crush_sections })
+    let (vertex_parts, parts) = named_parts::build(scene, &doc)?;
+    Ok(Model { mesh, min, max, triangles, materials: doc.materials, crush_sections, vertex_start, vertex_count, vertex_parts, parts })
 }
 
 /// Read a glTF file node by node, adding its materials and textures to
@@ -215,6 +227,8 @@ pub fn read_bytes(scene: &mut Scene, bytes: &[u8], path: &Path) -> Result<Docume
         let world = parent * Mat4::from_cols_array_2d(&node.transform().matrix());
         let normal_m = world.inverse().transpose();
         if let Some(mesh) = node.mesh() {
+            let split = node.extras().as_ref().and_then(|raw| serde_json::from_str::<serde_json::Value>(raw.get()).ok())
+                .is_some_and(|extras| extras.get("warpPart").is_some());
             let mut primitives = Vec::new();
             for prim in mesh.primitives() {
                 if prim.mode() != ::gltf::mesh::Mode::Triangles { continue; }
@@ -229,8 +243,28 @@ pub fn read_bytes(scene: &mut Scene, bytes: &[u8], path: &Path) -> Result<Docume
                 let vertices: Vec<Vertex> = pos.iter().zip(&nrm).zip(&uv).map(|((p, n), t)| {
                     Vertex { pos: world.transform_point3(Vec3::from(*p)).to_array(), normal: normal_m.transform_vector3(Vec3::from(*n)).normalize_or(Vec3::Y).to_array(), uv: *t }
                 }).collect();
+                // Named nodes may share a full attribute accessor and select only a
+                // slice of its index stream. Retain just the referenced vertices.
+                let vertices = if split {
+                    let mut compact = Vec::new();
+                    let mut remap = vec![u32::MAX; vertices.len()];
+                    for index in &mut indices {
+                        let entry = remap.get_mut(*index as usize).ok_or("glTF part index outside position accessor")?;
+                        if *entry == u32::MAX {
+                            *entry = compact.len() as u32;
+                            compact.push(vertices[*index as usize]);
+                        }
+                        *index = *entry;
+                    }
+                    compact
+                } else { vertices };
                 let material = prim.material().index().and_then(|i| materials.get(i).copied()).unwrap_or(fallback);
-                primitives.push(Primitive { vertices, indices, material, material_name: prim.material().name().map(str::to_string) });
+                let extras = prim.extras().as_ref().map(|raw| serde_json::from_str::<serde_json::Value>(raw.get()))
+                    .transpose().map_err(|e| e.to_string())?;
+                let detached_only = extras.as_ref().and_then(|v| v.get("warpDetachedOnly"))
+                    .map(|v| v.as_bool().ok_or("warpDetachedOnly must be a boolean")).transpose()?.unwrap_or(false);
+                if detached_only && !split { return Err("warpDetachedOnly needs a named warpPart node".into()); }
+                primitives.push(Primitive { detached_only, vertices, indices, material, material_name: prim.material().name().map(str::to_string) });
             }
             nodes.push(Node { name: node.name().map(str::to_string), extras: node.extras().as_ref().map(|r| r.get().to_string()), primitives });
         }
@@ -258,6 +292,32 @@ mod tests {
 
         let invalid = br#"{"asset":{"version":"2.0"},"materials":[{"extras":{"warpPreserveShading":"true"}}]}"#;
         assert!(read_bytes(&mut scene, invalid, Path::new("sample.gltf")).err().unwrap().contains("boolean"));
+    }
+
+    #[test]
+    fn named_sedan_parts_keep_glass_and_liners_with_the_detached_mesh() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../games/warp-theft-auto/assets/cars/sedan.gltf");
+        let mut scene = Scene::default();
+        let doc = read(&mut scene, &path).unwrap();
+        let model = load(&mut scene, &path).unwrap();
+        let names = ["frame", "bonnet", "door-lf", "door-rf", "door-lr", "door-rr", "boot"];
+        assert_eq!(model.parts.len(), names.len());
+        assert_eq!(model.vertex_count, model.vertex_parts.len());
+        for (id, name) in names.iter().enumerate() {
+            let node = doc.nodes.iter().find(|n| n.name.as_deref() == Some(*name)).unwrap();
+            let expected: usize = node.primitives.iter().filter(|p| !p.detached_only).map(|p| p.vertices.len()).sum();
+            assert_eq!(model.vertex_parts.iter().filter(|v| **v as usize == id).count(), expected);
+            assert!(expected > 0);
+            let (_, mesh) = model.parts.iter().find(|(n, _)| n == name).unwrap();
+            assert!((mesh.min + mesh.max).length() < 0.0001);
+            if id != 0 {
+                assert!(node.primitives.iter().any(|p| p.detached_only));
+                assert!(mesh.hinge.length() > 0.3);
+            }
+            if (2..=5).contains(&id) {
+                assert!(node.primitives.iter().any(|p| p.material_name.as_deref() == Some("Body_Glass")));
+            }
+        }
     }
 
     #[test]

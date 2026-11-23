@@ -1,10 +1,13 @@
 local util = require("kit/util")
 local damage = require("kit/car_damage")
+local detachment = require("detachment")
 local v = vector.create
 local models = {}
 local PAINT = { "sedan-ochre", "sedan", "sedan-pearl", "sedan-vermilion" }
 local BASE = "assets/cars/"
-local OFFSET = { v(-.759,0,-1.262), v(.759,0,-1.262), v(-.759,0,1.262), v(.759,0,1.262) }
+local OFFSET = detachment.wheelOffsets
+
+models.wheelOffsets=OFFSET
 
 -- Match the grid boundaries declared by this model's glTF warpCrushGrid.
 local CRUSH=damage.profile(.98,2.21,2.19,.48,1.04,1.16)
@@ -15,6 +18,9 @@ local paints={ochre=PAINT[1],teal=PAINT[2],pearl=PAINT[3],vermilion=PAINT[4]}
 -- origin (.33 m above the road). All paints share the same bumper, bonnet and roof.
 models.contactProfile="toyama"
 function models.prepareContacts()
+	local paths={}
+	for _,name in PAINT do table.insert(paths,BASE..name..".gltf") end
+	world.warm_dents(paths,8)
 	vehicles.contact_profile(models.contactProfile,-.15,{
 		{z=-2.21,width=1.00,top=.21}, {z=-2.10,width=1.30,top=.29},
 		{z=-2.00,width=1.52,top=.40}, {z=-1.86,width=1.65,top=.48},
@@ -76,76 +82,65 @@ function models.raycast(fleet,origin,direction,maxDistance,ignoreCar)
 end
 
 function models.hit(car,worldPoint,amount)
-	if car.kind~="car" then return false end
+	if car.kind~="car" or not (amount>0) then return false end
 	car.damage=car.damage or damage.new()
-	if not damage.hit(car.damage,CRUSH,localPoint(car,worldPoint),amount) then return false end
-	local _,frontLeft=damage.cellPose(CRUSH,car.damage.zones,0,0)
-	local _,rearRight=damage.cellPose(CRUSH,car.damage.zones,2,2)
-	vehicles.crush_query(car.native,models.contactProfile,v(-CRUSH.sideHinge,0,-CRUSH.frontHinge),v(CRUSH.sideHinge,0,CRUSH.rearHinge),v(frontLeft.x,1,rearRight.x),v(frontLeft.z,1,rearRight.z))
+	local p=localPoint(car,worldPoint)
+	local changed=damage.hit(car.damage,CRUSH,p,amount)
+	local dented=damage.dent(car.damage,CRUSH,p,amount)
+	local old=car.missingParts or 0
+	detachment.hit(car,p,amount)
+	if not changed and not dented and old==(car.missingParts or 0) then return false end
+	if dented or old~=(car.missingParts or 0) then vehicles.dent_query(car.native,models.contactProfile,car.damage.dents or {},car.body,car.missingParts or 0) end
 	car.damageDirty=true
 	return true
 end
 
-local function updatePanels(car)
-	local creating=not car.panels
-	local panel=car.panels or {}
-	local model=car.model or world.get(car.body).shape
-	for row=0,2 do
-		for column=0,2 do
-			local i=row*3+column
-			local pos,size=damage.cellPose(CRUSH,car.damage.zones,column,row)
-			if creating then
-				panel[i]=world.spawn(model.."#crush"..i,{pos=pos,size=size,solid=false,tag="damage-panel"},car.body)
-			else world.set(panel[i],{pos=pos,size=size}) end
-		end
-	end
-	if creating then
-		car.panels=panel
-		world.set(car.body,{visible=false})
-	end
-	car.damageDirty=false
-end
-
--- A single mesh remains in the distance. For the nearest damaged cars, skin
--- the same original surfaces across the crush zones. Reserve space for rooms
--- and transient effects, regardless of how many cars have been damaged.
 function models.streamDamage(fleet,dt)
 	fleet.crushIn=(fleet.crushIn or 0)-dt
 	if fleet.crushIn>0 then return end
-	fleet.crushIn=.15
+	fleet.crushIn=.12
 	local near={}
-	local used=0
 	for _,car in fleet.vehicles do
-		if car.panels then used+=9 end
 		if car.kind~="car" or not car.damage or car.damage.total<=0 then continue end
+		-- Retire panel children left by hot-reloading the former nine-cell model.
+		if car.panels then
+			for _,id in car.panels do world.remove(id) end
+			car.panels=nil
+			world.set(car.body,{visible=true})
+		end
 		local best=math.huge
 		for _,p in fleet.players do
 			local d=car.pos-p.pos
 			best=math.min(best,vector.dot(d,d))
 		end
-		if best<48^2 then table.insert(near,{car=car,distance=best*(if car.panels then .86 else 1)}) end
+		if best<48^2 then table.insert(near,{car=car,distance=best*(if car.dentActive then .86 else 1)}) end
 	end
 	table.sort(near,function(a,b)
 		return a.distance<b.distance or (a.distance==b.distance and a.car.index<b.car.index)
 	end)
-	local limit=math.clamp(math.floor((world.capacity()-world.count()+used-96)/9),0,8)
 	local selected={}
-	for i=1,math.min(#near,limit) do selected[near[i].car]=true end
+	local limit=math.min(8,#near)
+	for i=1,limit do selected[near[i].car]=true end
 	for _,car in fleet.vehicles do
-		if car.panels and not selected[car] then
-			world.set(car.body,{visible=true})
-			for _,id in car.panels do world.remove(id) end
-			car.panels=nil
+		if car.kind~="car" or not car.damage or car.damage.total<=0 or selected[car] then continue end
+		local mask=car.missingParts or 0
+		if car.dentActive or car.shellMask~=mask then
+			world.dent(car.body,nil,mask)
+			car.dentActive,car.shellMask=nil,mask
 		end
 	end
-	for i=1,math.min(#near,limit) do
+	for i=1,limit do
 		local car=near[i].car
-		if not car.panels or car.damageDirty then updatePanels(car) end
+		if not car.dentActive or car.damageDirty then
+			if world.dent(car.body,car.damage.dents or {},car.missingParts or 0) then
+				car.dentActive,car.damageDirty,car.shellMask=true,false,nil
+			end
+		end
 	end
 end
 
 function models.damagedControls(car,controls)
-	return damage.controls(car.damage,controls,car.speed)
+	return detachment.controls(car,damage.controls(car.damage,controls,car.speed))
 end
 
 -- Warp Humans' seated pose uses a floor anchor and faces +Z; sedans face -Z.

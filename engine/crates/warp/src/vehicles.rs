@@ -7,6 +7,16 @@ use script::mlua::{self, Lua, Table, Value, Vector};
 fn error(msg: &str) -> mlua::Error { mlua::Error::runtime(msg) }
 fn vec(v: glam::Vec3) -> Vector { Vector::new(v.x, v.y, v.z) }
 
+pub(crate) fn read_dents(rows: Table) -> mlua::Result<Vec<kern::crush::Dent>> {
+    if rows.raw_len()>kern::crush::MAX_DENTS { return Err(error("too many dent fields")); }
+    rows.sequence_values::<Table>().map(|row| {
+        let row=row?;
+        let pos=vec3(&row.raw_get("center")?,"dent center")?;
+        let axis=vec3(&row.raw_get("inward")?,"dent direction")?;
+        kern::crush::Dent::new(pos,axis,row.raw_get("radius")?,row.raw_get("depth")?).ok_or_else(||error("invalid dent radius, direction or depth"))
+    }).collect()
+}
+
 pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
     let t = lua.create_table()?;
     let c = core.clone();
@@ -73,6 +83,16 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
         sim(&c, "vehicles.step")?;
         c.world.fleet.as_mut().ok_or_else(|| error("call vehicles.reset before step"))?.step(dt);
         Ok(())
+    })?)?;
+    let c = core.clone();
+    t.set("dent_query", lua.create_function(move |_, (id,name,list,body,mask): (u32,String,Table,Option<u32>,Option<u32>)| {
+        let fields=read_dents(list)?;
+        let mut c=lock(&c);sim(&c,"vehicles.dent_query")?;
+        let mask=mask.unwrap_or(0);
+        if let Some(body)=body && mask!=0 {
+            return c.world.prepare_panel_query(id,&name,body,&fields,mask).map_err(|e|error(&e));
+        }
+        c.world.fleet.as_mut().ok_or_else(||error("call vehicles.reset first"))?.dent_query(id,&name,&fields).map_err(|e|error(&e))
     })?)?;
     let c = core.clone();
     t.set("crush_query", lua.create_function(move |_, (id, name, lo, hi, side, end): (u32, String, Value, Value, Value, Value)| {

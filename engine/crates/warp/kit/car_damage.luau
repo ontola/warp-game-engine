@@ -31,6 +31,48 @@ function damage.hit(state,profile,p,amount)
 	return oldEnd~=zones[endZone] or oldSide~=zones[sideZone] or oldTotal~=state.total
 end
 
+-- Merge nearby strikes in rest space; isolated hits on the opposite door keep
+-- independent fields. At capacity a weak new mark leaves stronger damage intact.
+function damage.dent(state,profile,p,amount)
+	if not (amount>0) then return false end
+	local fields=state.dents or {}
+	state.dents=fields
+	amount=math.min(amount,1)
+	local unit=profile.halfWidth
+	local x=p.x/unit
+	local z=p.z/(if p.z<0 then profile.front else profile.rear)
+	local ceiling=math.max(0,p.y/unit-.44)
+	local axis=v(-x*math.abs(x)^2,.07-1.8*ceiling^2,-z*math.abs(z)^2)
+	axis=if vector.magnitude(axis)>.001 then vector.normalize(axis) else v(0,-1,0)
+	local gain=math.min(.55,unit*(.016+.47*amount))
+	local reach=math.clamp(unit*(.40+.98*math.sqrt(amount)),.20,2.5)
+	local nearest,smallest=nil,nil
+	local best=math.huge
+	for i,f in fields do
+		local d=vector.magnitude(f.center-p)
+		if d<best and d<math.max(reach,f.radius)*.62 and vector.dot(f.inward,axis)>.23 then
+			nearest,best=i,d
+		end
+		if not smallest or f.depth<fields[smallest].depth then smallest=i end
+	end
+	if nearest then
+		local f=fields[nearest]
+		local nextDepth=math.min(.58,f.depth+gain)
+		if nextDepth==f.depth and reach<=f.radius then return false end
+		-- Do not move the original surface contact into the growing depression.
+		local shift=p-f.center
+		f.center+=(shift-f.inward*vector.dot(shift,f.inward))*(.23*gain/(gain+f.depth))
+		f.depth=nextDepth
+		f.radius=math.min(2.8,math.max(f.radius,reach,unit*.40+nextDepth*1.55))
+	else
+		local f={center=p,inward=axis,radius=reach,depth=gain}
+		if #fields<8 then table.insert(fields,f)
+		elseif gain>fields[smallest].depth then fields[smallest]=f
+		else return false end
+	end
+	return true
+end
+
 -- Each cell of a 3x3 grid scales about its shared inner face. Positions on
 -- either side of a seam map to precisely the same point at every damage level.
 function damage.cellPose(profile,zones,column,row)

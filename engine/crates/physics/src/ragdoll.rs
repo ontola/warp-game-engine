@@ -16,6 +16,27 @@ pub struct Segment {
     pub anchor: Vec3,
 }
 
+impl Segment {
+    /// The same capsule used by spawn. The segment endpoints are its outer
+    /// tips, while Parry expects the ends of the centre line.
+    fn capsule(&self, delta: Mat4) -> rapier3d::parry::shape::Capsule {
+        let axis = (self.end - self.start) * 0.5;
+        let middle = delta.transform_point3(self.start + axis);
+        let offset = delta.transform_vector3(axis.normalize_or_zero() * (axis.length() - self.radius).max(0.0));
+        rapier3d::parry::shape::Capsule::new(to(middle - offset), to(middle + offset), self.radius)
+    }
+
+    pub fn raycast(&self, delta: Mat4, origin: Vec3, direction: Vec3, limit: f32) -> Option<f32> {
+        use rapier3d::parry::query::{Ray, RayCast};
+        self.capsule(delta).cast_local_ray(&Ray::new(to(origin), to(direction)), limit, true)
+    }
+
+    pub fn closest(&self, delta: Mat4, point: Vec3) -> Vec3 {
+        use rapier3d::parry::query::PointQuery;
+        super::from(self.capsule(delta).project_local_point(to(point), true).point)
+    }
+}
+
 /// Game-authored passive response: radians and force-based spring coefficients.
 /// These are approximations, not inferred anatomical measurements.
 #[derive(Clone, Copy, Debug)]
@@ -226,6 +247,29 @@ impl Ragdoll {
     pub fn is_empty(&self) -> bool { self.parts.is_empty() }
     /// Handle for optional impulses or diagnostics on a particular segment.
     pub fn body(&self, part: usize) -> Body { self.parts[part].body }
+
+    /// Restore a frozen skin's world-space deltas into newly created limbs.
+    /// Both render samples start in that pose, with the original joint frames.
+    pub fn restore_deltas(&mut self, phys: &mut Physics, deltas: &[Mat4]) -> Result<(), String> {
+        if deltas.len() != self.parts.len() || deltas.iter().any(|m| !m.is_finite()) {
+            return Err("ragdoll restore needs a delta for each limb".into());
+        }
+        for (part, delta) in self.parts.iter_mut().zip(deltas) {
+            let (_, rotation, position) = (*delta * part.initial_inverse.inverse()).to_scale_rotation_translation();
+            let body = phys.world.bodies.get_mut(part.body.0).ok_or("ragdoll restore lost a limb")?;
+            let rotation = rotation.normalize();
+            body.set_position(rapier3d::prelude::Pose3::from_parts(to(position), to_q(rotation)), true);
+            part.current = Pose { position, rotation };
+            part.previous = part.current;
+        }
+        Ok(())
+    }
+
+    pub fn impulse_at(&self, phys: &mut Physics, index: usize, point: Vec3, delta_velocity: Vec3) {
+        if let Some(body) = phys.world.bodies.get_mut(self.parts[index].body.0) {
+            body.apply_impulse_at_point(to(delta_velocity * body.mass()), to(point), true);
+        }
+    }
 
     /// Capture after each fixed physics step, preserving the preceding pose
     /// for rendering. A level reset may already have removed these handles.

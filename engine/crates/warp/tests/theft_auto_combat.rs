@@ -107,9 +107,28 @@ fn free_roam_rivals_take_visible_hits_from_each_seat_and_return() {
         assert(s.enemies.vex.health==2 and s.enemies.vex.marker)
         assert(#world.find("combat-shard")>0 and #world.find("combat-splat")>0)
     "#);
-    tick(&mut game, [Controls::default(); 2], 80);
-    check(&mut game, "assert(not state.combat.cast.people.rook)");
-    tick(&mut game, [Controls::default(); 2], 650);
+    tick(&mut game, [Controls::default(); 2], 730);
+    check(&mut game, r#"
+        local s,pop=state.combat,state.population
+        local p=s.cast.people.rook
+        assert(s.enemies.rook.health==0 and p.dead and p.corpse and pop.corpses[p.corpse])
+        assert(humans.joint(p.corpse,"hips") and not s.enemies.rook.marker)
+        -- Age the corpse while a second seat still observes it.
+        pop.elapsed+=50
+        s.enemies.rook.respawnIn=0
+        world.place(state.fleet.players[1].body,vector.create(80,.85,78))
+    "#);
+    tick(&mut game, [Controls::default(); 2], 3);
+    check(&mut game, r#"
+        assert(state.combat.cast.people.rook.corpse)
+        world.place(state.fleet.players[2].body,vector.create(81,.85,78))
+    "#);
+    tick(&mut game, [Controls::default(); 2], 4);
+    check(&mut game, r#"
+        assert(not state.combat.cast.people.rook)
+        world.place(state.fleet.players[1].body,vector.create(8,.85,-36))
+    "#);
+    tick(&mut game, [Controls::default(); 2], 2);
     check(&mut game, r#"
         local s=state.combat
         assert(s.cast.people.rook and s.enemies.rook.health==2 and s.enemies.rook.marker)
@@ -193,7 +212,8 @@ fn an_unfitted_resident_can_be_shot_at_its_rendered_position_and_stays_down() {
     check(&mut game,r#"
         local pop=state.population
         local c=pop.residents[state.bystander]
-        assert(c.impact and c.impact.stage=="down" and pop.pedestrians.active[state.bystander])
+        assert(c.dead and c.impact.stage=="down" and c.corpse and pop.corpses[c.corpse])
+        assert(not pop.pedestrians.active[state.bystander])
         assert(c.shotUntil and state.combat.players[1].hits==1 and state.combat.enemies.rook.health==2)
         local gun=state.combat.players[1]
         assert(#world.find("combat-splat")>0 and gun.hitFlash>0 and gun.hitPoint)
@@ -209,7 +229,8 @@ fn an_unfitted_resident_can_be_shot_at_its_rendered_position_and_stays_down() {
     check(&mut game,r#"
         local pop=state.population
         local c=pop.residents[state.bystander]
-        assert(c.active==false and not pop.pedestrians.active[state.bystander] and not c.impact)
+        assert(c.active==false and not pop.pedestrians.active[state.bystander])
+        assert(c.dead and c.corpse and humans.joint(c.corpse,"hips"))
     "#);
 }
 
@@ -347,8 +368,26 @@ fn space_fires_and_live_module_edits_keep_the_active_cast_contract_and_effects()
         assert(state.storyCast.people.b.body==state.keptBody and state.story.step==2)
         assert(world.exists(state.keptDrop) and state.combat.players[2].hits==1)
     "#);
+    // The first target still occupies the sightline immediately after reload.
     tick(&mut game,[space,Controls::default()],1);
-    check(&mut game,r#"assert(state.story.status=="complete" and state.storyCast.people.b.impact)"#);
+    check(&mut game,r#"
+        local p=state.combat.players[1]
+        assert(p.hitFlash>0 and p.hits==0 and state.story.status=="active")
+        local seat=state.fleet.players[1]
+        local b=state.storyCast.people.b
+        world.place(seat.body,b.pos+vector.create(0,.85,1.4))
+        seat.view,seat.pitch=0,0
+    "#);
+    tick(&mut game,[Controls::default();2],30);
+    tick(&mut game,[space,Controls::default()],1);
+    check(&mut game,r#"
+        local p=state.combat.players[1]
+        assert(state.story.status=="complete" and state.storyCast.people.b.impact,
+            tostring(p.hits).." hits, contact "..tostring(p.hitPoint)..", player "..tostring(state.fleet.players[1].pos)..", B "..tostring(state.storyCast.people.b.pos))
+        local seat=state.fleet.players[1]
+        world.place(seat.body,vector.create(8,.85,-33))
+        seat.view,seat.pitch=0,0
+    "#);
     tick(&mut game,[Controls::default();2],65);
     check(&mut game,r#"assert(not world.exists(state.keptDrop))"#);
     game.apply_story(&format!(r#"return {{id="escort",title="Escort",cast={cast},steps={{
@@ -734,5 +773,85 @@ fn blast_passes_over_the_bonnet_but_the_cabin_protects_a_bystander() {
         assert(state.combat.crates[state.testCargo].respawnAt,"the shot must hit the cargo")
         assert(state.combat.enemies.rook.health<=0,"open air over the bonnet must transmit the blast")
         assert(state.combat.enemies.vex.health==2,"the closed cabin must block the blast")
+    "#);
+}
+
+#[test]
+fn a_settled_corpse_accepts_a_second_seats_shot_and_only_fragments_once() {
+    let mut game = city();
+    let idle = [Controls::default(); 2];
+    let fire = Controls { pressed: Buttons(Buttons::RIGHT_TRIGGER), ..Default::default() };
+    check(&mut game,r#"
+        local v=vector.create
+        local floor=v(8,24,-35)
+        world.spawn("cube",{tag="city",pos=floor-v(0,.1,0),size=v(22,.2,22),solid=true})
+        local s=state.combat
+        local p=s.cast.people.rook
+        p.pos,p.route,p.arrived=floor,nil,false
+        world.place(p.body,floor+v(0,.85,0))
+        humans.set(p.actor,{pos=floor,pose="idle"})
+        assert(s.cast:kill("rook",v(0,.3,-1)))
+        s.enemies.rook.health,s.enemies.rook.respawnIn,s.enemies.rook.waitClear=0,45,true
+        state.fallen=p.corpse
+        for i,seat in state.fleet.players do world.place(seat.body,floor+v(i,.85,5)) end
+    "#);
+    tick(&mut game,idle,320);
+    check(&mut game,r#"
+        local v=vector.create
+        local head=humans.joint(state.fallen,"head")
+        assert(head and state.population.corpses[state.fallen] and head.y<25)
+        local seat=state.fleet.players[2]
+        local feet=v(head.x,24,head.z+4)
+        world.place(seat.body,feet+v(0,.85,0))
+        seat.view,seat.pitch=0,math.atan2(head.y-feet.y-1.25,4)
+        state.lastHead=head
+    "#);
+    tick(&mut game,[Controls::default(),fire],1);
+    check(&mut game,r#"
+        local player=state.combat.players[2]
+        assert(player.hitFlash>0 and player.hits==0 and player.defeats==0)
+        assert(vector.magnitude(player.hitPoint-state.lastHead)<.38)
+        assert(state.population.corpses[state.fallen])
+    "#);
+    tick(&mut game,idle,15);
+    check(&mut game,r#"
+        local v=vector.create
+        local head=humans.joint(state.fallen,"head")
+        assert(vector.magnitude(head-state.lastHead)>.01)
+        local c=state.combat
+        for id,crate in c.crates do
+            if not state.cargo then
+                state.cargo=id
+                crate.pos=v(head.x+2,24.6,head.z)
+                world.place(id,crate.pos)
+                local seat=state.fleet.players[1]
+                world.place(seat.body,v(crate.pos.x,24.85,crate.pos.z+5))
+                seat.view,seat.pitch=0,math.atan2(-.65,5)
+            end
+        end
+    "#);
+    tick(&mut game,[fire,Controls::default()],1);
+    check(&mut game,r#"
+        local c=state.combat
+        assert(c.crates[state.cargo].respawnAt and c.cast.people.rook.gibbed)
+        assert(not state.population.corpses[state.fallen] and not humans.joint(state.fallen,"hips"))
+        assert(#c.effects.live.shard>=7 and #c.effects.live.splat>0)
+        for _,p in c.players do assert(p.hits==0 and p.defeats==0) end
+        state.fragmentSerial=c.effects.serial
+        for id,crate in c.crates do
+            if id~=state.cargo then
+                state.secondCargo=id
+                crate.pos=c.crates[state.cargo].pos
+                world.place(id,crate.pos)
+                break
+            end
+        end
+    "#);
+    tick(&mut game,idle,25);
+    tick(&mut game,[fire,Controls::default()],1);
+    check(&mut game,r#"
+        local c=state.combat
+        assert(c.crates[state.secondCargo].respawnAt,"second blast did not fire")
+        assert(state.fragmentSerial==c.effects.serial,"consumed corpse produced another hit")
     "#);
 }

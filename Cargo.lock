@@ -5008,6 +5008,7 @@ dependencies = [
  "glam 0.31.1",
  "glyphon",
  "image",
+ "kern",
  "meshopt",
  "naga",
  "png 0.18.1",
