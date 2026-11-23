@@ -94,8 +94,6 @@ pub(crate) mod page {
         kb_enter: bool,
         /// A chord to run when the room ticks.
         chord: Option<Chord>,
-        /// RB held on a seat's device (Back with RB in a game skips ahead).
-        rb_held: bool,
         /// Games started, oldest first (Back + LB plays the last again).
         played: Vec<String>,
         /// Covers fetched for the room's catalog: (game id, PNG).
@@ -284,8 +282,9 @@ pub(crate) mod page {
     /// Holding Back in the room shows, after 0.3 s, what Back plus a
     /// button does (the room draws the party's `back_menu` over the
     /// player): RB the next game, LB the previous one, B twice leaves.
-    /// Back tapped does nothing here; in a game Back goes to the room, and
-    /// RB held while Back is pressed there skips to the next game.
+    /// Back tapped does nothing here. In a game Back goes to the room when
+    /// it is let go without a chord; Back + RB / LB there go straight on to
+    /// the next / previous game ([`app::back_chord`]).
     fn back_chords(h: &mut Host, devices: &[(Device, Controls)]) {
         let now = web_time::Instant::now();
         let mut menu = Value::Null;
@@ -310,7 +309,6 @@ pub(crate) mod page {
             menu = json!({"player": id, "controller": format!("web:{dev}"), "confirm_leave": h.backs[k].2, "chords": chords});
         }
         if h.party["back_menu"] != menu { h.party["back_menu"] = menu; h.dirty = true; }
-        h.rb_held = devices.iter().any(|(d, c)| h.bound.contains(&Some(*d)) && c.held.has(Buttons::RIGHT_SHOULDER));
     }
 
     /// The people on the seats, as a game sees them: a running game takes
@@ -598,7 +596,7 @@ pub(crate) mod page {
                 // From the room: keep it. From another game (the page's
                 // buttons): that game goes, the room is already kept.
                 if h.on_screen.is_none() { app::web::switch_keeping(cfg, game_box, |p| with(|h| h.room = Some(p))); } else { app::web::switch(cfg, game_box); }
-                h.on_screen = Some(game.clone());
+                h.on_screen = Some(game.clone()); app::web::set_in_game(true);
                 set_session(h, Some(&game), "running");
                 h.played.retain(|g| *g != game);
                 h.played.push(game.clone());
@@ -616,7 +614,7 @@ pub(crate) mod page {
             let Some((game, paused)) = h.paused.take() else { return };
             app::web::resume(paused, Some(Box::new(|p| with(|h| h.room = Some(p)))));
             warp::web::hush(Some(false));
-            h.on_screen = Some(game.clone());
+            h.on_screen = Some(game.clone()); app::web::set_in_game(true);
             set_session(h, Some(&game), "running");
             empty_room(false);
         });
@@ -628,9 +626,15 @@ pub(crate) mod page {
             if h.on_screen.is_none() { return false; }
             let Some(room) = h.room.take() else { return false };
             let game = h.on_screen.take().unwrap_or_default();
-            if why == app::web::Exit::Back {
-                // RB held with Back: straight on to the next game.
-                if h.rb_held { h.chord = Some(Chord::Next); }
+            app::web::set_in_game(false);
+            if why != app::web::Exit::Quit {
+                // Back + RB / LB in the game: straight on to another game
+                // (the room plays the chord on its next tick).
+                h.chord = match why {
+                    app::web::Exit::Next => Some(Chord::Next),
+                    app::web::Exit::Previous if !h.played.is_empty() => Some(Chord::Previous),
+                    _ => None,
+                };
                 let name = game.clone();
                 app::web::resume(room, Some(Box::new(move |p| with(|h| h.paused = Some((name, p))))));
                 // Its loops and music wait silently with it (Joep: the sound went on).

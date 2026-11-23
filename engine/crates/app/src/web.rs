@@ -269,6 +269,8 @@ struct Shell {
     switched: Option<(u64, Instant)>,
     /// The running game has left once ([`on_exit`]): wait for the switch.
     exited: bool,
+    /// Back and its chords in a game: the room comes on Back's release.
+    back: crate::back_chord::BackChords,
     /// Per frame: time since the last frame, ticks, the game's draw, and the
     /// engine's encode and submit, in ms ([`Shell::stats`]).
     times: Vec<[f32; 4]>,
@@ -357,15 +359,28 @@ pub fn resume(parked: Parked, keep: Option<Box<dyn FnOnce(Parked)>>) {
 pub enum Exit {
     /// Its own menu's Quit ([`Game::quit`]).
     Quit,
-    /// Someone pressed Back (Select, Tab on the keyboard): the game stays
-    /// paused, as the host's Back does.
+    /// Someone pressed and let go of Back (Select, Tab on the keyboard)
+    /// without a chord: the game stays paused, as the host's Back does.
     Back,
+    /// Back + RB: straight on to the next game.
+    Next,
+    /// Back + LB: the game played before this one.
+    Previous,
 }
 
 /// Call `f` when the running game quits or someone presses Back; a browser
 /// host goes back to its lobby there (a [`switch`]) and returns true. When
 /// it returns false (or without it) Back is the game's like any button and
 /// a quit game keeps running.
+thread_local! {
+    static IN_GAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The host tells the shell whether a game (not its room) has the screen:
+/// only then is Back the host's, read on release with its RB/LB chords
+/// ([`crate::back_chord`]). In the room Back stays the room's.
+pub fn set_in_game(on: bool) { IN_GAME.with(|g| g.set(on)); }
+
 pub fn on_exit(f: impl FnMut(Exit) -> bool + 'static) { EXIT.with(|e| *e.borrow_mut() = Some(Box::new(f))); }
 
 /// [`on_exit`] was called: the page has a lobby to go back to.
@@ -399,7 +414,7 @@ pub fn run(cfg: crate::Config, game: Box<dyn Game>) {
     probe_refresh();
     let mut devices = Devices::new(cfg.keyboard);
     devices.pointer_enabled = cfg.pointer;
-    let shell = Shell { cfg, game, devices, window: None, live: Rc::new(RefCell::new(None)), acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), failed: false, announced: false, hidden_editor:None, switched: Some((next_presentation(), Instant::now())), exited: false, times: Vec::new(),
+    let shell = Shell { cfg, game, devices, window: None, live: Rc::new(RefCell::new(None)), acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), failed: false, announced: false, hidden_editor:None, switched: Some((next_presentation(), Instant::now())), exited: false, back: Default::default(), times: Vec::new(),
         render_height: query_param("render").and_then(|h| h.parse().ok()), quality: None, mobile: mobile() };
     if shell.mobile { log("phone preset: lower resolution, no bloom or contact occlusion (?quality=full turns it off)"); }
     match EventLoop::new() {
@@ -470,6 +485,7 @@ impl Shell {
             self.devices.keyboard_enabled = self.cfg.keyboard;
             self.devices.pointer_enabled = self.cfg.pointer;
             self.exited = false;
+            self.back = Default::default();
             self.acc = 0.0;
             self.switched = Some((generation, Instant::now()));
             self.times.clear();
@@ -496,10 +512,17 @@ impl Shell {
             steps += 1;
             self.game.pointer(self.devices.pointer(), size);
             let mut devices = self.devices.device_controls(step);
-            if !self.exited && devices.iter().any(|(_, c)| c.pressed.has(crate::Buttons::SELECT)) && exit(Exit::Back) {
-                // Back is the host's: the game never sees it.
-                self.exited = true;
-                for (_, c) in &mut devices { c.pressed.0 &= !crate::Buttons::SELECT; c.held.0 &= !crate::Buttons::SELECT; }
+            // Back is the host's: the game never sees it, nor RB/LB under it.
+            // The room comes on Back's release, so Back + RB/LB go straight
+            // on to another game ([`crate::back_chord`]).
+            if !self.exited && takes_back() && IN_GAME.with(|g| g.get()) {
+                let why = match self.back.step(&mut devices) {
+                    Some(crate::back_chord::BackAction::Room) => Some(Exit::Back),
+                    Some(crate::back_chord::BackAction::Next) => Some(Exit::Next),
+                    Some(crate::back_chord::BackAction::Previous) => Some(Exit::Previous),
+                    None => None,
+                };
+                if let Some(why) = why && exit(why) { self.exited = true; }
             }
             self.game.devices(&devices);
             let page = SEATS.with(|s| s.borrow_mut().as_mut().and_then(|f| f(&devices)));
