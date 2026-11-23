@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The standalone Splitscreen Club host (build-android-host.py): one
+     NativeActivity running libsplitscreen_host.so. The Splitscreen Club app
+     starts it from "Host on this phone" (HostLauncher.kt) with the
+     intent's "query" extra as the browser host's query string. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="club.splitscreen.host">
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-feature android:name="android.hardware.vulkan.version" android:version="0x401000" android:required="true" />
+    <uses-feature android:name="android.hardware.gamepad" android:required="false" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <application
+        android:label="Splitscreen Club Host"
+        android:hasCode="false"
+        android:extractNativeLibs="false"
+        android:appCategory="game"
+        android:isGame="true">
+        <activity
+            android:name="android.app.NativeActivity"
+            android:exported="true"
+            android:label="Splitscreen Club Host"
+            android:launchMode="singleTask"
+            android:screenOrientation="sensorLandscape"
+            android:resizeableActivity="false"
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density">
+            <meta-data android:name="android.app.lib_name" android:value="splitscreen_host" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

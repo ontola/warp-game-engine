@@ -159,6 +159,18 @@ pub async fn yield_to_browser() {
     let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }
 
+/// Run `task` on the page's event loop (natively on Android: between the
+/// render thread's frames, app::android::spawn).
+pub fn spawn(task: impl std::future::Future<Output = ()> + 'static) { wasm_bindgen_futures::spawn_local(task) }
+
+/// A future that is ready `ms` milliseconds from now.
+pub async fn sleep(ms: u32) {
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        if let Some(w) = web_sys::window() { let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms as i32); }
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+
 /// Fetch `url` (relative to the page) as bytes.
 pub async fn fetch(url: &str) -> Result<Vec<u8>, String> {
     use wasm_bindgen_futures::JsFuture;

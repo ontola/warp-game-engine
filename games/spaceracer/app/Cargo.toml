@@ -11,6 +11,11 @@ crate-type = ["rlib", "cdylib"]
 name = "spaceracer"
 path = "src/main.rs"
 
+[features]
+# The Quest APK's android_main (xr.rs); the phone host builds without it.
+default = ["quest"]
+quest = []
+
 [dependencies]
 spaceracer = { path = "../sim" }
 app = { path = "../../../engine/crates/app" }
@@ -30,8 +35,8 @@ fastnoise-lite = "1"
 warp-xr = { path = "../../../engine/crates/xr" }
 wgpu = "30"
 
-# The browser build (web.rs): std::time::Instant panics there.
-[target.'cfg(target_arch = "wasm32")'.dependencies]
+# The browser build and the Android host (web.rs): std::time::Instant panics in a browser.
+[target.'cfg(any(target_arch = "wasm32", target_os = "android"))'.dependencies]
 web-time = "1.1"
 
 [target.'cfg(target_os = "android")'.dependencies]

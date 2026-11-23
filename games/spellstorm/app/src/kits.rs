@@ -221,8 +221,8 @@ impl Kits {
 }
 
 pub fn default_dir() -> PathBuf {
-    // In a browser the page fetched the assets under this name (web.rs).
-    if cfg!(target_arch = "wasm32") {
+    // In a browser (and the Android host) the page fetched the assets under this name (web.rs).
+    if cfg!(any(target_arch = "wasm32", target_os = "android")) {
         return PathBuf::from(crate::web::KITS);
     }
     if let Some(d) = std::env::var_os("SPELLSTORM_KITS") {

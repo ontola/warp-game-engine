@@ -347,7 +347,7 @@ impl LuaGame {
     /// The page host's seats changed ([`crate::web::set_seats`]): follow
     /// them as a party's mid-session change does. Once per change; a game
     /// paused meanwhile follows when it ticks again.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
     fn page_seats(&mut self) {
         let Some((version, seats)) = crate::web::seats_after(self.page_seats) else { return };
         self.page_seats = version;
@@ -576,7 +576,7 @@ impl LuaGame {
         for l in &r.logs { self.say(format!("room log: {l}")); }
         if r.finish { self.say("game.finish: the match is over".into()); }
         // In a browser page the page's host keeps the room log.
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(any(target_arch = "wasm32", target_os = "android"))]
         if self.party.is_none() { for l in &r.logs { crate::web::room_log(l); } }
         let Some(party) = self.party.as_mut() else { return };
         for l in &r.logs { party.room_log(l); }
@@ -1122,7 +1122,7 @@ impl Game for LuaGame {
         if self.polls % POLL_TICKS == 0 && self.polls > 0 { self.reload(); }
         self.polls += 1;
         let dt = 1.0 / self.cfg.tick_rate;
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(any(target_arch = "wasm32", target_os = "android"))]
         self.page_seats();
         // Under Splitscreen Club the party's controllers drive the seats; the game
         // only runs while the host says so.
@@ -1229,7 +1229,7 @@ impl Game for LuaGame {
             self.sky_upload = None;
             steps.push(format!("scene {} ms", t.elapsed().as_millis()));
             // A browser build has no KERN_STARTUP_PROFILE: name the slow parts.
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(any(target_arch = "wasm32", target_os = "android"))]
             if let Some(p) = frame.renderer().and_then(|r| r.startup_profile()) && p.total_cpu_ms >= 500.0 {
                 app::web::log(&format!("renderer built in {}", p.slowest(6)));
             }

@@ -3,6 +3,9 @@
 //! files first and hands them over with [`insert`], and reads find them by
 //! path. Writes there change only the copy in memory.
 //!
+//! On Android the host's games come out of the APK the same way: files
+//! handed over with [`insert`] are found first, the filesystem after them.
+//!
 //! Only what loading and hot-reloading a game needs: read, write, a change
 //! stamp, and listing a folder.
 use std::io;
@@ -13,7 +16,7 @@ use std::time::SystemTime;
 pub type Stamp = (SystemTime, u64);
 
 #[cfg(not(target_arch = "wasm32"))]
-mod imp {
+mod fs {
     use super::*;
     pub fn read(p: &Path) -> io::Result<Vec<u8>> { std::fs::read(p) }
     pub fn write(p: &Path, bytes: &[u8]) -> io::Result<()> { std::fs::write(p, bytes) }
@@ -23,8 +26,8 @@ mod imp {
     pub fn list(dir: &Path) -> io::Result<Vec<PathBuf>> { std::fs::read_dir(dir)?.map(|e| e.map(|e| e.path())).collect() }
 }
 
-#[cfg(target_arch = "wasm32")]
-mod imp {
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
+mod mem {
     use super::*;
     use std::collections::BTreeMap;
     use std::sync::Mutex;
@@ -72,8 +75,26 @@ mod imp {
     }
 }
 
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+use fs as imp;
 #[cfg(target_arch = "wasm32")]
-/// Browser: make `bytes` the contents of `path` (as the game will name it).
+use mem as imp;
+
+/// Android: the files handed over first, then the filesystem.
+#[cfg(target_os = "android")]
+mod imp {
+    use super::*;
+    pub fn insert(p: &Path, bytes: Vec<u8>) { mem::insert(p, bytes) }
+    pub fn read(p: &Path) -> io::Result<Vec<u8>> { mem::read(p).or_else(|_| fs::read(p)) }
+    pub fn write(p: &Path, bytes: &[u8]) -> io::Result<()> { if mem::is_file(p) { mem::write(p, bytes) } else { fs::write(p, bytes) } }
+    pub fn stamp(p: &Path) -> Option<Stamp> { mem::stamp(p).or_else(|| fs::stamp(p)) }
+    pub fn is_file(p: &Path) -> bool { mem::is_file(p) || fs::is_file(p) }
+    pub fn is_dir(p: &Path) -> bool { (!mem::key(p).is_empty() && mem::is_dir(p)) || fs::is_dir(p) }
+    pub fn list(dir: &Path) -> io::Result<Vec<PathBuf>> { mem::list(dir).or_else(|_| fs::list(dir)) }
+}
+
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
+/// Browser and Android: make `bytes` the contents of `path` (as the game will name it).
 pub fn insert(path: impl AsRef<Path>, bytes: Vec<u8>) { imp::insert(path.as_ref(), bytes) }
 
 pub fn read(path: impl AsRef<Path>) -> io::Result<Vec<u8>> { imp::read(path.as_ref()) }

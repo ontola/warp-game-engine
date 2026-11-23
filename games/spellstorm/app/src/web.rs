@@ -9,10 +9,10 @@
 /// the characters are beside them in `spellstorm/assets/characters`.
 pub const KITS: &str = "spellstorm/assets/kits";
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
 pub use page::*;
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
 mod page {
     use std::path::Path;
 

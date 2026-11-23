@@ -10,10 +10,10 @@
 /// The game folder in the vfs (rules/, assets/).
 pub const ROOT: &str = "spaceracer";
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
 pub use page::*;
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
 mod page {
     use super::ROOT;
     use std::path::Path;

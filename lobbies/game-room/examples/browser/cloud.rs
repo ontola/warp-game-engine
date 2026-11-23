@@ -9,7 +9,7 @@
 //! from the cloud's own origin (it sends no CORS headers), or name it with
 //! `?cloud=`; `?cloud=off` plays without.
 
-use crate::page::{game_meta, queue, with, Host};
+use super::page::{game_meta, queue, with, Host};
 use serde_json::{json, Value};
 
 /// Polls this often, and at once after a pickup or a change of game.
@@ -77,7 +77,7 @@ fn cloud_origin() -> Option<String> {
 pub(crate) fn register_early() {
     let Some(origin) = cloud_origin() else { return };
     with(|h| h.cloud.registering = true);
-    wasm_bindgen_futures::spawn_local(async move {
+    app::web::spawn(async move {
         let registered = match page_room(&origin).await { Some(r) => Ok(r), None => register(&origin).await };
         match registered {
             Ok((token, code)) => {
@@ -90,8 +90,13 @@ pub(crate) fn register_early() {
     });
 }
 
+/// The Android host has no loading page: it registers itself.
+#[cfg(target_os = "android")]
+async fn page_room(_: &str) -> Option<(String, String)> { None }
+
 /// The room the loading page registered while the engine downloaded
 /// (index.html `window.splitscreenRoom`, a promise), when it is for this origin.
+#[cfg(target_arch = "wasm32")]
 async fn page_room(origin: &str) -> Option<(String, String)> {
     use wasm_bindgen::JsCast;
     let window = web_sys::window()?;
@@ -122,13 +127,19 @@ async fn register(origin: &str) -> Result<(String, String), String> {
 /// (index.html `#warp-join`).
 fn show_join(origin: &str, code: &str) {
     if code.is_empty() { return; }
-    let Some(doc) = web_sys::window().and_then(|w| w.document()) else { return };
-    if let Some(e) = doc.get_element_by_id("warp-qr") { e.set_inner_html(&qr_svg(&format!("{origin}/?r={code}"))); }
-    if let Some(e) = doc.get_element_by_id("warp-code") { e.set_text_content(Some(code)); }
-    let host = origin.split("://").nth(1).unwrap_or(origin);
-    if let Some(e) = doc.get_element_by_id("warp-host") { e.set_text_content(Some(host)); }
-    if let Some(e) = doc.get_element_by_id("warp-join") { let _ = e.remove_attribute("hidden"); }
-    if let Some(root) = doc.document_element() { let _ = root.set_attribute("data-qr", ""); }
+    // The Android host has no loading page: the room shows its code itself.
+    #[cfg(target_arch = "wasm32")]
+    {
+        let Some(doc) = web_sys::window().and_then(|w| w.document()) else { return };
+        if let Some(e) = doc.get_element_by_id("warp-qr") { e.set_inner_html(&qr_svg(&format!("{origin}/?r={code}"))); }
+        if let Some(e) = doc.get_element_by_id("warp-code") { e.set_text_content(Some(code)); }
+        let host = origin.split("://").nth(1).unwrap_or(origin);
+        if let Some(e) = doc.get_element_by_id("warp-host") { e.set_text_content(Some(host)); }
+        if let Some(e) = doc.get_element_by_id("warp-join") { let _ = e.remove_attribute("hidden"); }
+        if let Some(root) = doc.document_element() { let _ = root.set_attribute("data-qr", ""); }
+    }
+    #[cfg(target_os = "android")]
+    let _ = origin;
 }
 
 /// Start the room's poll loop for `players` seats.
@@ -139,7 +150,7 @@ pub(crate) fn start(players: usize) {
         h.cloud.seats = (0..players).map(|i| json!({"index": i, "player": random_hex(16), "revision": 1})).collect();
         h.cloud.applied = vec![None; players];
     });
-    wasm_bindgen_futures::spawn_local(async {
+    app::web::spawn(async {
         let mut failures = 0u32;
         loop {
             match poll().await {
@@ -162,7 +173,7 @@ pub(crate) fn start(players: usize) {
 
 /// Claim waiting profile `pending` for seat `index` (a door pickup in the room).
 pub(crate) fn pickup(pending: String, index: usize) {
-    wasm_bindgen_futures::spawn_local(async move {
+    app::web::spawn(async move {
         let Some((origin, token, seat)) = with(|h| Some((h.cloud.origin.clone(), h.cloud.token.clone()?, h.cloud.seats.get(index)?.clone()))) else { return };
         let body = json!({"pending": pending, "seat": seat}).to_string();
         match app::web::request("POST", &format!("{origin}/v1/lobbies/pickup"), &[("authorization", &format!("Bearer {token}"))], Some(&body)).await {
@@ -197,7 +208,7 @@ async fn poll() -> Result<(), String> {
     if !(200..300).contains(&status) { return Err(format!("poll: HTTP {status}")); }
     let reply: Value = serde_json::from_slice(&reply).map_err(|e| format!("poll: {e}"))?;
     if let Some((game, now)) = with(|h| apply(h, &reply)) {
-        if now { crate::page::start(game); }
+        if now { super::page::start(game); }
     }
     Ok(())
 }
@@ -208,7 +219,7 @@ fn snapshot(h: &Host) -> Value {
     let people = h.cloud.seats.len() as u64;
     let session = party["active_session"].as_object().map(|s| s["game"].clone()).unwrap_or(Value::Null);
     let games: Vec<Value> = party["library"].as_array().into_iter().flatten().map(|g| {
-        let fits = crate::page::fits(party, g["id"].as_str().unwrap_or_default(), people as usize) && people <= g["max_players"].as_u64().unwrap_or(8);
+        let fits = super::page::fits(party, g["id"].as_str().unwrap_or_default(), people as usize) && people <= g["max_players"].as_u64().unwrap_or(8);
         let state = if session == g["id"] { "playing" } else if h.loading.as_deref() == g["id"].as_str() { "loading" } else if fits { "available" } else { "unavailable" };
         json!({"id": g["id"], "selectable": fits, "state": state})
     }).collect();
@@ -300,13 +311,13 @@ fn phones(h: &mut Host, reply: &Value, held: &[Option<(String, u64, Value)>]) {
         let Some(id) = p["id"].as_str() else { continue };
         match h.cloud.phone_seats.get(id).cloned() {
             None if h.cloud.seats.len() < 8 => {
-                let seat = crate::page::add_player(h, true);
+                let seat = super::page::add_player(h, true);
                 let player = h.party["players"][seat]["id"].as_str().unwrap_or_default().to_string();
                 if let Some(name) = p["profile"]["display_name"].as_str() { h.party["players"][seat]["name"] = json!(name); }
                 h.cloud.phone_seats.insert(id.to_string(), (player, false));
             }
             // The poll that brought this reply already reported the new seat.
-            Some((player, false)) => if let Some(seat) = crate::page::seat_of(h, &player) {
+            Some((player, false)) => if let Some(seat) = super::page::seat_of(h, &player) {
                 pickup(id.to_string(), seat);
                 h.cloud.phone_seats.insert(id.to_string(), (player, true));
             },
@@ -316,7 +327,7 @@ fn phones(h: &mut Host, reply: &Value, held: &[Option<(String, u64, Value)>]) {
     let gone: Vec<String> = h.cloud.phone_seats.keys().filter(|id| !waiting.iter().any(|p| p["id"] == id.as_str())).cloned().collect();
     for id in gone {
         let Some((player, _)) = h.cloud.phone_seats.remove(&id) else { continue };
-        let linked = crate::page::seat_of(h, &player).is_some_and(|seat| held.get(seat).is_some_and(Option::is_some));
+        let linked = super::page::seat_of(h, &player).is_some_and(|seat| held.get(seat).is_some_and(Option::is_some));
         if !linked { leave.push(player); }
     }
     // A phone player whose profile left its seat.
@@ -325,7 +336,7 @@ fn phones(h: &mut Host, reply: &Value, held: &[Option<(String, u64, Value)>]) {
             if let Some(id) = h.party["players"][seat]["id"].as_str() { leave.push(id.to_string()); }
         }
     }
-    for player in leave { crate::page::leave_party(h, &player); }
+    for player in leave { super::page::leave_party(h, &player); }
 }
 
 /// The room's QR code as the native host draws it (game_room::qr reads it back).
@@ -350,9 +361,4 @@ pub(crate) fn uuid() -> String {
     format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
 }
 
-async fn sleep(ms: i32) {
-    let promise = js_sys::Promise::new(&mut |resolve, _| {
-        if let Some(w) = web_sys::window() { let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms); }
-    });
-    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
-}
+async fn sleep(ms: u32) { app::web::sleep(ms).await }

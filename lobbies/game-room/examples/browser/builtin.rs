@@ -13,7 +13,7 @@ pub(crate) type Loaded = Result<(Config, Box<dyn Game>), String>;
 /// a game that sets them does so while it loads, the others get them
 /// cleared.
 pub(crate) async fn load(folder: &str, players: usize) -> Option<Loaded> {
-    let seed = (js_sys::Math::random() * 1e9) as u64;
+    let seed = getrandom::u64().unwrap_or(0x5eed) % 1_000_000_000;
     match folder {
         "spellstorm" => Some(spellstorm_app::web::load(players, seed).await),
         "spaceracer" => Some(spaceracer_app::web::load(players, seed).await),

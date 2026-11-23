@@ -1,0 +1,26 @@
+[package]
+name = "game-room-android"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Splitscreen Club hosting natively on an Android phone: the Game Room's browser host (examples/browser) in a NativeActivity"
+
+[lib]
+name = "splitscreen_host"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+# Only an Android build has anything in it (build-android-host.py).
+[target.'cfg(target_os = "android")'.dependencies]
+game-room = { path = ".." }
+app = { path = "../../../engine/crates/app" }
+render = { path = "../../../engine/crates/render" }
+warp = { path = "../../../engine/crates/warp" }
+script = { path = "../../../engine/crates/script" }
+spellstorm-app = { path = "../../../games/spellstorm/app" }
+spaceracer-app = { path = "../../../games/spaceracer/app", default-features = false }
+serde_json.workspace = true
+web-time = "1.1"
+getrandom = "0.3"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+android-activity = { version = "0.6", features = ["native-activity"] }
