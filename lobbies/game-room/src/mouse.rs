@@ -116,6 +116,7 @@ impl Lobby {
                 self.browse(if key == "LB" { -1 } else { 1 });
             }
             ("music", "LB" | "RB") => self.skip_music_as(None, if key == "LB" { -1 } else { 1 }),
+            ("tv", "LB" | "RB") => self.skip_game(None, if key == "LB" { -1 } else { 1 }),
             ("exit", _) => {
                 self.press_prompt("exit", "Y");
                 if self.mouse_quit_armed() {
