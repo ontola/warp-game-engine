@@ -61,6 +61,7 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_FAR_SUN_SHADOW` | On for `Scene::stage_sun` scenes and (camera-anchored) for streamed GPU-forest worlds; `0` off, `1` forces the older foliage-oriented fit. `KERN_FAR_SUN_LOD`, `KERN_FAR_SUN_REACH` (m, default 1024) tune it. |
 | `KERN_WORLD_TERRAIN_VISIBILITY` | `Scene::world_terrain_visibility`. `KERN_TERRAIN_NODE_BUDGET` caps its traversal. |
 | `KERN_SIMPLE_LIGHTING`, `KERN_SIMPLE_CULL` | The scene's graphics settings (`terrain_fly` turns simple lighting on). |
+| `KERN_COMPACT_SHADE` | `1`: the compact shade pass (simple lighting plus game surfaces and sun shadows) even where the GPU binds enough textures for the full one. The Android phone host turns it on. |
 | `KERN_CLUSTERED_LIGHTS` | `Graphics::clustered_lights` (off): clustered local lights, hundreds per frame, some shadowed ([rendering](rendering.md#clustered-local-lights)). `1` turns them on, `0` off. |
 | `KERN_BOUNDED_DRAWS` | On for Adreno (Quest) with simple culling. |
 | `KERN_VIRTUAL_MEMBERS` | The game's `set_virtual_members` choice for recipe forests. |

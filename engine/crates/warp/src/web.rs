@@ -101,6 +101,19 @@ pub fn sound() -> Option<audio::synth::SoundSender> {
     })
 }
 
+/// The page's Luau games share one mixer ([`sound`]): silence it while a
+/// paused game waits behind the lobby (`Some(true)`), bring it back with
+/// the game (`Some(false)`), or end every voice of a game that quit
+/// (`None`). Opens nothing when no game made a sound yet.
+pub fn hush(paused: Option<bool>) {
+    SOUND.with(|s| if let Some((_, tx)) = s.borrow().as_ref() {
+        match paused {
+            Some(p) => tx.volume(if p { 0.0 } else { 1.0 }),
+            None => { tx.stop_all(); tx.volume(1.0); }
+        }
+    });
+}
+
 /// A value from the page's query string (`?game=neon-siege&players=2`).
 #[cfg(target_os = "android")]
 pub fn param(k: &str) -> Option<String> { app::web::query_param(k) }

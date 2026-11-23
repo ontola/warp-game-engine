@@ -179,7 +179,7 @@ pub struct Lobby {
     deeper: Vec<usize>,
     /// The full-screen game catalog (catalog.rs).
     pub catalog: crate::catalog::Catalog,
-    hud_size: [u32; 2],
+    pub(crate) hud_size: [u32; 2],
     pub(crate) mouse: crate::mouse::Mouse,
     /// Without a host: the commands the lobby would have sent it, for a host
     /// in the same program to take (the browser build, examples/browser/main.rs).

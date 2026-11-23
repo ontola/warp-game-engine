@@ -296,7 +296,10 @@ pub fn main(app: AndroidApp, start: impl FnOnce() + Send + 'static) {
     // shade pass cost 67 ms a frame on the 740 at 378 lines, the simple one
     // 9.5 ms at 1080. `env=` overrides. Bounded draws: see `direct_draws`.
     // SAFETY: as above, no other threads yet.
-    if std::env::var_os("KERN_SIMPLE_LIGHTING").is_none() { unsafe { std::env::set_var("KERN_SIMPLE_LIGHTING", "1") } }
+    // Compact rather than simple: what a browser runs (WebGPU binds too few
+    // textures for the full pass), so games look as they do there; simple
+    // skips game surfaces.
+    if std::env::var_os("KERN_SIMPLE_LIGHTING").is_none() && std::env::var_os("KERN_COMPACT_SHADE").is_none() { unsafe { std::env::set_var("KERN_COMPACT_SHADE", "1") } }
     install_panic_hook();
     use android_activity::WindowManagerFlags as F;
     app.set_window_flags(F::KEEP_SCREEN_ON | F::FULLSCREEN | F::LAYOUT_IN_SCREEN, F::empty());

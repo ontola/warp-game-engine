@@ -580,6 +580,9 @@ pub(crate) mod page {
         let Some((game, folder, players, entry)) = found else { app::web::log(&format!("{game}: not on this page, or a game is loading")); return };
         app::web::spawn(async move {
             let t0 = web_time::Instant::now();
+            // A paused game makes way: end its silenced voices before the
+            // new one starts its own in the shared mixer.
+            with(|h| if h.paused.is_some() { warp::web::hush(None) });
             #[cfg(target_arch = "wasm32")]
             let html = entry.map(|entry| super::html_game::HtmlGame::load(entry, with(|h| title(&h.party, &game)), players));
             #[cfg(not(target_arch = "wasm32"))]
@@ -622,6 +625,7 @@ pub(crate) mod page {
                 super::html_game::show_again(session);
             }
             app::web::resume(paused, Some(Box::new(|p| with(|h| h.room = Some(p)))));
+            warp::web::hush(Some(false));
             h.on_screen = Some(game.clone());
             set_session(h, Some(&game), "running");
             empty_room(false);
@@ -641,9 +645,12 @@ pub(crate) mod page {
                 if h.rb_held { h.chord = Some(Chord::Next); }
                 let name = game.clone();
                 app::web::resume(room, Some(Box::new(move |p| with(|h| h.paused = Some((name, p))))));
+                // Its loops and music wait silently with it (Joep: the sound went on).
+                warp::web::hush(Some(true));
                 set_session(h, Some(&game), "paused");
             } else {
                 app::web::resume(room, None);
+                warp::web::hush(None);
                 set_session(h, None, "");
             }
             true
