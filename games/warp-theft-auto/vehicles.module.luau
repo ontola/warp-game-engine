@@ -7,6 +7,22 @@ local OFFSET = { v(-.759,0,-1.262), v(.759,0,-1.262), v(-.759,0,1.262), v(.759,0
 
 local paints={ochre=PAINT[1],teal=PAINT[2],pearl=PAINT[3],vermilion=PAINT[4]}
 
+-- Local cross sections of the shipped Toyama mesh, relative to its axle-height
+-- origin (.33 m above the road). All paints share the same bumper, bonnet and roof.
+models.contactProfile="toyama"
+function models.prepareContacts()
+	vehicles.contact_profile(models.contactProfile,-.15,{
+		{z=-2.21,width=1.00,top=.21}, {z=-2.10,width=1.30,top=.29},
+		{z=-2.00,width=1.52,top=.40}, {z=-1.86,width=1.65,top=.48},
+		{z=-1.47,width=1.72,top=.63}, {z=-1.00,width=1.74,top=.63},
+		{z=-.88,width=1.74,roofWidth=1.55,top=.70}, {z=-.50,width=1.75,roofWidth=1.36,top=.91},
+		{z=-.10,width=1.75,roofWidth=1.19,top=1.09}, {z=.50,width=1.75,roofWidth=1.18,top=1.12},
+		{z=1.00,width=1.75,roofWidth=1.20,top=1.06}, {z=1.55,width=1.75,roofWidth=1.47,top=.77},
+		{z=1.72,width=1.70,top=.71}, {z=1.90,width=1.66,top=.70},
+		{z=2.07,width=1.55,top=.78}, {z=2.19,width=1.38,top=.31},
+	})
+end
+
 function models.car(pos, yaw, index, paint)
 	local model = BASE .. (paints[paint] or PAINT[(index-1)%#PAINT+1]) .. ".gltf"
 	local body = world.spawn(model, {pos=pos+v(0,.33,0), rot=v(0,yaw,0), tag="vehicle"})

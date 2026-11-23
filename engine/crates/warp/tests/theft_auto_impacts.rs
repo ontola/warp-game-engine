@@ -93,3 +93,117 @@ fn parked_and_creeping_cars_separate_people_and_a_moving_traffic_car_can_hit_the
     ticks(&mut g, 4, idle, idle);
     assert!(yes(&mut g, "local p=state.fleet.players[2]; return p.impact~=nil and p.impact.stage=='down' and p.impact.vehicle==state.testTraffic"));
 }
+
+
+#[test]
+fn sedan_bumper_takes_the_legs_first_then_the_torso_reaches_the_bonnet() {
+    let mut game = city();
+    let idle = Controls::default();
+    let gas = Controls { mv: [0., 1.], ..idle };
+    let board = Controls { pressed: Buttons(Buttons::NORTH), ..idle };
+    ticks(&mut game, 1, board, idle);
+    for _ in 0..260 {
+        ticks(&mut game, 1, gas, idle);
+        if yes(&mut game, "return state.fleet.vehicles[1].speed>8") { break; }
+    }
+    assert!(yes(&mut game, "return state.fleet.vehicles[1].speed>8"));
+    game.luau(r#"
+        local car=state.fleet.vehicles[1]
+        local d=vector.normalize(car.pos-car.prevPos)
+        state.testDir=vector.normalize(vector.create(d.x,0,d.z))
+        local actor=state.fleet.players[2]
+        world.place(actor.body,car.pos+state.testDir*6+vector.create(0,.85,0))
+        local total=0; for _ in state.fleet.vehicles do total+=1 end
+        for i=total+1,68 do
+            state.combat.cast:car("extra"..i,{pos=vector.create(550+i*6,0,500)})
+        end
+    "#).unwrap();
+    let mut fell = false;
+    for _ in 0..65 {
+        ticks(&mut game, 1, gas, idle);
+        if yes(&mut game, "local p=state.fleet.players[2];return p.impact and p.impact.stage=='down'") { fell=true; break; }
+    }
+    assert!(fell, "a nearby native car must remain a collider when a story adds distant vehicles");
+    game.luau(r#"
+        local h=state.population.avatars[2]
+        state.testFeet=(humans.joint(h,"foot_l")+humans.joint(h,"foot_r"))*.5
+        state.testChest=humans.joint(h,"chest")
+        state.legLead=0;state.chestOverHood=false;state.hoodFrames=0;state.firstImpactSpeed=state.fleet.vehicles[1].speed
+    "#).unwrap();
+    for frame in 0..35 {
+        ticks(&mut game, 1, gas, idle);
+        game.luau(&format!(r#"
+            local h=state.population.avatars[2]
+            local feet=(humans.joint(h,"foot_l")+humans.joint(h,"foot_r"))*.5
+            local chest=humans.joint(h,"chest")
+            local car=state.fleet.vehicles[1]
+            local forward=vector.create(-math.sin(car.yaw),0,-math.cos(car.yaw))
+            local right=vector.create(math.cos(car.yaw),0,-math.sin(car.yaw))
+            local localChest=chest-car.pos
+            local z=vector.dot(localChest,forward)
+            local lead=vector.dot((feet-state.testFeet)-(chest-state.testChest),state.testDir)
+            if {frame}<18 then state.legLead=math.max(state.legLead,lead) end
+            local hips=humans.joint(h,"hips")-car.pos
+            local hipZ=vector.dot(hips,forward)
+            -- At this portion of the bonnet the top falls from .96 m to .81 m.
+            -- The supporting pelvis capsule is approximately .16 m in radius.
+            local top=.96-.15*math.clamp((hipZ-1.47)/.39,0,1)
+            local gap=hips.y-top
+            if state.legLead>.20 and z>.83 and z<1.85 and hipZ>.95 and hipZ<1.90
+                and gap>.02 and gap<.25 and hipZ-z>.25 and math.abs(hips.y-localChest.y)<.22
+                and math.abs(vector.dot(localChest,right))<.89 then
+                state.hoodFrames+=1
+                if not state.chestOverHood then state.chestOverHood={{frame={frame},height=localChest.y,forward=z}} end
+            end
+        "#)).unwrap();
+    }
+    let stats = game.luau("return {legLead=state.legLead,overHood=state.chestOverHood,hoodFrames=state.hoodFrames,speed=state.firstImpactSpeed}").unwrap();
+    println!("sedan contact {stats}");
+    assert!(yes(&mut game, "return state.legLead>.20 and state.hoodFrames>=2"),"{stats}");
+}
+
+#[test]
+fn traffic_passing_a_flank_does_not_launch_a_pedestrian_and_reverse_contact_is_shared() {
+    let mut game = city();
+    let idle = Controls::default();
+    let gas = Controls { mv: [0., 1.], ..idle };
+    let reverse = Controls { mv: [0., -1.], ..idle };
+    let board = Controls { pressed: Buttons(Buttons::NORTH), ..idle };
+    ticks(&mut game, 1, board, idle);
+    for _ in 0..260 {
+        ticks(&mut game, 1, gas, idle);
+        if yes(&mut game, "return state.fleet.vehicles[1].speed>7") { break; }
+    }
+    game.luau(r#"
+        local c=state.fleet.vehicles[1]
+        local side=vector.create(math.cos(c.yaw),0,-math.sin(c.yaw))
+        world.place(state.fleet.players[2].body,c.pos+side*1.23+vector.create(0,.85,0))
+    "#).unwrap();
+    ticks(&mut game, 15, gas, idle);
+    assert!(yes(&mut game, "return not state.fleet.players[2].impact"));
+    for _ in 0..600 {
+        ticks(&mut game, 1, reverse, idle);
+        if yes(&mut game, "local c=state.fleet.vehicles[1];return c.gear==-1 and math.abs(c.speed)>4") { break; }
+    }
+    assert!(yes(&mut game, "local c=state.fleet.vehicles[1];return c.gear==-1 and math.abs(c.speed)>4"));
+    game.apply_story(include_str!("../../../../games/warp-theft-auto/story_contract.module.luau")).unwrap();
+    ticks(&mut game, 2, reverse, idle);
+    game.luau(r#"
+        local c=state.fleet.vehicles[1]
+        local forward=vector.create(-math.sin(c.yaw),0,-math.cos(c.yaw))
+        local side=vector.create(math.cos(c.yaw),0,-math.sin(c.yaw))
+        local p=state.storyCast.people.jack
+        p.pos=c.pos-forward*4.5-side*.65
+        world.place(p.body,p.pos+vector.create(0,.85,0))
+        humans.set(p.actor,{pos=p.pos,pose="walk"})
+        state.crossingStart,state.crossingSide=p.pos,side
+        assert(state.storyCast:walk("jack",{p.pos+side*3.5},1.85))
+    "#).unwrap();
+    let mut fell=false;
+    for _ in 0..50 {
+        ticks(&mut game, 1, reverse, idle);
+        if yes(&mut game, "local p=state.storyCast.people.jack;return p.wasHit and p.impact and p.impact.stage=='down' and p.impact.vehicle==1") { fell=true; break; }
+    }
+    assert!(yes(&mut game, "return vector.dot(state.storyCast.people.jack.pos-state.crossingStart,state.crossingSide)>.15"));
+    assert!(fell);
+}

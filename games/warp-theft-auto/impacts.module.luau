@@ -2,6 +2,7 @@
 -- Coordinates are feet positions. The box derives from the Toyama chassis mesh and
 -- the helicopter's solid hull; neither wheels nor decorative rotor blades knock people over.
 local util = require("kit/util")
+local models = require("vehicles")
 local v = vector.create
 local impacts = {}
 local RADIUS, HEIGHT, FALL_SPEED = .32, 1.70, 2.8
@@ -14,7 +15,7 @@ local function chassis(car, id, dt)
 	local pos, prev = car.pos+lift, (car.prevPos or car.pos)+lift
 	local oldYaw = car.prevYaw or car.yaw
 	local vel = (pos-prev)/dt
-	return {id=id, pos=pos, prevPos=prev, size=size, yaw=car.yaw, prevYaw=oldYaw,
+	return {id=id, native=car.native, pos=pos, prevPos=prev, size=size, yaw=car.yaw, prevYaw=oldYaw,
 		right=util.right(car.yaw), forward=util.forward(car.yaw), oldRight=util.right(oldYaw),
 		oldForward=util.forward(oldYaw), velocity=vel, speed=vector.magnitude(vel)}
 end
@@ -30,23 +31,68 @@ local function axis(a, b, lo, hi, first, last)
 	return math.max(first,math.min(enter,leave)), math.min(last,math.max(enter,leave))
 end
 
-local function contact(box, before, feet)
-	local a, b = before-box.prevPos, feet-box.pos
+-- Sweep the pedestrian's horizontal circle against a yawed chassis rectangle.
+-- A stop against a flat door and a glancing bumper corner get different normals.
+local function contact(box, before, feet, dt)
+	local a,b=before-box.prevPos,feet-box.pos
 	if math.min(math.abs(a.x),math.abs(b.x))>3.5 and a.x*b.x>0
 		or math.min(math.abs(a.z),math.abs(b.z))>3.5 and a.z*b.z>0 then return nil end
-	local w, h, l = box.size.x*.5+RADIUS, box.size.y*.5, box.size.z*.5+RADIUS
-	local t, last = axis(a.y,b.y,-h-HEIGHT,h,0,1)
+	local w,h,l=box.size.x*.5,box.size.y*.5,box.size.z*.5
+	local t,last=axis(a.y,b.y,-h-HEIGHT,h,0,1)
 	if t>last then return nil end
+	local ax,az=vector.dot(a,box.oldRight),vector.dot(a,box.oldForward)
 	local x,z=vector.dot(b,box.right),vector.dot(b,box.forward)
-	t,last=axis(vector.dot(a,box.oldRight),x,-w,w,t,last)
+	t,last=axis(ax,x,-w-RADIUS,w+RADIUS,t,last)
 	if t>last then return nil end
-	t,last=axis(vector.dot(a,box.oldForward),z,-l,l,t,last)
+	t,last=axis(az,z,-l-RADIUS,l+RADIUS,t,last)
 	if t>last then return nil end
-	-- For a gentle contact, stand immediately outside the nearest side.
-	local dx,dz=w-math.abs(x),l-math.abs(z)
-	local out = if dx<dz then box.right*(if x>=0 then 1 else -1)*math.max(0,dx+.015)
-		else box.forward*(if z>=0 then 1 else -1)*math.max(0,dz+.015)
-	return t,out
+	local dx,dz=x-ax,z-az
+	local cx,cz=ax+dx*t,az+dz*t
+	local nx,nz=cx-math.clamp(cx,-w,w),cz-math.clamp(cz,-l,l)
+	local d2=nx*nx+nz*nz
+	if d2>RADIUS*RADIUS+.00001 then
+		-- The slab corner is outside the rounded footprint. Find the first
+		-- true touch there; a walker beyond the corner can safely pass it.
+		local speed2=dx*dx+dz*dz
+		local along=nx*dx+nz*dz
+		local disc=along*along-speed2*(d2-RADIUS*RADIUS)
+		if along>=0 or speed2<.0000001 or disc<0 then return nil end
+		local step=(-along-math.sqrt(disc))/speed2
+		t+=step
+		if t>last then return nil end
+		nx,nz=nx+dx*step,nz+dz*step
+		cx,cz=ax+dx*t,az+dz*t
+	end
+	local ex,ez=x-math.clamp(x,-w,w),z-math.clamp(z,-l,l)
+	local edge=math.sqrt(ex*ex+ez*ez)
+	local out
+	if edge>.0001 then
+		out=(box.right*ex+box.forward*ez)*(math.max(0,RADIUS+.015-edge)/edge)
+	elseif w-math.abs(x)<l-math.abs(z) then
+		out=box.right*(if x>=0 then 1 else -1)*(w+RADIUS+.015-math.abs(x))
+	else
+		out=box.forward*(if z>=0 then 1 else -1)*(l+RADIUS+.015-math.abs(z))
+	end
+	if not dt then return t,out end
+	local len=math.sqrt(nx*nx+nz*nz)
+	local cy=a.y+(b.y-a.y)*t
+	local dy=math.min(h-cy,cy+h+HEIGHT)
+	local ny=0
+	if dy<math.min(w+RADIUS-math.abs(cx),l+RADIUS-math.abs(cz)) then
+		nx,ny,nz=0,(if h-cy<cy+h+HEIGHT then 1 else -1),0
+	elseif len>.0001 then
+		nx,nz=nx/len,nz/len
+	elseif w-math.abs(cx)<l-math.abs(cz) then
+		nx,nz=(if cx>=0 then 1 else -1),0
+	else
+		nx,nz=0,(if cz>=0 then 1 else -1)
+	end
+	local closing=-(nx*dx+ny*(b.y-a.y)+nz*dz)/dt
+	local normal=box.right*nx+v(0,ny,0)+box.forward*nz
+	local surface=closing+vector.dot(feet-before,normal)/dt
+	-- A passer-by moving alongside a fast car need not fall. Walking into
+	-- a parked car is also a gentle separation, even when the walker sprints.
+	return t,out,math.min(closing,surface)
 end
 
 local function routePoint(pop,c,feet,boxes)
@@ -170,7 +216,7 @@ local function advance(pop,p,actor,seat,dt,boxes)
 	end
 end
 
--- An actor advances at most two metres per tick, including teleports handled below.
+-- Include room for the visual hull, a walking radius and a fixed-tick step.
 -- Insert the swept chassis plus that margin into 16 m cells for shared seat/NPC queries.
 local CELL, MARGIN, EMPTY = 16, 5.5, {}
 local function cell(x,z)
@@ -195,20 +241,24 @@ local function person(pop,p,actor,seat,dt,boxes,grid)
 	end
 	if p.impact and p.impact.stage=="rise" then advance(pop,p,actor,seat,dt,boxes) end
 	local before=p.previousFeet or p.pos
-	if vector.magnitude(p.pos-before)>2 then before=p.pos end
-	local first, vehicle, out = math.huge,nil,nil
+	-- Ordinary walking, sprinting and authored routes stay below this speed.
+	-- A teleported or newly streamed body starts from the new pose at rest.
+	if vector.magnitude(p.pos-before)>12*dt then before=p.pos end
+	local first,vehicle,out,fall=math.huge,nil,nil,false
 	local nearby=grid[cell(math.floor(p.pos.x/CELL),math.floor(p.pos.z/CELL))]
 	for _,box in nearby or EMPTY do
-		local t,offset=contact(box,before,p.pos)
-		if t and (not vehicle or box.speed>=FALL_SPEED and vehicle.speed<FALL_SPEED
-			or (box.speed>=FALL_SPEED)==(vehicle.speed>=FALL_SPEED) and t<first) then
-			first,vehicle,out=t,box,offset
+		local t,offset,closing=contact(box,before,p.pos,dt)
+		if t then
+			local hard=closing>=FALL_SPEED
+			if not vehicle or (hard and not fall) or (hard==fall and (t<first or t==first and box.id<vehicle.id)) then
+				first,vehicle,out,fall=t,box,offset,hard
+			end
 		end
 	end
-	if vehicle and vehicle.speed>=FALL_SPEED then
-		local velocity=vehicle.velocity*math.min(.83,10/vehicle.speed)
-		local push=velocity+v(0,1+math.min(vehicle.speed*.10,2),0)
-		if humans.ragdoll(actor,push) then
+	if fall then
+		-- Keep the walker's momentum; the moving chassis supplies the entire
+		-- collision impulse at the actual bone/bumper contact in the solver.
+		if humans.ragdoll(actor,(p.pos-before)/dt,util.ZERO) then
 			local home=if p.impact then p.impact.home else p.pos
 			p.impact={stage="down",elapsed=0,home=home,vehicle=vehicle.id}
 			p.externalPose=true
@@ -317,8 +367,8 @@ local function promoteContacts(pop,fleet,dt,boxes,grid)
 					if c.impact or c.shotUntil or pop.pedestrians.active[row.id] then continue end
 					local delta=row.b-row.a
 					local feet,before=row.a+delta*age,row.a+delta*previous
-					local t,out=contact(box,before,feet)
-					if not t or (box.speed<FALL_SPEED and vector.magnitude(out)<.002) then continue end
+					local t,out,closing=contact(box,before,feet,dt)
+					if not t or (closing<FALL_SPEED and vector.magnitude(out)<.002) then continue end
 					local old=c.pos
 					c.pos=feet
 					local actor=pop.pedestrians:promote(row.id,pop.residents,observers)
@@ -336,7 +386,45 @@ local function promoteContacts(pop,fleet,dt,boxes,grid)
 	end
 end
 
+-- The engine accepts up to 64 nearby obstacles. Additional story cars across
+-- town should neither consume the limit nor cause us to lose the striking car.
+local function sendObstacles(boxes,roots)
+	local nearby={}
+	for _,box in boxes do
+		local sweep=box.pos-box.prevPos
+		local d2=vector.dot(sweep,sweep)
+		local reach=8+vector.magnitude(box.size)*.5
+		local closest=math.huge
+		for _,root in roots do
+			local toRoot=root-box.prevPos
+			local fraction=if d2>.000001 then math.clamp(vector.dot(toRoot,sweep)/d2,0,1) else 0
+			local delta=toRoot-sweep*fraction
+			closest=math.min(closest,vector.dot(delta,delta))
+		end
+		if closest<=reach*reach then
+			table.insert(nearby,{distance=closest,box=box})
+		end
+	end
+	if #nearby>64 then
+		table.sort(nearby,function(a,b)
+			if a.distance==b.distance then return a.box.id<b.box.id end
+			return a.distance<b.distance
+		end)
+	end
+	local obstacles={}
+	for i=1,math.min(#nearby,64) do
+		local b=nearby[i].box
+		obstacles[i]={id=b.id,vehicle=b.native,profile=if b.native then models.contactProfile else nil,pos=b.pos,prevPos=b.prevPos,size=b.size,yaw=b.yaw,prevYaw=b.prevYaw}
+	end
+	humans.obstacles(obstacles)
+end
+
+local preparedFleet
 function impacts.tick(pop,fleet,dt)
+	if preparedFleet~=fleet then
+		models.prepareContacts()
+		preparedFleet=fleet
+	end
 	pop.impactResidents=pop.impactResidents or {}
 	local boxes,grid={},{}
 	for i,car in fleet.vehicles do
@@ -379,26 +467,24 @@ function impacts.tick(pop,fleet,dt)
 			pop.impactResidents[id]=nil
 		end
 	end
-	local moving=false
-	for _,seat in fleet.players do if seat.impact and seat.impact.stage=="down" then moving=true; break end end
+	local roots={}
+	local function track(p)
+		if p.impact and p.impact.stage=="down" then table.insert(roots,p.impact.hips or p.pos+HIP) end
+	end
+	for _,seat in fleet.players do track(seat) end
 	for actor,p in fleet.storyPeople or EMPTY do
 		if not p.rideId then
 			person(pop,p,actor,false,dt,boxes,grid)
-			if p.impact and p.impact.stage=="down" then moving=true end
+			track(p)
 		else p.previousFeet=nil end
 	end
-	if not moving then
-		for id in pop.pedestrians.active do
-			local c=pop.residents[id]
-			if c and c.impact and c.impact.stage=="down" then moving=true; break end
-		end
+	for id in pop.pedestrians.active do
+		local c=pop.residents[id]
+		if c then track(c) end
 	end
-	if moving then
-		local obstacles={}
-		for _,b in boxes do table.insert(obstacles,{id=b.id,pos=b.pos,prevPos=b.prevPos,size=b.size,yaw=b.yaw,prevYaw=b.prevYaw}) end
-		humans.obstacles(obstacles)
+	if #roots>0 then sendObstacles(boxes,roots)
 	elseif pop.hadRagdolls then humans.obstacles({}) end
-	pop.hadRagdolls=moving
+	pop.hadRagdolls=#roots>0
 end
 
 return impacts
