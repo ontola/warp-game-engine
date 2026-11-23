@@ -7,6 +7,23 @@ frame has not been confirmed since (see Open). It uses the same renderer as the 
 build, without threads, gamepads, the F10 menu, screenshots, HDR or
 adaptive quality.
 
+## Small updates for a dedicated playtest
+
+After building a single-game Game Room shelf, package it against a local copy of
+the exact previous deployed shelf. Use separate directories. For example:
+
+```sh
+python engine/tools/cache_web_shelf.py build/web --previous ../previous-web --report ../playtest-bytes.json
+```
+
+The packer keeps existing HTTP cache keys for identical assets and assigns each
+new or edited asset its SHA-256 key. The page can fetch smaller gzip copies of
+the engine and large game files from any static server. It checks the browser's
+existing raw-file cache first. The byte report records both build stamps, the
+game's file count and sizes, the cold engine transfer, and the changed game
+payload. Other HTTP content encoding and browser cache residency can reduce the
+actual transfer. Keep the previous shelf for the next packaging run.
+
 ## Build and open it
 
 ```sh
