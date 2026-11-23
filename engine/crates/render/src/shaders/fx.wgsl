@@ -26,6 +26,8 @@ struct FxUniform {
     fog_scattering: vec4<f32>,
     sun_direction: vec4<f32>,
     sky_mean: vec4<f32>,
+    // Minimum camera-to-cloud distance in m (-1 when off), aerial far in km, aerial enabled.
+    sky_volume: vec4<f32>,
 };
 struct Puff {
     // centre, kind (0 smoke, 1 fire, 2 ember, 3 heat, 4 column, 5 streak, 6 mote, 7 baked smoke)
@@ -50,6 +52,66 @@ struct Puff {
 @group(0) @binding(5) var samp: sampler;
 @group(0) @binding(6) var smoke_animation: texture_3d<f32>;
 @group(0) @binding(7) var sun_depth: texture_depth_2d;
+
+@group(0) @binding(8) var cloud_light: texture_2d<f32>;
+@group(0) @binding(9) var cloud_distance: texture_2d<f32>;
+@group(0) @binding(10) var aerial_volume: texture_3d<f32>;
+
+const CLEAR_AIR = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+
+// Same squared slice distribution and camera boundary as sky_volume.wgsl.
+fn fx_aerial(uv: vec2<f32>, km: f32) -> vec4<f32> {
+    let count = f32(textureDimensions(aerial_volume).z);
+    let slice = sqrt(km / u.sky_volume.y) * count - 1.0;
+    let w = (clamp(slice, 0.0, count - 1.0) + 0.5) / count;
+    return mix(CLEAR_AIR, textureSampleLevel(aerial_volume, samp, vec3<f32>(uv, w), 0.0), clamp(slice + 1.0, 0.0, 1.0));
+}
+
+// Camera-to-fragment scattering (rgb) and transmission (a). Reuse the exact
+// cloud history and bilinear footprint from the sky composite. For a fragment
+// inside cloud, interpolate its accumulated opacity between the measured front,
+// opacity-weighted mean and back of the cloud march.
+fn fx_weather(world: vec3<f32>) -> vec4<f32> {
+    if u.sky_volume.x < 0.0 && u.sky_volume.z == 0.0 { return CLEAR_AIR; }
+    let d = distance(world, u.camera_near.xyz);
+    let can_hit_cloud = u.sky_volume.x >= 0.0 && d >= u.sky_volume.x;
+    if !can_hit_cloud && u.sky_volume.z == 0.0 { return CLEAR_AIR; }
+    let clip = u.view_proj * vec4<f32>(world, 1.0);
+    let uv = clamp(clip.xy / max(clip.w, 1e-6) * vec2<f32>(0.5, -0.5) + 0.5, vec2<f32>(0.0), vec2<f32>(1.0));
+    let km = d * 0.001;
+    var air = CLEAR_AIR;
+    if u.sky_volume.z > 0.0 { air = fx_aerial(uv, km); }
+    if !can_hit_cloud { return air; }
+    let dims = vec2<i32>(textureDimensions(cloud_distance));
+    let pixel = uv * vec2<f32>(dims) - 0.5;
+    let base = vec2<i32>(floor(pixel));
+    let f = fract(pixel);
+    var cloud = vec4<f32>(0.0);
+    var weighted_km = 0.0;
+    var depth_weight = 0.0;
+    for (var k=0; k<4; k++) {
+        let o = vec2<i32>(k & 1, k >> 1u);
+        let w = select(1.0-f.x, f.x, o.x==1) * select(1.0-f.y, f.y, o.y==1);
+        let q = clamp(base + o, vec2<i32>(0), dims-1);
+        let span = textureLoad(cloud_distance, q, 0).xyz;
+        if km <= span.y || span.y >= span.z { continue; }
+        var fraction = 1.0;
+        if km < span.z {
+            let middle = clamp(span.x, span.y, span.z);
+            fraction = 0.5 * (clamp((km-span.y)/max(middle-span.y,1e-5),0.0,1.0)
+                + clamp((km-middle)/max(span.z-middle,1e-5),0.0,1.0));
+        }
+        let sample = textureLoad(cloud_light, q, 0);
+        cloud += w * fraction * vec4<f32>(sample.rgb, 1.0-sample.a);
+        weighted_km += w * min(span.x,km);
+        depth_weight += w;
+    }
+    if cloud.a < 1e-4 { return air; }
+    let front_air = fx_aerial(uv, weighted_km/max(depth_weight,1e-5));
+    let transmission = clamp(1.0-cloud.a, 0.0, 1.0);
+    return vec4<f32>(air.rgb * transmission + cloud.rgb * front_air.a + front_air.rgb * cloud.a,
+        air.a * transmission);
+}
 
 fn smoke_visibility(world: vec3<f32>) -> f32 {
     if u.sunlight.w <= 0.0 { return 1.0; }
@@ -96,6 +158,7 @@ fn fog_phase(mu: f32, g: f32) -> f32 {
 // Four deterministic quadrature points avoid temporal shimmer in post-TAA FX.
 // This shares the surface atmosphere, with a bounded shadow integration cost.
 fn smoke_atmosphere(world: vec3<f32>) -> vec4<f32> {
+    if u.sky_volume.z > 0.0 { return CLEAR_AIR; }
     let delta = world-u.camera_near.xyz;
     let distance = max(length(delta), 0.0001);
     let direction = delta/distance;
@@ -393,7 +456,11 @@ fn fp16_safe(c: vec3<f32>) -> vec3<f32> {
 }
 
 // Convert the same gameplay recipes for a minimum-profile colour attachment.
-fn fx_output(value:vec4<f32>)->vec4<f32> {
+fn fx_output(world: vec3<f32>, source: vec4<f32>) -> vec4<f32> {
+    let medium = fx_weather(world);
+    // Premultiplied alpha retains in-scattered light in front of the puff.
+    // Additive fire/sparks carry zero alpha and only lose transmitted energy.
+    let value = vec4<f32>(source.rgb * medium.a + medium.rgb * source.a, source.a);
     if u.clock.z<=0.0 {return value;}
     let alpha=select(1.0,max(value.a,0.0001),value.a>0.0);
     let exposed=max(value.rgb/alpha*u.clock.z,vec3<f32>(0.0));
@@ -460,7 +527,7 @@ fn fx_column(in: V) -> @location(0) vec4<f32> {
     let color = mix(p.ay.rgb, p.az.rgb, smoothstep(p.timing.z, p.timing.w, in.age));
     // Apply opacity before limiting HDR: a low-alpha high-radiance beam must
     // not lose energy merely because its unweighted radiance exceeds fp16.
-    return fx_output(vec4<f32>(fp16_safe(color * (radiance * alpha * soft)), 0.0));
+    return fx_output(u.camera_near.xyz + ray * (entry + distance * 0.5), vec4<f32>(fp16_safe(color * (radiance * alpha * soft)), 0.0));
 }
 
 @fragment
@@ -470,7 +537,7 @@ fn fx_streak(in: V) -> @location(0) vec4<f32> {
     var fade = 1.0;
     if p.body.y > 0.0 { fade *= smoothstep(0.0, p.body.y, in.age); }
     if p.body.z > 0.0 { fade *= 1.0 - smoothstep(1.0 - p.body.z, 1.0, in.age); }
-    return fx_output(vec4<f32>(fp16_safe(p.az.rgb * (p.az.w * p.body.x * fade)), 0.0));
+    return fx_output(in.world, vec4<f32>(fp16_safe(p.az.rgb * (p.az.w * p.body.x * fade)), 0.0));
 }
 
 @fragment
@@ -485,7 +552,7 @@ fn fx_mote(in: V) -> @location(0) vec4<f32> {
     if p.body.z > 0.0 { fade *= 1.0 - smoothstep(1.0 - p.body.z, 1.0, in.age); }
     let dot = exp(-4.0 * r2) * (1.0 - smoothstep(0.6, 1.0, r2));
     let soft = smoothstep(0.0, max(p.ay.x * 2.0, 0.01), gap);
-    return fx_output(vec4<f32>(fp16_safe(p.az.rgb * (p.az.w * p.body.x * fade * dot * soft * in.shade)), 0.0));
+    return fx_output(in.world, vec4<f32>(fp16_safe(p.az.rgb * (p.az.w * p.body.x * fade * dot * soft * in.shade)), 0.0));
 }
 
 @fragment
@@ -546,10 +613,10 @@ fn fx_billow(in: V) -> @location(0) vec4<f32> {
     }
     if alpha < 0.0005 { discard; }
     if u32(p.center_kind.w) == 0u {
-        return fx_output(vec4<f32>(fp16_safe(smoke_radiance(in.world,clamp(in.shade*0.5+0.5,0.0,1.0),color))*alpha,alpha));
+        return fx_output(in.world, vec4<f32>(fp16_safe(smoke_radiance(in.world,clamp(in.shade*0.5+0.5,0.0,1.0),color))*alpha,alpha));
     }
     // Fire and sparks retain their emission.
-    return fx_output(vec4<f32>(fp16_safe(color * u.clock.y) * alpha, alpha));
+    return fx_output(in.world, vec4<f32>(fp16_safe(color * u.clock.y) * alpha, alpha));
 }
 
 @fragment
@@ -559,7 +626,7 @@ fn fx_ember(in: V) -> @location(0) vec4<f32> {
     let b = (1.0 - smoothstep(0.35, 1.0, in.age)) * p.body.a;
     if b < 0.0005 { discard; }
     // Additive, HDR bright so it blooms.
-    return fx_output(vec4<f32>(fp16_safe(p.body.rgb * p.extra.w * u.clock.y) * b, 0.0));
+    return fx_output(in.world, vec4<f32>(fp16_safe(p.body.rgb * p.extra.w * u.clock.y) * b, 0.0));
 }
 
 @fragment
@@ -584,7 +651,7 @@ fn fx_heat(in: V) -> @location(0) vec4<f32> {
     let zoom = (screen - vec2<f32>(0.5)) * strength * 0.05 * weight * falloff;
     let uv = clamp(screen - zoom + offset, u.size.zw * 0.5, vec2<f32>(1.0) - u.size.zw * 0.5);
     let col = textureSampleLevel(background, samp, uv, 0.0).rgb;
-    let alpha = weight * falloff;
+    let alpha = weight * falloff * fx_weather(in.world).a;
     if alpha < 0.002 { discard; }
     return vec4<f32>(col * alpha, alpha);
 }
@@ -728,6 +795,7 @@ fn fx_smoke(in: V) -> @location(0) vec4<f32> {
     let density_trim = 0.025 * (1.0 - smoothstep(1.7, 2.6, bake_time));
     var transmission = 1.0;
     var color = vec3<f32>(0.0);
+    var weighted_dist = 0.0;
     // One world-shadow query per plume pixel, rather than per volume step.
     let world = smoke_world(p, vec3<f32>(0.5));
     let atmosphere = smoke_atmosphere(world);
@@ -742,12 +810,13 @@ fn fx_smoke(in: V) -> @location(0) vec4<f32> {
         // The G channel is baked light transmittance through this same frame.
         // It provides self-shadowed form; it does not sample world shadows.
         let radiance = ambient_light + direct_light * pow(field.g, 1.3 * retirement);
+        weighted_dist += transmission * alpha * (full_entry + (f32(k) + 0.5) * step);
         color += transmission * alpha * radiance;
         transmission *= 1.0 - alpha;
         if transmission < 0.015 { break; }
     }
     if transmission > 0.9995 { discard; }
-    return fx_output(vec4<f32>(fp16_safe(color), 1.0 - transmission));
+    return fx_output(u.camera_near.xyz + ray * (weighted_dist / (1.0 - transmission)), vec4<f32>(fp16_safe(color), 1.0 - transmission));
 }
 
 // Minimum billows use a bounded projected sphere and an analytic soft density.
@@ -798,7 +867,7 @@ fn compact_billow(p:Puff)->vec4<f32> {
   let fade=smoothstep(0.0,0.025,age)*(1.0-smoothstep(0.35,1.0,age));
   let alpha=(1.0-exp(-optical*4.0))*fade;
   let color=smoke_radiance(ball.xyz,0.55,p.body.rgb);
-  return fx_output(vec4<f32>(fp16_safe(color)*alpha,alpha));
+  return fx_output(u.camera_near.xyz + ray * ((entry + exit) * 0.5), vec4<f32>(fp16_safe(color)*alpha,alpha));
  }
  let density=clamp((exit-entry)/ball.w,0.0,1.0);
  let age=clamp((in.age-p.ay.w)*(1.0+p.timing.w)/max(1.0-p.ay.w,0.001),0.0,1.0);
@@ -807,7 +876,7 @@ fn compact_billow(p:Puff)->vec4<f32> {
  var color=p.body.rgb*select(p.extra.rgb,vec3<f32>(1.0),p.center_kind.w==0.0 && p.az.w>=3.0)*0.6;
  if p.center_kind.w>0.5 {
   color=mix(vec3<f32>(3.0,0.12,0.005),vec3<f32>(9.0,2.0,0.12),density*(1.0-age));
-  return fx_output(vec4<f32>(color*u.clock.y*fade*density,0.0));
+  return fx_output(u.camera_near.xyz + ray * ((entry + exit) * 0.5), vec4<f32>(color*u.clock.y*fade*density,0.0));
  }
- return fx_output(vec4<f32>(color*u.clock.y*alpha,alpha));
+ return fx_output(u.camera_near.xyz + ray * ((entry + exit) * 0.5), vec4<f32>(color*u.clock.y*alpha,alpha));
 }

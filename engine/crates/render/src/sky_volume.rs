@@ -172,6 +172,16 @@ struct Uniform {
     cloud_shape: [f32; 4],
 }
 
+/// Existing per-view volumes, also sampled by transparent blast effects.
+pub(crate) struct FxSky {
+    pub cloud: wgpu::TextureView,
+    pub depth: wgpu::TextureView,
+    pub aerial: wgpu::TextureView,
+    pub nearest_cloud_m: f32,
+    pub aerial_far_km: f32,
+    pub aerial_enabled: bool,
+}
+
 struct Target {
     size: (u32, u32),
     half: (u32, u32),
@@ -179,6 +189,7 @@ struct Target {
     cloud: wgpu::Texture,
     cloud_depth: wgpu::Texture,
     history: [wgpu::Texture; 2],
+    fx_views: crate::frame::resource_cache::TextureViews<4>,
     output: wgpu::Texture,
     uniform: wgpu::Buffer,
     prev_vp: Option<Mat4>,
@@ -310,7 +321,7 @@ impl SkyVolumeSlot {
     }
 
     /// Encode the passes for one view; returns the composited HDR.
-    pub fn render(&self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, settings: &SkyVolume, view: ViewInput) -> Result<wgpu::Texture, String> {
+    pub fn render(&self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, settings: &SkyVolume, view: ViewInput) -> Result<(wgpu::Texture, FxSky), String> {
         let settings = settings.validated()?;
         let mut state = self.0.lock().unwrap();
         let State { passes, tables, ambient } = &mut *state;
@@ -334,6 +345,7 @@ impl SkyVolumeSlot {
                 froxels: texture("aerial perspective froxels", (SLICES, SLICES), SLICES, work),
                 cloud: texture("clouds (half resolution)", half, 1, work),
                 cloud_depth: texture("cloud front distance (half resolution)", half, 1, work),
+                fx_views: Default::default(),
                 history: [texture("cloud history A", half, 1, work), texture("cloud history B", half, 1, work)],
                 output: texture("sky volume HDR output (not temporal history)", size, 1, work | wgpu::TextureUsages::COPY_SRC
                     | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT),
@@ -381,8 +393,9 @@ impl SkyVolumeSlot {
         let (cur, prev) = ((t.frame & 1) as usize, 1 - (t.frame & 1) as usize);
 
         let view_of = |tex: &wgpu::Texture| tex.create_view(&Default::default());
-        let (froxels, cloud, cloud_depth, output, input_v) = (view_of(&t.froxels), view_of(&t.cloud), view_of(&t.cloud_depth), view_of(&t.output), view_of(input));
-        let (history_cur, history_prev) = (view_of(&t.history[cur]), view_of(&t.history[prev]));
+        let (froxels, cloud_depth) = (t.fx_views.get(&t.froxels), t.fx_views.get(&t.cloud_depth));
+        let (cloud, output, input_v) = (view_of(&t.cloud), view_of(&t.output), view_of(input));
+        let (history_cur, history_prev) = (t.fx_views.get(&t.history[cur]), t.fx_views.get(&t.history[prev]));
         let tv = passes.tables.as_ref().unwrap();
         let (shape, detail) = passes.noise_textures.as_ref().unwrap();
         use wgpu::BindingResource as R;
@@ -419,7 +432,18 @@ impl SkyVolumeSlot {
             pass.set_bind_group(0, &composite_bind, &[]);
             pass.dispatch_workgroups(size.0.div_ceil(8), size.1.div_ceil(8), 1);
         }
-        Ok(t.output.clone())
+        let sky = FxSky {
+            cloud: history_cur,
+            depth: cloud_depth,
+            aerial: froxels,
+            // Distance to the nearest point of the spherical altitude shell.
+            // No cloud texture reads for ordinary street-level effects.
+            nearest_cloud_m: settings.clouds.map_or(-1.0, |c| (c.base_m - view.camera.y)
+                .max(view.camera.y - c.base_m - c.thickness_m).max(0.0)),
+            aerial_far_km: settings.aerial_far_m * 0.001,
+            aerial_enabled: settings.aerial,
+        };
+        Ok((t.output.clone(), sky))
     }
 }
 
