@@ -20,14 +20,12 @@ fn pm_band(distance: f32, half_width: f32, aa: f32) -> f32 {
     return 1.0-smoothstep(half_width-aa,half_width+aa,abs(distance));
 }
 
-fn pm_street(s: SurfaceIn, aa: f32) -> vec3<f32> {
-    let p=s.p.xz;
+fn pm_street(p: vec2<f32>, tint: vec3<f32>, aa: f32) -> vec3<f32> {
     let curb=abs(p-56.0*round(p/56.0));
     let street=min(curb.x,curb.y);
     let along=select(p.x,p.y,curb.x<curb.y);
     let across=select(curb.y,curb.x,curb.x<curb.y);
     let along_dist=max(curb.x,curb.y);
-    if abs(s.n.y)<0.5 { return vec3<f32>(0.21,0.25,0.25); }
     if street>6.0 || max(abs(p.x),abs(p.y))>174.0 {
         let grid=abs(fract(p/1.6+0.5)-0.5)*1.6;
         let seam=pm_band(min(grid.x,grid.y),0.024,aa);
@@ -36,7 +34,7 @@ fn pm_street(s: SurfaceIn, aa: f32) -> vec3<f32> {
         return mix(walk,vec3<f32>(0.24,0.27,0.25),seam*0.55);
     }
     let aggregate=pm_hash(floor(p*9.0))*(1.0-smoothstep(0.03,0.17,aa));
-    var asphalt=s.tint*(0.70+aggregate*0.12);
+    var asphalt=tint*(0.70+aggregate*0.12);
     // A shallow gutter, a painted curb, and worn tyre lines establish scale.
     asphalt *= 1.0-0.14*pm_band(abs(across-2.85)-0.76,0.22,aa);
     let gutter=pm_band(across-5.81,0.16,aa);
@@ -271,23 +269,146 @@ fn pm_room_view(s: SurfaceIn, size: vec3<f32>, archetype: u32, variant: u32, aa:
     return mix(shaded_wall,shaded_hit,detail_weight);
 }
 
+// Coarse reflected silhouettes of the 56 m lots in world.module.luau.
+// Only glass calls this. The road and sky radiance are supplied by the caller.
+struct PmCityHit { travel: f32, normal: vec3<f32>, kind: u32 };
+
+fn pm_city_box(hit: PmCityHit, origin: vec3<f32>, inv: vec3<f32>, center: vec2<f32>,
+               half_size: vec2<f32>, height: f32, kind: u32) -> PmCityHit {
+    let lo=vec3<f32>(center.x-half_size.x,0.0,center.y-half_size.y);
+    let hi=vec3<f32>(center.x+half_size.x,height,center.y+half_size.y);
+    let a=(lo-origin)*inv;
+    let b=(hi-origin)*inv;
+    let entry=min(a,b);
+    let leaves=max(a,b);
+    let t=max(max(entry.x,entry.y),entry.z);
+    if t<=0.0 || t>=hit.travel || t>min(min(leaves.x,leaves.y),leaves.z) { return hit; }
+    var normal=vec3<f32>(0.0,0.0,-sign(inv.z));
+    if entry.x>=entry.z { normal=vec3<f32>(-sign(inv.x),0.0,0.0); }
+    if entry.y>=max(entry.x,entry.z) { normal=vec3<f32>(0.0,-sign(inv.y),0.0); }
+    return PmCityHit(t,normal,kind);
+}
+
+fn pm_reflected_city(s: SurfaceIn, ray: vec3<f32>, aa: f32, background: vec3<f32>) -> vec3<f32> {
+    let origin=s.p+s.n*.045;
+    let signs=select(vec3<f32>(-1.0),vec3<f32>(1.0),ray>=vec3<f32>(0.0));
+    let inv=signs/max(abs(ray),vec3<f32>(.00001));
+    var cell=floor(origin.xz/56.0);
+    let source=cell;
+    let stride=signs.xz;
+    var next=(56.0*(cell+max(stride,vec2<f32>(0.0)))-origin.xz)*inv.xz;
+    let limit=min(138.0,select(138.0,max(0.0,-origin.y*inv.y),ray.y<-.00001));
+    var hit=PmCityHit(limit,vec3<f32>(0.0),0u);
+    for (var i=0u; i<4u; i++) {
+        if any(cell<vec2<f32>(-3.0)) || any(cell>vec2<f32>(2.0)) { break; }
+        let center=(cell+.5)*56.0;
+        let own=all(cell==source);
+        let pad=(cell.x==2.0 && cell.y==0.0) || (cell.x==-3.0 && cell.y==-2.0);
+        let park=(cell.x==-2.0 && cell.y==1.0) || (cell.x==1.0 && cell.y==-2.0);
+        if !pad && !park {
+            if all(cell==vec2<f32>(0.0)) {
+                hit=pm_city_box(hit,origin,inv,center,vec2<f32>(1.45),7.4,4u);
+            } else if cell.x==2.0 {
+                if !own { hit=pm_city_box(hit,origin,inv,center-vec2<f32>(5.0,3.0),vec2<f32>(11.0,11.5),7.2,3u); }
+            } else if abs(cell.x)<=1.0 && (cell.y==-1.0 || cell.y==0.0) {
+                let height=select(38.0,57.2,all(cell==vec2<f32>(-1.0)));
+                if !own { hit=pm_city_box(hit,origin,inv,center,vec2<f32>(13.0),height,1u); }
+            } else {
+                // Two narrow hotels share a lot. A side pane can see its neighbour.
+                for (var side=-1; side<=1; side+=2) {
+                    let offset=f32(side)*9.0;
+                    if own && (origin.x-center.x)*offset>=0.0 { continue; }
+                    let hotel=center+vec2<f32>(offset,0.0);
+                    let height=select(9.7,12.8,side>0);
+                    hit=pm_city_box(hit,origin,inv,hotel,vec2<f32>(6.9,11.5),height,2u);
+                }
+            }
+        }
+        if hit.kind!=0u || min(next.x,next.y)>=limit { break; }
+        let advance=vec2<bool>(next.x<=next.y,next.y<=next.x);
+        cell+=select(vec2<f32>(0.0),stride,advance);
+        next+=select(vec2<f32>(0.0),abs(inv.xz)*56.0,advance);
+    }
+    if hit.kind==0u { return background; }
+
+    let pos=origin+ray*hit.travel;
+    let normal=hit.normal;
+    let footprint=aa*(1.0+hit.travel/max(distance(view.cam.xyz,s.p),1.0))/max(abs(dot(normal,ray)),.10);
+    var paint=vec3<f32>(.22,.30,.32);
+    if hit.kind==2u { paint=vec3<f32>(.58,.39,.29); }
+    if hit.kind==3u { paint=vec3<f32>(.34,.37,.32); }
+    if hit.kind==4u { paint=vec3<f32>(.58,.54,.42); }
+    var lamps=vec3<f32>(0.0);
+    if hit.kind<=2u && normal.y==0.0 {
+        let along=select(pos.z,pos.x,abs(normal.z)>.5);
+        let pitch=vec2<f32>(select(2.3,2.85,hit.kind==2u),3.1);
+        let grid=vec2<f32>(along,pos.y)/pitch;
+        let edge=(fract(grid)-.5)*pitch;
+        let width=select(.45,.30,hit.kind==2u);
+        let blur=clamp(footprint,.03,.6);
+        let panes=pm_band(edge.x,pitch.x*width,blur)*pm_band(edge.y,1.0,blur);
+        let resolved=1.0-smoothstep(.35,1.3,footprint);
+        let mean=2.0*width*2.0/pitch.y;
+        let lit=step(.73,pm_hash(floor(grid)+cell*13.0));
+        paint=mix(paint,vec3<f32>(.06,.12,.14),mix(mean,panes,resolved));
+        lamps=vec3<f32>(.94,.61,.31)*14.0*light.anim.y*mix(.27*mean,lit*panes,resolved);
+    }
+    let daylight=sky_irradiance(normal)*.78+light.sun_color.rgb*light.sun_dir.w*max(dot(normal,light.sun_dir.xyz),0.0);
+    let radiance=paint*daylight/PI+lamps;
+    return mix(radiance,background,smoothstep(100.0,138.0,hit.travel));
+}
+
+// Directional radiance for the optical layer of the distant storefront.
+fn pm_window_environment(s: SurfaceIn, ray: vec3<f32>, aa: f32) -> vec3<f32> {
+    let up=vec3<f32>(0.0,1.0,0.0);
+    let light_on_ground=(sky_irradiance(up)+light.sun_color.rgb*light.sun_dir.w*max(light.sun_dir.y,0.0))/PI;
+    var ground=vec3<f32>(.19,.19,.17);
+    if ray.y<-.004 {
+        let travel=s.p.y/-ray.y;
+        if travel<140.0 {
+            let pos=s.p.xz+ray.xz*travel;
+            // The hit footprint grows quickly as the mirror ray skims the pavement.
+            let footprint=aa*(1.0+travel/max(distance(view.cam.xyz,s.p),1.0))/max(-ray.y,.015);
+            let paving=pm_street(pos,vec3<f32>(.120,.133,.144),clamp(footprint,.02,.5));
+            let resolved=(1.0-smoothstep(.35,1.8,footprint))*(1.0-smoothstep(95.0,140.0,travel));
+            ground=mix(ground,paving,resolved);
+        }
+    }
+    let horizon=smoothstep(-.04,.035,ray.y);
+    if horizon<=0.0 { return ground*light_on_ground; }
+    let sky=min(sky_radiance(ray),vec3<f32>(gi.params.z));
+    return mix(ground*light_on_ground,sky,horizon);
+}
+
 fn pm_opening(s: SurfaceIn, size: vec3<f32>, archetype: u32, variant: u32,
               across: f32, width: f32, divisions: f32, glazed: bool, transom: bool, aa: f32) -> SurfaceOut {
     let interior=pm_room_view(s,size,archetype,variant,aa);
-    // The room's indirect illumination stays recessed behind the facade.
-    var out=SurfaceOut(interior*.064,s.n,.87,0.0,interior*.43);
+    let lod=smoothstep(2.0,11.0,distance(view.cam.xyz,s.p));
+    // Warm ceiling lighting reaches the room even when the street is dark.
+    // Its radiance is in nits, shared by the door and the view through glass.
+    let lamplight=vec3<f32>(.43)+lod*vec3<f32>(4.8,4.0,3.1);
+    var out=SurfaceOut(interior*.064,s.n,.87,0.0,interior*lamplight);
     if glazed {
-        let grazing=pow(1.0-clamp(abs(dot(s.dir,s.n)),0.0,1.0),5.0);
-        let reflection=.043+.43*grazing;
-        let street=vec3<f32>(.090,.15,.17);
-        out.albedo=mix(out.albedo,street,reflection);
-        out.rough=mix(.59,.18,grazing);
+        let cosine=clamp(abs(dot(s.dir,s.n)),0.0,1.0);
+        // Coated shopfront glass. Combine both faces of a thin pane,
+        // including internal reflections: R = 2F/(1+F), T = 1-R.
+        let fresnel=.16+.84*pow(1.0-cosine,5.0);
+        let reflection=lod*(2.0*fresnel)/(1.0+fresnel);
+        let ray=reflect(s.dir,s.n);
+        let reflected=pm_reflected_city(s,ray,aa,pm_window_environment(s,ray,aa));
+        let transmission=1.0-reflection;
+        out.albedo*=transmission;
+        out.emission=out.emission*transmission+reflected*reflection/max(light.anim.y,.001);
+        // The opaque material models the room behind the pane. Its rough
+        // lobe keeps the full renderer from adding another polished surface.
+        out.rough=.87;
         let cell=width/divisions;
         let stile=pm_band((fract(across/cell+.5)-.5)*cell,.034,aa);
         let rail=select(0.0,pm_band(s.p.y-2.17,.034,aa),transom);
         let frame=max(stile,rail);
         out.albedo=mix(out.albedo,vec3<f32>(.052,.083,.089),frame);
         out.emission*=1.0-frame;
+        out.rough=mix(out.rough,.68,frame);
     }
     return out;
 }
@@ -403,7 +524,11 @@ fn game_surface(s: SurfaceIn) -> SurfaceOut {
         return out;
     }
     if s.kind>=24u && s.kind<=28u { return pm_interior(s,aa); }
-    if s.kind==0u { out.albedo=pm_street(s,aa); return out; }
+    if s.kind==0u {
+        out.albedo=vec3<f32>(.21,.25,.25);
+        if abs(s.n.y)>=.5 { out.albedo=pm_street(s.p.xz,s.tint,aa); }
+        return out;
+    }
     if s.kind==1u || s.kind==2u || s.kind==3u || s.kind==8u { return pm_facade(s,aa); }
     if s.kind==5u {
         let p=s.p.xz;
