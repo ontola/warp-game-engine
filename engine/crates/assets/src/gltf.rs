@@ -10,9 +10,10 @@
 //! let model = assets::gltf::load(&mut scene, Path::new("stump.gltf"))?;
 //! scene.add_instance(model.mesh, Affine3A::from_translation(at));
 //! ```
-use render::cluster::{ClusterMesh, Part, Vertex};
+use render::cluster::{ClusterMesh, Part, SimplificationPolicy, Vertex};
 use render::scene::{Material, Scene, ALPHA_TEST, TWO_SIDED};
 use glam::{Mat4, Vec3};
+use std::collections::HashSet;
 use std::path::Path;
 
 pub struct Model {
@@ -69,6 +70,8 @@ pub struct Node {
 /// scene, its geometry is not (build meshes from `nodes` as needed).
 pub struct Document {
     pub nodes: Vec<Node>,
+    /// Materials whose mesh LODs retain authored shading normals and UVs.
+    preserve_shading: HashSet<u32>,
     /// Warp material per glTF material, in glTF order.
     pub materials: Vec<u32>,
 }
@@ -83,7 +86,15 @@ pub fn load(scene: &mut Scene, path: &Path) -> Result<Model, String> {
     }).collect();
     if parts.is_empty() { return Err(format!("{}: no triangle meshes", path.display())); }
     let triangles = parts.iter().map(|p| p.indices.len() / 3).sum();
-    let mesh = scene.add_mesh(&ClusterMesh::build(&parts));
+    let mesh = scene.add_mesh(&ClusterMesh::build_with_policy(&parts, |part| {
+        if !doc.preserve_shading.contains(&part.material) {
+            SimplificationPolicy::Geometry
+        } else if scene.materials[part.material as usize].layer >= 0 {
+            SimplificationPolicy::TexturedGeometry
+        } else {
+            SimplificationPolicy::ShadingNormals
+        }
+    }));
     Ok(Model { mesh, min, max, triangles, materials: doc.materials })
 }
 
@@ -122,6 +133,7 @@ pub fn read_bytes(scene: &mut Scene, bytes: &[u8], path: &Path) -> Result<Docume
     };
     let key = path.display().to_string();
     let mut materials = Vec::new();
+    let mut preserve_shading = HashSet::new();
     for m in g.materials() {
         let pbr = m.pbr_metallic_roughness();
         let f = pbr.base_color_factor();
@@ -158,8 +170,12 @@ pub fn read_bytes(scene: &mut Scene, bytes: &[u8], path: &Path) -> Result<Docume
         if m.alpha_mode() == ::gltf::material::AlphaMode::Mask { flags |= ALPHA_TEST; }
         // A game can assign an untextured opaque material the same surface
         // kind used by Luau's world.spawn and by custom lighting.
+        let mut preserve = false;
         if let Some(extras) = m.extras() {
             let extras: serde_json::Value = serde_json::from_str(extras.get()).map_err(|e| e.to_string())?;
+            if let Some(value) = extras.get("warpPreserveShading") {
+                preserve = value.as_bool().ok_or("material extras.warpPreserveShading must be a boolean")?;
+            }
             if let Some(kind) = extras.get("warpSurface") {
                 let kind = kind.as_u64().and_then(|n| u8::try_from(n).ok())
                     .ok_or("material extras.warpSurface must be an integer from 0 to 255")?;
@@ -174,6 +190,7 @@ pub fn read_bytes(scene: &mut Scene, bytes: &[u8], path: &Path) -> Result<Docume
         // Glass and other see-through surfaces: the sorted forward pass,
         // never a shadow caster or light blocker in the room bake.
         if m.alpha_mode() == ::gltf::material::AlphaMode::Blend { scene.set_material_blend(id, f[3], m.double_sided()); }
+        if preserve { preserve_shading.insert(id); }
         materials.push(id);
     }
     let fallback = scene.add_material(Material { tint: [0.8; 3], layer: -1, roughness: 0.8, flags: 0, scale: 1.0, metal: 0.0 });
@@ -206,7 +223,7 @@ pub fn read_bytes(scene: &mut Scene, bytes: &[u8], path: &Path) -> Result<Docume
         }
         for child in node.children() { stack.push((child, world)); }
     }
-    Ok(Document { nodes, materials })
+    Ok(Document { nodes, materials, preserve_shading })
 }
 
 #[cfg(test)]
@@ -217,6 +234,17 @@ mod tests {
     fn base64_decodes() {
         assert_eq!(base64_decode("aGVsbG8=").unwrap(), b"hello");
         assert_eq!(base64_decode("AAEC").unwrap(), [0, 1, 2]);
+    }
+
+    #[test]
+    fn preserves_shading_only_for_opted_in_materials() {
+        let mut scene = Scene::default();
+        let bytes = br#"{"asset":{"version":"2.0"},"materials":[{},{"extras":{"warpPreserveShading":true}},{"extras":{"warpPreserveShading":false}}]}"#;
+        let doc = read_bytes(&mut scene, bytes, Path::new("sample.gltf")).unwrap();
+        assert_eq!(doc.preserve_shading, HashSet::from([doc.materials[1]]));
+
+        let invalid = br#"{"asset":{"version":"2.0"},"materials":[{"extras":{"warpPreserveShading":"true"}}]}"#;
+        assert!(read_bytes(&mut scene, invalid, Path::new("sample.gltf")).err().unwrap().contains("boolean"));
     }
 
     #[test]
