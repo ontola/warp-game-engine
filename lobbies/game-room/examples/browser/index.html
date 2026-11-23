@@ -63,6 +63,23 @@ html:not([data-opening]) #warp-progress.later #warp-join{display:none}
 #warp-progress.later .loader{width:100%}
 #warp-progress.later #warp-step{font-size:14px}
 
+/* A short screen (a phone on its side is about 390 px high): the loading
+   screen in two columns, brand and progress left, joining right, so the
+   QR code isn't cut off. */
+@media (max-height:560px) and (min-aspect-ratio:4/3){
+  #warp-progress:not(.later){display:grid;grid-template-columns:minmax(0,auto) minmax(0,auto);justify-content:center;align-content:center;column-gap:clamp(24px,5vw,56px);row-gap:14px;padding:16px 24px;
+    grid-template-areas:"brand join" "game join" "loader hints" "loader install"}
+  #warp-progress:not(.later) .brand{grid-area:brand;gap:10px}
+  #warp-progress:not(.later) #warp-game{grid-area:game}
+  #warp-progress:not(.later) .loader{grid-area:loader;width:min(360px,42vw);align-self:start}
+  #warp-progress:not(.later) #warp-join{grid-area:join;align-self:center;max-width:min(380px,44vw)}
+  #warp-progress:not(.later) .hints{grid-area:hints;justify-content:flex-start}
+  #warp-progress:not(.later) #warp-install{grid-area:install;text-align:left;max-width:min(380px,44vw);font-size:13px}
+  .brand img{width:64px;height:64px;border-radius:16px}
+  .wordmark{font-size:clamp(24px,4.6vw,44px)}
+  .hints li{padding:6px 12px;font-size:13px}
+}
+
 /* The room with nobody in it yet (the engine sets html[data-empty]). */
 #club-notice{position:fixed;top:28px;left:50%;transform:translate(-50%,-12px);opacity:0;visibility:hidden;transition:opacity .35s,transform .35s,visibility .35s;
   display:flex;align-items:center;gap:18px;padding:16px 24px;border-radius:20px;background:rgba(13,16,32,.86);border:1px solid rgba(255,255,255,.1);
