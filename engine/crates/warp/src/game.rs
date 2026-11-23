@@ -175,6 +175,11 @@ impl LuaGame {
         let lines = bank.scan();
         let mut world = World::new(dir, cfg.max_entities);
         world.scene.style = crate::surface::load_style(dir)?;
+        #[cfg(target_arch = "wasm32")]
+        let detail = app::web::query_param("detail");
+        #[cfg(not(target_arch = "wasm32"))]
+        let detail = std::env::var("WARP_SURFACE_DETAIL").ok();
+        world.scene.graphics.low_surface_detail = detail.as_deref() == Some("low");
         let core: Shared = Arc::new(Mutex::new(Core {
             storage: if cfg.storage { Some(crate::storage::Storage::open(dir, &cfg.id, location).map_err(|e| format!("storage: {e}"))?) } else { None },
             world,

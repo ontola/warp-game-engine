@@ -364,6 +364,7 @@ impl World {
     pub fn fresh_scene(&mut self) -> Result<(), String> {
         let mut w = World::new(&self.dir, self.slots.capacity());
         w.scene.style = self.scene.style.clone();
+        w.scene.graphics.low_surface_detail = self.scene.graphics.low_surface_detail;
         for (&id, e) in &self.entities {
             let (mesh, _) = w.mesh(&e.shape, &e.look)?;
             let mut e = e.clone();
