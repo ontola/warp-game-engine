@@ -1,4 +1,6 @@
 local crowd = require("kit/crowd")
+local impacts = require("impacts")
+local panic = require("panic")
 local population = {}
 
 -- A phase on a shared sidewalk loop determines a pedestrian's position even
@@ -58,7 +60,7 @@ local function social(pop, parks, seed)
 			local z = center.z + (if group==1 then 8.5 elseif group==2 then -6.9 else -8.1)
 			for side=-1,1,2 do
 				table.insert(pop.residents, {
-					role="neighbour", pos=v(x+.7*side,0,z), yaw=-side*math.pi/2,
+					role="neighbour", refuge=center.refuge, pos=v(x+.7*side,0,z), yaw=-side*math.pi/2,
 					action=if side>0 then "wave" else "idle", phase=sampleNoise(seed,i*4+group,side)*11,
 					night=group~=2,
 				})
@@ -87,7 +89,7 @@ local function localResidents(pop, interiors, city)
 		if not interiors.active[id] then
 			for _, index in ids do
 				local worker=pop.residents[index]
-				if worker.shotUntil then pop.absentWorkers[index]=worker end
+				if worker.shotUntil or worker.panic then pop.absentWorkers[index]=worker end
 				pop.residents[index] = nil
 			end
 			pop.rooms[id] = nil
@@ -102,16 +104,17 @@ local function localResidents(pop, interiors, city)
 			local index = pop.streetCount + (i-1)*#city.buildings + id
 			local phase = sampleNoise(b.seed,i,3)
 			local c = {building=id, role=anchor.role, action=anchor.pose, pos=anchor.pos,
-				yaw=anchor.yaw, phase=phase*17, night=b.kind=="hotel" or i%4~=0}
+				yaw=anchor.yaw, refuge=anchor.refuge, phase=phase*17, night=b.kind=="hotel" or i%4~=0}
 			local absent=pop.absentWorkers[index]
 			if type(absent)=="table" then
 				c=absent
+				c.refuge=anchor.refuge
 			elseif absent and absent>pop.elapsed then
 				-- Older live sessions stored just the worker's suppression time.
 				c.shotUntil=absent
 			end
 			pop.absentWorkers[index]=nil
-			if anchor.to then
+			if anchor.to and not c.delta then
 				c.a, c.delta = anchor.pos, anchor.to-anchor.pos
 				c.walkTime = vector.magnitude(c.delta)/(.8+.48*phase)
 				c.segment = c.walkTime + 1.5 + phase*3
@@ -127,11 +130,40 @@ local function localResidents(pop, interiors, city)
 	return changed
 end
 
+-- The fitted and distant streets share the combat spatial index. The small
+-- streamed indoor roster also includes workers currently without a fitted rig.
+function population.gunshot(pop, source, building)
+	local radius=54
+	local extent=v(radius,radius,radius)
+	local function hear(id,c,feet,actor)
+		if c.active==false or c.impact or c.dead or c.shotUntil then return end
+		local reach=if c.building==building then radius else 18
+		local delta=feet-source
+		if vector.dot(delta,delta)<=reach*reach then
+			panic.hear(pop,c,id,feet,source,if c.path and not actor then math.max(0,pop.selectionIn) else nil)
+		end
+	end
+	impacts.visitResidents(pop,source-extent,source+extent,hear)
+	for _,ids in pop.rooms do
+		for _,id in ids do
+			if not pop.pedestrians.active[id] then
+				local c=pop.residents[id]
+				hear(id,c,c.pos)
+			end
+		end
+	end
+end
+
 local function sample(pop, c, ahead)
 	if c.impact then return end
-	local t = pop.elapsed+c.phase+(ahead or 0)
+	local time=pop.elapsed+(ahead or 0)
+	local t, route=time+c.phase,nil
+	if c.panic then
+		t,route=panic.sample(pop,c,time,ahead~=nil)
+		if not t then return end
+	end
 	if c.path then
-		local leg = pop.paths[c.path][1 + math.floor(t/c.segment)%4]
+		local leg = pop.paths[route or c.path][1 + math.floor(t/c.segment)%4]
 		local fraction = math.min(1,(t%c.segment)/c.walkTime)
 		c.pos, c.yaw = leg.a+leg.delta*fraction, leg.yaw
 		c.pose = if fraction<1 then "walk" else "idle"
@@ -220,7 +252,13 @@ function population.tick(pop, city, seats, dt, hour, interiors)
 		for id,worker in pop.absentWorkers do
 			local expired
 			if type(worker)=="number" then expired=worker<=pop.elapsed
-			else expired=not worker.corpse and worker.shotUntil<=pop.elapsed and not deathObserved(worker,observers) end
+			elseif worker.shotUntil then
+				expired=not worker.corpse and worker.shotUntil<=pop.elapsed and not deathObserved(worker,observers)
+			else
+				-- The room may stream back in while its occupants are still fleeing.
+				sample(pop,worker)
+				expired=not worker.panic
+			end
 			if expired then pop.absentWorkers[id]=nil end
 		end
 		pop.selectionIn = .40
