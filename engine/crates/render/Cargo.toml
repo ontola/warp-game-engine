@@ -7,6 +7,9 @@ description = "Kern's renderer: GPU-driven clusters with LOD, visibility buffer,
 
 [features]
 dlss = ["dep:ash"]
+# Android phones (the native Splitscreen Club host): desktop texture array
+# sizes instead of the headset ones.
+phone = []
 
 [dependencies]
 vfs = { path = "../vfs" }

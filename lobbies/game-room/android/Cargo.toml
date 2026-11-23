@@ -14,7 +14,7 @@ path = "src/lib.rs"
 [target.'cfg(target_os = "android")'.dependencies]
 game-room = { path = ".." }
 app = { path = "../../../engine/crates/app" }
-render = { path = "../../../engine/crates/render" }
+render = { path = "../../../engine/crates/render", features = ["phone"] }
 warp = { path = "../../../engine/crates/warp" }
 script = { path = "../../../engine/crates/script" }
 spellstorm-app = { path = "../../../games/spellstorm/app" }

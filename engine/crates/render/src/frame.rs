@@ -45,9 +45,12 @@ pub(crate) mod texture_mips;
 pub const MAX_VISIBLE: u32 = 4 << 20;
 /// Albedo array resolution: the Poly Haven sets are 2K.
 /// Side of every albedo array layer; `screen::Screen` draws layers at this size.
-pub const TEXTURE_SIZE: u32 = if cfg!(target_os = "android") { 512 } else { 2048 };
+pub const TEXTURE_SIZE: u32 = if SMALL_TEXTURES { 512 } else { 2048 };
 /// Normal map array resolution.
-const NORMAL_SIZE: u32 = if cfg!(target_os = "android") { 512 } else { 1024 };
+const NORMAL_SIZE: u32 = if SMALL_TEXTURES { 512 } else { 1024 };
+/// Headsets (Android without the `phone` feature) keep texture arrays small;
+/// a phone host draws the browser's sizes (painted screens stay sharp).
+const SMALL_TEXTURES: bool = cfg!(target_os = "android") && !cfg!(feature = "phone");
 pub(crate) const SHADOW_SIZE: u32 = if cfg!(target_os = "android") { 2048 } else { 4096 };
 const NEAR_SHADOW_SIZE: u32 = if cfg!(target_os = "android") { 1024 } else { 2048 };
 /// Half side of the near sun map. 24 m (2.3 cm texels): with the round fade
