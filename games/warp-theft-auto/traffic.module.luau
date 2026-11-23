@@ -78,7 +78,10 @@ local function controls(fleet,car,dt)
 	if d.evacuate then
 		return {brake=if math.abs(car.speed)>1 then .9 else 0,handbrake=if math.abs(car.speed)<2 then 1 else 0}
 	end
-	if p and now>=p.untilTime then p,car.panic=nil,nil end
+	if p and now>=p.untilTime then
+		d.slowdownUntil=now+3
+		p,car.panic=nil,nil
+	end
 	local lane=d.lanes[d.step]
 	local pos,speed=car.pos,math.abs(car.speed)
 	local goal=lane[d.goal]

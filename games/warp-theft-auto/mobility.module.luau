@@ -190,7 +190,7 @@ function mobility.tick(m,dt,input)
 			if car.active then models.sync(car) end
 			local contact=contacts[car.native]
 			if contact then
-				if car.panic and car.driver and contact.deltaV>=3 then
+				if car.driver and contact.deltaV>=3 and (car.panic or (car.driver.slowdownUntil or 0)>game.time()) then
 					-- A crash near the end of a panic can leave the driver pinned
 					-- after gunfire stops. Give them time to escape on foot.
 					car.driver.crashWatchUntil=game.time()+7
