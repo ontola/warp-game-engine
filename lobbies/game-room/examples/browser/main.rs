@@ -677,7 +677,12 @@ pub(crate) mod page {
     }
 
     async fn run() -> Result<(), String> {
-        let library: Vec<Value> = serde_json::from_slice(&app::web::fetch("games/library.json").await?).map_err(|e| format!("games/library.json: {e}"))?;
+        #[cfg(target_arch = "wasm32")]
+        let bytes = super::html_game::catalog_json().await.map_err(|e| format!("Game catalog: {e:?}"))?
+            .as_string().ok_or("Game catalog was not JSON")?.into_bytes();
+        #[cfg(not(target_arch = "wasm32"))]
+        let bytes = app::web::fetch("games/library.json").await?;
+        let library: Vec<Value> = serde_json::from_slice(&bytes).map_err(|e| format!("games/library.json: {e}"))?;
         let players = warp::web::param("players").and_then(|p| p.parse().ok()).unwrap_or(0usize).min(MAX_SEATS);
         // The room's QR code on the loading screen while the room is built.
         super::cloud::register_early();
@@ -725,7 +730,11 @@ pub(crate) mod page {
         // title card until a cover arrives).
         let covers: Vec<(String, String)> = with(|h| h.party["library"].as_array().into_iter().flatten()
             .filter(|g| g["has_cover"] == true)
-            .filter_map(|g| Some((g["id"].as_str()?.to_string(), format!("games/{}/cover.png", g["folder"].as_str()?)))).collect());
+            .filter_map(|g| {
+                let folder = g["folder"].as_str()?;
+                let url = g["web_cover"].as_str().map(String::from).unwrap_or_else(|| format!("games/{folder}/cover.png"));
+                Some((g["id"].as_str()?.to_string(), url))
+            }).collect());
         app::web::spawn(async move {
             for (game, url) in covers {
                 match app::web::fetch(&url).await {

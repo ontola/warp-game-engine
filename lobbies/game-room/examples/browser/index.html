@@ -167,6 +167,7 @@ body.debug #warp-games{display:flex!important}
 <button id="fullscreen" type="button" aria-label="Play fullscreen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>Fullscreen<kbd>F11</kbd></button>
 <div id="warp-log"></div>
 <script src="qrcode.js"></script>
+<script src="web-catalog.js"></script>
 <script type="module">
 import init from './pkg/terrain_fly.js';
 import {connectStories} from './stories/editor.js';
@@ -211,11 +212,11 @@ if (/Windows/.test(navigator.userAgent)) { const a = document.getElementById('wa
 // ?game=NAME: name the game (and show its cover) while everything loads.
 const opening = new URLSearchParams(location.search).get('game');
 if (opening) document.documentElement.setAttribute('data-opening', '');
-if (opening) fetch('games/library.json?v=' + (document.documentElement.dataset.version || '')).then(r => r.json()).then(list => {
+if (opening) window.clubGameLibrary().then(list => {
   const g = list.find(g => g.id === opening || g.folder === opening);
   if (!g) return;
   document.getElementById('warp-game-title').textContent = g.title || opening;
-  if (g.has_cover) document.getElementById('warp-cover').src = 'games/' + g.folder + '/cover.png?v=' + (document.documentElement.dataset.version || '');
+  if (g.has_cover) document.getElementById('warp-cover').src = (g.web_cover || 'games/' + g.folder + '/cover.png') + '?v=' + (document.documentElement.dataset.version || '');
   document.getElementById('warp-game').hidden = false;
 }).catch(() => {});
 // Once the room is on screen, later loading (a game) is a small card.
@@ -240,9 +241,7 @@ async function wasm() {
 async function showDirectGames(reason) {
   show(0, reason);
   try {
-    const res = await fetch('games/library.json?v=' + (document.documentElement.dataset.version || ''));
-    if (!res.ok) return;
-    const games = await res.json();
+    const games = await window.clubGameLibrary();
     const links = document.getElementById('web-game-links');
     for (const game of games) {
       if (!game.web_entry) continue;

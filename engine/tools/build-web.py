@@ -59,6 +59,11 @@ WARP_PICKER = '''<div id="warp-games" style="position:fixed;top:8px;right:8px;di
 const bar = document.getElementById('warp-games');
 const games = await (await fetch('games/index.json')).json();
 const room = ROOM;
+if (room) {
+  for (const g of await window.clubGameLibrary()) {
+    if (g.web_entry && !games.includes(g.folder)) games.push(g.folder);
+  }
+}
 const current = () => new URLSearchParams(location.search).get('game') || (room ? 'room' : games[0]);
 const paint = () => { for (const b of bar.children) b.style.background = b.dataset.game === current() ? '#8fd19e' : '#222'; };
 for (const g of (room ? ['room'] : []).concat(games)) {
@@ -252,6 +257,11 @@ def copy_games(names):
                         'players': f'{lo}-{hi}' if lo != hi else str(lo), 'min_players': lo, 'max_players': hi,
                         'has_cover': bool(cover), 'bots': 0, 'web_entry': relative})
         names.append(game_id)
+    if args.production_shelf:
+        extra = [g for g in library if g.get('web_entry') and g['id'] in ('ballkickers', 'frog-fighter')]
+        for game in extra:
+            shutil.copyfile(out / game['id'] / 'cover.png', OUT / 'godot' / game['id'] / 'cover.png')
+        (OUT / 'godot/library.json').write_text(json.dumps(extra), encoding='utf-8')
     (out / 'index.json').write_text(json.dumps(names))
     (out / 'library.json').write_text(json.dumps(library))
 
@@ -308,6 +318,10 @@ if not args.no_build:
     page = page.replace(f"./pkg/{args.example}.js'", f"./pkg/{args.example}.js?v={version}'").replace(f"'pkg/{args.example}_bg.wasm'", f"'pkg/{args.example}_bg.wasm?v={version}'")
     page = page.replace('<html lang="en">', f'<html lang="en" data-version="{version}">', 1)
     page = page.replace('<meta charset="utf-8">', '<meta charset="utf-8">\n<meta http-equiv="Cache-Control" content="no-cache">' + VERSION_CHECK, 1)
+    if room:
+        page = page.replace('src="web-catalog.js"', f'src="web-catalog.js?v={version}"')
+        if not args.production_shelf and (args.web_game or args.luau_only or args.games != ','.join(WARP_GAMES)):
+            page = page.replace('<html lang="en"', '<html lang="en" data-custom-shelf', 1)
     (OUT / 'version.json').write_text(json.dumps({'version': version}))
     (OUT / 'index.html').write_text(page)
     if room:
@@ -317,6 +331,7 @@ if not args.no_build:
         shutil.copy(ROOT / 'lobbies/game-room/assets/splitscreen-club-icon.png', OUT)
         # qrcode-generator 1.4.4 (MIT, Kazuhiko Arase): the loading screen's QR code.
         shutil.copy(ROOT / 'lobbies/game-room/examples/browser/qrcode.js', OUT)
+        shutil.copy(ROOT / 'lobbies/game-room/examples/browser/web-catalog.js', OUT)
         shutil.copytree(ROOT / 'lobbies/game-room/examples/browser/stories', OUT / 'stories', dirs_exist_ok=True)
     (OUT / 'assets').mkdir(exist_ok=True)
     if args.example == 'terrain_fly':

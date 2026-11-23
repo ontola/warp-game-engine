@@ -12,6 +12,10 @@ function closeGame() {
     current = undefined;
 }
 
+export async function catalogJSON() {
+    return JSON.stringify(await window.clubGameLibrary());
+}
+
 export function mount(entry, title, description) {
     closeGame();
     const url = new URL(entry, document.baseURI);

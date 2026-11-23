@@ -40,6 +40,8 @@ async function session() {
   const token = ++generation;
   if (!game || !/^[a-z0-9-]+$/.test(game)) return;
   try {
+    const library = await window.clubGameLibrary();
+    if (generation !== token || library.some(g => g.web_entry && g.id === game)) return;
     const base = './games/' + game + '/';
     const files = await (await fetch(base + 'files.json')).json();
     if (!files.includes('stories.json')) return;

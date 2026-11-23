@@ -6,6 +6,8 @@ use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen(module = "/examples/browser/html-game.js")]
 extern "C" {
+    #[wasm_bindgen(catch, js_name = catalogJSON)]
+    pub(super) async fn catalog_json() -> Result<JsValue, JsValue>;
     #[wasm_bindgen(catch)]
     fn mount(entry: &str, title: &str, description: &str) -> Result<(), JsValue>;
     fn active(session: &str) -> bool;

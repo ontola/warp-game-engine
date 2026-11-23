@@ -232,6 +232,14 @@ the lobby, game entry points, runtime, covers and story assets keep their
 relative URLs. Each HTML entry is relative to the site's root, for example
 `godot/ballkickers/index.html` opens at `/play/godot/ballkickers/index.html`.
 
+Production also serves the profile's `godot/` directory persistently under
+`https://splitscreen.club/play/godot/`, outside replaceable lobby releases.
+The standard `--warp` page at that origin merges the two entries from
+`godot/library.json` into its bundled shelf when missing. The external
+covers live at `godot/<id>/cover.png`. Offline hosts, other origins, explicit
+custom shelves and the native Android host use their own catalog. A missing,
+invalid or slow production manifest leaves the bundled games available.
+
 The browser host opens each HTML game on demand in a same-origin iframe. The
 `splitscreen-club-webgame-v1` message channel carries the existing game
 protocol's party, seats, controller input and pause/resume messages. Export
