@@ -243,7 +243,7 @@ impl Lobby {
         }
         let station = self.station_for(id);
         let kind = station.as_ref().map_or("", |s| s.kind.as_str()).to_string();
-        let station_x = matches!(kind.as_str(), "shelf" | "queue") || (kind == "tv" && station.as_ref().is_some_and(|s| s.quit));
+        let station_x = matches!(kind.as_str(), "shelf" | "queue");
         // X only works the room's buttons; the world never sees it.
         self.world.set_input(id, buttons & !BTN_X, stick);
         if station.as_ref().is_some_and(|s| s.hold) {
@@ -254,8 +254,28 @@ impl Lobby {
             let key = if pressed & BTN_LB != 0 { "LB" } else { "RB" };
             self.press_prompt("shelf", key);
             self.browse(if pressed & BTN_LB != 0 { -1 } else { 1 });
+        } else if kind == "tv" && pressed & (BTN_LB | BTN_RB) != 0 {
+            self.skip_game(Some(id), if pressed & BTN_LB != 0 { -1 } else { 1 });
         } else if pressed & (BTN_LB | BTN_RB) != 0 {
             self.skip_music(id, if pressed & BTN_LB != 0 { -1 } else { 1 });
+        }
+    }
+
+    /// LB/RB at the TV while a game runs or waits paused: start the
+    /// previous game or the next one, for a player or (None) the mouse.
+    pub(crate) fn skip_game(&mut self, _id: Option<&str>, direction: i32) {
+        let Some(current) = self.host.current_game() else { return };
+        if direction > 0 && self.host.upcoming().is_empty() { return; }
+        if !self.cooldown(format!("tv:skip{direction}")) { return; }
+        self.press_prompt("tv", if direction < 0 { "LB" } else { "RB" });
+        if direction < 0 {
+            self.command(json!({"type": "previous"}));
+            self.toast("Back to the previous game.", GREEN);
+        } else {
+            self.command(json!({"type": "next"}));
+            self.toast(format!("Next game. {} closes.", get(&current, "title", "This game")), GREEN);
+            self.host.quitting = Some((get(&current, "id", ""), self.time + 15.0));
+            self.screens_dirty = true;
         }
     }
 
@@ -722,7 +742,12 @@ impl Lobby {
         let unlinked = self.world.players.iter().any(|p| !self.host.is_linked(&p.id) && !self.claims.contains_key(&p.id));
         if self.host.current_game().is_some() { self.started_once = true; }
         let tv = self.host.tv_station();
-        let tv_items: Vec<(&str, &str, bool)> = if tv.quit { vec![("Y", &tv.short, true), ("X", "Quit", true)] } else { vec![("Y", &tv.short, true)] };
+        // A game on: LB and RB start the previous and the next game.
+        let on = self.host.current_game().is_some();
+        // (RB is what X Quit was: the next game, this one closes.)
+        let mut tv_items: Vec<(&str, &str, bool)> = vec![("Y", &tv.short, true)];
+        if on { tv_items.insert(0, ("LB", "Previous", true)); }
+        if on && tv.quit { tv_items.push(("RB", "Next", true)); }
         let tv_nudge = joined && !self.started_once && tv.enabled && !occupied.contains_key("tv");
         if tv_nudge { self.nudges.insert("tv".into()); }
         let was = self.prompt_active.get("tv").copied().unwrap_or(false);

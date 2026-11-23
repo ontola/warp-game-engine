@@ -36,6 +36,7 @@ pub mod emulate;
 mod frame_log;
 pub mod profile;
 pub mod frame_rate;
+pub mod back_chord;
 #[cfg(target_arch = "wasm32")]
 pub mod web;
 
