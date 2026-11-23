@@ -19,9 +19,13 @@ def glb(groups, materials, generator):
         group=groups[material['name']]
         assert group.indices
         mats.append(material)
-        prims.append({'material':len(mats)-1,'attributes':{
-            'POSITION':accessor(group.points,'3f',5126,'VEC3',True),'NORMAL':accessor(group.normals,'3f',5126,'VEC3')},
-            'indices':accessor([(i,) for i in group.indices],'H',5123,'SCALAR')})
+        attrs={'POSITION':accessor(group.points,'3f',5126,'VEC3',True),
+               'NORMAL':accessor(group.normals,'3f',5126,'VEC3')}
+        if getattr(group,'uvs',None):
+            assert len(group.uvs)==len(group.points)
+            attrs['TEXCOORD_0']=accessor(group.uvs,'2f',5126,'VEC2')
+        prims.append({'material':len(mats)-1,'attributes':attrs,
+                      'indices':accessor([(i,) for i in group.indices],'H',5123,'SCALAR')})
     doc={'asset':{'version':'2.0','generator':generator},'scene':0,'scenes':[{'nodes':[0]}],
          'nodes':[{'mesh':0}],'meshes':[{'primitives':prims}],'buffers':[{'byteLength':len(data)}],
          'materials':mats,'bufferViews':views,'accessors':accs}

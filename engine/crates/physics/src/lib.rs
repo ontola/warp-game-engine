@@ -10,6 +10,7 @@ use rapier3d::prelude::*;
 
 pub mod ragdoll;
 pub mod vehicle;
+pub mod terrain;
 mod static_set;
 pub use static_set::StaticSet;
 

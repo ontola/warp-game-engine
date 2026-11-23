@@ -281,7 +281,8 @@ function Cast:tick(dt)
 			local car=fleet.vehicles[p.rideId]
 			if car then seatPerson(p,car) end
 		elseif p.route then
-			local delta=p.route[p.leg]-p.pos
+			local target=p.route[p.leg]
+			local delta=target-p.pos
 			local distance=vector.magnitude(delta)
 			-- Ground varies by curb and floor thickness. Reach the authored
 			-- horizontal waypoint even when collision holds feet a little higher.
@@ -292,6 +293,11 @@ function Cast:tick(dt)
 				p.yaw=math.atan2(delta.x,delta.z)
 				local velocity=delta*math.min(p.pace/distance,1/dt)
 				local nextPos=p.pos+velocity*dt
+				if nextPos.x < -city.BOUND and target.y<=cape.height(target.x,target.z)+.05 then
+					local dy = math.clamp(cape.height(nextPos.x,nextPos.z)-p.pos.y,-p.pace*dt,p.pace*dt)
+					velocity=util.with_y(velocity,dy/dt)
+					nextPos=p.pos+velocity*dt
+				end
 				if nextPos.x >= -city.BOUND or not cape.remoteTrunk(fleet.layout.cape,nextPos,.32) then
 					world.move(p.body,velocity,dt,QUERY)
 				end

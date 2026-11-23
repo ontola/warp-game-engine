@@ -1,7 +1,9 @@
 """Rebuild the shared woodland stand. Run with Python 3; no textures or external packages."""
+import json
 import math
 import random
 import re
+import struct
 from pathlib import Path
 
 from bake_plants import Geometry, Model, TONES, add, between, blade, scale, shoot, unit
@@ -162,5 +164,24 @@ def stand():
     return m
 
 
+def trail_copse():
+    # Reuse the indexed positions, normals and materials already downloaded with
+    # forest-stand. The second glTF describes only a narrow arrangement of them.
+    source = (GAME / "assets/plants/forest-stand.glb").read_bytes()
+    json_bytes = struct.unpack_from("<I", source, 12)[0]
+    doc = json.loads(source[20:20 + json_bytes])
+    nodes = doc["nodes"]
+    config = (GAME / "forest.module.luau").read_text().split("local trailRoots = {", 1)[1].split("\n}", 1)[0]
+    roots = re.findall(r"\{(\d+),([-\d.]+),([-\d.]+)\}", config)
+    assert len(roots) == 4
+    doc["nodes"] = [dict(nodes[int(i)-1], translation=[float(x),0,float(z)]) for i,x,z in roots]
+    doc["scenes"] = [{"nodes": list(range(len(roots)))}]
+    doc["buffers"] = [{"uri": "forest-stand.glb", "byteLength": len(source)}]
+    for view in doc["bufferViews"]:
+        view["byteOffset"] += 28 + json_bytes
+    return json.dumps(doc, separators=(",", ":")).encode()
+
+
 if __name__ == "__main__":
     stand().save("forest-stand",(1,1,1))
+    (GAME / "assets/plants/trail-copse.gltf").write_bytes(trail_copse())

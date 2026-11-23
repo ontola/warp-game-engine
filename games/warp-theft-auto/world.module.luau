@@ -48,7 +48,7 @@ end
 
 function city.roof(s,x,z,radius)
     local r = math.max(radius or 0, 0)
-    local top = if s.cape and x < -BOUND then cape.roof(s.cape,x,z,r) else 0
+    local top = if s.cape and x < -BOUND then math.max(cape.height(x,z),cape.roof(s.cape,x,z,r)) else 0
     for ix=index(x-r),index(x+r) do
         for iz=index(z-r),index(z+r) do
             for _,b in s.blocks[(ix-1)*6+iz] do
@@ -187,7 +187,7 @@ local function hotel(s,x,z,ix,iz,seed)
         local d = 18+noise(seed,ix,iz,salt+1)*10
         local w = 12+noise(seed,ix,iz,salt+2)*3.5
         local tone = sample(HOTEL_COLORS,noise(seed,ix,iz,salt+3))
-        groundFloor(s,"hotel",u,z,w,d,tone,29,lotSeed(seed,ix,iz,63+side))
+        groundFloor(s,"hotel",u,z,w,d,tone,32,lotSeed(seed,ix,iz,63+side))
         obstacle(s,u,(h+GROUND_HEIGHT)/2,z,w,h-GROUND_HEIGHT,d,tone,HOTEL)
         obstacle(s,u,h+.2,z,w+.5,.4,d+.55,LIMESTONE)
         box(u,2.78,z+d/2+.56,w*.82,.24,1.35,if side<0 then "#397c7c" else "#bc6149")
@@ -268,7 +268,7 @@ local function park(s,x,z,plaza,lawns)
     else
         local center = v(x,.036,z)
         table.insert(lawns.patches,{pos=center,width=PARK_WIDTH,depth=PARK_WIDTH})
-        -- surface.wgsl paints the paths where abs(localX Â± localZ) <= 1.15.
+        -- surface.wgsl paints the paths where abs(localX Ã‚Â± localZ) <= 1.15.
         -- Its diagonal coordinate is sqrt(2) times the perpendicular distance.
         for _,turn in {-1,1} do
             table.insert(lawns.cutouts,{pos=center,width=DIAGONAL_PATH*math.sqrt(2),
@@ -479,6 +479,12 @@ function city.build(seed)
     end
     harbor()
     s.cape = cape.build(seed)
+    -- A roadside grain yard marks the transition from the city to the cape.
+    world.spawn("assets/grain-yard.glb",{pos=v(-255,0,26),solid=false,tag="grain-yard"})
+    for _,bin in {{-4.9,10.75},{4.9,9.55}} do
+        obstacle(s,-255+bin[1],bin[2]/2,26,7.25,bin[2],7.25,METAL,nil,{visible=false})
+    end
+    obstacle(s,-255,7.6,30.85,2.12,15.2,2.16,METAL,nil,{visible=false})
     -- The open-sided timber shelter marks the turn at the western lookout.
     for _,dx in {-2.5,2.5} do
         for _,dz in {-2,2} do
@@ -498,7 +504,7 @@ function city.build(seed)
         {name="Meridian Tower",pos=v(-28,0,-3),kind="drive"},
         {name="Harbor Heliport",pos=v(140,0,28),kind="fly"},
         {name="West Field",pos=v(-140,0,-84),kind="fly"},
-        {name="Mariner Wood",pos=v(-674,0,-116),kind="walk"},
+        {name="Mariner Wood",pos=v(-674,cape.height(-674,-116),-116),kind="walk"},
         {name="Cape Lookout",pos=v(-1093,0,0),kind="drive"},
         {name="Lookout Meadow",pos=v(-1080,0,11),kind="fly"},
     }

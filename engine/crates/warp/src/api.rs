@@ -767,6 +767,41 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             let mut c=lock(&core);sim(&c,"world.dent")?;
             c.world.dent(id,fields,mask.unwrap_or(0)).map_err(rt)
         })),
+        ("heightfield", f!(core, move |_, opts: Table| {
+            let origin = vec3(&opts.raw_get("origin")?, "heightfield origin")?;
+            let columns = opts.raw_get("columns")?;
+            let spacing = opts.raw_get("spacing")?;
+            let samples: Table = opts.raw_get("heights")?;
+            use physics::terrain::{HeightGrid, RoadStrip};
+            use physics::vehicle::surfaces::Surface;
+            if samples.raw_len() > HeightGrid::MAX_SAMPLES { return Err(rt("heightfield sample budget exceeded")); }
+            let heights = samples.sequence_values::<f32>().collect::<mlua::Result<Vec<_>>>()?;
+            let grip = |name: Option<String>| {
+                let name = name.as_deref().unwrap_or("grass");
+                Surface::ALL.into_iter().find(|s| s.name()==name).ok_or_else(|| rt(format!("unknown terrain grip {name}")))
+            };
+            let base = grip(opts.raw_get("grip")?)?;
+            let mut roads = Vec::new();
+            let mut count = 0;
+            if let Some(routes) = opts.raw_get::<Option<Table>>("roads")? {
+                for route in routes.sequence_values::<Table>() {
+                    let route = route?;
+                    let points: Table = route.raw_get("points")?;
+                    count += points.raw_len();
+                    if count > HeightGrid::MAX_ROAD_POINTS || points.raw_len()<2 { return Err(rt("invalid heightfield road point count")); }
+                    let points = points.sequence_values::<Table>().map(|p| {
+                        let p = p?;
+                        Ok(glam::Vec2::new(p.raw_get::<f32>(1)?-origin.x,p.raw_get::<f32>(2)?-origin.z))
+                    }).collect::<mlua::Result<Vec<_>>>()?;
+                    roads.push(RoadStrip { points, width: route.raw_get("width")?, surface: grip(route.raw_get("grip")?)? });
+                }
+            }
+            let tag = opts.raw_get::<Option<String>>("tag")?.unwrap_or_default();
+            let grid = HeightGrid::new(columns,spacing,&heights,base,&roads).map_err(rt)?;
+            let mut c = lock(&core);
+            sim(&c,"world.heightfield")?;
+            c.world.add_heightfield(grid,origin,tag).map_err(rt)
+        })),
         ("raycast", f!(core, move |lua, (origin, dir, max, opts): (Value, Value, Option<f32>, Option<Table>)| {
             let (o, d) = (vec3(&origin, "raycast origin")?, vec3(&dir, "raycast direction")?);
             let f = filter(opts)?;

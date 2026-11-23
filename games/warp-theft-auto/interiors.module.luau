@@ -15,7 +15,12 @@ function interiors.new(buildings)
 		local surface = b.proxySurface or world.get(b.shell).surface
 		local look = b.color .. tostring(surface)
 		if not warmed[look] then
-			world.warm("cube",{color=b.color,surface=surface,coverage=1})
+			-- New primitive looks rebuild the shared renderer. Preload the finite
+			-- mask variants for closed shells and fading split-screen copies.
+			for mask=0,7 do
+				world.warm("cube",{color=b.color,surface=surface,metal=mask/7})
+				world.warm("cube",{color=b.color,surface=surface,metal=mask/7,coverage=1})
+			end
 			warmed[look] = true
 		end
 	end
@@ -75,7 +80,7 @@ end
 -- The original shell shows the most opaque view. Each less opaque view
 -- that still needs shell pixels gets a private GPU coverage mask. Most
 -- rooms need no extra entities at all, including one fully entered alone.
-local function cover(b, facade, views)
+local function cover(b, facade, views, absent)
 	local highest = 0
 	for _, view in views do
 		highest = math.max(highest, if view.room==b.id then view.coverage else 255)
@@ -89,7 +94,7 @@ local function cover(b, facade, views)
 		if coverage>0 and coverage<highest then
 			if not copy then
 				local id = world.spawn("cube",{pos=vector.create(b.x,b.h/2,b.z), size=facade.size,
-					color=b.color,surface=facade.surface,coverage=coverage/255,
+					color=b.color,surface=facade.surface,coverage=coverage/255,metal=absent/7,
 					hide_views=255-bit,solid=false})
 				facade.copies[i] = {id=id,coverage=coverage}
 			elseif copy.coverage~=coverage then
@@ -167,8 +172,29 @@ function interiors.load_visible(stream, buildings, wanted, views)
 			stream.facades[id] = {surface=b.proxySurface or world.get(b.shell).surface,
 				size=vector.create(b.w,b.h,b.d)+BIAS,copies={}}
 		end
-		cover(b,stream.facades[id],views)
+		cover(b,stream.facades[id],views,stream.windowAbsences and stream.windowAbsences[id] or 0)
 	end
+end
+
+-- The window material reads three absence bits from metal. Preserve them on
+-- the closed shell and on each view's fading copy as visitors come and go.
+function interiors.update_occupants(stream, buildings, absent)
+	local previous = stream.windowAbsences
+	if previous then
+		for id in previous do absent[id] = absent[id] or 0 end
+	end
+	for id, mask in absent do
+		if not previous or previous[id]~=mask then
+			local look = {metal=mask/7}
+			world.set(buildings[id].shell,look)
+			local facade = stream.facades[id]
+			if facade then
+				for _, copy in facade.copies do world.set(copy.id,look) end
+			end
+		end
+		if mask==0 then absent[id]=nil end
+	end
+	stream.windowAbsences = absent
 end
 
 return interiors

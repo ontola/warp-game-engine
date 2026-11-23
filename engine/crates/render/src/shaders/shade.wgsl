@@ -204,6 +204,8 @@ struct ShadeScratch {
 // sets a feature false when its scene cannot use it (Renderer::new), so a
 // game without cars, grass, tracks or forests does not compile their code.
 override FEATURE_CARS: bool = true;
+// Available to game_surface on desktop and compact WebGPU renderers.
+override SURFACE_LOW_DETAIL: bool = false;
 // Procedural rock and lava surfaces (procedural_surface.wgsl).
 override FEATURE_PROCEDURAL: bool = true;
 override FEATURE_GRASS: bool = true;

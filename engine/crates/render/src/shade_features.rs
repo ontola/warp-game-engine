@@ -12,6 +12,8 @@ use crate::scene::{Scene, ALPHA_TEST, CAR_MASK, GRASS, HAIR, SKIN, LAVA, ROAD, R
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ShadeFeatures {
+    /// Quality requested by the scene for game-authored materials.
+    pub low_surface_detail: bool,
     /// Procedural car surfaces and lamp emission (`Scene::car_materials`).
     pub cars: bool,
     /// Grass lighting (GRASS materials).
@@ -62,12 +64,14 @@ pub const REGION_WORD: usize = 6;
 pub const ROAD_WORD: usize = 2;
 
 impl ShadeFeatures {
-    pub const ALL: Self = Self { cars: true, grass: true, grass_shade: true, tracks: true, world_terrain: true, foliage_pages: true, meadow: true, terrain: true, foliage: true, procedural: true, irradiance: true, field_regions: true, field_roads: true, skin_hair: true };
+    pub const ALL: Self = Self { low_surface_detail: false, cars: true, grass: true, grass_shade: true, tracks: true, world_terrain: true, foliage_pages: true, meadow: true, terrain: true, foliage: true, procedural: true, irradiance: true, field_regions: true, field_roads: true, skin_hair: true };
 
     pub fn for_scene(scene: &Scene, world_terrain: bool, foliage_pages: bool, meadow: bool) -> Self {
-        if crate::switches::SHADE_FEATURES.is("all") { return Self::ALL; }
+        let low_surface_detail = scene.graphics.low_surface_detail;
+        if crate::switches::SHADE_FEATURES.is("all") { return Self { low_surface_detail, ..Self::ALL }; }
         let any = |mask: u32| scene.materials.iter().any(|m| m.flags & mask != 0);
         Self {
+            low_surface_detail,
             cars: !scene.car_materials.is_empty() || any(CAR_MASK),
             grass: any(GRASS),
             grass_shade: any(GRASS | TERRAIN | ROAD) && scene.far_grass.is_some(),
@@ -89,6 +93,7 @@ impl ShadeFeatures {
     pub fn constants(&self, rock_variation: bool, skip_hidden_meadow: bool) -> Vec<(&'static str, f64)> {
         let b = |v: bool| if v { 1.0 } else { 0.0 };
         vec![
+            ("SURFACE_LOW_DETAIL", b(self.low_surface_detail)),
             ("ROCK_VARIATION", b(rock_variation)),
             ("SKIP_HIDDEN_MEADOW", b(skip_hidden_meadow)),
             ("FEATURE_CARS", b(self.cars)),
@@ -126,7 +131,9 @@ mod tests {
         assert!(!f.grass && !f.grass_shade && f.tracks && !f.cars && f.meadow);
         scene.add_material(Material { tint: [0.5; 3], layer: -1, roughness: 0.8, flags: GRASS, scale: 1.0, metal: 0.0 });
         assert!(ShadeFeatures::for_scene(&scene, false, false, true).grass);
-        assert_eq!(ShadeFeatures::ALL.constants(false, false).len(), 16);
+        assert!(f.constants(false, false).contains(&("SURFACE_LOW_DETAIL", 0.0)));
+        scene.graphics.low_surface_detail = true;
+        assert!(ShadeFeatures::for_scene(&scene, false, false, false).constants(false, false).contains(&("SURFACE_LOW_DETAIL", 1.0)));
         assert!(!ShadeFeatures::for_scene(&scene, false, false, true).skin_hair);
         scene.add_material(Material { tint: [0.5; 3], layer: -1, roughness: 0.8, flags: crate::scene::SKIN, scale: 1.0, metal: 0.0 });
         let f = ShadeFeatures::for_scene(&scene, false, false, true);

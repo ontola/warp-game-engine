@@ -127,6 +127,39 @@ fn pm_parcel(s: SurfaceIn) -> f32 {
     return floor(pm_hash(lot+vec2<f32>(half_lot,0.0))*19.0);
 }
 
+// Keep courses in world metres so the solid shell and streamed wall panels meet.
+fn pm_wall_stone(s: SurfaceIn, p: vec2<f32>, brick: bool, aa: f32) -> SurfaceOut {
+    var out=SurfaceOut(s.tint,s.n,.83,0.0,vec3<f32>(0.0));
+    let unit=select(vec2<f32>(1.32,.49),vec2<f32>(.39,.135),brick);
+    let row=floor(p.y/unit.y);
+    let bond=vec2<f32>(p.x/unit.x+fract(row*.5),p.y/unit.y);
+    let within=fract(bond);
+    let edge=min(within,1.0-within)*unit;
+    let seam=min(edge.x,edge.y);
+    let joint=select(.012,.006,brick);
+    let resolvable=1.0-smoothstep(unit.y*.20,unit.y*.72,aa);
+    if resolvable<=0.0 { return out; }
+    let mortar=(1.0-smoothstep(max(0.0,joint-aa),joint+aa,seam))*resolvable;
+    let grout=mix(s.tint*.65,vec3<f32>(.35,.30,.25),select(.25,.65,brick));
+    if SURFACE_LOW_DETAIL {
+        out.albedo=mix(s.tint,grout,mortar);
+        return out;
+    }
+    let block=pm_hash(floor(bond));
+    let fired=select(vec3<f32>(.075,.065,.054),vec3<f32>(.22,.15,.11),brick);
+    let face=s.tint*(1.0+(block-.50)*fired*resolvable);
+    out.albedo=mix(face,grout,mortar);
+    out.rough=mix(.76+.12*block,.98,mortar);
+    // A sloped shoulder on each side of the recessed mortar responds to the actual sun.
+    let bevel=select(.037,.018,brick);
+    let slope=(vec2<f32>(1.0)-smoothstep(vec2<f32>(joint),vec2<f32>(bevel+aa),edge))*smoothstep(vec2<f32>(0.0),vec2<f32>(joint),edge);
+    let direction=sign(vec2<f32>(.5)-within);
+    let relief=slope*direction*(resolvable*(1.0-smoothstep(.014,.085,aa))*.41);
+    let tangent=select(vec3<f32>(0,0,1),vec3<f32>(1,0,0),abs(s.n.z)>.5);
+    out.normal=normalize(s.n-tangent*relief.x-vec3<f32>(0,relief.y,0));
+    return out;
+}
+
 fn pm_facade(s: SurfaceIn, aa: f32) -> SurfaceOut {
     var out=SurfaceOut(s.tint,s.n,0.77,0.0,vec3<f32>(0.0));
     if abs(s.n.y)>0.6 {
@@ -148,9 +181,19 @@ fn pm_facade(s: SurfaceIn, aa: f32) -> SurfaceOut {
             }
         }
         out.rough=0.62;
+        if !SURFACE_LOW_DETAIL && aa<.18 {
+            let fold=fract((p.x+offset)/.47)-.5;
+            let flange=(1.0-smoothstep(.0,.095,abs(abs(fold)-.15)))*sign(fold);
+            let tangent=select(vec3<f32>(0,0,1),vec3<f32>(1,0,0),abs(s.n.z)>.5);
+            out.normal=normalize(s.n+tangent*flange*.46*(1.0-smoothstep(.035,.18,aa)));
+            let beam=pm_band(fract((p.y+.07)/2.54)*2.54-.07,.048,aa);
+            out.albedo*=1.0-.19*beam;
+            out.metal=.21;
+        }
         return out;
     }
     let hotel=s.kind==2u;
+    out=pm_wall_stone(s,p,hotel,aa);
     let pitch=select(vec2<f32>(2.3,3.1),vec2<f32>(2.85,3.1),hotel);
     let grid=vec2<f32>((t+offset)/pitch.x,p.y/pitch.y);
     let cell=floor(grid);
@@ -163,10 +206,35 @@ fn pm_facade(s: SurfaceIn, aa: f32) -> SurfaceOut {
     let cool=vec3<f32>(0.045,0.115,0.145);
     let sky=vec3<f32>(0.22,0.365,0.39);
     let glass=mix(cool,sky,0.18+0.52*frac_cell.y+room*0.23);
-    let sill=pm_band((frac_cell.y-0.15)*pitch.y,0.095,aa);
-    out.albedo=mix(s.tint*(0.92+sill*0.20),glass,window);
-    out.rough=mix(0.77,0.28,window);
-    out.metal=0.18*window;
+    let windowLocal=(frac_cell-vec2<f32>(.5,.53))*pitch;
+    let halfWindow=widths*pitch;
+    let sill=pm_band(windowLocal.y+halfWindow.y+.060,.085,aa)*
+        pm_band(windowLocal.x,halfWindow.x+.16,aa);
+    let casing=pm_band(windowLocal.x,halfWindow.x+.072,aa)*
+        pm_band(windowLocal.y,halfWindow.y+.072,aa);
+    let trim=mix(s.tint,vec3<f32>(.66,.58,.44),select(.22,.50,hotel));
+    var wall=mix(out.albedo,trim,casing);
+    wall=mix(wall,trim*1.18,sill);
+    var pane=glass;
+    var metal=.18;
+    let masonryNormal=out.normal;
+    if !SURFACE_LOW_DETAIL && aa<.24 {
+        // Recess the panes behind an outer stone reveal. The offset grows at grazing angles.
+        let tangent=select(vec3<f32>(0,0,1),vec3<f32>(1,0,0),abs(s.n.z)>.5);
+        let revealDepth=select(.065,.14,hotel);
+        let eyeShift=vec2<f32>(dot(s.dir,tangent),s.dir.y)*revealDepth/max(.25,abs(dot(s.dir,s.n)));
+        let behind=windowLocal+clamp(eyeShift,vec2<f32>(-.32),vec2<f32>(.32));
+        let inset=pm_band(behind.x,halfWindow.x-.042,aa)*pm_band(behind.y,halfWindow.y-.045,aa);
+        let bar=max(pm_band(behind.x,.025,aa),pm_band(behind.y-halfWindow.y*.48,.028,aa));
+        pane=mix(trim*.48,mix(glass,vec3<f32>(.055,.077,.082),bar),inset);
+        let apron=pm_band(windowLocal.y+halfWindow.y+.159,.040,aa)*pm_band(windowLocal.x,halfWindow.x+.105,aa);
+        wall*=1.0-.22*apron*(1.0-smoothstep(.07,.24,aa));
+        metal*=inset;
+    }
+    out.albedo=mix(wall,pane,window);
+    out.normal=normalize(mix(masonryNormal,s.n,max(window,max(casing,sill))));
+    out.rough=mix(out.rough,0.28,window);
+    out.metal=metal*window;
     // Occupied rooms emit a modest warm light, naturally visible after dusk.
     let blind=select(1.0,0.51,frac_cell.y>0.34+0.48*room);
     let curtain=pm_band(frac_cell.x-.21,.08,aa/pitch.x)*step(.53,room);
@@ -237,15 +305,20 @@ fn pm_shop(s: SurfaceIn, aa: f32) -> SurfaceOut {
 
 // The distant podium uses the same sills, stiles and opening extents as
 // room.module.luau. Up close, separate optical panes replace the distant glass.
-fn pm_masonry(s: SurfaceIn, aa: f32) -> SurfaceOut {
-    var out=SurfaceOut(s.tint,s.n,.75,0.0,vec3<f32>(0.0));
-    if abs(s.n.y)>.5 { return out; }
+fn pm_masonry(s: SurfaceIn, aa: f32, brick: bool) -> SurfaceOut {
+    if abs(s.n.y)>.5 { return SurfaceOut(s.tint,s.n,.75,0.0,vec3<f32>(0.0)); }
     let t=select(s.p.z,s.p.x,abs(s.n.z)>.5);
-    let row=floor(s.p.y/.51);
-    let h=pm_band((fract(s.p.y/.51+.5)-.5)*.51,.009,aa);
-    let joint=pm_band((fract(t/1.72+row*.5+.5)-.5)*1.72,.009,aa);
-    let trim=pm_band(s.p.y-3.98,.072,aa)+pm_band(s.p.y-2.61,.039,aa);
-    out.albedo*=.94-.15*max(h,joint)+.13*trim;
+    let plinth=1.0-smoothstep(.37-aa,.37+aa,s.p.y);
+    var out=pm_wall_stone(s,vec2<f32>(t,s.p.y),brick && plinth<.5,aa);
+    let limestone=mix(s.tint,vec3<f32>(.54,.48,.40),.32);
+    out.albedo=mix(out.albedo,out.albedo*.68,plinth);
+    let ledge=max(pm_band(s.p.y-3.98,.085,aa),pm_band(s.p.y-2.63,.058,aa));
+    out.albedo=mix(out.albedo,limestone*1.14,ledge);
+    if !SURFACE_LOW_DETAIL {
+        let drip=max(pm_band(s.p.y-3.865,.028,aa),pm_band(s.p.y-2.54,.021,aa));
+        out.albedo*=1.0-.25*drip;
+        out.normal=normalize(mix(out.normal,s.n+vec3<f32>(0,.22,0),ledge));
+    }
     return out;
 }
 
@@ -266,6 +339,55 @@ fn pm_furniture_hit(current: PmRoomSample, origin: vec3<f32>, inv: vec3<f32>,
     if t<=0.0 || t>=current.distance || t>min(min(exit_t.x,exit_t.y),exit_t.z) { return current; }
     let facing=select(select(.65,.82,entry.x>entry.z),1.04,entry.y>=max(entry.x,entry.z));
     return PmRoomSample(t,color*facing);
+}
+
+// A vertical card at each activity anchor shares the furniture depth test.
+// Only rays within a person's footprint evaluate the rounded silhouette.
+fn pm_limb(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, radius: f32) -> f32 {
+    let v=b-a;
+    return length(p-a-v*clamp(dot(p-a,v)/max(dot(v,v),.0001),0.0,1.0))-radius;
+}
+
+fn pm_room_person(hit: PmRoomSample, origin: vec3<f32>, dir: vec3<f32>, across: vec2<f32>,
+                  travel_axis: vec2<f32>, feet: vec2<f32>, facing: vec2<f32>, seated: bool,
+                  identity: vec2<f32>, aa: f32, fade: f32) -> PmRoomSample {
+    let delta=feet-origin.xz;
+    let travel=dot(delta,travel_axis);
+    if travel<=0.0 || travel>=hit.distance { return hit; }
+    let at=vec2<f32>(-dot(delta,across),origin.y+dir.y*travel);
+    if abs(at.x)>.68+aa || at.y<0.0 || at.y>1.99+aa { return hit; }
+
+    let seed=pm_hash(identity);
+    let p=at/(.96+.10*seed);
+    let side=dot(facing,across);
+    let width=.20-.064*abs(side);
+    let hip=select(.90,.52,seated);
+    let shoulder=vec2<f32>(side*.025,hip+.49);
+    let head=shoulder+vec2<f32>(side*.025,.275);
+    let knee=select(0.0,.38*side,seated);
+    let offset=mix(knee,0.0,clamp((p.y-.42)/(hip-.42),0.0,1.0));
+    let leg=pm_limb(vec2<f32>(abs(p.x-offset),p.y),vec2<f32>(width*.60,.08),vec2<f32>(width*.47,hip),.082);
+    let torso=pm_limb(p,vec2<f32>(0.0,hip+.028),shoulder,width*.88);
+    let arm=pm_limb(vec2<f32>(abs(p.x-shoulder.x),p.y),vec2<f32>(width,.04+hip),
+                    vec2<f32>(width*.94,shoulder.y-.015),.066);
+    let face=length((p-head)*vec2<f32>(1.13,.87))-.132;
+    let outline=min(min(torso,arm),min(face,leg));
+    let coverage=1.0-smoothstep(-aa,aa,outline);
+    if coverage<=0.0 { return hit; }
+
+    let shirts=array<vec3<f32>,6>(vec3<f32>(.11,.24,.33),vec3<f32>(.56,.21,.12),
+        vec3<f32>(.12,.29,.20),vec3<f32>(.52,.48,.37),vec3<f32>(.30,.16,.25),vec3<f32>(.17,.19,.23));
+    let shirt=shirts[u32(seed*6.0)];
+    let skin=mix(vec3<f32>(.23,.11,.062),vec3<f32>(.70,.41,.26),fract(seed*7.13));
+    var color=mix(vec3<f32>(.070,.086,.11),vec3<f32>(.20,.17,.13),fract(seed*5.61));
+    if torso<=leg || arm<=leg {
+        color=select(shirt,skin,arm<torso && p.y<hip+.22);
+    }
+    if face<min(min(torso,arm),leg) {
+        color=select(skin,skin*.24,p.y>head.y+.056);
+    }
+    let shading=(.52+.48*exp(-.095*travel))*(.88-.12*clamp((p.x-shoulder.x)/width,-1.0,1.0));
+    return PmRoomSample(travel,mix(hit.color,color*shading,coverage*fade));
 }
 
 fn pm_room_view(s: SurfaceIn, size: vec3<f32>, archetype: u32, variant: u32, aa: f32) -> vec3<f32> {
@@ -310,6 +432,10 @@ fn pm_room_view(s: SurfaceIn, size: vec3<f32>, archetype: u32, variant: u32, aa:
             for (var side=-1; side<=1; side+=2) {
                 let x=f32(side)*size.x*.29;
                 let z=-size.z*.05;
+                if SURFACE_LOW_DETAIL {
+                    hit=pm_furniture_hit(hit,origin,inv,vec3<f32>(x,1.20,z),vec3<f32>(.93,1.20,size.z*.24),vec3<f32>(.40,.27,.14));
+                    continue;
+                }
                 hit=pm_furniture_hit(hit,origin,inv,vec3<f32>(x,1.87,z),vec3<f32>(1.15,.085,size.z*.30),vec3<f32>(.43,.16,.085));
                 for (var bay=-1; bay<=1; bay+=2) {
                     let crate_z=z+f32(bay)*size.z*.145;
@@ -321,8 +447,10 @@ fn pm_room_view(s: SurfaceIn, size: vec3<f32>, archetype: u32, variant: u32, aa:
             let desk_z=size.z*select(.235,.23,hotel);
             let desk_w=select(4.8,size.x*.26,hotel);
             hit=pm_furniture_hit(hit,origin,inv,vec3<f32>(desk_x,.46,desk_z),vec3<f32>(desk_w*.5-.11,.44,.47),wood);
+            if !SURFACE_LOW_DETAIL {
+                hit=pm_furniture_hit(hit,origin,inv,vec3<f32>(desk_x,1.40,desk_z),vec3<f32>(.365,.215,.045),vec3<f32>(.043,.10,.10));
+            }
             hit=pm_furniture_hit(hit,origin,inv,vec3<f32>(desk_x,.955,desk_z),vec3<f32>(desk_w*.5,.055,.56),vec3<f32>(.61,.55,.42));
-            hit=pm_furniture_hit(hit,origin,inv,vec3<f32>(desk_x,1.40,desk_z),vec3<f32>(.365,.215,.045),vec3<f32>(.043,.10,.10));
             let sofa=vec3<f32>(size.x*select(.29,.34,hotel),.39,size.z*select(.23,.21,hotel));
             hit=pm_furniture_hit(hit,origin,inv,sofa,vec3<f32>(.515,.37,select(2.20,1.40,hotel)),fabric);
             let back=select(vec2<f32>(-.26,-.25),vec2<f32>(.265,-.32),hotel)*size.xz;
@@ -331,7 +459,41 @@ fn pm_room_view(s: SurfaceIn, size: vec3<f32>, archetype: u32, variant: u32, aa:
     }
     let shaded_wall=c*(.52+.48*exp(-.095*travel));
     let shaded_hit=hit.color*(.52+.48*exp(-.095*hit.distance));
-    return mix(shaded_wall,shaded_hit,detail_weight);
+    let background=mix(shaded_wall,shaded_hit,detail_weight);
+    // A person remains readable after individual furniture edges become subpixel.
+    let fade=1.0-smoothstep(.22,.46,aa);
+    let planar=dot(dir.xz,dir.xz);
+    let absent=u32(round(clamp(s.metal,0.0,1.0)*7.0));
+    if fade<=0.0 || planar<.001 || absent==7u { return background; }
+    let across=vec2<f32>(-dir.z,dir.x)*inverseSqrt(planar);
+    let travel_axis=dir.xz/planar;
+    let lot=round(s.p.xz-s.local.xz*size.xz);
+    var people=PmRoomSample(hit.distance,background);
+    // The same three fixed activities as the streamed room. The bit mask is
+    // shared with population.module.luau and follows its per-lot absences.
+    for (var i=0u; i<3u; i++) {
+        if (absent & (1u<<i))!=0u { continue; }
+        var feet=vec2<f32>(0.0);
+        var facing=vec2<f32>(0.0,1.0);
+        var seated=false;
+        if warehouse {
+            feet=vec2<f32>(-size.x*.29+select(1.84,3.0,i==1u),size.z*select(.37,.41,i==1u));
+            facing=vec2<f32>(-1.0,0.0);
+            if i==2u { feet=vec2<f32>(2.3,-size.z*.41); facing=vec2<f32>(0.0,1.0); }
+        } else {
+            let desk=size.xz*select(vec2<f32>(-.26,.235),vec2<f32>(-.285,.23),hotel);
+            feet=desk+vec2<f32>(0.0,select(-.93,1.0,i==1u));
+            if i==1u { facing.y=-1.0; }
+            if i==2u {
+                feet=size.xz*select(vec2<f32>(.29,.23),vec2<f32>(.34,.21),hotel)+vec2<f32>(-.12,select(0.0,.55,hotel));
+                facing=vec2<f32>(-1.0,0.0);
+                seated=true;
+            }
+        }
+        people=pm_room_person(people,origin,dir,across,travel_axis,feet,facing,seated,
+                              lot+vec2<f32>(f32(i)*17.0,6.0),aa,fade);
+    }
+    return people.color;
 }
 
 // Coarse reflected silhouettes of the 56 m lots in world.module.luau.
@@ -423,6 +585,28 @@ fn pm_reflected_city(s: SurfaceIn, ray: vec3<f32>, aa: f32, background: vec3<f32
     return mix(radiance,background,smoothstep(100.0,138.0,hit.travel));
 }
 
+// One reflected block on the low profile: no city traversal, sky texture or pavement samples.
+fn pm_low_reflection(s: SurfaceIn, ray: vec3<f32>) -> vec3<f32> {
+    let up=vec3<f32>(0.0,1.0,0.0);
+    let sky=sky_irradiance(up)/PI;
+    let sun=light.sun_color.rgb*light.sun_dir.w/PI;
+    let ground=.18*(sky+sun*max(light.sun_dir.y,0.0));
+    let env=mix(ground,sky*(.85+.7*max(ray.y,0.0)),smoothstep(-.04,.10,ray.y));
+    let cell=floor(s.p.xz/56.0)+round(s.n.xz);
+    if any(cell<vec2<f32>(-3.0)) || any(cell>vec2<f32>(2.0)) { return env; }
+    if all(cell==vec2<f32>(-2,1)) || all(cell==vec2<f32>(1,-2)) || all(cell==vec2<f32>(2,0)) ||
+       all(cell==vec2<f32>(-3,-2)) || all(cell==vec2<f32>(0)) { return env; }
+    let center=(cell+.5)*56.0;
+    let office=abs(cell.x)<=1.0 && (cell.y==-1.0 || cell.y==0.0);
+    let height=select(select(11.0,7.2,cell.x==2.0),38.0,office);
+    let inv=select(vec3<f32>(-1.0),vec3<f32>(1.0),ray>=vec3<f32>(0.0))/max(abs(ray),vec3<f32>(.00001));
+    let limit=select(100.0,min(100.0,-s.p.y*inv.y),ray.y<-.00001);
+    let hit=pm_city_box(PmCityHit(limit,vec3<f32>(0.0),0u),s.p+s.n*.045,inv,center,
+                        vec2<f32>(select(16.0,13.0,office),12.0),height,1u);
+    if hit.kind==0u { return env; }
+    return vec3<f32>(.22,.25,.24)*(sky*.69+sun*max(dot(hit.normal,light.sun_dir.xyz),0.0));
+}
+
 // Directional radiance for the optical layer of the distant storefront.
 fn pm_window_environment(s: SurfaceIn, ray: vec3<f32>, aa: f32) -> vec3<f32> {
     let up=vec3<f32>(0.0,1.0,0.0);
@@ -452,15 +636,20 @@ fn pm_opening(s: SurfaceIn, size: vec3<f32>, archetype: u32, variant: u32,
     // Warm ceiling lighting reaches the room even when the street is dark.
     // Its radiance is in nits, shared by the door and the view through glass.
     let lamplight=vec3<f32>(.43)+lod*vec3<f32>(4.8,4.0,3.1);
-    var out=SurfaceOut(interior*.064,s.n,.87,0.0,interior*lamplight);
+    // Diffuse light entering the opening scales with the actual outdoor sky.
+    let street_bounce=light.sun_color.rgb*light.sun_dir.w*max(light.sun_dir.y,0.0)*.067;
+    let daylight=lod*(.24*sky_irradiance(s.n)+street_bounce)/(PI*max(light.anim.y,.001));
+    var out=SurfaceOut(interior*.064,s.n,.87,0.0,interior*(lamplight+daylight));
     if glazed {
         let cosine=clamp(abs(dot(s.dir,s.n)),0.0,1.0);
         // Coated shopfront glass. Combine both faces of a thin pane,
         // including internal reflections: R = 2F/(1+F) before absorption.
-        let fresnel=.125+.875*pow(1.0-cosine,5.0);
+        let fresnel=.06+.94*pow(1.0-cosine,5.0);
         let reflection=lod*(2.0*fresnel)/(1.0+fresnel);
         let ray=reflect(s.dir,s.n);
-        let reflected=pm_reflected_city(s,ray,aa,pm_window_environment(s,ray,aa));
+        var reflected: vec3<f32>;
+        if SURFACE_LOW_DETAIL { reflected=pm_low_reflection(s,ray); }
+        else { reflected=pm_reflected_city(s,ray,aa,pm_window_environment(s,ray,aa)); }
         // The smoke tint absorbs light coming through the pane.
         let transmission=.80*(1.0-reflection);
         out.albedo*=transmission;
@@ -486,7 +675,7 @@ fn pm_ground_floor(s: SurfaceIn, aa: f32) -> SurfaceOut {
     let variant=encoded/3u;
     let warehouse=archetype==2u;
     let hotel=archetype==1u;
-    var out=pm_masonry(s,aa);
+    var out=pm_masonry(s,aa,hotel);
     if warehouse {
         var face=s;
         face.kind=3u;
@@ -594,9 +783,124 @@ fn pm_scorch(s: SurfaceIn, aa: f32) -> SurfaceOut {
     return SurfaceOut(color,s.n,mix(.97,s.rough,ash),s.metal*ash,vec3<f32>(0));
 }
 
+// The collider and the baked fallback share these broad land-cover regions.
+// Surface shading blends through triangulation edges and resolves finer growth
+// only where the screen footprint can show it.
+// Small coastal fields on either side of the grain elevator. The grass margins
+// leave space at the ends of the rows for machinery to turn.
+fn pm_cape_fields(p: vec2<f32>, grass: vec3<f32>, aa: f32) -> vec3<f32> {
+    if p.x < -460.0 || p.x > -193.0 || abs(p.y)>150.0 { return grass; }
+    let x=-p.x-193.0;
+    let z=abs(p.y)-14.0-.085*x;
+    if z<0.0 { return grass; }
+    let cross=z+3.0*sin(x*.028);
+    let bed=vec2<f32>((x+select(21.0,0.0,p.y>0.0))/68.0,cross/43.0);
+    let within=fract(bed);
+    let toEdge=min(within,1.0-within)*vec2<f32>(68.0,43.0);
+    let outer=min(min(x,267.0-x),min(z,120.0-z));
+    let cover=smoothstep(1.4,3.4,min(outer,min(toEdge.x,toEdge.y)));
+    let crop=u32(floor(bed.x)+2.0*floor(bed.y)+select(1.0,0.0,p.y>0.0))%4u;
+    let palette=array<vec3<f32>,4>(vec3<f32>(.32,.25,.115),vec3<f32>(.139,.099,.069),
+        vec3<f32>(.128,.194,.072),vec3<f32>(.255,.215,.114));
+    var soil=palette[crop];
+    if !SURFACE_LOW_DETAIL {
+        let planting=select(x+.16*cross,cross-.12*x,(crop&1u)==0u);
+        let furrow=cos(planting*8.4);
+        let planted=smoothstep(3.2,6.4,min(toEdge.x,toEdge.y));
+        let coarse=cos(planting*.82+.23*sin(.07*x));
+        soil*=1.0+.12*furrow*(1.0-smoothstep(.06,.26,aa))*planted+.06*coarse;
+    }
+    return mix(grass,soil,cover);
+}
+
+fn pm_cape_ground(s: SurfaceIn, aa: f32) -> SurfaceOut {
+    let p=s.p.xz;
+    let weather=sin(.015*p.x+.022*p.y)+.53*cos(.034*p.y-.010*p.x);
+    let grade=length(s.n.xz)/max(.25,s.n.y);
+    let damp=1.0-smoothstep(-.82,-.30,weather);
+    let meadow=max(smoothstep(.81,1.25,weather),
+        smoothstep(-585.0,-515.0,p.x)*smoothstep(-.42,.12,weather));
+    let first=(p-vec2<f32>(-690,-99))/vec2<f32>(150,100);
+    let second=(p-vec2<f32>(-900,108))/vec2<f32>(95,83);
+    let woodland=1.0-smoothstep(.76,1.19,min(dot(first,first),dot(second,second))-.10*weather);
+    let heath=max(smoothstep(13.0,19.0,s.p.y-2.0*weather),smoothstep(.17,.25,grade));
+    let granite=max(smoothstep(.265,.35,grade-.045*weather),
+        smoothstep(18.0,23.0,s.p.y-2.5*weather)*smoothstep(.09,.17,grade));
+    var color=mix(vec3<f32>(.145,.205,.099),vec3<f32>(.10,.17,.078),damp);
+    color=mix(color,vec3<f32>(.265,.256,.119),meadow);
+    color=mix(color,vec3<f32>(.097,.13,.066),woodland);
+    color=mix(color,vec3<f32>(.194,.159,.110),heath);
+    color=mix(color,vec3<f32>(.297,.290,.255),granite);
+    if !SURFACE_LOW_DETAIL {
+        let tufts=pm_scorch_noise(p*.37)*.7+pm_scorch_noise(p*1.29)*.3;
+        let striae=sin(dot(p,vec2<f32>(1.34,.59))+4.0*tufts);
+        let swath=sin(.65*p.y+.074*p.x+1.25*sin(.033*p.x));
+        color*=1.0+.30*(tufts-.5)+.082*meadow*swath+.12*granite*striae;
+        let resolved=1.0-smoothstep(.028,.20,aa);
+        if resolved>0.0 {
+            let blade=pm_scorch_noise(p*vec2<f32>(6.4,3.7))-.5;
+            color+=resolved*blade*mix(vec3<f32>(.073,.083,.021),vec3<f32>(.050,.048,.044),granite);
+        }
+    }
+    return SurfaceOut(pm_cape_fields(p,color,aa),s.n,mix(.91,.81,granite),0.0,vec3<f32>(0.0));
+}
+
+// Stony trail faces use metre-scale course coordinates in the untextured mesh.
+// The same wheel paths follow the complete switchback in either direction.
+fn pm_gravel_chip(p: vec2<f32>, scale: f32, aa: f32) -> f32 {
+    let uv=p*scale;
+    let pick=pm_hash(floor(uv));
+    let center=.28+.44*vec2<f32>(pick,fract(pick*17.31));
+    let q=abs(fract(uv)-center);
+    let radius=.12+.17*fract(pick*41.53);
+    let distance=max(q.x+.42*q.y,.34*q.x+q.y);
+    let edge=clamp(aa*scale,.04,.44);
+    let coverage=1.0-smoothstep(radius-edge,radius+edge,distance);
+    return coverage*(pick-.43);
+}
+
+fn pm_cape_gravel(s: SurfaceIn, aa: f32) -> SurfaceOut {
+    let uv=s.uv0*s.bary.x+s.uv1*s.bary.y+s.uv2*s.bary.z;
+    let across=(uv.x-.5)*8.0;
+    let along=uv.y*1024.0;
+    let p=s.p.xz;
+    let footprint=max(length(s.dx),length(s.dy));
+    let variation=pm_scorch_noise(p*.28);
+    let wander=.17*sin(along*.083)+.09*sin(along*.31);
+    let tracks=abs(abs(across-wander)-.83);
+    let traffic=smoothstep(.10,.77,variation+.22*sin(along*.22));
+    let compact=(1.0-smoothstep(.13,.46+aa,tracks))*traffic
+        *(1.0-smoothstep(.34,1.3,footprint));
+    let edge=2.56+.26*sin(along*.19)+.29*(variation-.5);
+    let fringe=smoothstep(edge-.25-aa,edge+.23+aa,abs(across));
+    let gravel=mix(vec3<f32>(.147,.121,.088),vec3<f32>(.294,.238,.168),variation);
+    var color=mix(gravel,vec3<f32>(.155,.117,.080),compact*.72);
+    var rough=.94-.12*compact;
+    if !SURFACE_LOW_DETAIL {
+        let resolved=1.0-smoothstep(.036,.145,footprint);
+        let coarse=1.0-smoothstep(.17,.46,footprint);
+        if coarse>0.0 {
+            let grit=pm_scorch_noise(p*1.8)-.5;
+            color+=vec3<f32>(.103,.087,.066)*grit*coarse;
+        }
+        if resolved>0.0 {
+            let chips=pm_gravel_chip(p,6.3,aa)+.5*pm_gravel_chip(p.yx+12.3,11.1,aa);
+            color+=vec3<f32>(.23,.22,.19)*chips*resolved*(1.0-.52*compact);
+        }
+    }
+    if fringe>0.0 {
+        let land=pm_cape_ground(s,aa);
+        color=mix(color,land.albedo,fringe);
+        rough=mix(rough,land.rough,fringe);
+    }
+    return SurfaceOut(color,s.n,rough,0.,vec3<f32>(0));
+}
+
 fn game_surface(s: SurfaceIn) -> SurfaceOut {
     let aa=clamp(max(length(s.dx),length(s.dy))*0.56,0.012,0.5);
     var out=SurfaceOut(s.tint,s.n,s.rough,s.metal,vec3<f32>(0.0));
+    if s.kind==40u { return pm_cape_ground(s,aa); }
+    if s.kind==41u { return pm_cape_gravel(s,aa); }
     if s.kind==220u { return pm_scorch(s,aa); }
     if s.kind==221u {
         // White-hot gas at the mouth, cooling to amber along the plume and lateral jets.
@@ -624,7 +928,7 @@ fn game_surface(s: SurfaceIn) -> SurfaceOut {
         out.metal=.32*edge;
         return out;
     }
-    if s.kind==29u { return pm_masonry(s,aa); }
+    if s.kind==29u || s.kind==32u { return pm_masonry(s,aa,s.kind==32u); }
     if (s.kind>=20u && s.kind<=22u) || (s.kind>=64u && s.kind<100u) { return pm_ground_floor(s,aa); }
     if s.kind==23u {
         // Brass end caps on a narrow, warm welcome light.

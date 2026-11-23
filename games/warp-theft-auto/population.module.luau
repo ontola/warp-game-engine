@@ -1,6 +1,7 @@
 local crowd = require("kit/crowd")
 local impacts = require("impacts")
 local panic = require("panic")
+local roomStream = require("interiors")
 local population = {}
 
 -- A phase on a shared sidewalk loop determines a pedestrian's position even
@@ -243,12 +244,25 @@ local function onShift(pop, id, c, hour, observers)
 	return scheduled
 end
 
+-- The window shader shows the reception pair and seated guest in offices
+-- and hotels, or the loading pair and supervisor in warehouses. All three
+-- are scheduled around the clock. Keep their windows in sync when they leave
+-- their normal positions, even after the furnished room streams out.
+local function markAbsent(masks, pop, buildings, index)
+	local offset = index - pop.streetCount - 1
+	local id = offset % #buildings + 1
+	local anchor = math.floor(offset / #buildings) + 1
+	local bit = anchor - (if buildings[id].kind=="warehouse" then 5 else 1)
+	if bit>=0 and bit<3 then masks[id]=bit32.bor(masks[id] or 0,2^bit) end
+end
+
 function population.tick(pop, city, seats, dt, hour, interiors)
 	pop.elapsed += dt
 	pop.selectionIn -= dt
 	local people, observers = updateAvatars(pop,seats)
 	local changed = localResidents(pop,interiors,city)
 	if changed or pop.selectionIn<=0 then
+		local windowAbsences = {}
 		for id,worker in pop.absentWorkers do
 			local expired
 			if type(worker)=="number" then expired=worker<=pop.elapsed
@@ -259,7 +273,8 @@ function population.tick(pop, city, seats, dt, hour, interiors)
 				sample(pop,worker)
 				expired=not worker.panic
 			end
-			if expired then pop.absentWorkers[id]=nil end
+			if expired then pop.absentWorkers[id]=nil
+			else markAbsent(windowAbsences,pop,city.buildings,id) end
 		end
 		pop.selectionIn = .40
 		pop.streetRevision = (pop.streetRevision or 0)+1
@@ -270,7 +285,11 @@ function population.tick(pop, city, seats, dt, hour, interiors)
 			end
 			sample(pop,c)
 			c.active = onShift(pop,id,c,hour,observers)
+			if c.building and (not c.active or c.panic or c.impact) then
+				markAbsent(windowAbsences,pop,city.buildings,id)
+			end
 		end
+		roomStream.update_occupants(interiors,city.buildings,windowAbsences)
 		-- Each view claims its own nearest people in turn. Prefer the visitor's
 		-- room and the one visible through nearby glass or a doorway. Spare slots still
 		-- draw the street outside its windows.

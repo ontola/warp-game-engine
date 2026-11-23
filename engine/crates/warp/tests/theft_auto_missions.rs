@@ -27,6 +27,28 @@ fn advance(g: &mut LuaGame, input: Controls, count: usize) {
 fn press(bit: u32) -> Controls { Controls { pressed: Buttons(bit), ..Default::default() } }
 
 #[test]
+fn forest_rally_uses_the_baked_gravel_and_starts_untimed() {
+    let mut game=load();
+    let source=include_str!("../../../../games/warp-theft-auto/story_rally.module.luau");
+    assert_eq!(game.apply_story(source).unwrap(), "Mariner Ridge Rally");
+    eval(&mut game,r#"
+        local cast=state.storyCast
+        local car=cast.cars.kestrel
+        local steps=state.story.run.definition.steps
+        assert(#steps==12 and state.story.action=="enter" and state.story.raceTime==nil)
+        for i=2,#steps do
+            local at=steps[i].pos
+            local floor=world.raycast(at+vector.create(0,2,0),vector.create(0,-1,0),4,{tag="city"})
+            assert(floor and math.abs(floor.point.y-at.y)<.10,"floating rally gate "..i)
+        end
+        world.place(state.fleet.players[1].body,car.pos+vector.create(1.6,.85,0))
+    "#);
+    advance(&mut game,Controls::default(),2);
+    advance(&mut game,press(Buttons::NORTH),1);
+    eval(&mut game,"assert(state.story.step==2 and state.story.raceTime~=nil)");
+}
+
+#[test]
 fn wrong_definitions_leave_the_active_story_running() {
     let mut g=load();
     assert_eq!(g.apply_story(RACE).unwrap(),"Exchange Street Sprint");

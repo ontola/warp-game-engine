@@ -6,9 +6,17 @@ use kern::collide::YawBox;
 use rapier3d::{glamx::{Pose3, Quat, Vec3 as V3}, prelude::*};
 use std::{collections::BTreeMap, sync::{Arc, OnceLock}};
 
-struct Pavement;
-impl Ground for Pavement {
-    fn road_surface(&self, _: V3, hint: i64) -> (Surface, i64) { (Surface::Asphalt, hint) }
+#[derive(Default)]
+struct FleetGround { grids: Vec<crate::terrain::PlacedGrid> }
+impl Ground for FleetGround {
+    fn road_surface(&self, p: V3, hint: i64) -> (Surface, i64) {
+        // Only terrain colliders carry the ROAD tag. Pick the support nearest the
+        // contact point when two patches overlap in horizontal coordinates.
+        if let [grid] = self.grids.as_slice() { return (grid.surface_at(p).unwrap_or(Surface::Asphalt), hint); }
+        self.grids.iter().enumerate().filter_map(|(i, g)| {
+            Some(((g.floor(p.x,p.z)?-p.y).abs(),g.surface_at(p)?,i as i64))
+        }).min_by(|a,b| a.0.total_cmp(&b.0)).map_or((Surface::Asphalt,hint), |(_,s,i)| (s,i))
+    }
     fn water_level(&self, _: f64, _: f64) -> f64 { f64::NEG_INFINITY }
 }
 
@@ -84,6 +92,7 @@ pub struct Fleet {
     dent_templates: BTreeMap<String,(Vec<Vec3>,Vec<[u32;3]>)>,
     panel_surfaces: BTreeMap<String,(Vec<Vec3>,Vec<([u32;3],u8)>)>,
     surfaces: Surfaces,
+    ground: FleetGround,
     next: u32,
     acc: f64,
     /// Strongest hard contact per vehicle across this game tick's fixed steps.
@@ -103,7 +112,14 @@ impl Fleet {
                 .collision_groups(InteractionGroups::new(super::GROUP_WORLD, Group::ALL, InteractionTestMode::And)).build();
             world.colliders.insert(c);
         }
-        Self { world, cars: BTreeMap::new(), contact_profiles: BTreeMap::new(), crush_grids: BTreeMap::new(), dent_templates:BTreeMap::new(), panel_surfaces:BTreeMap::new(), surfaces: Surfaces::default(), next: 1, acc: 0., impacts: BTreeMap::new() }
+        Self { world, cars: BTreeMap::new(), contact_profiles: BTreeMap::new(), crush_grids: BTreeMap::new(), dent_templates:BTreeMap::new(), panel_surfaces:BTreeMap::new(), surfaces: Surfaces::default(), ground: FleetGround::default(), next: 1, acc: 0., impacts: BTreeMap::new() }
+    }
+
+    pub fn add_heightfield(&mut self, grid: crate::terrain::PlacedGrid) {
+        let collider = grid.collider().user_data(super::ROAD)
+            .collision_groups(InteractionGroups::new(super::GROUP_WORLD, Group::ALL, InteractionTestMode::And));
+        self.world.colliders.insert(collider);
+        self.ground.grids.push(grid);
     }
 
     /// Park on the supplied ground point. Parked cars remain solid to traffic.
@@ -156,7 +172,7 @@ impl Fleet {
             for entry in self.cars.values_mut() {
                 let car = &mut entry.car;
                 if self.world.bodies[car.body].is_fixed() { continue; }
-                car.integrate(&mut self.world, &Pavement, &self.surfaces, step);
+                car.integrate(&mut self.world, &self.ground, &self.surfaces, step);
                 if car.hold && car.on_ground == 4 && car.linvel(&self.world).length_squared() < 0.004
                     && car.angvel(&self.world).length_squared() < 0.004 {
                     let body = &mut self.world.bodies[car.body];

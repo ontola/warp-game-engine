@@ -91,6 +91,7 @@ impl Look {
 #[derive(Clone, Debug)]
 pub struct Entity {
     pub shape: Shape,
+    terrain: Option<std::sync::Arc<physics::terrain::HeightGrid>>,
     pub look: Look,
     pub pos: Vec3,
     /// Euler angles in radians: x pitch, y yaw, z roll (applied yaw, pitch, roll).
@@ -124,6 +125,12 @@ pub struct Entity {
 }
 
 impl Entity {
+    pub(crate) fn terrain(&self) -> Option<physics::terrain::PlacedGrid> {
+        let grid = self.terrain.as_ref()?;
+        let (rotation,position) = self.world_pose();
+        Some(physics::terrain::PlacedGrid::new(grid.clone(),rotation,position))
+    }
+
     // Model-space Y shear. It vanishes on each hinge, so adjacent panel edges
     // stay welded even when front and side compression happen together.
     fn crush_slope(&self) -> Vec3 {
@@ -364,6 +371,7 @@ impl World {
     pub fn fresh_scene(&mut self) -> Result<(), String> {
         let mut w = World::new(&self.dir, self.slots.capacity());
         w.scene.style = self.scene.style.clone();
+        w.scene.graphics.low_surface_detail = self.scene.graphics.low_surface_detail;
         for (&id, e) in &self.entities {
             let (mesh, _) = w.mesh(&e.shape, &e.look)?;
             let mut e = e.clone();
@@ -494,10 +502,18 @@ impl World {
         if let Some(w) = &s.wire { local = w.bounds(); }
         let id = self.next;
         self.next += 1;
-        let mut e = Entity { crush_hinge: self.crush_hinge(&s.shape), parent: s.parent, frame, children: Vec::new(), shape: s.shape, look: s.look, pos: s.pos, rot: s.rot, size: s.size, solid: s.solid, visible: s.visible, shadow_only: s.shadow_only, hide_views: s.hide_views, tag: s.tag, wire: s.wire, slot: None, edge_slots: Vec::new(), mesh, local };
+        let mut e = Entity { terrain: None, crush_hinge: self.crush_hinge(&s.shape), parent: s.parent, frame, children: Vec::new(), shape: s.shape, look: s.look, pos: s.pos, rot: s.rot, size: s.size, solid: s.solid, visible: s.visible, shadow_only: s.shadow_only, hide_views: s.hide_views, tag: s.tag, wire: s.wire, slot: None, edge_slots: Vec::new(), mesh, local };
         show(&mut self.slots, &mut self.scene, &mut e);
         if let Some(parent) = s.parent { self.entities.get_mut(&parent).unwrap().children.push(id); }
         self.entities.insert(id, e);
+        Ok(id)
+    }
+
+    pub(crate) fn add_heightfield(&mut self, grid: physics::terrain::HeightGrid, origin: Vec3, tag: String) -> Result<u32,String> {
+        let pos = origin + grid.center_offset();
+        if !pos.is_finite() { return Err("heightfield origin and extent must be finite".into()); }
+        let id = self.spawn(Spawn { pos, visible: false, solid: true, tag, ..Default::default() })?;
+        self.entities.get_mut(&id).unwrap().terrain = Some(std::sync::Arc::new(grid));
         Ok(id)
     }
 
@@ -733,7 +749,12 @@ impl World {
         let mut best: Option<Hit> = None;
         for (&id, e) in &self.entities {
             if !filter.wants(id, e, true) { continue; }
-            if let Some((t, n)) = e.bounds().ray(origin, dir, best.map_or(max, |h| h.distance)) {
+            let limit = best.map_or(max, |h| h.distance);
+            let hit = match e.terrain() {
+                Some(grid) => grid.ray(origin,dir,limit),
+                None => e.bounds().ray(origin,dir,limit),
+            };
+            if let Some((t, n)) = hit {
                 if best.is_none_or(|h| t < h.distance) { best = Some(Hit { id, distance: t, point: origin + dir * t, normal: n }); }
             }
         }
@@ -742,18 +763,35 @@ impl World {
 
     /// Entities (solid or not) whose box touches a sphere, in id order.
     pub fn overlap(&self, center: Vec3, radius: f32, filter: &Filter) -> Vec<u32> {
-        self.entities.iter().filter(|&(&id, e)| filter.wants(id, e, false) && sphere_touches(&e.bounds(), center, radius)).map(|(&id, _)| id).collect()
+        self.entities.iter().filter(|&(&id, e)| filter.wants(id, e, false) && e.terrain().map_or_else(|| sphere_touches(&e.bounds(), center, radius), |g| g.touches(center, radius))).map(|(&id, _)| id).collect()
     }
 
     /// Move an upright cylinder (`center`, `radius`, `height`) by `vel * dt`,
     /// sliding along solid boxes. Returns the new position and velocity and
     /// whether it stands on something.
     pub fn move_body(&self, center: Vec3, vel: Vec3, dt: f32, radius: f32, height: f32, filter: &Filter) -> (Vec3, Vec3, bool) {
-        let boxes: Vec<YawBox> = self.entities.iter().filter(|&(&id, e)| filter.wants(id, e, true)).map(|(_, e)| e.bounds()).collect();
+        let mut grids = Vec::new();
+        let boxes: Vec<YawBox> = self.entities.iter().filter(|&(&id, e)| filter.wants(id, e, true))
+            .filter_map(|(_,e)| {
+                if let Some(grid) = e.terrain() { grids.push(grid); None } else { Some(e.bounds()) }
+            }).collect();
         let (mut pos, mut vel) = (center, vel);
         let mover = Mover { radius: radius.max(0.01), half_height: (height * 0.5).max(0.01) };
         let contact = mover.slide(&boxes, &mut pos, &mut vel, dt, (radius * 0.5).clamp(0.05, 0.5));
-        (pos, vel, contact.on_floor)
+        let mut grounded = contact.on_floor;
+        for grid in grids {
+            let Some(floor) = grid.floor(pos.x,pos.z) else { continue };
+            let feet = pos.y-mover.half_height;
+            // Stay planted down a shallow grade if the last step began on it.
+            let on_slope = feet-floor < 0.30 && vel.y<=0. &&
+                grid.floor(center.x,center.z).is_some_and(|y| (center.y-mover.half_height-y).abs()<0.045);
+            if feet<=floor || on_slope {
+                pos.y = floor+mover.half_height;
+                grounded |= vel.y<=0.;
+                vel.y = vel.y.max(0.);
+            }
+        }
+        (pos, vel, grounded)
     }
 
     /// Upload moved slots to a renderer made from this scene.
