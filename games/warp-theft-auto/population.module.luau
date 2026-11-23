@@ -1,29 +1,6 @@
 local crowd = require("kit/crowd")
 local population = {}
 
--- Planted maritime pines. Two crown shapes share their cooked parts across
--- the whole city; placement scale and yaw follow each individual site.
-local PINE = {
-	height = 14, pace = 9, shape = 1.1, whorl = {3, 4}, laterals = 0.55,
-	max_order = 2, limb_step = 0.42, side_length = 0.7, crowding = 4,
-	wood = 0.015, tip_radius = 0.012, plumes = 1.35, needle_years = 4,
-}
-local NEEDLES = {
-	brush_needles = 12, needle_length = 0.52, needle_width = 0.019,
-	brush_reach = 0.24, needles = {0.18, 0.37, 0.22},
-}
-
-local function plant_city(sites, seed)
-	for i, pos in ipairs(sites) do
-		local phase = (seed % 283 + i * 173) % 283
-		plants.grow({
-			pos = pos, species = PINE, look = NEEDLES, age = 9,
-			seed = 17 + i % 2, scale = 0.74 + 0.4 * phase / 283,
-			yaw = phase * 2 * math.pi / 283,
-		})
-	end
-end
-
 -- A phase on a shared sidewalk loop determines a pedestrian's position even
 -- after a long absence. Two parallel lanes let companions walk abreast.
 local v = vector.create
@@ -91,7 +68,6 @@ local function social(pop, parks, seed)
 end
 
 function population.new(city, seed)
-	plant_city(city.plantSites, seed)
 	local pop = {seed=seed, residents={}, paths={}, rooms={}, avatars={}, pedestrians=crowd.new("resident",72,seed), elapsed=0, selectionIn=0}
 	for block, loop in city.walkLoops do addBlock(pop,loop,block,seed) end
 	social(pop,city.parks,seed)

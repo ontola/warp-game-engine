@@ -444,9 +444,9 @@ function city.build(seed)
             table.insert(s.walkLoops,{v(x-reach,0,z-reach),v(x+reach,0,z-reach),v(x+reach,0,z+reach),v(x-reach,0,z+reach)})
             if plaza or garden then
                 -- In a lawn the trunks and their grates sit beside the diagonal paths.
-                local pineZ=if garden then 9 else 13
+                local treeZ=if garden then 9 else 13
                 for _,dx in {-13,13} do
-                    for _,dz in {-pineZ,pineZ} do
+                    for _,dz in {-treeZ,treeZ} do
                         local pos=v(x+dx,0,z+dz)
                         table.insert(s.plantSites,pos)
                         if garden then table.insert(lawns.cutouts,{pos=pos,width=TREE_GRATE,depth=TREE_GRATE}) end
@@ -462,10 +462,10 @@ function city.build(seed)
     end
     grass.set(lawns)
     avenue(s)
-    -- Vegetation supplies the visible trunk and crown; movement uses the trunk.
-    for _,pos in s.plantSites do
+    for i,pos in ipairs(s.plantSites) do
+        local phase = (seed % 283 + i * 173) % 283
         box(pos.x,.035,pos.z,TREE_GRATE,.04,TREE_GRATE,"#747e75",17)
-        obstacle(s,pos.x,1.65,pos.z,.32,3.3,.32,"#655445",nil,{visible=false})
+        streetTree(s,pos.x,pos.z,phase*2*math.pi/283,.74+.40*phase/283,nil)
     end
     harbor()
     s.cape = cape.build(seed)

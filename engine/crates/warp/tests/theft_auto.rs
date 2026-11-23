@@ -70,6 +70,9 @@ fn both_city_lawns_follow_their_diagonal_walks_and_tree_grates() {
     assert!(game.errors().is_empty(), "{:?}", game.errors());
 
     let core = game.core();
+    assert_eq!(core.plants.status().0, 0, "the playtest uses static tree meshes");
+    assert_eq!(core.world.find("street-tree").len(), 52);
+    assert_eq!(core.world.find("woodland").len(), 48);
     let field = core.world.scene.meadow.as_ref().expect("city lawn meadow");
     let sample = |x: f32, z: f32| {
         let ix = ((x - field.origin[0]) / field.cell).round() as usize;
