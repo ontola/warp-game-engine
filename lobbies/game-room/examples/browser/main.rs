@@ -23,6 +23,8 @@
 
 #[cfg(any(target_arch = "wasm32", target_os = "android"))]
 mod builtin;
+#[cfg(target_arch = "wasm32")]
+mod html_game;
 #[cfg(any(target_arch = "wasm32", target_os = "android"))]
 mod cloud;
 
@@ -565,24 +567,29 @@ pub(crate) mod page {
         }
         let found = with(|h| {
             let meta = game_meta(&h.party, &game)?;
+            let entry = meta["web_entry"].as_str().map(String::from);
             let (id, folder) = (meta["id"].as_str()?.to_string(), meta["folder"].as_str()?.to_string());
             if h.loading.is_some() { return None; }
             h.loading = Some(id.clone());
             h.party["warm_session"] = json!({"game": id, "phase": "preparing", "progress": 50, "progress_label": "Loading"});
             h.dirty = true;
             h.cloud.refresh = true;
-            Some((id, folder, h.players))
+            Some((id, folder, h.players, entry))
         });
-        let Some((game, folder, players)) = found else { app::web::log(&format!("{game}: not on this page, or a game is loading")); return };
+        let Some((game, folder, players, entry)) = found else { app::web::log(&format!("{game}: not on this page, or a game is loading")); return };
         app::web::spawn(async move {
             let t0 = web_time::Instant::now();
             // A paused game makes way: end its silenced voices before the
             // new one starts its own in the shared mixer.
             with(|h| if h.paused.is_some() { warp::web::hush(None) });
-            let loaded = match super::builtin::load(&folder, players).await {
+            #[cfg(target_arch = "wasm32")]
+            let html = entry.map(|entry| super::html_game::HtmlGame::load(entry, with(|h| title(&h.party, &game)), players));
+            #[cfg(not(target_arch = "wasm32"))]
+            let html = { let _ = entry; None };
+            let loaded = if let Some(html) = html { Ok(html) } else { match super::builtin::load(&folder, players).await {
                 Some(l) => l,
                 None => warp::web::load(&folder, Some(players)).await.map(|(c, g)| (c, Box::new(g) as Box<dyn Game>)),
-            };
+            } };
             with(|h| {
                 h.loading = None;
                 h.party["warm_session"] = Value::Null;
@@ -612,6 +619,10 @@ pub(crate) mod page {
     fn resume() {
         with(|h| {
             let Some((game, paused)) = h.paused.take() else { return };
+            #[cfg(target_arch = "wasm32")]
+            if let Some(session) = h.party["active_session"]["id"].as_str() {
+                super::html_game::show_again(session);
+            }
             app::web::resume(paused, Some(Box::new(|p| with(|h| h.room = Some(p)))));
             warp::web::hush(Some(false));
             h.on_screen = Some(game.clone()); app::web::set_in_game(true);
@@ -635,6 +646,11 @@ pub(crate) mod page {
                     app::web::Exit::Previous if !h.played.is_empty() => Some(Chord::Previous),
                     _ => None,
                 };
+            }
+            let keep = why != app::web::Exit::Quit;
+            #[cfg(target_arch = "wasm32")]
+            let keep = super::html_game::pause() && keep;
+            if keep {
                 let name = game.clone();
                 app::web::resume(room, Some(Box::new(move |p| with(|h| h.paused = Some((name, p))))));
                 // Its loops and music wait silently with it (Joep: the sound went on).
@@ -661,7 +677,12 @@ pub(crate) mod page {
     }
 
     async fn run() -> Result<(), String> {
-        let library: Vec<Value> = serde_json::from_slice(&app::web::fetch("games/library.json").await?).map_err(|e| format!("games/library.json: {e}"))?;
+        #[cfg(target_arch = "wasm32")]
+        let bytes = super::html_game::catalog_json().await.map_err(|e| format!("Game catalog: {e:?}"))?
+            .as_string().ok_or("Game catalog was not JSON")?.into_bytes();
+        #[cfg(not(target_arch = "wasm32"))]
+        let bytes = app::web::fetch("games/library.json").await?;
+        let library: Vec<Value> = serde_json::from_slice(&bytes).map_err(|e| format!("games/library.json: {e}"))?;
         let players = warp::web::param("players").and_then(|p| p.parse().ok()).unwrap_or(0usize).min(MAX_SEATS);
         // The room's QR code on the loading screen while the room is built.
         super::cloud::register_early();
@@ -709,7 +730,11 @@ pub(crate) mod page {
         // title card until a cover arrives).
         let covers: Vec<(String, String)> = with(|h| h.party["library"].as_array().into_iter().flatten()
             .filter(|g| g["has_cover"] == true)
-            .filter_map(|g| Some((g["id"].as_str()?.to_string(), format!("games/{}/cover.png", g["folder"].as_str()?)))).collect());
+            .filter_map(|g| {
+                let folder = g["folder"].as_str()?;
+                let url = g["web_cover"].as_str().map(String::from).unwrap_or_else(|| format!("games/{folder}/cover.png"));
+                Some((g["id"].as_str()?.to_string(), url))
+            }).collect());
         app::web::spawn(async move {
             for (game, url) in covers {
                 match app::web::fetch(&url).await {
