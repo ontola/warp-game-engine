@@ -62,6 +62,8 @@ pub enum SimplificationPolicy {
     AlphaCards,
     /// Preserve authored normals, UV seams and folds without projected-area credit.
     TexturedGeometry,
+    /// Preserve smooth authored normals on untextured surfaces while allowing distant folds to simplify.
+    ShadingNormals,
     /// Opaque thin leaves/needles: preserve authored orientation and attributes,
     /// and carry projected-area loss through the DAG. No alpha-test assumption.
     ThinFoliage,
@@ -78,9 +80,9 @@ type PendingCluster = (usize, i32, Vec<u32>, [f32; 4]);
 /// A purely positional collapse can turn a small bent branch inside out
 /// relative to its retained shading normals, despite preserving its outline.
 /// Attribute weights reduce this but do not forbid it. Keep such replacement
-/// triangles below two projected pixels by assigning half their longest edge
-/// as error. Source detail and distant root budgets remain unchanged.
-fn protect_surface_orientation(part: &Part<'_>, groups: &mut [[f32; 5]], pending: &[PendingCluster]) {
+/// triangles small on screen by charging part of their longest edge as error.
+/// Textured geometry and foliage use half an edge (two pixels at the default cut).
+fn protect_surface_orientation(part: &Part<'_>, groups: &mut [[f32; 5]], pending: &[PendingCluster], edge_weight: f32) {
     let orientation: f64 = part.indices.chunks_exact(3).map(|tri| {
         let p: [glam::Vec3; 3] = std::array::from_fn(|k| glam::Vec3::from(part.vertices[tri[k] as usize].pos));
         let n: glam::Vec3 = tri.iter().map(|i| glam::Vec3::from(part.vertices[*i as usize].normal)).sum();
@@ -105,7 +107,7 @@ fn protect_surface_orientation(part: &Part<'_>, groups: &mut [[f32; 5]], pending
             if face.length_squared() <= 1e-20 { continue; }
             let n: glam::Vec3 = tri.iter().map(|i| glam::Vec3::from(part.vertices[*i as usize].normal)).sum();
             if n.length_squared() <= 1e-12 || face.normalize().dot(n.normalize()) * sign < -0.1 {
-                error = error.max((p[1]-p[0]).length().max((p[2]-p[0]).length()).max((p[2]-p[1]).length()) * 0.5);
+                error = error.max((p[1]-p[0]).length().max((p[2]-p[0]).length()).max((p[2]-p[1]).length()) * edge_weight);
             }
         }
         groups[*refined as usize][4] = groups[*refined as usize][4].max(error);
@@ -278,12 +280,44 @@ mod constraint_tests {
     }
 
     #[test]
+    fn smooth_surface_lods_respond_to_normals_and_ignore_unused_uvs() {
+        let (mut vertices, indices) = folded_grid();
+        for v in &mut vertices {
+            v.pos[1] = 0.0;
+            v.normal = glam::Vec3::new((v.pos[0] * 0.31).sin(), 1.0, (v.pos[2] * 0.23).cos()).normalize().to_array();
+        }
+        let bake = |verts: &[Vertex]| {
+            let part = Part { vertices: verts, indices: &indices, material: 0 };
+            ClusterMesh::build_with_policy(&[part], |_| SimplificationPolicy::ShadingNormals)
+        };
+        let smooth = bake(&vertices);
+        for (i, v) in vertices.iter_mut().enumerate() {
+            v.uv = [(i % 7) as f32, (i % 11) as f32];
+        }
+        let different_uvs = bake(&vertices);
+        assert_eq!(smooth.tris, different_uvs.tris);
+        assert_eq!(smooth.cluster_verts, different_uvs.cluster_verts);
+        assert_eq!(bytemuck::cast_slice::<GpuCluster, u8>(&smooth.clusters),
+            bytemuck::cast_slice::<GpuCluster, u8>(&different_uvs.clusters));
+        for v in &mut vertices { v.normal = [0.0, 1.0, 0.0]; }
+        let flat = bake(&vertices);
+        // Both inputs are coplanar. Only the authored shading on the first one
+        // can need extra triangles at this cut.
+        let cut = |mesh: &ClusterMesh, error: f32| -> usize {
+            mesh.clusters.iter().filter(|c| c.own_error <= error && error < c.parent_error)
+                .map(|c| c.tri_count as usize).sum()
+        };
+        assert!(cut(&smooth, 0.001) > cut(&flat, 0.001));
+        assert!(smooth.root_triangles() < indices.len() / 12);
+    }
+
+    #[test]
     fn all_false_constraints_preserve_every_existing_policy_byte_for_byte() {
         let (vertices, indices) = folded_grid();
         let parts = [Part { vertices: &vertices, indices: &indices, material: 4 }];
         for policy in [SimplificationPolicy::Geometry, SimplificationPolicy::Terrain,
-            SimplificationPolicy::TexturedGeometry, SimplificationPolicy::AlphaCards,
-            SimplificationPolicy::ThinFoliage] {
+            SimplificationPolicy::TexturedGeometry, SimplificationPolicy::ShadingNormals,
+            SimplificationPolicy::AlphaCards, SimplificationPolicy::ThinFoliage] {
             let baseline = ClusterMesh::build_with_policy(&parts, |_| policy);
             let constrained = ClusterMesh::build_with_constraints(&parts, |_| policy, |_, _| false);
             assert_eq!(bytemuck::cast_slice::<Vertex, u8>(&baseline.vertices), bytemuck::cast_slice::<Vertex, u8>(&constrained.vertices));
@@ -599,7 +633,16 @@ impl ClusterMesh {
             let thin_foliage=selected_policy == SimplificationPolicy::ThinFoliage;
             let coverage=selected_policy == SimplificationPolicy::AlphaCards || thin_foliage;
             let terrain=selected_policy == SimplificationPolicy::Terrain;
-            if selected_policy != SimplificationPolicy::Geometry {
+            if selected_policy == SimplificationPolicy::ShadingNormals {
+                // Plain paint needs accurate interpolated normals, especially on broad
+                // curved panels. UV seams carry no appearance information here.
+                attributes = part.vertices.iter().flat_map(|v| v.normal).collect();
+                mesh.vertex_attributes = &attributes;
+                mesh.vertex_attributes_stride = 3 * std::mem::size_of::<f32>();
+                mesh.attribute_weights = &[0.15, 0.15, 0.15];
+                config.simplify_preserve_folds = true;
+                config.simplify_fallback_sloppy = false;
+            } else if selected_policy != SimplificationPolicy::Geometry {
                 attributes = part.vertices.iter().flat_map(|v| [v.normal[0], v.normal[1], v.normal[2],
                     if terrain {v.uv[0].clamp(0.0,32.0)}else{v.uv[0]},if terrain {v.uv[1].clamp(0.0,2.0)}else{v.uv[1]}]).collect();
                 mesh.vertex_attributes = &attributes;
@@ -658,8 +701,11 @@ impl ClusterMesh {
                 out.levels = out.levels.max(group.depth as u32 + 1);
                 gid as i32
             });
-            if selected_policy == SimplificationPolicy::TexturedGeometry || thin_foliage {
-                protect_surface_orientation(part, &mut groups, &pending);
+            if matches!(selected_policy, SimplificationPolicy::ShadingNormals | SimplificationPolicy::TexturedGeometry | SimplificationPolicy::ThinFoliage) {
+                // Large flipped faces corrupt silhouettes and specular highlights. Plain
+                // smooth surfaces can release smaller folds without exposing a UV seam.
+                let edge_weight = if selected_policy == SimplificationPolicy::ShadingNormals { 0.075 } else { 0.5 };
+                protect_surface_orientation(part, &mut groups, &pending, edge_weight);
                 #[cfg(test)]
                 policy_tests::assert_complete_dag_cuts(&groups, &pending);
             }
