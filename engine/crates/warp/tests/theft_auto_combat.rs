@@ -395,3 +395,44 @@ fn an_unaimed_click_fires_on_foot_but_vehicle_throttle_never_fires() {
     tick(&mut game, [Controls::default(); 2], 1);
     check(&mut game, "assert(not state.combat.players[2])");
 }
+
+#[test]
+fn simultaneous_shots_detonate_visible_cargo_once_and_keep_the_city_running() {
+    let mut game = city();
+    check(&mut game, r#"
+        for id,crate in state.combat.crates do
+            if crate.pos.x < 11 then state.cargo=id end
+        end
+        local pos=state.combat.crates[state.cargo].pos
+        for _,seat in state.fleet.players do
+            world.place(seat.body,vector.create(pos.x,.85,pos.z+5))
+            seat.view,seat.pitch=0,-.13
+        end
+        state.wall=world.spawn("cube",{tag="city",solid=true,pos=pos+vector.create(0,0,2.5),size=vector.create(2,3,.4)})
+    "#);
+    let fire = Controls { pressed: Buttons(Buttons::RIGHT_TRIGGER), ..Default::default() };
+    tick(&mut game, [fire;2], 1);
+    check(&mut game, "assert(world.get(state.cargo).visible); world.remove(state.wall)");
+    assert!(game.core().world.explosions.is_none());
+    tick(&mut game, [Controls::default();2], 22);
+    tick(&mut game, [fire;2], 1);
+    check(&mut game, r#"
+        local c=state.combat.crates[state.cargo]
+        assert(not world.get(state.cargo).visible and not world.get(state.cargo).solid)
+        assert(c.respawnAt-game.time()>14)
+        assert(state.combat.players[1].defeats==0 and state.combat.players[2].defeats==0)
+    "#);
+    assert_eq!(game.core().world.explosions.as_ref().unwrap().explosion_stats().full, 1);
+    check(&mut game, r#"
+        local c=state.combat.crates[state.cargo]
+        world.place(state.fleet.players[1].body,c.pos+vector.create(0,.225,0))
+        c.respawnAt=game.time()
+    "#);
+    tick(&mut game, [Controls::default();2], 1);
+    check(&mut game, r#"
+        assert(not world.get(state.cargo).visible)
+        world.place(state.fleet.players[1].body,state.combat.crates[state.cargo].pos+vector.create(0,.225,5))
+    "#);
+    tick(&mut game, [Controls::default();2], 32);
+    check(&mut game, "assert(world.get(state.cargo).visible and world.get(state.cargo).solid)");
+}

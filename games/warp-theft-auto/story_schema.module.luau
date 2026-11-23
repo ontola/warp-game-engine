@@ -90,6 +90,7 @@ local actions={
 	dropoff={person="key",pos="pos",radius="radius?"},
 	checkpoint={car="key?",pos="pos",radius="radius?"},
 	contract={person="key",range="range?"},
+	explosion={pos="pos",radius="radius?"},
 }
 for _, spec in actions do spec.op="key"; spec.text="text" end
 

@@ -155,3 +155,16 @@ fn contract_uses_the_owner_camera_and_a_clear_shot() {
     advance(&mut g,shot,1);
     eval(&mut g,r#"assert(state.story.status=="complete" and state.storyCast:wasHit("jack") and state.storyCast.people.jack.impact)"#);
 }
+
+#[test]
+fn authored_explosion_plays_once_then_finishes() {
+    let mut game = load();
+    let script = r#"return {id="signal",title="Signal",cast={},steps={
+        {op="explosion",pos=vector.create(10,1,-9),radius=5,text="Signal from the docks"}
+    }}"#;
+    game.apply_story(script).unwrap();
+    advance(&mut game, Controls::default(), 12);
+    eval(&mut game, r#"assert(state.story.status=="complete")"#);
+    assert_eq!(game.core().world.explosions.as_ref().unwrap().explosion_stats().full, 1);
+    assert!(game.apply_story(&script.replace("radius=5", "radius=-1")).is_err());
+}

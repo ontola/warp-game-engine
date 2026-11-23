@@ -17,6 +17,8 @@ cargo run --locked --release -p warp -- run games/warp-theft-auto --players 4
 
 Follow Exchange Avenue west through Lido Gardens to leave the city. At the fork, the northern branch runs through Mariner Wood. Both branches reach the red-roofed shelter at Cape Lookout and form a 1.68 km driving loop. Each player's minimap follows their route onto the cape.
 
+Shoot the red crate with the yellow hazard stripe across the junction from the starting cars on Exchange Avenue. There are two more crates at the eastern docks. Each plays Growing Guns’ explosion and returns after 15 seconds once the site is clear. For a scripted blast, add a story step such as `{op="explosion",pos=vector.create(10.7,.625,-10.8),radius=5,text="Signal from the docks"}`. It plays once when the story reaches that step.
+
 A new round generates a new city seed. Pass `--seed 1948` to replay a layout. The city starts at 16:00. A full day takes eight minutes. The sun moves between simulation ticks, the sky changes continuously and the street lighting fades through twilight.
 
 | Action | Keyboard and mouse | Controller |

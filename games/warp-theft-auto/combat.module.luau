@@ -3,6 +3,7 @@
 local Cast=require("story_cast")
 local crowd=require("kit/crowd")
 local fx=require("combat_fx")
+local explosions=require("explosions")
 local impacts=require("impacts")
 local sidearm=require("sidearm")
 local combat={}
@@ -18,7 +19,7 @@ local markerEdges={1,5,2,5,3,5,4,5}
 function combat.new(fleet,pop)
 	world.warm("wire",marker)
 	fx.warm()
-	local s={players={},enemies={},cast=Cast.new(fleet,pop,crowd.new("rival")),effects=fx.new()}
+	local s={players={},enemies={},cast=Cast.new(fleet,pop,crowd.new("rival")),effects=fx.new(),crates=explosions.placeCrates()}
 	for _,r in routes do s.enemies[r.key]={health=2,respawnIn=0} end
 	return s
 end
@@ -105,8 +106,15 @@ local function targetOnRay(state,seat,origin,ray)
 	impacts.visitResidents(state.population,origin,origin+ray*(RANGE+2),function(id,c,feet,actor)
 		consider("resident",id,c,feet,RANGE,actor)
 	end)
-	if target and sidearm.clear(origin,ray,target.along) then return target end
-	return nil
+	-- A single scenery trace orders pedestrians, cover and marked cargo for every seat.
+	local distance = if target then math.max(0,target.along-.001) else RANGE
+	local cover = if distance>0 then sidearm.sceneryHit(origin,ray,distance) else nil
+	if cover then
+		local crate = s.crates[cover.id]
+		if crate then return {kind="crate",key=cover.id,point=cover.point},cover.point end
+		return nil,cover.point
+	end
+	return target,if target then target.point else origin+ray*RANGE
 end
 
 local function hitTarget(state,target,ray)
@@ -149,9 +157,14 @@ local function shoot(state,id,player,seat,input)
 	elseif pressed or player.shotFlash>0 then origin,ray=sidearm.hipRay(seat) end
 	sidearm.follow(player,state.population.avatars[id],seat,ray)
 	if not ray or (not player.aiming and not pressed) then return end
-	local target=targetOnRay(state,seat,origin,ray)
+	local target,point=targetOnRay(state,seat,origin,ray)
 	player.onTarget=target~=nil
-	if not sidearm.discharge(player,player,seat,input,target and target.point,origin,ray) or not target then return end
+	if not sidearm.discharge(player,player,seat,input,point,origin,ray) or not target then return end
+	if target.kind=="crate" then
+		explosions.hit(state.combat.crates[target.key],target.key)
+		sidearm.confirmHit(player,target.point)
+		return
+	end
 	local hit,lethal=hitTarget(state,target,ray)
 	if not hit then return end
 	player.hits+=1
@@ -162,6 +175,8 @@ end
 
 function combat.tick(state,dt,input)
 	local s,fleet,story=state.combat,state.fleet,state.story
+	s.crates=s.crates or explosions.placeCrates()
+	explosions.tick(s.crates,fleet)
 	fx.tick(s.effects,dt)
 	updateRivals(s,fleet,dt)
 	for id,player in s.players do

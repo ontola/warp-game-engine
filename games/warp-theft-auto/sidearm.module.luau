@@ -131,8 +131,8 @@ function sidearm.intersect(origin,ray,feet,pos,range,height)
 	return first,origin+ray*first
 end
 
-function sidearm.clear(origin,ray,along)
-	return along<=.001 or world.raycast(origin,ray,along-.001,cover)==nil
+function sidearm.sceneryHit(origin,ray,distance)
+	return world.raycast(origin,ray,distance,cover)
 end
 
 function sidearm.trigger(input)

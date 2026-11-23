@@ -515,6 +515,18 @@ fn pm_interior(s: SurfaceIn, aa: f32) -> SurfaceOut {
 fn game_surface(s: SurfaceIn) -> SurfaceOut {
     let aa=clamp(max(length(s.dx),length(s.dy))*0.56,0.012,0.5);
     var out=SurfaceOut(s.tint,s.n,s.rough,s.metal,vec3<f32>(0.0));
+    if s.kind==30u {
+        // A steel-edged red case with a yellow and charcoal hazard band on all four sides.
+        let u=select(s.local.x,s.local.z,abs(s.n.x)>.5);
+        let band=pm_band(s.local.y-.08,.12,min(.08,aa));
+        let stripe=smoothstep(.42,.58,fract((u+s.local.y*.7)*6.0));
+        let paint=mix(vec3<f32>(.028,.035,.036),vec3<f32>(.96,.65,.08),stripe);
+        let edge=smoothstep(.435,.475,max(abs(u),abs(s.local.y)));
+        let side=mix(s.tint,paint,band);
+        out.albedo=mix(side,vec3<f32>(.19,.20,.19),edge);
+        out.metal=.32*edge;
+        return out;
+    }
     if s.kind==29u { return pm_masonry(s,aa); }
     if (s.kind>=20u && s.kind<=22u) || (s.kind>=64u && s.kind<100u) { return pm_ground_floor(s,aa); }
     if s.kind==23u {
