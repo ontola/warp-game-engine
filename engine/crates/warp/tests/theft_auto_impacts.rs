@@ -207,3 +207,109 @@ fn traffic_passing_a_flank_does_not_launch_a_pedestrian_and_reverse_contact_is_s
     assert!(yes(&mut game, "return vector.dot(state.storyCast.people.jack.pos-state.crossingStart,state.crossingSide)>.15"));
     assert!(fell);
 }
+
+#[test]
+fn a_resident_rolls_onto_the_sedan_without_a_second_launch_when_the_driver_brakes() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../games/warp-theft-auto");
+    let idle = Controls::default();
+    let board = Controls {
+        pressed: Buttons(Buttons::NORTH),
+        ..idle
+    };
+    let gas = Controls {
+        mv: [0., 1.],
+        ..idle
+    };
+    let brake = Controls {
+        mv: [0., -1.],
+        ..idle
+    };
+
+    for (target_z, expected_speed) in [(-0.12, 10.39), (-10.8, 15.97)] {
+        let mut game = LuaGame::load(
+            &dir,
+            &Overrides {
+                seed: Some(1948),
+                players: Some(1),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        game.echo = false;
+        game.luau(&format!(
+            r#"
+            local p=state.population.street[1]
+            p.pos,p.yaw,p.action=vector.create(3.85,0,{target_z}),math.pi/2,"idle"
+            p.path,p.delta,p.previousFeet=nil,nil,nil
+            p.nextPos,p.nextYaw,p.pose=p.pos,p.yaw,"idle"
+            state.population.selectionIn=0
+        "#
+        ))
+        .unwrap();
+        for _ in 0..169 {
+            game.tick(&[idle]);
+        }
+        game.tick(&[board]);
+        for _ in 0..2 {
+            game.tick(&[idle]);
+        }
+        assert!(yes(&mut game, "return state.fleet.players[1].vehicle==1"));
+        for _ in 0..220 {
+            game.tick(&[gas]);
+            if yes(
+                &mut game,
+                "local p=state.population.street[1]; return p.impact and p.impact.vehicle==1",
+            ) {
+                break;
+            }
+        }
+        let speed: f64 = game
+            .luau("return state.fleet.vehicles[1].speed")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            yes(
+                &mut game,
+                "return state.population.street[1].impact.vehicle==1"
+            ) && (speed - expected_speed).abs() < 0.1,
+            "contact at {speed} m/s"
+        );
+
+        game.luau("state.testRoll={hips=0,head=0,feet=0,bonnet=0}")
+            .unwrap();
+        // Keep measuring through the roof and rear windscreen, where a leg trapped
+        // inside the moving shell used to eject the whole rig after mounting the bonnet.
+        for age in 1..=118 {
+            game.tick(&[if age <= 18 { gas } else { brake }]);
+            game.luau(r#"
+                local r=state.testRoll
+                local a=assert(state.population.pedestrians.active[1])
+                local car=state.fleet.vehicles[1]
+                local hips=humans.joint(a,"hips")-car.pos
+                local head=humans.joint(a,"head")-car.pos
+                r.hips=math.max(r.hips,hips.y)
+                r.head=math.max(r.head,head.y)
+                r.feet=math.max(r.feet,humans.joint(a,"foot_l").y-car.pos.y,humans.joint(a,"foot_r").y-car.pos.y)
+                local forward=vector.create(-math.sin(car.yaw),0,-math.cos(car.yaw))
+                local z=vector.dot(hips,forward)
+                if z>1.0 and z<1.9 and hips.y>.93 and hips.y<1.45
+                    and vector.dot(hips-head,forward)>.35 and math.abs(hips.y-head.y)<.25 then
+                    r.bonnet+=1
+                end
+            "#).unwrap();
+        }
+        let report = game.luau("return state.testRoll").unwrap();
+        assert!(game.errors().is_empty(), "{:?}", game.errors());
+        // The roof is 1.45 m high. Allow a cartwheel above it, including feet overhead;
+        // the original unstable contact instead took hips past 3 m at both speeds.
+        assert!(
+            yes(
+                &mut game,
+                "local r=state.testRoll; return r.bonnet>=2 and r.hips<2.45 and r.head<2.7 and r.feet<3.25"
+            ),
+            "{speed} m/s: {report}"
+        );
+    }
+}
