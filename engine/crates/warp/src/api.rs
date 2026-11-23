@@ -289,7 +289,8 @@ pub fn shape(name: &str) -> mlua::Result<Shape> {
             if !(3..=64).contains(&sides) || !(0.005..=0.5).contains(&width) { return Err(bad()); }
             Shape::Outline { sides, width: (width * 1000.0).round() as u32 }
         }
-        p if p.ends_with(".glb") || p.ends_with(".gltf") => Shape::Model(p.to_string()),
+        p if p.ends_with(".glb") || p.ends_with(".gltf") || p.rsplit_once("#crush").is_some_and(|(file, n)|
+            (file.ends_with(".glb") || file.ends_with(".gltf")) && matches!(n.as_bytes(), [b'0'..=b'8'])) => Shape::Model(p.to_string()),
         other => return Err(rt(format!("unknown shape {other:?}: cube, pane, sphere, capsule, outline6 or a model path such as \"assets/crate.glb\""))),
     })
 }
@@ -752,6 +753,7 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
         })),
         ("find", f!(core, move |lua, tag: String| lua.create_sequence_from(lock(&core).world.find(&tag)))),
         ("count", f!(core, move |_, ()| Ok(lock(&core).world.entities.len()))),
+        ("capacity", f!(core, move |_, ()| Ok(lock(&core).world.capacity()))),
         ("raycast", f!(core, move |lua, (origin, dir, max, opts): (Value, Value, Option<f32>, Option<Table>)| {
             let (o, d) = (vec3(&origin, "raycast origin")?, vec3(&dir, "raycast direction")?);
             let f = filter(opts)?;

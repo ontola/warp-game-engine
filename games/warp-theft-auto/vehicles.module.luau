@@ -1,9 +1,13 @@
 local util = require("kit/util")
+local damage = require("kit/car_damage")
 local v = vector.create
 local models = {}
 local PAINT = { "sedan-ochre", "sedan", "sedan-pearl", "sedan-vermilion" }
 local BASE = "assets/cars/"
 local OFFSET = { v(-.759,0,-1.262), v(.759,0,-1.262), v(-.759,0,1.262), v(.759,0,1.262) }
+
+-- Match the grid boundaries declared by this model's glTF warpCrushGrid.
+local CRUSH=damage.profile(.98,2.21,2.19,.48,1.04,1.16)
 
 local paints={ochre=PAINT[1],teal=PAINT[2],pearl=PAINT[3],vermilion=PAINT[4]}
 
@@ -32,7 +36,116 @@ function models.car(pos, yaw, index, paint)
 		wheels[i] = world.spawn(BASE .. name .. ".gltf", {pos=offset, solid=false, tag="wheel"}, body)
 	end
 	return {kind="car", index=index, paint=paint, pos=pos, yaw=yaw, speed=0, body=body, wheels=wheels,
-		native=vehicles.spawn(pos,yaw), rpm=950, gear=1, load=0, slip=0, contact=0, loose=0, soft=0, throttle=0}
+		model=model, damage=damage.new(), native=vehicles.spawn(pos,yaw), rpm=950, gear=1, load=0, slip=0, contact=0, loose=0, soft=0, throttle=0}
+end
+
+local function localPoint(car,point)
+	local r=car.rotation or v(0,car.yaw,0)
+	local d=point-(car.pos+v(0,.33,0))
+	local cy,sy=math.cos(r.y),math.sin(r.y)
+	local x,z=cy*d.x-sy*d.z,sy*d.x+cy*d.z
+	local cx,sx=math.cos(r.x),math.sin(r.x)
+	local y=cx*d.y+sx*z
+	local cz,sz=math.cos(r.z),math.sin(r.z)
+	return v(cz*x+sz*y,-sz*x+cz*y,-sx*d.y+cx*z)
+end
+
+function models.closestPoint(car,worldPoint,radius)
+	if car.kind~="car" then return nil end
+	if radius then
+		local d=worldPoint-(car.pos+v(0,.78,0))
+		if vector.dot(d,d)>(radius+2.61)^2 then return nil end
+	end
+	return vehicles.closest_point(car.native,models.contactProfile,worldPoint)
+end
+
+function models.raycast(fleet,origin,direction,maxDistance,ignoreCar)
+	local best,limit=nil,maxDistance
+	local cars=fleet.vehicles or fleet
+	for _,car in cars do
+		if car.kind~="car" or car==ignoreCar then continue end
+		local d=car.pos+v(0,.78,0)-origin
+		local along=math.clamp(vector.dot(d,direction),0,limit)
+		local offset=d-direction*along
+		if vector.dot(offset,offset)>6.8 then continue end
+		local hit=vehicles.raycast(car.native,models.contactProfile,origin,direction,limit)
+		if hit and (not best or hit<limit or (hit==limit and car.index<best.index)) then best,limit=car,hit end
+	end
+	if best then return best,origin+direction*limit,limit end
+	return nil
+end
+
+function models.hit(car,worldPoint,amount)
+	if car.kind~="car" then return false end
+	car.damage=car.damage or damage.new()
+	if not damage.hit(car.damage,CRUSH,localPoint(car,worldPoint),amount) then return false end
+	local _,frontLeft=damage.cellPose(CRUSH,car.damage.zones,0,0)
+	local _,rearRight=damage.cellPose(CRUSH,car.damage.zones,2,2)
+	vehicles.crush_query(car.native,models.contactProfile,v(-CRUSH.sideHinge,0,-CRUSH.frontHinge),v(CRUSH.sideHinge,0,CRUSH.rearHinge),v(frontLeft.x,1,rearRight.x),v(frontLeft.z,1,rearRight.z))
+	car.damageDirty=true
+	return true
+end
+
+local function updatePanels(car)
+	local creating=not car.panels
+	local panel=car.panels or {}
+	local model=car.model or world.get(car.body).shape
+	for row=0,2 do
+		for column=0,2 do
+			local i=row*3+column
+			local pos,size=damage.cellPose(CRUSH,car.damage.zones,column,row)
+			if creating then
+				panel[i]=world.spawn(model.."#crush"..i,{pos=pos,size=size,solid=false,tag="damage-panel"},car.body)
+			else world.set(panel[i],{pos=pos,size=size}) end
+		end
+	end
+	if creating then
+		car.panels=panel
+		world.set(car.body,{visible=false})
+	end
+	car.damageDirty=false
+end
+
+-- A single mesh remains in the distance. For the nearest damaged cars, skin
+-- the same original surfaces across the crush zones. Reserve space for rooms
+-- and transient effects, regardless of how many cars have been damaged.
+function models.streamDamage(fleet,dt)
+	fleet.crushIn=(fleet.crushIn or 0)-dt
+	if fleet.crushIn>0 then return end
+	fleet.crushIn=.15
+	local near={}
+	local used=0
+	for _,car in fleet.vehicles do
+		if car.panels then used+=9 end
+		if car.kind~="car" or not car.damage or car.damage.total<=0 then continue end
+		local best=math.huge
+		for _,p in fleet.players do
+			local d=car.pos-p.pos
+			best=math.min(best,vector.dot(d,d))
+		end
+		if best<48^2 then table.insert(near,{car=car,distance=best*(if car.panels then .86 else 1)}) end
+	end
+	table.sort(near,function(a,b)
+		return a.distance<b.distance or (a.distance==b.distance and a.car.index<b.car.index)
+	end)
+	local limit=math.clamp(math.floor((world.capacity()-world.count()+used-96)/9),0,8)
+	local selected={}
+	for i=1,math.min(#near,limit) do selected[near[i].car]=true end
+	for _,car in fleet.vehicles do
+		if car.panels and not selected[car] then
+			world.set(car.body,{visible=true})
+			for _,id in car.panels do world.remove(id) end
+			car.panels=nil
+		end
+	end
+	for i=1,math.min(#near,limit) do
+		local car=near[i].car
+		if not car.panels or car.damageDirty then updatePanels(car) end
+	end
+end
+
+function models.damagedControls(car,controls)
+	return damage.controls(car.damage,controls,car.speed)
 end
 
 -- Warp Humans' seated pose uses a floor anchor and faces +Z; sedans face -Z.
@@ -55,6 +168,7 @@ end
 
 function models.sync(car)
 	local p = vehicles.get(car.native)
+	car.rotation=p.rot
 	car.pos, car.yaw, car.active = p.pos - v(0,.33,0), p.rot.y, not p.parked
 	car.speed, car.gear, car.rpm, car.cut = p.speed, p.gear, p.rpm, p.cut
 	car.slip, car.torque, car.load = p.slip, p.torque, p.load

@@ -419,12 +419,7 @@ local function sendObstacles(boxes,roots)
 	humans.obstacles(obstacles)
 end
 
-local preparedFleet
 function impacts.tick(pop,fleet,dt)
-	if preparedFleet~=fleet then
-		models.prepareContacts()
-		preparedFleet=fleet
-	end
 	pop.impactResidents=pop.impactResidents or {}
 	local boxes,grid={},{}
 	for i,car in fleet.vehicles do

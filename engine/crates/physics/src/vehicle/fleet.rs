@@ -45,6 +45,18 @@ pub struct ChassisContact {
 impl ChassisContact {
     pub fn same_hull(&self, other: &Self) -> bool { Arc::ptr_eq(&self.hull.0, &other.hull.0) }
 
+    fn pose(&self) -> Pose3 { Pose3::from_parts(crate::to(self.current.0), crate::to_q(self.current.1)) }
+
+    /// Intersect the fitted skin in its current full chassis pose.
+    pub fn raycast(&self, origin: Vec3, dir: Vec3, limit: f32) -> Option<f32> {
+        let dir = dir.try_normalize()?;
+        self.hull.cast_ray(&self.pose(), &Ray::new(crate::to(origin), crate::to(dir)), limit, true)
+    }
+
+    pub fn closest_point(&self, point: Vec3) -> Vec3 {
+        crate::from(self.hull.project_point(&self.pose(), crate::to(point), false).point)
+    }
+
     /// Mirror the very same shapes in a secondary simulation (e.g. nearby ragdolls).
     pub fn add_kinematic(&self, physics: &mut crate::Physics) -> crate::Body {
         physics.add_kinematic_shape(self.previous.0, self.previous.1, self.hull.clone())
@@ -60,15 +72,20 @@ struct FleetCar {
     // The compact's lower body and cabin are already cooked by the road solver.
     // Assemble their shared handles only for consumers that need the whole hull.
     hull: OnceLock<SharedShape>,
+    query_skin: Option<(String, SharedShape)>,
 }
 
 pub struct Fleet {
     world: PhysicsWorld,
     cars: BTreeMap<u32, FleetCar>,
     contact_profiles: BTreeMap<String, SharedShape>,
+    /// Model-space triangles split once per fitted body and grid, shared by all paints.
+    crush_grids: BTreeMap<String, (kern::crush::Grid, Vec<(usize, [Vec3; 3])>)>,
     surfaces: Surfaces,
     next: u32,
     acc: f64,
+    /// Strongest hard contact per vehicle across this game tick's fixed steps.
+    impacts: BTreeMap<u32, (Vec3, f32)>,
 }
 
 impl Fleet {
@@ -84,7 +101,7 @@ impl Fleet {
                 .collision_groups(InteractionGroups::new(super::GROUP_WORLD, Group::ALL, InteractionTestMode::And)).build();
             world.colliders.insert(c);
         }
-        Self { world, cars: BTreeMap::new(), contact_profiles: BTreeMap::new(), surfaces: Surfaces::default(), next: 1, acc: 0. }
+        Self { world, cars: BTreeMap::new(), contact_profiles: BTreeMap::new(), crush_grids: BTreeMap::new(), surfaces: Surfaces::default(), next: 1, acc: 0., impacts: BTreeMap::new() }
     }
 
     /// Park on the supplied ground point. Parked cars remain solid to traffic.
@@ -96,8 +113,9 @@ impl Fleet {
         car.hold = true;
         let id = self.next;
         self.next += 1;
+        self.world.bodies[handle].user_data = id.into();
         let previous = car.pose(&self.world);
-        self.cars.insert(id, FleetCar { car, previous, hull: OnceLock::new() });
+        self.cars.insert(id, FleetCar { car, previous, hull: OnceLock::new(), query_skin: None });
         id
     }
 
@@ -128,6 +146,7 @@ impl Fleet {
     }
 
     pub fn step(&mut self, dt: f64) {
+        self.impacts.clear();
         for entry in self.cars.values_mut() { entry.previous = entry.car.pose(&self.world); }
         self.acc += dt;
         let step = 1. / HZ;
@@ -146,9 +165,33 @@ impl Fleet {
                 }
             }
             self.world.step();
+            self.record_impacts();
             self.acc -= step;
         }
     }
+
+    /// Report the shared contact anchor and normal change in speed (m/s).
+    /// The resting and suspension loads are below the reporting threshold.
+    fn record_impacts(&mut self) {
+        for pair in self.world.narrow_phase.contact_pairs() {
+            let impulse = pair.total_impulse_magnitude();
+            if impulse <= 0. { continue; }
+            let a = &self.world.colliders[pair.collider1];
+            let b = &self.world.colliders[pair.collider2];
+            for collider in [a, b] {
+                let Some(body) = collider.parent() else { continue; };
+                let id = self.world.bodies[body].user_data as u32;
+                let Some(entry) = self.cars.get(&id) else { continue; };
+                let delta_v = impulse / entry.car.spec.mass as f32;
+                if delta_v <= 1.2 || self.impacts.get(&id).is_some_and(|&(_, last)| last >= delta_v) { continue; }
+                let Some((_, hit)) = pair.find_deepest_contact() else { continue; };
+                let point = (a.position().transform_point(hit.local_p1) + b.position().transform_point(hit.local_p2)) * 0.5;
+                self.impacts.insert(id, (crate::from(point), delta_v));
+            }
+        }
+    }
+
+    pub fn impacts(&self) -> &BTreeMap<u32, (Vec3, f32)> { &self.impacts }
 
     /// An optional low-poly secondary contact skin, shared by every instance.
     /// The road solver keeps the vehicle spec's chassis mass and driving contacts.
@@ -178,6 +221,10 @@ impl Fleet {
         }
         let hull = SharedShape::trimesh_with_flags(vertices, triangles, TriMeshFlags::FIX_INTERNAL_EDGES)
             .map_err(|e| format!("vehicle contact mesh: {e}"))?;
+        self.crush_grids.remove(&name);
+        for entry in self.cars.values_mut() {
+            if entry.query_skin.as_ref().is_some_and(|(n, _)| n == &name) { entry.query_skin = None; }
+        }
         self.contact_profiles.insert(name, hull);
         Ok(())
     }
@@ -195,6 +242,43 @@ impl Fleet {
         }.clone();
         let pose = |p: Pose3| (crate::from(p.translation), crate::from_q(p.rotation));
         Some(ChassisContact { hull, previous: pose(entry.previous), current: pose(entry.car.pose(&self.world)) })
+    }
+
+    /// Refit the small gameplay query skin only on a hit. Road solver mass,
+    /// suspension and the chassis used to support ragdolls stay stable.
+    pub fn crush_query(&mut self, id: u32, profile: &str, grid: kern::crush::Grid, scales: [f32; 4]) -> Result<(), String> {
+        if !grid.valid() || !scales.iter().all(|s| (0.05..=1.).contains(s)) { return Err("invalid crush grid or scale".into()); }
+        let Some(entry) = self.cars.get_mut(&id) else { return Err("unknown vehicle".into()); };
+        let mesh = self.contact_profiles.get(profile).and_then(|shape| shape.as_trimesh()).ok_or("unknown contact profile")?;
+        if !self.crush_grids.get(profile).is_some_and(|cached| cached.0 == grid) {
+            let (mut poly, mut work, mut pieces) = (Vec::new(), Vec::new(), Vec::new());
+            for indices in mesh.indices() {
+                let tri = indices.map(|i| crate::from(mesh.vertices()[i as usize]));
+                grid.split(tri, &mut poly, &mut work, |cell, tri| pieces.push((cell, tri)));
+            }
+            self.crush_grids.insert(profile.to_owned(), (grid, pieces));
+        }
+        let pieces = &self.crush_grids[profile].1;
+        let mut vertices = Vec::with_capacity(pieces.len() * 3);
+        let mut indices = Vec::with_capacity(pieces.len());
+        let [left,right,front,rear] = scales;
+        for &(cell, tri) in pieces {
+            let scale = Vec3::new([left,1.,right][cell % 3],1.,[front,1.,rear][cell / 3]);
+            let base=vertices.len() as u32;
+            vertices.extend(tri.map(|p| crate::to(kern::crush::deform(p, grid.hinge(cell), scale))));
+            indices.push([base,base+1,base+2]);
+        }
+        let hull = SharedShape::trimesh(vertices,indices).map_err(|e| format!("crushed contact mesh: {e}"))?;
+        entry.query_skin=Some((profile.to_owned(),hull));
+        Ok(())
+    }
+
+    pub fn query_contact(&self, id: u32, name: &str) -> Option<ChassisContact> {
+        let mut contact = self.chassis_contact(id, Some(name))?;
+        if let Some((n,hull)) = &self.cars.get(&id)?.query_skin {
+            if n == name { contact.hull = hull.clone(); }
+        }
+        Some(contact)
     }
 
     pub fn pose(&self, id: u32) -> Option<CarPose> {

@@ -22,6 +22,7 @@ end
 
 function mobility.new(layout)
 	vehicles.reset("city")
+	models.prepareContacts()
 	cape.fleetReady(layout.cape)
 	local m = {players={}, vehicles={}, layout=layout}
 	for _, spawn in city.vehicle_spawns(layout.seed) do
@@ -169,6 +170,7 @@ function mobility.tick(m,dt,input)
 		local inp = if car.owner then input[car.owner] or {} else nil
 		if car.kind=="car" then
 			local controls = if car.auto then car.auto(car,dt) else models.drive(inp)
+			controls=models.damagedControls(car,controls)
 			if controls or car.wasDriven then vehicles.drive(car.native,controls) end
 			car.wasDriven = controls~=nil
 			car.throttle = if controls then controls.throttle or 0 else 0
@@ -176,10 +178,16 @@ function mobility.tick(m,dt,input)
 		elseif car.owner or not car.grounded then models.fly(car,inp,dt,city) end
 	end
 	vehicles.step(dt)
+	local contacts=vehicles.impacts()
 	for _, car in m.vehicles do
-		if car.kind=="car" and car.active then models.sync(car) end
+		if car.kind=="car" then
+			if car.active then models.sync(car) end
+			local contact=contacts[car.native]
+			if contact then models.hit(car,contact.point,math.clamp((contact.deltaV-1.2)/14,0,1)) end
+		end
 		if car.releaseWhenEmpty and not car.owner then mobility.release_car(m,car) end
 	end
+	models.streamDamage(m,dt)
 	for _,id in ids do
 		local p = m.players[id]
 		if p.vehicle then

@@ -116,11 +116,19 @@ pub struct Entity {
     /// A wire's slots, one per edge.
     edge_slots: Vec<SlotId>,
     mesh: usize,
+    /// A crush panel bends upward around the same inner faces as its compression.
+    crush_hinge: Vec3,
     /// Collision box at size 1: centre offset and half extents.
     local: (Vec3, Vec3),
 }
 
 impl Entity {
+    // Model-space Y shear. It vanishes on each hinge, so adjacent panel edges
+    // stay welded even when front and side compression happen together.
+    fn crush_slope(&self) -> Vec3 {
+        kern::crush::slope(self.crush_hinge, self.size)
+    }
+
     /// The collision box: rotated about Y only (pitch and roll are ignored).
     pub fn bounds(&self) -> YawBox {
         let (offset, half) = self.local;
@@ -131,8 +139,15 @@ impl Entity {
                 (pos, rot.to_euler(EulerRot::YXZ).0)
             }
         };
-        let center = pos + Quat::from_rotation_y(yaw) * (offset * self.size);
-        YawBox { center, half: half * self.size.abs(), yaw }
+        let mut scaled = offset * self.size;
+        let mut extents = half * self.size.abs();
+        if self.crush_hinge != Vec3::ZERO {
+            let slope = self.crush_slope();
+            scaled.y += slope.dot(offset - self.crush_hinge);
+            extents.y += slope.abs().dot(half);
+        }
+        let center = pos + Quat::from_rotation_y(yaw) * scaled;
+        YawBox { center, half: extents, yaw }
     }
 
     pub fn parent(&self) -> Option<u32> { self.parent }
@@ -151,7 +166,15 @@ impl Entity {
 
     fn transform(&self) -> Affine3A {
         let (rotation, position) = self.world_pose();
-        Affine3A::from_scale_rotation_translation(self.size, rotation, position)
+        let mut xf = Affine3A::from_scale_rotation_translation(self.size, rotation, position);
+        if self.crush_hinge != Vec3::ZERO {
+            let slope = self.crush_slope();
+            let up = glam::Vec3A::from(rotation * Vec3::Y);
+            xf.matrix3.x_axis += up * slope.x;
+            xf.matrix3.z_axis += up * slope.z;
+            xf.translation -= up * slope.dot(self.crush_hinge);
+        }
+        xf
     }
 }
 
@@ -235,7 +258,7 @@ impl Filter {
     }
 }
 
-struct ModelInfo { mesh: usize, min: Vec3, max: Vec3 }
+struct ModelInfo { mesh: usize, min: Vec3, max: Vec3, crush_hinge: Vec3 }
 
 pub struct World {
     pub(crate) fleet: Option<physics::vehicle::fleet::Fleet>,
@@ -343,6 +366,7 @@ impl World {
             let (mesh, _) = w.mesh(&e.shape, &e.look)?;
             let mut e = e.clone();
             e.mesh = mesh;
+            e.crush_hinge = w.crush_hinge(&e.shape);
             e.slot = None;
             e.edge_slots.clear();
             show(&mut w.slots, &mut w.scene, &mut e);
@@ -376,6 +400,13 @@ impl World {
         m
     }
 
+    fn crush_hinge(&self, shape: &Shape) -> Vec3 {
+        match shape {
+            Shape::Model(path) => self.models.get(path).map_or(Vec3::ZERO, |m| m.crush_hinge),
+            _ => Vec3::ZERO,
+        }
+    }
+
     /// The mesh and unit collision box for a shape and look.
     fn mesh(&mut self, shape: &Shape, look: &Look) -> Result<(usize, (Vec3, Vec3)), String> {
         if look.coverage.is_some() && (look.glass.is_some() || matches!(shape, Shape::Model(_))) {
@@ -390,10 +421,17 @@ impl World {
             Shape::Outline { sides, width } => 3 + (*sides as usize) * 1000 + *width as usize,
             Shape::Model(path) => {
                 if !self.models.contains_key(path) {
-                    let file = self.asset(path)?;
-                    let model = assets::gltf::load(&mut self.scene, &file)?;
-                    self.models.insert(path.clone(), ModelInfo { mesh: model.mesh, min: model.min, max: model.max });
-                    self.rebuild = true;
+                    let base = path.rsplit_once("#crush").map_or(path.as_str(), |(base, _)| base);
+                    if !self.models.contains_key(base) {
+                        let file = self.asset(base)?;
+                        let model = assets::gltf::load(&mut self.scene, &file)?;
+                        for (i, part) in model.crush_sections {
+                            self.models.insert(format!("{base}#crush{i}"), ModelInfo { mesh: part.mesh, min: part.min, max: part.max, crush_hinge: part.hinge });
+                        }
+                        self.models.insert(base.to_owned(), ModelInfo { mesh: model.mesh, min: model.min, max: model.max, crush_hinge: Vec3::ZERO });
+                        self.rebuild = true;
+                    }
+                    if !self.models.contains_key(path) { return Err(format!("model has no section {path}")); }
                 }
                 let m = &self.models[path];
                 return Ok((m.mesh, ((m.min + m.max) * 0.5, ((m.max - m.min) * 0.5).max(Vec3::splat(1e-3)))));
@@ -446,7 +484,7 @@ impl World {
         if let Some(w) = &s.wire { local = w.bounds(); }
         let id = self.next;
         self.next += 1;
-        let mut e = Entity { parent: s.parent, frame, children: Vec::new(), shape: s.shape, look: s.look, pos: s.pos, rot: s.rot, size: s.size, solid: s.solid, visible: s.visible, shadow_only: s.shadow_only, hide_views: s.hide_views, tag: s.tag, wire: s.wire, slot: None, edge_slots: Vec::new(), mesh, local };
+        let mut e = Entity { crush_hinge: self.crush_hinge(&s.shape), parent: s.parent, frame, children: Vec::new(), shape: s.shape, look: s.look, pos: s.pos, rot: s.rot, size: s.size, solid: s.solid, visible: s.visible, shadow_only: s.shadow_only, hide_views: s.hide_views, tag: s.tag, wire: s.wire, slot: None, edge_slots: Vec::new(), mesh, local };
         show(&mut self.slots, &mut self.scene, &mut e);
         if let Some(parent) = s.parent { self.entities.get_mut(&parent).unwrap().children.push(id); }
         self.entities.insert(id, e);
@@ -485,6 +523,7 @@ impl World {
         let moved_children = !e.children.is_empty() && (e.pos != old.pos || e.rot != old.rot);
         if e.shape != old.shape || (e.look != old.look && e.look.key() != old.look.key()) {
             (e.mesh, e.local) = self.mesh(&e.shape, &e.look)?;
+            e.crush_hinge = self.crush_hinge(&e.shape);
         }
         if let Some(w) = &e.wire { e.local = w.bounds(); }
         show(&mut self.slots, &mut self.scene, &mut e);
