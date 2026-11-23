@@ -74,7 +74,22 @@ function ambience.lamps(city, seats, clock)
 			end
 		end
 	end
-	lights.set(lamps)
+	clock.streetLights,clock.streetLightsChanged=lamps,true
+end
+
+function ambience.weaponLights(clock,players)
+	local combined
+	for id=1,4 do
+		local p=players[id]
+		if p and p.muzzleLight and p.tip then
+			combined=combined or table.clone(clock.streetLights or {})
+			table.insert(combined,{pos=p.tip,color="#ffbc72",range=2.55,intensity=p.muzzleLight})
+		end
+	end
+	if combined or clock.hadMuzzleLight or clock.streetLightsChanged then
+		lights.set(combined or clock.streetLights or {})
+	end
+	clock.hadMuzzleLight,clock.streetLightsChanged=combined~=nil,false
 end
 
 return ambience

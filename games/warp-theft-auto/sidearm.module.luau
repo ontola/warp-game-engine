@@ -10,8 +10,12 @@ local SCALE=.68
 local dark={color="#34414a",roughness=.74}
 local slide={color="#a8babc",roughness=.57,metal=.18}
 local trim={color="#dc914e",roughness=.66}
-local glow={color="#ffb84e",emissive=2.6,roughness=1}
-local streak={color="#ffd988",emissive=1.4,roughness=1}
+local MUZZLE="assets/effects/muzzle-flash.glb"
+local streak={color="#b5a590",roughness=.93}
+local function streakTint(color)
+	-- The streak catches the street lighting. Custom rounds keep a hint of their tint.
+	return if color then color*.48+v(.21,.20,.19) else streak.color
+end
 local cover={tag="city"}
 
 function sidearm.warm()
@@ -19,10 +23,10 @@ function sidearm.warm()
 	growingProp.warm()
 	for _,id in catalog.order do
 		local color=catalog.get(id).color
-		if color then world.warm("cube",{color=color,emissive=streak.emissive,roughness=streak.roughness}) end
+		if color then world.warm("cube",{color=streakTint(color),roughness=streak.roughness}) end
 	end
 	for _,look in {dark,slide,trim} do world.warm("cube",look) end
-	world.warm("sphere",glow)
+	world.warm(MUZZLE)
 	world.warm("cube",streak)
 end
 
@@ -43,21 +47,61 @@ local function make(hand,rotation)
 	return root
 end
 
-function sidearm.remove(ctx)
-	if ctx.prop then world.remove(ctx.prop); ctx.prop=nil end
-	ctx.tip,ctx.turn,ctx.propWeapon,ctx.propSpec,ctx.holder=nil,nil,nil,nil,nil
+local function clearMuzzle(ctx)
+	if ctx.flash then world.remove(ctx.flash) end
+	ctx.flash,ctx.muzzleAge,ctx.muzzleScale,ctx.muzzleLight=nil,nil,nil,nil
 end
 
-function sidearm.clearFlash(ctx)
-	if ctx.flash then world.remove(ctx.flash); ctx.flash=nil end
+function sidearm.remove(ctx)
+	clearMuzzle(ctx)
+	if ctx.prop then world.remove(ctx.prop); ctx.prop=nil end
+	ctx.tip,ctx.turn,ctx.propWeapon,ctx.propSpec,ctx.holder,ctx.socket=nil,nil,nil,nil,nil,nil
+end
+
+local function clearTraces(ctx)
 	if ctx.trace then world.remove(ctx.trace); ctx.trace=nil end
 	if ctx.leftTrace then world.remove(ctx.leftTrace); ctx.leftTrace=nil end
 	if ctx.rightTrace then world.remove(ctx.rightTrace); ctx.rightTrace=nil end
+	ctx.traceFlight=nil
+end
+
+function sidearm.clearFlash(ctx)
+	clearMuzzle(ctx)
+	clearTraces(ctx)
+end
+
+-- The hot core, side jets and forward plume move with the barrel through recoil.
+-- Each shot owns at most one mesh and one short-lived, unshadowed point light.
+local MUZZLE_LIFE=.075
+function sidearm.muzzleTick(ctx,dt)
+	if not ctx.flash then return end
+	if not ctx.muzzleAge or not ctx.prop then clearMuzzle(ctx); return end
+	ctx.muzzleAge+=dt
+	local u=ctx.muzzleAge/MUZZLE_LIFE
+	if u>=1 then clearMuzzle(ctx); return end
+	local spread=math.min(1,u*4)
+	local cool=1-u*u
+	local width=ctx.muzzleScale*(.90+.30*spread)*cool
+	local length=ctx.muzzleScale*(.74+.57*spread)*cool
+	world.set(ctx.flash,{size=v(width,width,length)})
+	ctx.muzzleLight=ctx.muzzleScale*5200*(1-u)^2
+end
+
+local function igniteMuzzle(ctx,spec)
+	if not ctx.prop or not ctx.socket then return end
+	clearMuzzle(ctx)
+	local size=if spec.kind=="launcher" then .54 elseif spec.kind=="pistol" then .36
+		else math.clamp(.30+.045*spec.damage+.014*(spec.pellets-1),.32,.54)
+	ctx.muzzleRoll=((ctx.muzzleRoll or 0)+2.39996)%(2*math.pi)
+	ctx.muzzleScale,ctx.muzzleAge=size,0
+	ctx.flash=world.spawn(MUZZLE,{tag="sidearm-flash",pos=ctx.socket,rot=v(0,0,ctx.muzzleRoll),size=v(size,size,size),solid=false},ctx.prop)
+	sidearm.muzzleTick(ctx,0)
 end
 
 -- A shot adds velocity to a damped spring. Rapid follow-up shots blend into
 -- the existing kick. Keeping the shoulder up briefly gives hip fire a recovery.
 function sidearm.recoil(ctx,spec)
+	igniteMuzzle(ctx,spec)
 	local kick=if spec.id=="launcher" then .22 elseif spec.id=="pistol" then .15
 		else math.clamp(.058+.034*spec.damage+.011*(spec.pellets-1),.07,.24)
 	ctx.kickSpeed=math.min((ctx.kickSpeed or 0)+kick*50,13)
@@ -114,34 +158,67 @@ function sidearm.follow(ctx,avatar,seat,ray,spec,dt,pressed)
 		else ctx.prop=make(hand,rotation) end
 		ctx.propWeapon,ctx.propSpec=weapon,if growing then spec else nil
 	else world.set(ctx.prop,{pos=hand,rot=rotation}) end
-	if growing then ctx.tip=growingProp.tip(hand,dir,up,spec)
-	elseif weapon=="launcher" then ctx.tip=launcherProp.tip(hand,dir,up)
-	else ctx.tip=hand+(dir*.292+up*.084)*SCALE end
+	local zero,forward,vertical=util.ZERO,v(0,0,1),v(0,1,0)
+	if growing then ctx.socket=growingProp.tip(zero,forward,vertical,spec)
+	elseif weapon=="launcher" then ctx.socket=launcherProp.tip(zero,forward,vertical)
+	else ctx.socket=v(0,.084,.2655)*SCALE end
+	ctx.tip=hand+dir*ctx.socket.z+up*ctx.socket.y
 	ctx.turn,ctx.holder=rotation,avatar
 end
 
-local function streakTo(tip,point,color)
-	local delta=point-tip
-	local length=vector.magnitude(delta)
-	if length<.15 then return nil end
-	local dir=delta/length
+-- Visual only. The hit is already resolved. Animate a short segment of the
+-- sampled ray, starting beyond the barrel and ending at the actual contact.
+local function streakTo(ctx,slot,point,color)
+	local delta=point-ctx.tip
+	local range=vector.magnitude(delta)
+	if range<.8 then return end
+	local dir=delta/range
+	local length=math.min(.46,range*.14)
+	local flight=ctx.traceFlight
+	if not flight then
+		local speed=if ctx.propSpec then ctx.propSpec.velocity else 1
+		flight={distance=2.5,speed=580*math.clamp(speed or 1,.8,1.3),paths={}}
+		ctx.traceFlight=flight
+	end
 	local trace=table.clone(streak)
-	if color then trace.color=color end
-	trace.pos=tip+delta*.5
+	trace.color=streakTint(color)
+	local origin=ctx.tip-dir*(length*.5)
+	trace.pos=origin+dir*math.min(flight.distance,range)
 	trace.rot=v(-math.asin(math.clamp(dir.y,-1,1)),math.atan2(dir.x,dir.z),0)
-	trace.tag,trace.size,trace.solid="sidearm-trace",v(.025,.025,length),false
-	return world.spawn("cube",trace)
+	trace.tag,trace.size,trace.solid="sidearm-trace",v(.012,.012,length),false
+	ctx[slot]=world.spawn("cube",trace)
+	flight.paths[slot]={origin=origin,dir=dir,range=range}
+end
+
+local function advanceTraces(ctx,dt)
+	local flight=ctx.traceFlight
+	if not flight then
+		-- Retire a streak left in the world by a live edit from the older effect.
+		if ctx.shotFlash==0 and (ctx.trace or ctx.leftTrace or ctx.rightTrace) then clearTraces(ctx) end
+		return
+	end
+	local before=flight.distance
+	flight.distance+=dt*flight.speed
+	for slot,path in flight.paths do
+		if before>=path.range then
+			world.remove(ctx[slot])
+			ctx[slot],flight.paths[slot]=nil,nil
+		else
+			world.set(ctx[slot],{pos=path.origin+path.dir*math.min(flight.distance,path.range)})
+		end
+	end
+	if next(flight.paths)==nil then ctx.traceFlight=nil end
 end
 
 function sidearm.flash(ctx,point,color,left,right)
+	clearTraces(ctx)
 	if not ctx.tip then return end
-	sidearm.clearFlash(ctx)
-	local o=table.clone(glow)
-	o.tag,o.pos,o.rot,o.size,o.solid="sidearm-flash",ctx.tip,ctx.turn,v(.108,.108,.22)*SCALE,false
-	ctx.flash=world.spawn("sphere",o)
-	ctx.trace=streakTo(ctx.tip,point,color)
-	if left and vector.magnitude(left-point)>.08 then ctx.leftTrace=streakTo(ctx.tip,left,color) end
-	if right and right~=left and vector.magnitude(right-point)>.08 then ctx.rightTrace=streakTo(ctx.tip,right,color) end
+	local spec=ctx.propSpec
+	-- At high rates a periodic streak conveys direction without filling the street.
+	if spec and spec.automatic and spec.interval<.18 and ((ctx.shotNumber or 1)-1)%3~=0 then return end
+	streakTo(ctx,"trace",point,color)
+	if left and vector.magnitude(left-point)>.08 then streakTo(ctx,"leftTrace",left,color) end
+	if right and right~=left and vector.magnitude(right-point)>.08 then streakTo(ctx,"rightTrace",right,color) end
 end
 
 -- Both modes use the same seat camera, capsule and city visibility query.
@@ -284,7 +361,8 @@ end
 
 function sidearm.tickFlash(ctx,display,dt)
 	display.shotFlash=math.max(0,display.shotFlash-dt)
-	if display.shotFlash==0 then sidearm.clearFlash(ctx) end
+	advanceTraces(ctx,dt)
+	sidearm.muzzleTick(ctx,dt)
 	if display.hitPoint then
 		display.hitFlash=math.max(0,display.hitFlash-dt)
 		if display.hitFlash==0 then display.hitPoint=nil end

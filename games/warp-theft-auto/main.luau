@@ -71,6 +71,7 @@ local function tick(dt, input)
 		city.set_clock(state.city, state.clock.hour)
 		ambience.lamps(state.city, state.fleet.players, state.clock)
 	end
+	ambience.weaponLights(state.clock,state.combat.players)
 end
 
 local function draw()

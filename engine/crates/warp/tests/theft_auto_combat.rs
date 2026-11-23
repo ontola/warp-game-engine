@@ -211,6 +211,69 @@ fn walking_shooters_keep_both_hands_on_their_own_weapon_through_aim_and_recoil()
 }
 
 #[test]
+fn muzzle_flashes_follow_each_of_four_guns_and_release_their_street_light_slots() {
+    let mut game = LuaGame::load(
+        &game_folder(),
+        &Overrides { players: Some(4), seed: Some(1948), ..Default::default() },
+        None,
+    ).unwrap();
+    game.echo = false;
+    game.tick(&[Controls::default(); 4]);
+    check(&mut game, r#"
+        local guns={"pistol","uzi","shotgun","launcher"}
+        for i,seat in state.fleet.players do
+            world.place(seat.body,vector.create(26+i*1.6,.85,39))
+            seat.weapon,seat.view,seat.pitch=guns[i],0,.16
+        end
+        state.clock.hour,state.clock.secondsPerDay=22,1e15
+        state.flashSample={}
+    "#);
+    for _ in 0..35 { game.tick(&[aim(); 4]); }
+    let street_lamps = game.core().lamps.len();
+    assert!(street_lamps > 0);
+    game.tick(&[shoot(); 4]);
+    check(&mut game, r#"
+        assert(#world.find("sidearm-flash")==4)
+        for i,p in state.combat.players do
+            local f=world.get(p.flash)
+            assert(f.parent==p.prop and vector.magnitude(f.world_pos-p.tip)<.006)
+            assert(p.muzzleAge==0 and p.muzzleScale<=.55)
+            state.flashSample[i]={id=p.flash,tip=p.tip,light=p.muzzleLight}
+        end
+        assert(state.combat.players[4].muzzleScale>state.combat.players[1].muzzleScale)
+    "#);
+    {
+        let core = game.core();
+        assert_eq!(core.lamps.len(), street_lamps+4);
+        assert!(core.lamps[street_lamps..].iter().all(|l| l.range < 3.0));
+    }
+    for _ in 0..2 { game.tick(&[shoot(); 4]); }
+    check(&mut game, r#"
+        for i,p in state.combat.players do
+            local saved=state.flashSample[i]
+            assert(p.flash==saved.id and p.muzzleLight<saved.light)
+            assert(vector.magnitude(p.tip-saved.tip)>.005)
+            assert(vector.magnitude(world.get(p.flash).world_pos-p.tip)<.006)
+        end
+    "#);
+    for _ in 0..4 { game.tick(&[aim(); 4]); }
+    check(&mut game, r#"
+        assert(#world.find("sidearm-flash")==0)
+        for _,p in state.combat.players do assert(not p.muzzleLight) end
+        state.fleet.players[1].weapon="rifle"
+        state.fleet.players[2].weapon="sniper"
+    "#);
+    assert_eq!(game.core().lamps.len(),street_lamps);
+    for _ in 0..32 { game.tick(&[aim(); 4]); }
+    game.tick(&[shoot(),shoot(),aim(),aim()]);
+    check(&mut game,r#"
+        assert(#world.find("sidearm-flash")==2)
+        for i=1,2 do local p=state.combat.players[i]; assert(world.get(p.flash).parent==p.prop) end
+    "#);
+    assert!(game.errors().is_empty(), "{:?}", game.logs());
+}
+
+#[test]
 fn a_contract_uses_the_same_gun_and_a_bystander_in_front_intercepts_the_shot() {
     let mut game = city();
     let story = r#"return {
@@ -725,8 +788,25 @@ fn growing_guns_fire_rates_and_magazines_are_independent_for_each_trigger() {
         local a,b=state.combat.players[1],state.combat.players[2]
         assert(a.prop and b.prop and a.trace and b.trace and a.ammo==24 and b.ammo==4)
         assert(a.shotNumber==1 and b.shotNumber==1)
+        for _,player in {a,b} do
+            local streak=world.get(player.trace)
+            assert(streak.emissive==0 and streak.size.z<=.47 and streak.size.x<.015)
+            assert(vector.magnitude(streak.pos-player.tip)<3)
+        end
+        state.firstStreak=world.get(a.trace).pos
     "#);
-    tick(&mut game,[held;2],60);
+    tick(&mut game,[held;2],1);
+    check(&mut game,r#"
+        local a=state.combat.players[1]
+        assert(a.trace and vector.magnitude(world.get(a.trace).pos-state.firstStreak)>5)
+        assert(#state.combat.projectiles==0)
+    "#);
+    tick(&mut game,[held;2],5);
+    check(&mut game,r#"
+        local a=state.combat.players[1]
+        assert(a.shotNumber==2 and not a.trace,"rapid follow-up should fire without a visible streak")
+    "#);
+    tick(&mut game,[held;2],54);
     check(&mut game,r#"
         local a,b=state.combat.players[1],state.combat.players[2]
         assert(a.shotNumber>=14 and a.shotNumber<=15 and a.ammo==25-a.shotNumber,a.shotNumber)

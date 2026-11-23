@@ -598,6 +598,14 @@ fn game_surface(s: SurfaceIn) -> SurfaceOut {
     let aa=clamp(max(length(s.dx),length(s.dy))*0.56,0.012,0.5);
     var out=SurfaceOut(s.tint,s.n,s.rough,s.metal,vec3<f32>(0.0));
     if s.kind==220u { return pm_scorch(s,aa); }
+    if s.kind==221u {
+        // White-hot gas at the mouth, cooling to amber along the plume and lateral jets.
+        let heat=1.-smoothstep(.08,.86,s.local.z+length(s.local.xy)*.85);
+        let core=heat*heat;
+        let fire=mix(vec3<f32>(4800.,620.,20.),vec3<f32>(49000.,28000.,6500.),core)
+            +vec3<f32>(108000.,92000.,52000.)*core*core*core;
+        return SurfaceOut(vec3<f32>(.18,.048,.01),s.n,1.,0.,fire);
+    }
     if s.kind==31u {
         // The diffuser follows the street lighting transition at sunset and dawn.
         let dusk=1.0-smoothstep(-.057,.224,light.sun_dir.y);
