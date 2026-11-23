@@ -83,7 +83,8 @@ Measured on a Galaxy Tab S9+ (Adreno 740) and a Xiaomi 13 class phone
 
 - The full `shade` pass cost 67 ms a frame on the 740 at 378 lines; the
   simple one (`KERN_SIMPLE_LIGHTING`) 9.5 ms at 1080 lines. The host turns
-  it on, and the 3D view starts at 1080 lines (adaptive quality lowers it).
+  on the compact one (`KERN_COMPACT_SHADE`: simple plus game surfaces and
+  sun shadows, which a browser runs too), and the 3D view starts at 1080 lines (adaptive quality lowers it).
 - The 830's driver drops indirect draws: only emissive and transparent
   things showed. On Adreno 8xx the host draws with bounded direct draws
   (`KERN_SIMPLE_CULL`, `KERN_BOUNDED_DRAWS`); not on the 740, where they

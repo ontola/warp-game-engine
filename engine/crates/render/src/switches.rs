@@ -48,6 +48,7 @@ pub const CANOPY_COMPACT_SUPPORT: Switch = Switch::new("KERN_CANOPY_COMPACT_SUPP
 pub const CLUSTERED_LIGHTS: Switch = Switch::new("KERN_CLUSTERED_LIGHTS");
 pub const CLUSTERED_SHADOW_FACES: Switch = Switch::new("KERN_CLUSTERED_SHADOW_FACES");
 pub const CLUSTERED_SHADOW_LAYERS: Switch = Switch::new("KERN_CLUSTERED_SHADOW_LAYERS");
+pub const COMPACT_SHADE: Switch = Switch::new("KERN_COMPACT_SHADE");
 pub const CLUSTER_BUCKETS: Switch = Switch::new("KERN_CLUSTER_BUCKETS");
 pub const CLUSTER_TRAVERSAL: Switch = Switch::new("KERN_CLUSTER_TRAVERSAL");
 pub const COARSE_FOOTPRINT_M: Switch = Switch::new("KERN_COARSE_FOOTPRINT_M");
@@ -203,6 +204,7 @@ pub const ALL: &[&Switch] = &[
     &CLUSTERED_SHADOW_FACES,
     &CLUSTERED_SHADOW_LAYERS,
     &CLUSTER_BUCKETS,
+    &COMPACT_SHADE,
     &CLUSTER_TRAVERSAL,
     &COARSE_FOOTPRINT_M,
     &COOK_THREADS,
