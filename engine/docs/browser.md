@@ -209,26 +209,38 @@ How the build differs from native:
   thread is busy (a long frame) the sound can stutter; an AudioWorklet would
   take it off that thread.
 
-### Adding a game with its own HTML export
+### Building the full production shelf for `/play/`
 
-Place the complete export under `build/web/`, outside the generated `games/`
-directory. Keep its assets and relative paths together. Repeat `--web-game` for
-each game on the same origin. It takes the source manifest, the entry path
-relative to the site, and a cover PNG (or `-` for no cover). For example:
+Build the two Godot games in adjacent checkouts with their Web export tools,
+including the game bridge and license files. Each produces `build/web` in its
+own repository. From the Warp repository, start with a fresh `build/web` staging
+directory and run:
 
 ```sh
+python3 engine/tools/pack_godot_web.py \
+  --ballkickers ../ballkickers/build/web --frog-fighter ../frog-fighter/build/web \
+  --output build/web/godot
 python3 engine/tools/build-web.py --warp \
   --web-game ../ballkickers/gamenight.json godot/ballkickers/index.html ../ballkickers/assets/gamenight/cover.png \
   --web-game ../frog-fighter/gamenight.json godot/frog-fighter/index.html ../frog-fighter/assets/gamenight/cover.png
 ```
 
-This adds both games to the selected Luau and built-in Rust games. The room
-loads each HTML game on demand in an iframe. A game using the
-`splitscreen-club-webgame-v1` message channel can receive the existing game
-protocol's party, seats, controller frames and pause/resume messages. Both
-ends verify the sender window and origin. Export pages can also run directly.
-When WebGPU cannot start the room, its loading screen offers direct links to
-the HTML games in the catalog.
+The packer writes a shared, content-addressed Godot runtime alongside the two
+games. The second command copies the covers and appends both games to the
+default seven Luau games and the two built-in Rust games. The release command
+uses both `--web-game` arguments every time. A plain `--warp` builds the
+engine's default shelf. Check `build/web/games/library.json` for all eleven
+entries. Publish the complete staging directory together under `/play/` so
+the lobby, game entry points, runtime, covers and story assets keep their
+relative URLs. Each HTML entry is relative to the site's root, for example
+`godot/ballkickers/index.html` opens at `/play/godot/ballkickers/index.html`.
+
+The browser host opens each HTML game on demand in a same-origin iframe. The
+`splitscreen-club-webgame-v1` message channel carries the existing game
+protocol's party, seats, controller input and pause/resume messages. Export
+pages can also run directly. When WebGPU cannot start the 3D room, its loading
+screen offers direct links. This packaging targets the browser on desktops
+and phones. The native Android host still loads its native and Luau games.
 
 
 ## What the browser needs
