@@ -10,39 +10,142 @@ local function text(label, x, y, size, color)
 	hud.text(label, x, y, {size = size, color = color or ink})
 end
 
-local function minimap(fleet, id, goal, x, y, size)
-	local bound = city.BOUND
-	local function coord(n) return (math.clamp(n, -bound, bound) + bound) * size / (2*bound) end
-	local function dot(pos, width, color)
-		local cx, cy = x + coord(pos.x), y + coord(pos.z)
-		hud.box(cx-width/2, cy-width/2, width, width, color)
-	end
-	hud.box(x-2,y-2,size+4,size+4,"#adc2bca0")
-	hud.box(x,y,size,size,"#18363a")
-	local line = math.max(1, size * 0.013)
-	for n=-3,3 do
-		local edge = coord(n * city.STEP)
-		hud.box(x+edge-line/2,y,line,size,"#6a8385")
-		hud.box(x,y+edge-line/2,size,line,"#6a8385")
-	end
-	for _, car in fleet.vehicles do
-		if not car.owner then dot(car.pos, if car.kind=="helicopter" then size*.046 else size*.025, if car.kind=="helicopter" then aqua else muted) end
-	end
-	if goal then
-		dot(goal.pos, size*.077, gold)
-		dot(goal.pos, size*.033, panel)
-	end
-	for pid, seat in fleet.players do
-		if pid ~= id then dot(seat.pos, size*.055, "#ec8a87") end
-	end
-	local me = fleet.players[id]
-	local d = size*.053
-	dot(me.pos, d+2, panel)
-	dot(me.pos, d, "#ffffff")
-	local nose = me.pos + vector.create(-math.sin(me.yaw), 0, -math.cos(me.yaw)) * 11
-	dot(nose, d*.52, "#ffffff")
-end
+-- Rasterize the cape's actual coastline and road curves once into narrow columns.
+-- The HUD draws rectangles; each seat only visits the columns inside its map.
+local cape = require("west-cape-data")
+local columnWidth = 12
+local capeWest = cape.coast[1][1]
+local mapColumns = {}
+local groves = require("west-cape").groves
+local parks = {{-84,84},{84,-84}}
 
+local function prepareMap()
+    local coastIndex = 1
+    local east = cape.coast[#cape.coast][1]
+    for left=capeWest,east-1,columnWidth do
+        local right = math.min(left+columnWidth,east)
+        local mid = (left+right)*.5
+        while cape.coast[coastIndex+1][1]<mid do coastIndex+=1 end
+        local a,b = cape.coast[coastIndex],cape.coast[coastIndex+1]
+        local t = (mid-a[1])/(b[1]-a[1])
+        local col = {{a[2]+(b[2]-a[2])*t, a[3]+(b[3]-a[3])*t, "#47574a"}}
+        for _,g in groves do
+            local r = (mid-g[1])/g[3]
+            if math.abs(r)<1 then
+                local span = g[4]*math.sqrt(1-r*r)
+                table.insert(col,{g[2]-span,g[2]+span,"#234938"})
+            end
+        end
+        local roadSpans = {}
+        for _,road in cape.roads do
+            for i=2,#road do
+                local p,q = road[i-1],road[i]
+                if math.min(p[1],q[1])<right and math.max(p[1],q[1])>=left then
+                    local z0,z1 = p[2],q[2]
+                    local dx = q[1]-p[1]
+                    if dx~=0 then
+                        z0 = p[2]+(q[2]-p[2])*math.clamp((left-p[1])/dx,0,1)
+                        z1 = p[2]+(q[2]-p[2])*math.clamp((right-p[1])/dx,0,1)
+                    end
+                    table.insert(roadSpans,{math.min(z0,z1)-3.7,math.max(z0,z1)+3.7})
+                end
+            end
+        end
+        table.sort(roadSpans,function(a,b) return a[1]<b[1] end)
+        local merged
+        for _,span in roadSpans do
+            if merged and merged[2]>=span[1] then
+                merged[2]=math.max(merged[2],span[2])
+            else
+                merged={span[1],span[2],"#bdba9a"}
+                table.insert(col,merged)
+            end
+        end
+        table.insert(mapColumns,col)
+    end
+end
+prepareMap()
+
+local function minimap(fleet, id, goal, x, y, size)
+    local me = fleet.players[id]
+    -- Keep the city overview around downtown. On the west approach the centre
+    -- follows each player continuously and opens up to show more of the route.
+    local t = math.clamp((-me.pos.x-55)/180,0,1)
+    local follow = t*t*(3-2*t)
+    local radius = city.BOUND+12+follow*67
+    if me.mode=="fly" then radius+=math.clamp(me.pos.y*.45,0,80) end
+    local inside = radius*.86
+    local cx = math.clamp(me.pos.x*follow,me.pos.x-inside,me.pos.x+inside)
+    local cz = math.clamp(me.pos.z*follow,me.pos.z-inside,me.pos.z+inside)
+    local left,top = cx-radius,cz-radius
+    local right,bottom = cx+radius,cz+radius
+    local zoom = size/(2*radius)
+    local function rect(x0,z0,x1,z1,color)
+        local l,r = math.max(x0,left),math.min(x1,right)
+        local u,d = math.max(z0,top),math.min(z1,bottom)
+        if r>l and d>u then hud.box(x+(l-left)*zoom,y+(u-top)*zoom,(r-l)*zoom,(d-u)*zoom,color) end
+    end
+    local function dot(wx,wz,width,color)
+        local half = width/(2*zoom)
+        rect(wx-half,wz-half,wx+half,wz+half,color)
+    end
+    hud.box(x-2,y-2,size+4,size+4,"#adc2bca0")
+    hud.box(x,y,size,size,"#1c3944")
+
+    for i=math.max(1,math.floor((left-capeWest)/columnWidth)+1),math.min(#mapColumns,math.ceil((right-capeWest)/columnWidth)) do
+        local edge = capeWest+(i-1)*columnWidth
+        for _,span in mapColumns[i] do
+            rect(edge,span[1],math.min(edge+columnWidth,-city.BOUND),span[2],span[3])
+        end
+    end
+    local bound = city.BOUND
+    if right > -bound and left < bound and bottom > -bound and top < bound then
+        rect(-bound,-bound,bound,bound,"#283f40")
+        for _,park in parks do rect(park[1]-18.5,park[2]-18.5,park[1]+18.5,park[2]+18.5,"#466349") end
+        local edge = math.max(.6,size*.0065)/zoom
+        for n=-3,3 do
+            local p = n*city.STEP
+            rect(p-edge,-bound,p+edge,bound,"#738c8b")
+            rect(-bound,p-edge,bound,p+edge,"#738c8b")
+        end
+    end
+    local function onMap(p)
+        return p.x>=left and p.x<=right and p.z>=top and p.z<=bottom
+    end
+    for _,car in fleet.vehicles do
+        if not car.owner and onMap(car.pos) then
+            local heli = car.kind=="helicopter"
+            dot(car.pos.x,car.pos.z,if heli then size*.046 else size*.025,if heli then aqua else muted)
+        end
+    end
+    for pid,seat in fleet.players do
+        if pid~=id and onMap(seat.pos) then dot(seat.pos.x,seat.pos.z,size*.055,"#ec8a87") end
+    end
+    if goal then
+        local p = goal.pos
+        if onMap(p) then
+            dot(p.x,p.z,size*.077,gold)
+            dot(p.x,p.z,size*.033,panel)
+        else
+            -- Intersect the direction FROM this seat with the inset map edge.
+            local dx,dz = p.x-me.pos.x,p.z-me.pos.z
+            local inset = radius*.075
+            local kx = if dx==0 then math.huge else ((if dx>0 then right-inset else left+inset)-me.pos.x)/dx
+            local kz = if dz==0 then math.huge else ((if dz>0 then bottom-inset else top+inset)-me.pos.z)/dz
+            local k = math.max(0,math.min(kx,kz))
+            local tx,tz = me.pos.x+k*dx,me.pos.z+k*dz
+            local back = radius*.066/math.sqrt(dx*dx+dz*dz)
+            dot(tx,tz,size*.043,gold)
+            dot(tx-back*dx-back*dz*.44,tz-back*dz+back*dx*.44,size*.031,gold)
+            dot(tx-back*dx+back*dz*.44,tz-back*dz-back*dx*.44,size*.031,gold)
+        end
+    end
+    local d = size*.053
+    dot(me.pos.x,me.pos.z,d+2,panel)
+    dot(me.pos.x,me.pos.z,d,"#ffffff")
+    local nose = radius*.065
+    dot(me.pos.x-math.sin(me.yaw)*nose,me.pos.z-math.cos(me.yaw)*nose,d*.52,"#ffffff")
+end
 local venue = {office = "Office lobby", hotel = "Hotel lobby", warehouse = "Freight warehouse"}
 local verbs = {recover = "Take marked car ", drive = "Drive to ", fly = "Land at ", walk = "Meet on foot at "}
 local function drawStories(menu, titles, x, y, w, h, s)
