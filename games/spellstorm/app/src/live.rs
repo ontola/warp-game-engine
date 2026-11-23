@@ -18,7 +18,24 @@ pub const MAKING: &str = include_str!("making.wgsl");
 
 /// The game surface: surface.wgsl and the making glow after it.
 pub fn surface(source: &str) -> String {
+    let source = if lite() { source.replacen("const SS_LITE: bool = false;", "const SS_LITE: bool = true;", 1) } else { source.to_string() };
     format!("{source}\n{MAKING}\n{}", include_str!("making_glow.wgsl"))
+}
+
+/// The cheap surfaces (surface.wgsl SS_LITE): on a phone (the host's
+/// mobile preset, `?quality=full` turns it off), or SPELLSTORM_LITE=1.
+pub fn lite() -> bool {
+    if let Some(v) = std::env::var_os("SPELLSTORM_LITE") {
+        return v != "0";
+    }
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+    {
+        app::web::mobile()
+    }
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    {
+        false
+    }
 }
 
 /// The game mask: a monster being made is cut off above its edge.
