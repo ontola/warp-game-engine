@@ -211,7 +211,8 @@ fn multiplayer_visitors_share_rooms_and_release_them_on_departure() {
             for _, id in ids do assert(world.exists(id)) end
             total += #ids
         end
-        assert(world.count() == total and total < 1450)
+        assert(world.count() == total, "untracked room entities")
+        assert(world.capacity()-total >= 300, "four-room entity count: "..total)
         return total
     "#);
     assert_eq!(game.state_json()["room_lighting"]["active"], 4);
@@ -231,6 +232,61 @@ fn multiplayer_visitors_share_rooms_and_release_them_on_departure() {
         assert(world.count() == base - 4)
     "#);
     assert_eq!(game.state_json()["room_lighting"]["active"], 0);
+}
+
+#[test]
+fn absent_window_occupants_follow_split_views_and_room_streaming() {
+    let mut game = start(2, 1948);
+    let still = [Controls::default(); 2];
+    for kind in ["office", "hotel", "warehouse"] {
+        stage(&mut game, 1, kind, 0., 3.);
+        run(&mut game, 4, &still);
+        eval(&mut game, &format!(r#"
+            local b = state.testLots.{kind}
+            local pop = state.population
+            local first = if b.kind=="warehouse" then 5 else 1
+            local ids = pop.rooms[b.id]
+            state.windowWorker = ids[first]
+            state.otherWorker = ids[first+2]
+            assert(world.get(b.shell).metal==0)
+            pop.residents[state.windowWorker].shotUntil = pop.elapsed+300
+            pop.residents[state.otherWorker].shotUntil = pop.elapsed+300
+            pop.selectionIn = 0
+        "#));
+        run(&mut game, 1, &still);
+        // The person at the entrance and their remote companion see the same absences.
+        let check_views = format!(r#"
+            local b = state.testLots.{kind}
+            local copy = state.interiors.facades[b.id].copies[players.get(1).view]
+            assert(copy and math.round(world.get(copy.id).metal*7)==5)
+            assert(math.round(world.get(b.shell).metal*7)==5)
+        "#);
+        eval(&mut game, &check_views);
+        stage(&mut game, 1, kind, 0., 1.);
+        run(&mut game, 2, &still);
+        stage(&mut game, 1, kind, 0., 3.);
+        run(&mut game, 2, &still);
+        eval(&mut game, &check_views); // The fading view's copy was recreated.
+        stage(&mut game, 1, kind, 0., 16.);
+        run(&mut game, 4, &still);
+        eval(&mut game, &format!(r#"
+            local b = state.testLots.{kind}
+            local pop = state.population
+            assert(not pop.rooms[b.id] and math.round(world.get(b.shell).metal*7)==5)
+            pop.absentWorkers[state.windowWorker] = pop.elapsed
+            pop.selectionIn = 0
+        "#));
+        run(&mut game, 1, &still);
+        eval(&mut game, &format!("assert(math.round(world.get(state.testLots.{kind}.shell).metal*7)==4)"));
+        stage(&mut game, 1, kind, 0., 3.);
+        run(&mut game, 2, &still);
+        eval(&mut game, &format!(r#"
+            local b = state.testLots.{kind}
+            local copy = state.interiors.facades[b.id].copies[players.get(1).view]
+            assert(math.round(world.get(copy.id).metal*7)==4)
+            assert(state.population.residents[state.windowWorker].active)
+        "#));
+    }
 }
 
 #[test]

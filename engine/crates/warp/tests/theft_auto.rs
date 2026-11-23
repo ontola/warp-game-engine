@@ -17,14 +17,24 @@ fn cape_trunks_stream_for_two_seats_and_custom_routes_reach_the_lookout() {
     settle(&mut game);
     game.luau(r#"
         local c=state.city.cape
-        assert(c.stands>20 and c.trees==c.stands*15 and next(c.active)==nil)
-        local _,cell=next(c.cells)
-        local trunk=cell[1]
+        assert(c.stands>20 and c.slopeTrees>0 and c.trailStands>=24 and next(c.active)==nil)
+        assert(c.trees==c.stands*15+c.slopeTrees+c.trailStands*4 and #world.find("trail-woodland")==c.trailStands)
+        assert(#world.find("woodland")==c.stands and #world.find("woodland-tree")==c.slopeTrees)
+        local trunk=nil
+        for _,cell in c.cells do
+            for _,t in cell do
+                assert(t[4]>t[5])
+                if trunk==nil or t[5]>trunk[5] then trunk=t end
+            end
+        end
+        assert(trunk and trunk[5]>10, "check the elevated woodland collision grid")
+        local ground=world.raycast(vector.create(trunk[1],trunk[4]+1,trunk[2]),vector.create(0,-1,0),70,{tag="city"})
+        assert(ground and math.abs(ground.point.y-trunk[5]-.04)<.01)
         state.highAbove=function(seat)
-            world.place(state.fleet.players[seat].body,vector.create(trunk[1],65,trunk[2]))
+            world.place(state.fleet.players[seat].body,vector.create(trunk[1],trunk[4]+40,trunk[2]))
         end
         state.atTree=function(seat)
-            world.place(state.fleet.players[seat].body,vector.create(trunk[1]+1.5,.85,trunk[2]))
+            world.place(state.fleet.players[seat].body,vector.create(trunk[1]+1.5,trunk[5]+.95,trunk[2]))
         end
         state.away=function(seat)
             world.place(state.fleet.players[seat].body,vector.create(6.1,.85,11))
@@ -72,7 +82,7 @@ fn both_city_lawns_follow_their_diagonal_walks_and_tree_grates() {
     let core = game.core();
     assert_eq!(core.plants.status().0, 0, "the playtest uses static tree meshes");
     assert_eq!(core.world.find("street-tree").len(), 52);
-    assert_eq!(core.world.find("woodland").len(), 48);
+    assert!(!core.world.find("cape-hedge").is_empty());
     let field = core.world.scene.meadow.as_ref().expect("city lawn meadow");
     let sample = |x: f32, z: f32| {
         let ix = ((x - field.origin[0]) / field.cell).round() as usize;
@@ -572,4 +582,47 @@ fn a_driver_pinned_while_slowing_after_an_escape_leaves_the_car() {
     }
     assert!(crashed_while_slowing);
     game.luau("assert(not state.runner.dead and not state.runner.rideId and not state.motorist.auto)").unwrap();
+}
+
+#[test]
+fn cape_gravel_tires_climb_the_same_ridge_as_walking_and_story_markers() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../games/warp-theft-auto");
+    let mut g = LuaGame::load(&dir, &Overrides { seed: Some(1948), ..Default::default() }, None).unwrap();
+    let gate = serde_json::json!({"id":"ridge","title":"Mariner Wood","cast":[],
+        "steps":[{"op":"checkpoint","pos":[-591,0,-68.16],"text":"Climb the pass"}]});
+    assert_eq!(g.apply_story_data(gate).unwrap(), "Mariner Wood");
+    g.luau(r#"
+        local start=state.story.target
+        assert(start.y>12 and start.y<13)
+        local down=vector.create(0,-1,0)
+        local floor=world.raycast(start+vector.create(0,3,0),down,5,{tag="city"})
+        assert(floor and math.abs(floor.point.y-start.y)<.015)
+        state.testRallyCar=vehicles.spawn(start,math.atan2(24.39,.66))
+        vehicles.drive(state.testRallyCar,{throttle=1})
+    "#).unwrap();
+    for _ in 0..240 {
+        g.tick(&[Controls::default()]);
+        if g.luau("return vehicles.get(state.testRallyCar).pos.x < -603").unwrap()=="true" { break; }
+    }
+    let sample = g.luau(r#"
+        local car=vehicles.get(state.testRallyCar)
+        local ground=world.raycast(car.pos+vector.create(0,2,0),vector.create(0,-1,0),4,{tag="city"})
+        assert(car.pos.x< -603 and ground and car.pos.y>14)
+        assert(car.pos.y-ground.point.y>.05 and car.pos.y-ground.point.y<.75)
+        assert(car.contact>.4 and car.loose>.4, "expected gravel under the tyres")
+        return {x=car.pos.x,height=ground.point.y,loose=car.loose,contact=car.contact}
+    "#).unwrap();
+    eprintln!("Mariner Wood climb: {sample}");
+    g.luau(r#"
+        local p=state.fleet.players[1]
+        p.view=math.atan2(24.39,.66)
+        world.place(p.body,state.story.target+vector.create(0,.85,0))
+    "#).unwrap();
+    for _ in 0..100 { g.tick(&[Controls { mv:[0.,1.], ..Default::default() }]); }
+    g.luau(r#"
+        local p=state.fleet.players[1]
+        local floor=world.raycast(p.pos+vector.create(0,2,0),vector.create(0,-1,0),4,{tag="city"})
+        assert(p.pos.x< -595 and p.pos.y>13 and floor and math.abs(p.pos.y-floor.point.y)<.06)
+    "#).unwrap();
+    assert!(g.errors().is_empty(), "{:?}",g.errors());
 }

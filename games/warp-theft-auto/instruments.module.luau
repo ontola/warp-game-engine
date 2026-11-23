@@ -38,7 +38,7 @@ local function prepareMap()
             end
         end
         local roadSpans = {}
-        for _,road in cape.roads do
+        for route,road in cape.roads do
             for i=2,#road do
                 local p,q = road[i-1],road[i]
                 if math.min(p[1],q[1])<right and math.max(p[1],q[1])>=left then
@@ -48,17 +48,20 @@ local function prepareMap()
                         z0 = p[2]+(q[2]-p[2])*math.clamp((left-p[1])/dx,0,1)
                         z1 = p[2]+(q[2]-p[2])*math.clamp((right-p[1])/dx,0,1)
                     end
-                    table.insert(roadSpans,{math.min(z0,z1)-3.7,math.max(z0,z1)+3.7})
+                    local gravel = route==3
+                    local width = if gravel then 2.6 else 3.7
+                    local color = if gravel then "#d1a16e" else "#bdba9a"
+                    table.insert(roadSpans,{math.min(z0,z1)-width,math.max(z0,z1)+width,color})
                 end
             end
         end
         table.sort(roadSpans,function(a,b) return a[1]<b[1] end)
         local merged
         for _,span in roadSpans do
-            if merged and merged[2]>=span[1] then
+            if merged and merged[3]==span[3] and merged[2]>=span[1] then
                 merged[2]=math.max(merged[2],span[2])
             else
-                merged={span[1],span[2],"#bdba9a"}
+                merged=span
                 table.insert(col,merged)
             end
         end
@@ -152,23 +155,24 @@ local verbs = {recover = "Take marked car ", drive = "Drive to ", fly = "Land at
 local function drawStories(menu, titles, x, y, w, h, s)
 	local panelW = math.min(w * .9, 345*s)
 	local lh = 30*s
-	local left, top = x+(w-panelW)/2, y+(h-232*s)/2
-	hud.box(left,top,panelW,232*s,"#11232af8")
+	local panelH = (112+30*#titles)*s
+	local left, top = x+(w-panelW)/2, y+(h-panelH)/2
+	hud.box(left,top,panelW,panelH,"#11232af8")
 	text("STORIES",left+14*s,top+9*s,20*s,gold)
 	for i, title in titles do
 		local py = top + (18+i*30)*s
 		if menu.choice == i then hud.box(left+6*s,py-2*s,panelW-12*s,lh,"#355454") end
 		text(title,left+16*s,py,18*s,ink)
 	end
-	text(menu.message or "↑ ↓ / D-pad   Choose     Space / A   Play",
-		left+14*s,top+185*s,14*s,if menu.message then gold else muted)
-	text("R / X   Close",left+14*s,top+207*s,14*s,muted)
+	text(menu.message or "â†‘ â†“ / D-pad   Choose     Space / A   Play",
+		left+14*s,top+panelH-47*s,14*s,if menu.message then gold else muted)
+	text("R / X   Close",left+14*s,top+panelH-25*s,14*s,muted)
 end
 
 local function objective(story, left, top, width, s)
 	local headline = if story.status=="active" then story.title .. "   " .. story.step .. "/" .. story.total else story.title
 	if story.raceTime then headline ..= string.format("   %d:%04.1f", math.floor(story.raceTime / 60), story.raceTime % 60) end
-	local info = if story.status=="complete" then "Mission complete" elseif story.status=="failed" then "Mission failed · " .. (story.objective or "") else story.objective or ""
+	local info = if story.status=="complete" then "Mission complete" elseif story.status=="failed" then "Mission failed Â· " .. (story.objective or "") else story.objective or ""
 	local lines, line = {}, ""
 	for word in string.gmatch(info, "%S+") do
 		local nextLine = if line=="" then word else line .. " " .. word

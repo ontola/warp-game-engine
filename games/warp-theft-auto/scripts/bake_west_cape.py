@@ -8,6 +8,8 @@ import gzip
 import math
 from pathlib import Path
 from mesh_glb import glb
+import cape_relief as relief
+from cape_landcover import ground_material, LAND_COLORS
 
 ROOT = Path(__file__).resolve().parents[1]
 # Walkable bank top in metres (x, south, north). The city plate starts at x=-178.
@@ -36,6 +38,8 @@ COLORS = {
     'Dunes': (.32,.295,.204), 'Wet sand': (.245,.230,.175),
     'Weathered rock': (.210,.212,.176), 'Scree': (.266,.262,.196),
     'Gravel verge': (.209,.198,.159), 'Asphalt': (.119,.130,.131),
+    **LAND_COLORS,
+    'Forest gravel': (.215,.16,.103),
     'Edge paint': (.557,.556,.438), 'Lane paint': (.544,.445,.248),
 }
 
@@ -49,17 +53,37 @@ def mix(a, b, t):
     return tuple(x+(y-x)*t for x,y in zip(a,b))
 
 
-def rounded_loop():
-    route = [JUNCTION]
-    for before, corner, after in zip(LOOP, LOOP[1:], LOOP[2:]):
-        distance = min(23, math.dist(before,corner)*.18, math.dist(corner,after)*.18)
+def rounded_path(path, radius):
+    route = [path[0]]
+    for before, corner, after in zip(path, path[1:], path[2:]):
+        distance = min(radius, math.dist(before,corner)*.18, math.dist(corner,after)*.18)
         entry = mix(corner,before,distance/math.dist(corner,before))
         exit_point = mix(corner,after,distance/math.dist(corner,after))
         for k in range(4):
             t = k/3
             point = mix(mix(entry,corner,t),mix(corner,exit_point,t),t)
             route.append(tuple(round(v,2) for v in point))
-    return route+[JUNCTION]
+    return route+[path[-1]]
+
+
+def on_road(path,x,z):
+    def closest(a,b):
+        dx,dz=b[0]-a[0],b[1]-a[1]
+        t=max(0,min(1,((x-a[0])*dx+(z-a[1])*dz)/(dx*dx+dz*dz)))
+        return mix(a,b,t)
+    return min((closest(a,b) for a,b in zip(path,path[1:])),key=lambda p:math.dist(p,(x,z)))
+
+
+def rally(loop):
+    # Two trailheads join the paved loop. Offset bends climb the eastern shoulder
+    # of Mariner Wood, switch back along the spine and descend the northern ridge.
+    start=on_road(loop,-565,-94)
+    end=on_road(loop,-821,144)
+    return rounded_path([start,(-585,-68),(-622,-69),(-650,-42),(-711,-33),
+        (-738,-52),(-697,-80),(-676,-104),(-696,-113),(-753,-94),
+        (-789,-65),(-806,-23),(-855,-8),(-907,24),(-935,53),
+        (-918,68),(-868,40),(-832,43),(-803,65),(-831,82),
+        (-879,106),(-875,125),end],19)
 
 
 def bank_bounds(x):
@@ -75,6 +99,7 @@ class Group:
     normals: list = field(default_factory=list)
     indices: list = field(default_factory=list)
     known: dict = field(default_factory=dict)
+    uvs: list = field(default_factory=list)
 
     def vertex(self, point, normal):
         # Grid snapping shares contour edges; finer road coordinates retain narrow lines.
@@ -87,6 +112,13 @@ class Group:
         return self.known[p,n]
 
     def polygon(self, points, normals=None):
+        if normals is not None:
+            self.flat_polygon(points,normals)
+        else:
+            for patch,norms in relief.lift(points):
+                self.flat_polygon(patch,norms)
+
+    def flat_polygon(self, points, normals=None):
         ids = [self.vertex(p,n) for p,n in zip(points,normals or [UP]*len(points))]
         for a,b in zip(ids[1:],ids[2:]):
             i,j,k = ids[0],a,b
@@ -97,35 +129,16 @@ class Group:
             self.indices.extend((i,j,k) if area>0 else (i,k,j))
 
 
-def clip(poly, value, below):
-    """Clip a ground polygon in scalar-field space; neighbouring cells share the crossing."""
-    result = []
-    for a,b in zip(poly,poly[1:]+poly[:1]):
-        keep_a, keep_b = (a[2] <= value, b[2] <= value) if below else (a[2] >= value, b[2] >= value)
-        if keep_a: result.append(a)
-        if keep_a != keep_b: result.append(mix(a,b,(value-a[2])/(b[2]-a[2])))
-    return result
-
-
 def ground(mesh):
-    rows = []
-    for x,lo,hi in COAST:
-        row = []
-        for k in range(5):
-            z = lo+(hi-lo)*k/4
-            # Long, irregular bands of pasture follow the prevailing wind. Contours
-            # are baked into planar geometry, so they need neither textures nor decals.
-            h = math.sin(x*.012+z*.016)+.62*math.sin(z*.031-x*.008)+.39*math.cos(x*.036+z*.006)
-            row.append((x,z,h))
-        rows.append(row)
-    bounds = [-3, -.62, .56, 3]
+    rows = [[(x,0,lo+(hi-lo)*j/6) for j in range(7)] for x,lo,hi in COAST]
     for a,b in zip(rows,rows[1:]):
         for k in range(len(a)-1):
             for tri in ([a[k],a[k+1],b[k]], [a[k+1],b[k+1],b[k]]):
-                for lo,hi,color in zip(bounds,bounds[1:],('Grassy hollows','Heath','Rough pasture')):
-                    patch = clip(clip(tri,lo,False),hi,True)
-                    if len(patch)>=3:
-                        mesh[color].polygon([(x,0,z) for x,z,_ in patch])
+                for patch,normals in relief.lift(tri):
+                    x,y,z = (sum(p[k] for p in patch)/len(patch) for k in range(3))
+                    nx,ny,nz = relief.smooth_normal(x,z)
+                    material = ground_material(x,z,y,math.hypot(nx,nz)/ny)
+                    mesh[material].flat_polygon(patch,normals)
 
     # Open bank line: the east cut meets the city directly, with no wall across the seam.
     coast = [(x,hi) for x,lo,hi in reversed(COAST)]+[(x,lo) for x,lo,hi in COAST]
@@ -207,17 +220,46 @@ def road(mesh, connector, loop):
 
 
 
+def gravel(mesh,path):
+    # A single ribbon carries signed lateral distance and chainage. The surface
+    # shader feathers its shoulders into the heath and resolves individual stones.
+    group = mesh['Forest gravel']
+    cross = [section(path,i,[-3.24,3.24],.025) for i in range(len(path))]
+    segments = []
+    length = 0
+    for i,(a,b) in enumerate(zip(path,path[1:])):
+        group.polygon([cross[i][0],cross[i][1],cross[i+1][1],cross[i+1][0]])
+        tx,tz=unit(b[0]-a[0],b[1]-a[1])
+        distance=math.dist(a,b)
+        segments.append((a[0],a[1],tx,tz,distance,length))
+        length+=distance
+    for x,_,z in group.points:
+        best=math.inf
+        for ax,az,tx,tz,distance,start in segments:
+            u=max(0,min(distance,(x-ax)*tx+(z-az)*tz))
+            dx,dz=x-ax-u*tx,z-az-u*tz
+            d2=dx*dx+dz*dz
+            if d2<best:
+                best,across,along=d2,dz*tx-dx*tz,start+u
+        group.uvs.append((.5+across/8,along/1024))
+
+
 def luau(paths):
     def row(values):
         return '{'+','.join(f'{n:g}' for n in values)+'}'
     lines=['-- Generated by scripts/bake_west_cape.py. Coordinates are world-space metres.',
            'return {','    coast = {',*('        '+row(r)+',' for r in COAST),'    },','    roads = {']
     for path in paths: lines.extend(['        {',*('            '+row(r)+',' for r in path),'        },'])
-    return ('\n'.join([*lines,'    },','}'])+'\n').encode()
+    lines.extend(['    },',f'    terrain = {{x={relief.X},z={relief.Z},spacing={relief.SPACING},columns={relief.COLUMNS},rows={relief.ROWS},heights={{'])
+    for j in range(relief.ROWS):
+        samples = relief.HEIGHTS[j*relief.COLUMNS:(j+1)*relief.COLUMNS]
+        lines.append('        '+','.join(f'{n:g}' for n in samples)+',')
+    return ('\n'.join([*lines,'    }},','}'])+'\n').encode()
 
 
 def bake(check):
-    paths=[CONNECTOR,rounded_loop()]
+    loop=rounded_path(LOOP,23)
+    paths=[CONNECTOR,loop,rally(loop)]
     assert COAST[-1] == (-178,-178,178) and all(a[0]<b[0] for a,b in zip(COAST,COAST[1:]))
     for path in paths:
         for a,b in zip(path,path[1:]):
@@ -226,20 +268,34 @@ def bake(check):
                 lo,hi=bank_bounds(x)
                 assert lo+5.1<=z<=hi-5.1
     assert paths[0][-1]==paths[1][0]==paths[1][-1]
+    # Trailheads sit on the paved road and a gravel car can climb either way.
+    for x,z in (paths[2][0],paths[2][-1]):
+        assert math.dist((x,z),on_road(loop,x,z))<.001
+    for a,b in zip(paths[2],paths[2][1:]):
+        steps=math.ceil(math.dist(a,b)/2)
+        for j in range(steps):
+            p,q=mix(a,b,j/steps),mix(a,b,(j+1)/steps)
+            assert abs(relief.height(*p)-relief.height(*q)) <= .30*math.dist(p,q)
     mesh=defaultdict(Group)
     ground(mesh)
-    road(mesh,*paths)
+    road(mesh,CONNECTOR,loop)
+    gravel(mesh,paths[2])
     materials = [{'name':name,'pbrMetallicRoughness':{'baseColorFactor':[*color,1],'roughnessFactor':1,'metallicFactor':0}}
-                 for name,color in COLORS.items()]
+                 for name,color in COLORS.items() if mesh[name].indices]
+    for material in materials:
+        if material['name'] in LAND_COLORS or material['name'] in ('Grassy hollows','Rough pasture'):
+            material['extras'] = {'warpSurface':40}
+        elif material['name']=='Forest gravel':
+            material['extras'] = {'warpSurface':41}
     geometry=glb(mesh,materials,'Port Meridian west cape')
     wire=len(gzip.compress(geometry,compresslevel=6,mtime=0))
-    assert wire<=20000, f'Coast download exceeds budget: {wire}'
+    assert wire<=76*1024, f'Coast download exceeds budget: {wire}'
     outputs={ROOT/'assets/west-cape.glb':geometry, ROOT/'west-cape-data.module.luau':luau(paths)}
     for file,content in outputs.items():
         if check:
             if file.read_bytes()!=content: raise ValueError(f'Run {Path(__file__).name} to update {file.name}')
         else: file.write_bytes(content)
-    print(f'{len(COAST)} coast rows, {len(paths[1])} loop points, {sum(len(g.indices)//3 for g in mesh.values())} triangles')
+    print(f'{len(COAST)} coast rows, {len(loop)} loop points, {len(paths[2])} rally points, {sum(len(g.indices)//3 for g in mesh.values())} triangles')
     print(f'{len(geometry)} GLB bytes, {wire} gzip bytes; {len(outputs[ROOT/"west-cape-data.module.luau"])} Luau bytes')
 
 

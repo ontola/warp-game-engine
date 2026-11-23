@@ -12,6 +12,10 @@
     "file": "story_contract.module.luau"
   },
   {
+    "title": "Mariner Ridge Rally",
+    "file": "story_rally.module.luau"
+  },
+  {
     "title": "Custom loadout",
     "file": "story_loadout.module.luau"
   }

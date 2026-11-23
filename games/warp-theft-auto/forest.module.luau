@@ -9,6 +9,11 @@ local roots = {
     {-3.9,2.5,1.06,322,"pine"}, {3.3,3.3,.89,62,"fir"}, {7.6,7.0,1.08,192,"pine"},
     {-7.6,9.9,.92,275,"fir"}, {-.8,9.2,1.14,5,"birch"}, {3.6,11.1,.83,124,"pine"},
 }
+-- A short, narrow group can follow a contour through a banked bend. Each
+-- entry reuses the species, height and rotation of a tree in the full stand.
+local trailRoots = {
+    {2,-5.1,-.60}, {6,-1.7,.88}, {3,2.1,-.77}, {13,5.7,.48},
+}
 local radius = {pine=.32, fir=.29, birch=.22}
 local height = {pine=10.95, fir=12.2, birch=9.77}
 forest.count = #roots
@@ -25,6 +30,15 @@ function forest.trunks(x, z, yaw, scale, visit)
     for _, tree in roots do
         local dx,dz,k,species = tree[1],tree[2],tree[3]*scale,tree[5]
         visit(x+c*dx+s*dz, z-s*dx+c*dz, radius[species]*k, height[species]*k)
+    end
+end
+
+function forest.trailTrunks(x,z,yaw,scale,visit)
+    local c,s=math.cos(yaw)*scale,math.sin(yaw)*scale
+    for _,root in trailRoots do
+        local tree=roots[root[1]]
+        local k=tree[3]*scale
+        visit(x+c*root[2]+s*root[3],z-s*root[2]+c*root[3],radius[tree[5]]*k,height[tree[5]]*k)
     end
 end
 

@@ -1,14 +1,33 @@
--- West Cape is a flat coastal terrace. Roads, shoreline colliders and the map
--- use the cross-sections baked with its render mesh.
+-- West Cape joins the city at sea level. The inland ridge, roads, walking
+-- and vehicle physics share the height samples baked with the visible mesh.
 local data = require("west-cape-data")
 local forest = require("forest")
 local cape = {}
 local v = vector.create
+local terrain = data.terrain
+
+function cape.height(x,z)
+    local gx,gz = (x-terrain.x)/terrain.spacing,(z-terrain.z)/terrain.spacing
+    local i,j = math.floor(gx),math.floor(gz)
+    if i<0 or j<0 or i>=terrain.columns-1 or j>=terrain.rows-1 then return 0 end
+    local fx,fz = gx-i,gz-j
+    local k = 1+j*terrain.columns+i
+    local h = terrain.heights
+    local a,b,c,d = h[k],h[k+1],h[k+terrain.columns],h[k+terrain.columns+1]
+    if fx+fz<=1 then return a+(b-a)*fx+(c-a)*fz end
+    return d+(c-d)*(1-fx)+(b-d)*(1-fz)
+end
+
 local CELL = 24
 local MAX_SCALE = 1.08
 local canopyTop = 0
 forest.trunks(0,0,0,MAX_SCALE,function(_,_,_,h) canopyTop=math.max(canopyTop,h) end)
-cape.groves = {{-690,-99,120,83},{-900,108,80,65}}
+-- The main wood follows sheltered ground, with windbreaks on the approach
+-- and lower stands beyond the ridge. The same footprints appear on the map.
+cape.groves = {
+    {-690,-99,120,83}, {-900,108,80,65}, {-516,102,48,25},
+    {-748,-191,76,32}, {-896,192,64,30}, {-1062,42,65,31},
+}
 local groves = cape.groves
 local function grid(x,z)
     return math.floor(x/CELL)*1024+math.floor(z/CELL)
@@ -54,26 +73,94 @@ local function shore(ax,az,bx,bz)
     box(v((ax+bx)*.5,1.4,(az+bz)*.5),v(.32,3.0,math.sqrt(dx*dx+dz*dz)+.3),
         math.atan2(dx,dz),false)
 end
+-- Every placement checks only road segments in its own 24 m cell. Pad the
+-- bins by the largest tested footprint, the original 21 m woodland clearance.
+local roadCells={}
+for _,path in data.roads do
+    for i=2,#path do
+        local a,b=path[i-1],path[i]
+        local edge={a[1],a[2],b[1],b[2]}
+        for ix=math.floor((math.min(a[1],b[1])-21)/CELL),math.floor((math.max(a[1],b[1])+21)/CELL) do
+            for iz=math.floor((math.min(a[2],b[2])-21)/CELL),math.floor((math.max(a[2],b[2])+21)/CELL) do
+                local key=ix*1024+iz
+                roadCells[key]=roadCells[key] or {}
+                table.insert(roadCells[key],edge)
+            end
+        end
+    end
+end
 local function clearRoad(x,z,radius)
-    for _,path in data.roads do
-        for i=2,#path do
-            local a,b=path[i-1],path[i]
-            if segmentDistance2(x,z,a[1],a[2],b[1],b[2])<radius*radius then return false end
+    local edges=roadCells[grid(x,z)]
+    if edges then
+        for _,e in edges do
+            if segmentDistance2(x,z,e[1],e[2],e[3],e[4])<radius*radius then return false end
         end
     end
     return true
 end
+
+-- The middle saddle is wooded on both shoulders. The later high switchbacks
+-- stay open to the coast. All roots follow the actual gravel centreline.
+local function plantTrail(path,noise,trunk,centers)
+    local distance,station,index,stands=0,285,0,0
+    for i=2,#path do
+        local a,b=path[i-1],path[i]
+        local dx,dz=b[1]-a[1],b[2]-a[2]
+        local length=math.sqrt(dx*dx+dz*dz)
+        local nx,nz=-dz/length,dx/length
+        while station<=distance+length and station<=517 do
+            local t=(station-distance)/length
+            local x,z=a[1]+t*dx,a[2]+t*dz
+            for _,side in {-1,1} do
+                local width=7.5+noise(index,side,41)*3.8
+                local along=(noise(index,side,42)-.5)*5
+                local scale=.81+.23*noise(index,side,43)
+                for attempt=0,3 do
+                    local offset=(width+2.4*attempt)*side
+                    local cx,cz=x+nx*offset+nz*along,z+nz*offset-nx*along
+                    local gx=cape.height(cx+2,cz)-cape.height(cx-2,cz)
+                    local gz=cape.height(cx,cz+2)-cape.height(cx,cz-2)
+                    local yaw=math.atan2(gx,gz)+(if noise(index,side,44)<.5 then math.pi else 0)
+                    local base,clear=math.huge,true
+                    forest.trailTrunks(cx,cz,yaw,scale,function(tx,tz)
+                        if not clearRoad(tx,tz,5.25) then clear=false end
+                        base=math.min(base,cape.height(tx,tz))
+                    end)
+                    if not clear then continue end
+                    world.spawn("assets/plants/trail-copse.gltf",{pos=v(cx,base,cz),rot=v(0,yaw,0),
+                        size=v(scale,scale,scale),tag="trail-woodland",solid=false})
+                    forest.trailTrunks(cx,cz,yaw,scale,function(tx,tz,r,h)
+                        trunk(tx,tz,r,base+h,cape.height(tx,tz)-.04)
+                    end)
+                    centers[#centers+1]={cx,cz}
+                    stands+=1
+                    break
+                end
+            end
+            index+=1
+            station+=12.6+4.4*noise(index,0,45)
+        end
+        distance+=length
+        if station>517 then break end
+    end
+    return stands
+end
 local function trunkBodies(trunks)
     local bodies=table.create(#trunks)
     for _,t in trunks do
-        bodies[#bodies+1]=box(v(t[1],t[4]*.5,t[2]),v(t[3]*2,t[4],t[3]*2),0,false)
+        local base=t[5] or 0
+        bodies[#bodies+1]=box(v(t[1],(t[4]+base)*.5,t[2]),v(t[3]*2,t[4]-base,t[3]*2),0,false)
     end
     return bodies
 end
 
 function cape.build(seed)
-    local c={cells={},active={},viewerCells={},stands=0,trees=0}
+    local c={cells={},active={},viewerCells={},stands=0,slopeTrees=0,trees=0}
     world.spawn("assets/west-cape.glb",{pos=v(0,0,0),solid=false,tag="west-cape"})
+    world.heightfield({origin=v(terrain.x,0,terrain.z),spacing=terrain.spacing,
+        columns=terrain.columns,heights=terrain.heights,tag="city",grip="grass",
+        roads={{points=data.roads[2],width=9,grip="asphalt"},
+              {points=data.roads[3],width=5.2,grip="gravel"}}})
     local rows=data.coast
     for i=2,#rows do
         local a,b=rows[i-1],rows[i]
@@ -87,25 +174,74 @@ function cape.build(seed)
     -- Each forest draw covers one stand. Gaps in the canopy follow the actual
     -- road ribbon and reveal both its shoulders around bends.
     local function noise(i,j,salt)
-        local n=(seed%2147483647 + (i+50)*7385609 + (j+20)*1934963 + salt*834927)%2147483647
-        return (((n*48271)%2147483647)*16807%2147483647)/2147483647
+        -- Independent lanes for canopy gaps, heading and root position.
+        local n=bit32.bxor(seed,i*7385609,j*1934963,salt*834927)
+        n=bit32.band(bit32.bxor(n,bit32.rshift(n,16))*40503,0xffffffff)
+        n=bit32.band(bit32.bxor(n,bit32.rshift(n,13))*38637,0xffffffff)
+        return bit32.bxor(n,bit32.rshift(n,16))/4294967296
+    end
+    local function trunk(x,z,r,top,base)
+        local key=grid(x,z)
+        local trunks=c.cells[key]
+        if not trunks then trunks={}; c.cells[key]=trunks end
+        trunks[#trunks+1]={x,z,r,top,base}
+        c.trees+=1
+    end
+    local trailCenters={}
+    c.trailStands=plantTrail(data.roads[3],noise,trunk,trailCenters)
+    local function nearTrailWood(x,z)
+        for _,p in trailCenters do
+            if (p[1]-x)^2+(p[2]-z)^2<42^2 then return true end
+        end
+        return false
     end
     for _,g in groves do
         for i=math.floor((g[1]-g[3])/27),math.ceil((g[1]+g[3])/27) do
             for j=math.floor((g[2]-g[4])/27),math.ceil((g[2]+g[4])/27) do
                 local x,z=i*27+6*(noise(i,j,1)-.5),j*27+6*(noise(i,j,2)-.5)
-                if not cape.wooded(x,z) or not clearRoad(x,z,21) then continue end
+                if ((x-g[1])/g[3])^2+((z-g[2])/g[4])^2>1 or not clearRoad(x,z,21) then continue end
                 local yaw=noise(i,j,3)*math.pi*2
                 local scale=.90+(MAX_SCALE-.90)*noise(i,j,4)
-                forest.place(x,0,z,yaw,scale)
-                c.stands+=1
-                forest.trunks(x,z,yaw,scale,function(tx,tz,r,h)
-                    local key=grid(tx,tz)
-                    local rows=c.cells[key]
-                    if not rows then rows={}; c.cells[key]=rows end
-                    rows[#rows+1]={tx,tz,r,h}
-                    c.trees+=1
+                local low,high=math.huge,-math.huge
+                forest.trunks(x,z,yaw,scale,function(tx,tz)
+                    local y=cape.height(tx,tz)
+                    low,high=math.min(low,y),math.max(high,y)
                 end)
+                if high-low<1.5 then
+                    -- Seating the shared mesh at its lowest root keeps every stem planted.
+                    forest.place(x,low,z,yaw,scale)
+                    c.stands+=1
+                    forest.trunks(x,z,yaw,scale,function(tx,tz,r,h)
+                        trunk(tx,tz,r,low+h,cape.height(tx,tz)-.04)
+                    end)
+                elseif not nearTrailWood(x,z) then
+                    -- On slopes a few independently rooted broadleaves leave clear
+                    -- views of the higher heath and rock through the forest edge.
+                    for n=1,if noise(i,j,20)>.88 then 2 else 1 do
+                        local tx=x+19*(noise(i,j,n+7)-.5)
+                        local tz=z+19*(noise(i,j,n+10)-.5)
+                        local y=cape.height(tx,tz)
+                        local k=1.22+.78*noise(i,j,n+13)
+                        world.spawn("assets/plants/street-tree.glb",{pos=v(tx,y-.04,tz),rot=v(0,yaw+n*2.4,0),
+                            size=v(k,k,k),solid=false,tag="woodland-tree"})
+                        trunk(tx,tz,.20*k,y+6.2*k,y-.04)
+                        c.slopeTrees+=1
+                    end
+                end
+            end
+        end
+    end
+    -- Two broken hedgerows border the meadow at the city gate. Each shrub
+    -- reuses the park mesh and sits independently on its own patch of ground.
+    for row=1,2 do
+        for n=1,8 do
+            if noise(n,row,24)<.22 then continue end
+            local x=-207-n*14
+            local z=(if row==1 then -1 else 1)*(19+n*1.43)+2*noise(n,row,25)
+            if not (x>=-281 and x<=-230 and z>=0 and z<=48) and clearRoad(x,z,10) then
+                local k=1.05+.40*noise(n,row,26)
+                world.spawn("assets/plants/shrub-bed.glb",{pos=v(x,cape.height(x,z)-.05,z),
+                    rot=v(0,.18*(row*2-3),0),size=v(k*2.6,k,k),solid=false,tag="cape-hedge"})
             end
         end
     end
@@ -132,7 +268,9 @@ function cape.update(c,players)
     end
     for id,p in players do
         local key=nil
-        if p.pos.y<canopyTop+4 and p.pos.x< -490 and p.pos.x> -1020 then key=grid(p.pos.x,p.pos.z) end
+        if p.pos.x< -178 and p.pos.x>data.coast[1][1] and p.pos.y<cape.height(p.pos.x,p.pos.z)+canopyTop+4 then
+            key=grid(p.pos.x,p.pos.z)
+        end
         if c.viewerCells[id]~=key then c.viewerCells[id]=key; changed=true end
     end
     if not changed then return end

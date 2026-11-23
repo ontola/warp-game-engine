@@ -4,8 +4,9 @@ local passenger = require("story_passenger")
 local race = require("story_race")
 local contract = require("story_contract")
 local board = {warm=missions.warm}
-local examples = {passenger, race, contract}
-board.titles = {passenger.title, race.title, contract.title, "Harbor dispatch"}
+local rally = require("story_rally")
+local examples = {passenger, race, contract, rally}
+board.titles = {passenger.title, race.title, contract.title, rally.title, "Harbor dispatch"}
 
 function board.clear(state)
 	if state.story then missions.stop(state.story, state.storyCast) end
