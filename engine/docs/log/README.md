@@ -19,6 +19,9 @@ current defaults, in [renderer switches](../renderer-switches.md).
   the guide or [status](../status.md) instead.
 - When a change alters how something works, update the guide for that part
   in the same commit. The log is not a substitute for that.
+- [Port Meridian curbside details](2026-11-23-port-meridian-street-details.md)
+- [Sedan door reflections at different distances](2026-11-23-port-meridian-car-paint.md)
+- [Warp Human falls and Port Meridian vehicle contact](2026-11-23-port-meridian-ragdoll-contacts.md)
 - [Port Meridian weapon wheel and Growing Guns loadouts](2026-11-23-port-meridian-weapon-wheel.md)
 - [Growing Guns explosions in Port Meridian](2026-11-23-port-meridian-explosions.md)
 - [Shared city and woodland trees in Warp Theft Auto](2026-11-23-port-meridian-shared-trees.md)
