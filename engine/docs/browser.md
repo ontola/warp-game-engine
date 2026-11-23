@@ -122,7 +122,16 @@ one), logging each change. On a MacBook Pro M5 Pro (Chrome, 2992x1704
 canvas) the room is GPU-bound: 19.4 ms a frame at full size with about
 5 ms on the page thread, 8.3 ms (120 Hz) at 1080 lines. Every 300 frames
 the page logs the frame interval and the page thread's ticks, draw and
-encode; `?render=H` fixes the 3D view's height to tell GPU from CPU. `--bare` builds `examples/warp_web.rs`
+encode; `?render=H` fixes the 3D view's height to tell GPU from CPU. As
+natively, the lower rungs also drop contact occlusion and then bloom.
+
+Phones get a cheaper preset (`app::web::mobile`): an Android, iPhone or iPad
+browser, or `?quality=mobile` anywhere (`?quality=full` turns it off). The
+3D view starts at 540 lines (or `?render=H`, which on a phone is the start
+rather than a fixed height) and adaptive quality lowers it from there, and
+every frame drops GI (its gather pass), contact and reflection occlusion,
+traced reflections, bloom and lens flare. The page logs "phone preset" when
+it is on. `--bare` builds `examples/warp_web.rs`
 (crate `warp`) instead: the games and those buttons, no room. What is
 left to do is in [browser-handoff.md](browser-handoff.md).
 

@@ -254,6 +254,38 @@ struct Shell {
     /// Lowers the 3D view's resolution while frames miss the game's target
     /// (60 fps unless it names one), as the native shell does.
     quality: Option<crate::quality::AdaptiveQuality>,
+    /// The phone preset ([`mobile`]): a lower resolution and no GI, bloom,
+    /// contact occlusion or traced reflections.
+    mobile: bool,
+}
+
+/// Phones get a cheaper preset: an Android, iPhone or iPad browser, or
+/// `?quality=mobile` anywhere (`?quality=full` turns it off). Adaptive
+/// quality then starts from [`MOBILE_BASE_HEIGHT`] lines (or `?render=H`)
+/// instead of 1440 and lowers from there, and the frame drops the passes
+/// that cost a phone GPU most.
+pub fn mobile() -> bool {
+    match query_param("quality").as_deref() {
+        Some("mobile" | "low") => true,
+        Some("full" | "high") => false,
+        _ => web_sys::window().and_then(|w| w.navigator().user_agent().ok())
+            .is_some_and(|ua| ["Android", "iPhone", "iPad", "Mobile"].iter().any(|k| ua.contains(k))),
+    }
+}
+
+/// Where adaptive quality starts on a phone: about half of a 1080p panel.
+const MOBILE_BASE_HEIGHT: u32 = 540;
+
+/// The phone preset's lighting: no GI (its gather pass), contact and
+/// reflection occlusion, traced reflections, bloom or lens flare.
+fn mobile_light(mut light: render::Lighting) -> render::Lighting {
+    light.gi = 0.0;
+    light.contact_occlusion = 0.0;
+    light.reflection_occlusion = 0.0;
+    light.traced_reflections = 0.0;
+    light.bloom_boost = 0.0;
+    light.lens_flare = 0.0;
+    light
 }
 
 /// Replace the running game with `game` at the next frame, keeping the
@@ -342,7 +374,8 @@ pub fn run(cfg: crate::Config, game: Box<dyn Game>) {
     let mut devices = Devices::new(cfg.keyboard);
     devices.pointer_enabled = cfg.pointer;
     let shell = Shell { cfg, game, devices, window: None, live: Rc::new(RefCell::new(None)), acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), failed: false, announced: false, hidden_editor:None, switched: None, exited: false, times: Vec::new(),
-        render_height: query_param("render").and_then(|h| h.parse().ok()), quality: None };
+        render_height: query_param("render").and_then(|h| h.parse().ok()), quality: None, mobile: mobile() };
+    if shell.mobile { log("phone preset: lower resolution, no GI, bloom or contact occlusion (?quality=full turns it off)"); }
     match EventLoop::new() {
         Ok(events) => events.spawn_app(shell),
         Err(e) => log(&format!("event loop: {e}")),
@@ -466,6 +499,13 @@ impl Shell {
         let t_draw = Instant::now();
         let mut frame = Frame { gpu: &live.gpu, size, dt, alpha, split, scene_fps: if dt > 0.0 { 1.0 / dt } else { 0.0 }, scene_worst_ms: dt * 1000.0, focused: true, hdr: None, stream_generated_textures: true, renderer: &mut live.renderer };
         let mut draw: Draw = self.game.draw(&mut frame)?;
+        // As natively, the adaptive rung also drops contact occlusion and
+        // bloom; a phone drops them (and GI) from the start.
+        if let Some(q) = &self.quality {
+            draw.light = q.apply_light(draw.light);
+            if !q.rung().bloom { draw.light.bloom_boost = 0.0; }
+        }
+        if self.mobile { draw.light = mobile_light(draw.light); }
         // The touch stick, while a thumb is on it.
         if let Some((from, knob, r)) = self.devices.touch_stick(size) {
             let clip = [0.0, 0.0, size[0] as f32, size[1] as f32];
@@ -488,20 +528,23 @@ impl Shell {
         if REFRESH.with(|r| { let (hz, used) = r.get(); r.set((hz, true)); hz.is_some() && !used }) { quality.set_target_fps(chase(self.game.target_fps()), None); }
         // As natively: a large canvas starts from 1440 lines, 0 is native,
         // and the controller scales down from there.
-        let height = match self.render_height {
+        // A phone starts lower (`?render=H` is its start, not a fixed cap).
+        let base = |game: Option<u32>| match (self.mobile, game) {
+            (true, _) => self.render_height.unwrap_or(MOBILE_BASE_HEIGHT).min(game.filter(|h| *h > 0).unwrap_or(u32::MAX)).min(size[1]),
+            (false, Some(0)) => size[1],
+            (false, Some(h)) => h,
+            (false, None) => size[1].min(ADAPTIVE_BASE_HEIGHT),
+        };
+        let height = match self.render_height.filter(|_| !self.mobile) {
             Some(h) => Some(h),
-            None => match self.cfg.max_render_height {
-                Some(0) => Some(quality.render_height(size[1])).filter(|h| *h < size[1]),
-                Some(h) => Some(quality.render_height(h)),
-                None => Some(quality.render_height(size[1].min(ADAPTIVE_BASE_HEIGHT))).filter(|h| *h < size[1]),
-            },
+            None => Some(quality.render_height(base(self.cfg.max_render_height))).filter(|h| *h < size[1]),
         };
         live.out.draw(&live.gpu, renderer, &draw, size, split, &view, height)?;
         live.gpu.queue.present(texture);
         self.frames += 1;
-        if self.switched.is_none() && self.render_height.is_none() {
+        if self.switched.is_none() && (self.render_height.is_none() || self.mobile) {
             if quality.frame(f64::from(dt) * 1000.0, Instant::now()) {
-                let next = match self.cfg.max_render_height { Some(0) => quality.render_height(size[1]), Some(m) => quality.render_height(m), None => quality.render_height(size[1].min(ADAPTIVE_BASE_HEIGHT)) };
+                let next = quality.render_height(base(self.cfg.max_render_height));
                 log(&format!("{}: 3D view now {} lines high (chasing {:.0} fps)", self.cfg.title, next.min(size[1]), quality.target_fps()));
             }
         }
