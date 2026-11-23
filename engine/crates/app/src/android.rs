@@ -200,7 +200,9 @@ pub fn mobile() -> bool { !matches!(query_param("quality").as_deref(), Some("ful
 const MOBILE_BASE_HEIGHT: u32 = 1080;
 
 fn mobile_light(mut light: render::Lighting) -> render::Lighting {
-    light.gi = 0.0;
+    // GI stays: the compact pass only looks the baked irradiance volume up
+    // (cheap), and without it Spellstorm and the room were far too dark
+    // (Joep). Its expensive part, the RSM gather, is off (KERN_RSM, main).
     light.contact_occlusion = 0.0;
     light.reflection_occlusion = 0.0;
     light.traced_reflections = 0.0;
@@ -271,7 +273,7 @@ pub fn run(cfg: crate::Config, game: Box<dyn Game>) {
     let mut devices = Devices::new(cfg.keyboard);
     devices.pointer_enabled = cfg.pointer;
     let mobile = mobile();
-    if mobile { log("phone preset: lower resolution, no GI, bloom or contact occlusion (quality=full turns it off)"); }
+    if mobile { log("phone preset: lower resolution, no RSM, bloom or contact occlusion (quality=full turns it off)"); }
     let shell = Shell { cfg, game, devices, acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), announced: false, switched: None, exited: false, back: Default::default(),
         times: Vec::new(), render_height: query_param("render").and_then(|h| h.parse().ok()), quality: None, mobile, profiling: false, gpu_passes: Vec::new(), gpu_total: 0.0 };
     SHELL.with(|s| *s.borrow_mut() = Some(shell));
@@ -309,6 +311,7 @@ pub fn main(app: AndroidApp, start: impl FnOnce() + Send + 'static) {
     // Compact rather than simple: what a browser runs (WebGPU binds too few
     // textures for the full pass), so games look as they do there; simple
     // skips game surfaces.
+    if std::env::var_os("KERN_RSM").is_none() { unsafe { std::env::set_var("KERN_RSM", "0") } }
     if std::env::var_os("KERN_SIMPLE_LIGHTING").is_none() && std::env::var_os("KERN_COMPACT_SHADE").is_none() { unsafe { std::env::set_var("KERN_COMPACT_SHADE", "1") } }
     install_panic_hook();
     use android_activity::WindowManagerFlags as F;
