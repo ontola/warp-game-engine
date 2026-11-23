@@ -6,6 +6,63 @@ use std::path::Path;
 use warp::{LuaGame, Overrides};
 
 #[test]
+fn cape_trunks_stream_for_two_seats_and_custom_routes_reach_the_lookout() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../games/warp-theft-auto");
+    let mut game = LuaGame::load(&dir, &Overrides { seed: Some(1948), players: Some(2), ..Default::default() }, None).unwrap();
+    let idle = [Controls::default(); 2];
+    let settle = |g: &mut LuaGame| {
+        for _ in 0..3 { g.tick(&idle); }
+        assert!(g.errors().is_empty(), "{:?}", g.errors());
+    };
+    settle(&mut game);
+    game.luau(r#"
+        local c=state.city.cape
+        assert(c.stands>20 and c.trees==c.stands*15 and next(c.active)==nil)
+        local _,cell=next(c.cells)
+        local trunk=cell[1]
+        state.highAbove=function(seat)
+            world.place(state.fleet.players[seat].body,vector.create(trunk[1],65,trunk[2]))
+        end
+        state.atTree=function(seat)
+            world.place(state.fleet.players[seat].body,vector.create(trunk[1]+1.5,.85,trunk[2]))
+        end
+        state.away=function(seat)
+            world.place(state.fleet.players[seat].body,vector.create(6.1,.85,11))
+        end
+        state.nearTrees=function()
+            local count=0
+            for _,ids in c.active do
+                for _,id in ids do assert(world.exists(id)); count+=1 end
+            end
+            return count
+        end
+        state.atTree(1)
+    "#).unwrap();
+    settle(&mut game);
+    game.luau("state.firstTreeCount=state.nearTrees(); assert(state.firstTreeCount>0 and state.firstTreeCount<state.city.cape.trees); state.atTree(2)").unwrap();
+    settle(&mut game);
+    game.luau("assert(state.nearTrees()==state.firstTreeCount); state.away(1)").unwrap();
+    settle(&mut game);
+    game.luau("assert(state.nearTrees()==state.firstTreeCount); state.highAbove(2)").unwrap();
+    settle(&mut game);
+    game.luau("assert(state.nearTrees()==0); state.away(2)").unwrap();
+    settle(&mut game);
+    let cape_story = serde_json::json!({
+        "id":"cape", "title":"Cape route", "cast":[],
+        "steps":[{"op":"checkpoint","pos":[-1093,0,0],"text":"Reach the lookout"}]
+    });
+    assert_eq!(game.apply_story_data(cape_story.clone()).unwrap(), "Cape route");
+    let mut offshore = cape_story;
+    offshore["steps"][0]["pos"] = serde_json::json!([-1208,0,190]);
+    assert!(game.apply_story_data(offshore.clone()).is_err());
+    // Shore clearance is measured perpendicular to this steep bank.
+    offshore["steps"][0]["pos"] = serde_json::json!([-1200,0,-48]);
+    assert!(game.apply_story_data(offshore.clone()).is_err());
+    offshore["steps"][0]["pos"] = serde_json::json!([-1200,0,-46.9]);
+    assert!(game.apply_story_data(offshore).is_ok());
+}
+
+#[test]
 fn both_city_lawns_follow_their_diagonal_walks_and_tree_grates() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../games/warp-theft-auto");
     let mut game = LuaGame::load(&dir, &Overrides { seed: Some(1948), ..Default::default() }, None).unwrap();

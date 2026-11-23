@@ -26,7 +26,8 @@ fn pm_street(p: vec2<f32>, tint: vec3<f32>, aa: f32) -> vec3<f32> {
     let along=select(p.x,p.y,curb.x<curb.y);
     let across=select(curb.y,curb.x,curb.x<curb.y);
     let along_dist=max(curb.x,curb.y);
-    if street>6.0 || max(abs(p.x),abs(p.y))>174.0 {
+    let west_exit = p.x < -168.0 && abs(p.y) <= 6.0;
+    if street>6.0 || (max(abs(p.x),abs(p.y))>174.0 && !west_exit) {
         let grid=abs(fract(p/1.6+0.5)-0.5)*1.6;
         let seam=pm_band(min(grid.x,grid.y),0.024,aa);
         let slab=pm_hash(floor(p/1.6));

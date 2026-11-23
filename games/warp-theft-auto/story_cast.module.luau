@@ -1,6 +1,8 @@
 -- Named actors borrow fitted Warp Humans from the city. Story cars are ordinary
 -- Rapier sedans that can be driven by a local player or a waypoint controller.
 local mobility=require("mobility")
+local city=require("world")
+local cape=require("west-cape")
 local models=require("vehicles")
 local util=require("kit/util")
 local v=vector.create
@@ -212,7 +214,11 @@ function Cast:tick(dt)
 				if p.leg>#p.route then p.route,p.pose,p.arrived=nil,"idle",true end
 			else
 				p.yaw=math.atan2(delta.x,delta.z)
-				world.move(p.body,delta*math.min(p.pace/distance,1/dt),dt,QUERY)
+				local velocity=delta*math.min(p.pace/distance,1/dt)
+				local nextPos=p.pos+velocity*dt
+				if nextPos.x >= -city.BOUND or not cape.remoteTrunk(fleet.layout.cape,nextPos,.32) then
+					world.move(p.body,velocity,dt,QUERY)
+				end
 				p.pos,p.pose=world.get(p.body).pos-HIP,"walk"
 			end
 			humans.set(p.actor,{pos=p.pos,yaw=p.yaw,pose=p.pose})

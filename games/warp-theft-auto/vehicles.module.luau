@@ -79,7 +79,7 @@ function models.helicopter(pos, yaw)
 		vel=util.ZERO, speed=0, angle=0, grounded=true}
 end
 
-function models.fly(c, input, dt, limit)
+function models.fly(c, input, dt, city)
 	local held = if input then input.held or {} else {}
 	local steer = if input then input.move_x or 0 else 0
 	local thrust = if input then input.move_y or 0 else 0
@@ -92,7 +92,14 @@ function models.fly(c, input, dt, limit)
 	if c.pos.y >= 85 then vy = math.min(vy,0) end
 	local out, contact = world.move(c.body, v(h.x,vy-.02,h.z), dt, {tag="city"})
 	local center = world.get(c.body).pos
-	local bounded = v(math.clamp(center.x,-limit+2,limit-2),center.y, math.clamp(center.z,-limit+2,limit-2))
+	local bounded = city.flight_bounds(center)
+	if not city.on_land(bounded.x,bounded.z,0) then
+		contact = false
+		if bounded.y < 1.45 then
+			bounded = v(bounded.x,1.45,bounded.z)
+			out = v(out.x,math.max(0,out.y),out.z)
+		end
+	end
 	world.set(c.body, {pos=bounded, rot=v(-thrust*.09,c.yaw,steer*.11)})
 	c.pos, c.vel = bounded-v(0,1,0), out
 	c.grounded, c.speed = contact, vector.magnitude(out)

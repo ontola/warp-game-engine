@@ -2,6 +2,7 @@ local controller = require("kit/controller")
 local cameraKit = require("kit/camera")
 local util = require("kit/util")
 local city = require("world")
+local cape = require("west-cape")
 local models = require("vehicles")
 local v = vector.create
 local mobility = {}
@@ -20,6 +21,7 @@ end
 
 function mobility.new(layout)
 	vehicles.reset("city")
+	cape.fleetReady(layout.cape)
 	local m = {players={}, vehicles={}, layout=layout}
 	for _, spawn in city.vehicle_spawns(layout.seed) do
 		if spawn.kind == "car" then mobility.add_car(m,spawn.pos,spawn.yaw)
@@ -149,6 +151,7 @@ function mobility.release_car(m,car)
 end
 
 function mobility.tick(m,dt,input)
+	cape.update(m.layout.cape,m.players)
 	local ids = {}
 	for id in m.players do table.insert(ids,id) end
 	table.sort(ids)
@@ -170,7 +173,7 @@ function mobility.tick(m,dt,input)
 			car.wasDriven = controls~=nil
 			car.throttle = if controls then controls.throttle or 0 else 0
 			if controls then car.active=true end
-		elseif car.owner or not car.grounded then models.fly(car,inp,dt,city.BOUND) end
+		elseif car.owner or not car.grounded then models.fly(car,inp,dt,city) end
 	end
 	vehicles.step(dt)
 	for _, car in m.vehicles do

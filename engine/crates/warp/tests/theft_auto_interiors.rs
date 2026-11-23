@@ -211,7 +211,7 @@ fn multiplayer_visitors_share_rooms_and_release_them_on_departure() {
             for _, id in ids do assert(world.exists(id)) end
             total += #ids
         end
-        assert(world.count() == total and total < 1280)
+        assert(world.count() == total and total < 1450)
         return total
     "#);
     assert_eq!(game.state_json()["room_lighting"]["active"], 4);

@@ -1,4 +1,5 @@
 -- Decode author data before the mission creates a person, car or marker.
+local city = require("world")
 local schema = {}
 local v = vector.create
 local function plain(t) return type(t)=="table" and getmetatable(t)==nil end
@@ -25,7 +26,7 @@ local function position(p)
 			x,y,z=rawget(p,"x"),rawget(p,"y"),rawget(p,"z")
 		elseif list(p,3,false) and #p==3 then x,y,z=p[1],p[2],p[3] end
 	end
-	if number(x,-177,177) and number(y,-.25,100) and number(z,-177,177) then return v(x,y,z) end
+	if finite(x) and finite(z) and number(y,-.25,100) and city.on_land(x,z,1) then return v(x,y,z) end
 	return nil
 end
 

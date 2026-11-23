@@ -1,6 +1,7 @@
 -- Port Meridian. Streets, sidewalk loops and collision all use metres in the
 -- same coordinate system. Buildings and civic landmarks are generated once.
 local room = require("room")
+local cape = require("west-cape")
 local city = { STEP = 56, BOUND = 178 }
 local v = vector.create
 local STEP = city.STEP
@@ -45,7 +46,7 @@ end
 
 function city.roof(s,x,z,radius)
     local r = math.max(radius or 0, 0)
-    local top = 0
+    local top = if s.cape and x < -BOUND then cape.roof(s.cape,x,z,r) else 0
     for ix=index(x-r),index(x+r) do
         for iz=index(z-r),index(z+r) do
             for _,b in s.blocks[(ix-1)*6+iz] do
@@ -58,9 +59,18 @@ function city.roof(s,x,z,radius)
     return top
 end
 
+function city.on_land(x,z,r)
+    if x < -BOUND then return cape.contains(x,z,r) end
+    return x+r <= BOUND and math.abs(z)+r <= BOUND
+end
+
+function city.flight_bounds(center)
+    return v(math.clamp(center.x,-1240,210),center.y,math.clamp(center.z,-375,375))
+end
+
 function city.blocked(s,x,z,radius,bottomY)
     local r = radius or 0
-    return math.abs(x)+r > BOUND or math.abs(z)+r > BOUND
+    return not city.on_land(x,z,r)
         or city.roof(s,x,z,r) > (bottomY or 0) + 0.05
 end
 
@@ -101,6 +111,10 @@ function city.vehicle_spawns(seed)
 end
 
 function city.district(x,z)
+    if x < -BOUND then
+        if cape.wooded(x,z) then return "Mariner Wood" end
+        return if x < -1000 then "Cape Lookout" else "West Cape"
+    end
     if x >= STEP*2 then return "East Docks" end
     if x < -STEP then return "Lido Gardens" end
     if z > STEP or z < -STEP then return "Old Meridian" end
@@ -388,8 +402,8 @@ local function harbor()
     -- Split the far shore into overlapping capes around three separate bays.
     for _,p in {
         {435,-175,330,41,205,.58}, {527,-265,365,63,225,-.43},
-        {-465,-355,620,72,250,-.32}, {-685,-413,410,87,205,.26},
-        {-410,460,460,48,215,-.47}, {-583,538,470,62,228,.19},
+        {-465,-745,620,72,250,-.32}, {-685,-813,410,87,205,.26},
+        {-410,760,460,48,215,-.47}, {-583,838,470,62,228,.19},
         {680,420,520,74,230,-.53},
     } do
         world.spawn("assets/cape.glb",{pos=v(p[1],-3.3,p[2]),size=v(p[3],p[4],p[5]),
@@ -406,10 +420,12 @@ function city.build(seed)
     box(0,-2,0,BOUND*2,4,BOUND*2,"#61666a",ASPHALT,true)
     -- Keep walking and driving on the island, including along perimeter roads.
     for _,side in {-1,1} do
-        box(side*(BOUND-.2),.35,0,.45,.7,BOUND*2,"#bcc6b9")
+        if side==1 then
+            box(BOUND-.2,.35,0,.45,.7,BOUND*2,"#bcc6b9")
+            box(BOUND+.16,1.4,0,.32,3,BOUND*2,"#74898a",nil,true,{visible=false})
+        end
         box(0,.35,side*(BOUND-.2),BOUND*2,.7,.45,"#bcc6b9")
-        box(side*(BOUND+.16),25,0,.32,52,BOUND*2,"#74898a",nil,true,{visible=false})
-        box(0,25,side*(BOUND+.16),BOUND*2,52,.32,"#74898a",nil,true,{visible=false})
+        box(0,1.4,side*(BOUND+.16),BOUND*2,3,.32,"#74898a",nil,true,{visible=false})
     end
     for ix=-3,2 do
         for iz=-3,2 do
@@ -452,6 +468,17 @@ function city.build(seed)
         obstacle(s,pos.x,1.65,pos.z,.32,3.3,.32,"#655445",nil,{visible=false})
     end
     harbor()
+    s.cape = cape.build(seed)
+    -- The open-sided timber shelter marks the turn at the western lookout.
+    for _,dx in {-2.5,2.5} do
+        for _,dz in {-2,2} do
+            obstacle(s,-1111+dx,1.65,dz,.23,3.3,.23,"#73573d")
+        end
+    end
+    obstacle(s,-1111,3.4,0,6.5,.28,5.5,"#a24433")
+    for _,z in {-1.55,1.55} do
+        obstacle(s,-1111,.28,z,3.8,.55,.55,"#84613f")
+    end
     s.landmarks = {
         {name="Exchange Clock",pos=v(22,0,28),kind="walk"},
         {name="Lido Gardens",pos=v(-84,0,84),kind="walk"},
@@ -461,6 +488,9 @@ function city.build(seed)
         {name="Meridian Tower",pos=v(-28,0,-3),kind="drive"},
         {name="Harbor Heliport",pos=v(140,0,28),kind="fly"},
         {name="West Field",pos=v(-140,0,-84),kind="fly"},
+        {name="Mariner Wood",pos=v(-674,0,-116),kind="walk"},
+        {name="Cape Lookout",pos=v(-1093,0,0),kind="drive"},
+        {name="Lookout Meadow",pos=v(-1080,0,11),kind="fly"},
     }
     return s
 end
