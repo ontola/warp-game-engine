@@ -23,6 +23,10 @@ canvas#warp{width:100vw;height:100vh;display:block;touch-action:none;user-select
 .wordmark{font:400 clamp(34px,7vw,72px)/1 Bungee,Outfit,system-ui;letter-spacing:.01em;margin:0}
 .wordmark .a{color:var(--amber)}.wordmark .b{color:var(--violet)}
 .loader{width:min(440px,82vw);display:flex;flex-direction:column;gap:12px}
+#web-game-links:not([hidden]){display:flex;justify-content:center;gap:10px;flex-wrap:wrap}
+#web-game-links a{display:inline-flex;align-items:center;min-height:44px;padding:0 16px;border:1px solid var(--violet);border-radius:10px;color:var(--text);font-weight:700;text-decoration:none}
+#web-game-links a:hover,#web-game-links a:focus-visible{background:var(--violet);color:#0d1020}
+#warp-progress.direct-games #warp-game,#warp-progress.direct-games #warp-track,#warp-progress.direct-games #warp-join,#warp-progress.direct-games .hints{display:none}
 #warp-track{height:10px;border-radius:999px;background:rgba(255,255,255,.08);overflow:hidden}
 #warp-bar{height:100%;width:0;border-radius:999px;background:linear-gradient(90deg,var(--amber),var(--violet));transition:width .3s ease}
 #warp-step{text-align:center;color:var(--muted);font-size:15px;min-height:1.5em}
@@ -107,6 +111,11 @@ html[data-empty][data-key-hint] #club-notice strong{animation:nod .9s ease}
 #warp-games{display:none!important}
 body.debug #warp-log{display:block}
 body.debug #warp-games{display:flex!important}
+
+/* Keep a direct game choice within reach on a short landscape display. */
+#warp-progress.direct-games:not(.later){display:flex;flex-direction:column;align-items:center;justify-content:center;gap:clamp(10px,3vh,24px);padding:14px 20px;overflow:auto}
+#warp-progress.direct-games:not(.later) .loader{width:min(440px,90vw);align-self:center}
+#warp-progress.direct-games:not(.later) #warp-install{max-width:36rem;text-align:center}
 </style>
 </head><body><canvas id="warp" tabindex="0"></canvas>
 <div id="warp-progress">
@@ -118,6 +127,7 @@ body.debug #warp-games{display:flex!important}
   <div class="loader">
     <div id="warp-track"><div id="warp-bar"></div></div>
     <div id="warp-step">Loading</div>
+    <nav id="web-game-links" aria-label="Play a game directly" hidden></nav>
   </div>
   <ul class="hints">
     <li><b>Controller</b> press A to join</li>
@@ -216,11 +226,36 @@ async function wasm() {
   }
   return new Blob(parts).arrayBuffer();
 }
+// A browser can run an HTML game even when it cannot render the 3D lobby.
+async function showDirectGames(reason) {
+  show(0, reason);
+  try {
+    const res = await fetch('games/library.json?v=' + (document.documentElement.dataset.version || ''));
+    if (!res.ok) return;
+    const games = await res.json();
+    const links = document.getElementById('web-game-links');
+    for (const game of games) {
+      if (!game.web_entry) continue;
+      const url = new URL(game.web_entry, document.baseURI);
+      if (!['https:', 'http:'].includes(url.protocol) || url.origin !== location.origin) continue;
+      const link = document.createElement('a');
+      link.href = url.href;
+      link.textContent = game.title || game.id;
+      if (game.id === opening) links.prepend(link);
+      else links.append(link);
+    }
+    if (links.childElementCount) {
+      box.classList.add('direct-games');
+      step.textContent = 'The 3D lobby could not start. Choose a game to play directly.';
+      links.hidden = false;
+    }
+  } catch { /* Keep the original graphics or loading error on screen. */ }
+}
 const android = /Android/i.test(navigator.userAgent);
-if (!navigator.gpu) show(0, android
+if (!navigator.gpu) showDirectGames(android
   ? 'This browser has no WebGPU. Open this page in Chrome, or host from the Splitscreen Club app.'
   : 'Splitscreen Club needs WebGPU: open this page in Chrome or Edge on a computer.');
 // WebGPU there, but no adapter for this device's GPU (blocklisted or too old).
 else navigator.gpu.requestAdapter().catch(() => null).then(a => a ? wasm() : Promise.reject('no adapter')).then(async bytes => { show(0.3, 'Starting'); const module = await WebAssembly.compile(bytes); await init({module_or_path: module}); connectStories(window.warp, module); })
-  .catch(e => { if (e === 'no adapter') { show(0, "This device's GPU isn't supported by this browser's WebGPU." + (android ? ' Try Chrome, or host from the Splitscreen Club app.' : ' Try Chrome or Edge, with hardware acceleration on.')); return; } show(0, 'Could not start: ' + e); log.textContent += 'start failed: ' + e + '\n'; console.error(e); });
+  .catch(e => { if (e === 'no adapter') { showDirectGames("This device's GPU isn't supported by this browser's WebGPU." + (android ? ' Try Chrome, or host from the Splitscreen Club app.' : ' Try Chrome or Edge, with hardware acceleration on.')); return; } showDirectGames('Could not start: ' + e); log.textContent += 'start failed: ' + e + '\n'; console.error(e); });
 </script></body></html>

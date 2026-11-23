@@ -23,6 +23,8 @@
 
 #[cfg(any(target_arch = "wasm32", target_os = "android"))]
 mod builtin;
+#[cfg(target_arch = "wasm32")]
+mod html_game;
 #[cfg(any(target_arch = "wasm32", target_os = "android"))]
 mod cloud;
 
@@ -566,21 +568,26 @@ pub(crate) mod page {
         }
         let found = with(|h| {
             let meta = game_meta(&h.party, &game)?;
+            let entry = meta["web_entry"].as_str().map(String::from);
             let (id, folder) = (meta["id"].as_str()?.to_string(), meta["folder"].as_str()?.to_string());
             if h.loading.is_some() { return None; }
             h.loading = Some(id.clone());
             h.party["warm_session"] = json!({"game": id, "phase": "preparing", "progress": 50, "progress_label": "Loading"});
             h.dirty = true;
             h.cloud.refresh = true;
-            Some((id, folder, h.players))
+            Some((id, folder, h.players, entry))
         });
-        let Some((game, folder, players)) = found else { app::web::log(&format!("{game}: not on this page, or a game is loading")); return };
+        let Some((game, folder, players, entry)) = found else { app::web::log(&format!("{game}: not on this page, or a game is loading")); return };
         app::web::spawn(async move {
             let t0 = web_time::Instant::now();
-            let loaded = match super::builtin::load(&folder, players).await {
+            #[cfg(target_arch = "wasm32")]
+            let html = entry.map(|entry| super::html_game::HtmlGame::load(entry, with(|h| title(&h.party, &game)), players));
+            #[cfg(not(target_arch = "wasm32"))]
+            let html = { let _ = entry; None };
+            let loaded = if let Some(html) = html { Ok(html) } else { match super::builtin::load(&folder, players).await {
                 Some(l) => l,
                 None => warp::web::load(&folder, Some(players)).await.map(|(c, g)| (c, Box::new(g) as Box<dyn Game>)),
-            };
+            } };
             with(|h| {
                 h.loading = None;
                 h.party["warm_session"] = Value::Null;
@@ -610,6 +617,10 @@ pub(crate) mod page {
     fn resume() {
         with(|h| {
             let Some((game, paused)) = h.paused.take() else { return };
+            #[cfg(target_arch = "wasm32")]
+            if let Some(session) = h.party["active_session"]["id"].as_str() {
+                super::html_game::show_again(session);
+            }
             app::web::resume(paused, Some(Box::new(|p| with(|h| h.room = Some(p)))));
             h.on_screen = Some(game.clone());
             set_session(h, Some(&game), "running");
@@ -623,6 +634,8 @@ pub(crate) mod page {
             if h.on_screen.is_none() { return false; }
             let Some(room) = h.room.take() else { return false };
             let game = h.on_screen.take().unwrap_or_default();
+            #[cfg(target_arch = "wasm32")]
+            let why = if super::html_game::pause() { why } else { app::web::Exit::Quit };
             if why == app::web::Exit::Back {
                 // RB held with Back: straight on to the next game.
                 if h.rb_held { h.chord = Some(Chord::Next); }

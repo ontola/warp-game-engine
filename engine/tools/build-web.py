@@ -109,6 +109,8 @@ parser.add_argument('--warp', action='store_true', help='build the Game Room wit
 parser.add_argument('--bare', action='store_true', help='with --warp: the games without the room (examples/warp_web.rs)')
 parser.add_argument('--games', default=','.join(WARP_GAMES), help='games/ folders to serve with --warp (comma separated)')
 parser.add_argument('--luau-only', action='store_true', help='only include the selected Luau games on the browser shelf')
+parser.add_argument('--web-game', action='append', nargs=3, default=[], metavar=('MANIFEST', 'ENTRY', 'COVER'),
+                    help='with --warp: register a prebuilt HTML game from its gamenight.json, site-relative HTML path outside games/, and cover PNG (or -)')
 parser.add_argument('--assets-only', metavar='DIR', help="with --warp: only the room's files and the games (no wasm, no page) into DIR: the Android host's bundle (build-android-host.py)")
 args = parser.parse_args()
 if args.assets_only:
@@ -167,6 +169,20 @@ def copy_games(names):
     games/index.json (the names) and games/library.json (the room's shelf:
     the store id, folder, title and player counts from gamenight.json): the page fetches these."""
     out = OUT / 'games'
+    browser_games = []
+    for manifest, entry, cover in args.web_game:
+        meta = json.loads(Path(manifest).read_text())
+        game_id = meta['id']
+        if not re.fullmatch(r'[a-z0-9][a-z0-9-]*', game_id):
+            sys.exit(f'Invalid HTML game id: {game_id}')
+        target = (OUT / entry).resolve()
+        if (not target.is_relative_to(OUT.resolve()) or target.is_relative_to(out.resolve())
+                or not target.is_file() or target.suffix.lower() != '.html'):
+            sys.exit(f'{entry}: place the exported HTML inside {OUT} and outside its generated games/ folder')
+        image = None if cover == '-' else Path(cover)
+        if image and (not image.is_file() or image.resolve().is_relative_to(out.resolve())):
+            sys.exit(f'{cover}: choose a cover file outside {out}')
+        browser_games.append((meta, target.relative_to(OUT.resolve()).as_posix(), image))
     shutil.rmtree(out, ignore_errors=True)
     library = []
     for name in names:
@@ -215,6 +231,21 @@ def copy_games(names):
         lo, hi = players.get('min', 1), players.get('max', 4)
         library.append({'id': meta.get('id', name), 'folder': name, 'title': meta.get('title', name), 'tagline': meta.get('tagline', ''),
                          'players': f'{lo}-{hi}' if lo != hi else str(lo), 'min_players': lo, 'max_players': hi, 'has_cover': cover.exists(), 'bots': 0, 'builtin': True})
+    for meta, relative, cover in browser_games:
+        game_id = meta['id']
+        if any(g['id'] == game_id or g['folder'] == game_id for g in library):
+            sys.exit(f'Conflicting HTML game id: {game_id}')
+        game_dir = out / game_id
+        game_dir.mkdir(parents=True)
+        # The story editor asks every game on the shelf for editable Luau files.
+        (game_dir / 'files.json').write_text('[]')
+        if cover:
+            shutil.copy(cover, game_dir / 'cover.png')
+        lo, hi = meta['players']['min'], meta['players']['max']
+        library.append({'id': game_id, 'folder': game_id, 'title': meta['title'], 'tagline': meta.get('tagline', ''),
+                        'players': f'{lo}-{hi}' if lo != hi else str(lo), 'min_players': lo, 'max_players': hi,
+                        'has_cover': bool(cover), 'bots': 0, 'web_entry': relative})
+        names.append(game_id)
     (out / 'index.json').write_text(json.dumps(names))
     (out / 'library.json').write_text(json.dumps(library))
 
