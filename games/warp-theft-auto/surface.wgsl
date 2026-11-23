@@ -55,6 +55,70 @@ fn pm_street(p: vec2<f32>, tint: vec3<f32>, aa: f32) -> vec3<f32> {
     return asphalt;
 }
 
+// Cast iron lies flush with the road. Use the same 56 m centre lines and
+// 6 m kerbs as pm_street, keeping the inlets upstream of the crossings.
+fn pm_road_iron(p: vec2<f32>, aa: f32, road: SurfaceOut) -> SurfaceOut {
+    if aa >= .30 || max(abs(p.x),abs(p.y)) > 173.0 { return road; }
+    let lines=round(p/56.0);
+    let offset=p-56.0*lines;
+    let vertical=abs(offset.x)<abs(offset.y);
+    let across=select(offset.y,offset.x,vertical);
+    let along=select(p.x,p.y,vertical);
+    let side=abs(across);
+    let inlet=abs(side-5.65)<.25+aa;
+    let cover=abs(side-1.65)<.42+aa;
+    if !inlet && !cover { return road; }
+    let line=select(lines.y,lines.x,vertical);
+    let block=floor(along/56.0);
+    let along_block=along-56.0*block;
+    let street_phase=line*.618+block*.382+select(.27,0.0,vertical);
+    let fade=1.0-smoothstep(.12,.30,aa);
+    var mask=0.0;
+    var iron=vec3<f32>(.088,.088,.075);
+    if inlet {
+        let phase=fract(street_phase+select(.53,0.0,across>0.0));
+        let center=select(15.4+6.0*phase,36.0+5.0*phase,phase>.5);
+        let q=vec2<f32>(along_block-center,side-5.65);
+        if abs(q.x)>.46+aa { return road; }
+        let corner=abs(q)-vec2<f32>(.395,.195);
+        let edge=length(max(corner,vec2<f32>(0.0)))+min(max(corner.x,corner.y),0.0)-.045;
+        mask=1.0-smoothstep(-aa,aa,edge);
+        let rim=pm_band(edge+.033,.017,aa);
+        // Two rows of slots separated by a cast spine, inside a raised rim.
+        let tooth=(fract(q.x/.094+.5)-.5)*.094;
+        let detail=1.0-smoothstep(.022,.075,aa);
+        let slots=mix(.39,pm_band(tooth,.019,aa),detail)
+            *pm_band(q.x,.365,aa)*pm_band(q.y,.149,aa)
+            *(1.0-pm_band(q.y,.019,aa)*detail);
+        iron=mix(iron,vec3<f32>(.013,.016,.017),slots);
+        iron=mix(iron,vec3<f32>(.19,.17,.135),rim);
+    } else {
+        // An access cover in one lane on alternating blocks. Its tread fades
+        // to an area average as the camera moves away.
+        if fract((line+block)*.5+select(.5,0.0,vertical))>.25 { return road; }
+        let phase=fract(street_phase);
+        let center=vec2<f32>(27.0+6.0*phase,select(1.65,-1.65,phase>.5));
+        let q=vec2<f32>(along_block,across)-center;
+        if max(abs(q.x),abs(q.y))>.40+aa { return road; }
+        let r=length(q);
+        mask=1.0-smoothstep(.39-aa,.39+aa,r);
+        let ring=pm_band(r-.34,.014,aa);
+        let diagonal=(fract(vec2<f32>(q.x+q.y,q.x-q.y)/.092+.5)-.5)*.092;
+        let tread=pm_band(min(abs(diagonal.x),abs(diagonal.y)),.009,aa);
+        let face=1.0-smoothstep(.30-aa,.30+aa,r);
+        iron+=vec3<f32>(.053)*mix(.35,tread,1.0-smoothstep(.018,.06,aa))*face;
+        iron=mix(iron,vec3<f32>(.023,.025,.022),ring);
+        let sockets=length(abs(q)-vec2<f32>(.24,.10));
+        iron*=1.0-.8*(1.0-smoothstep(.020-aa,.020+aa,sockets));
+    }
+    mask*=fade;
+    var out=road;
+    out.albedo=mix(road.albedo,iron,mask);
+    out.rough=mix(road.rough,.61,mask);
+    out.metal=mix(road.metal,.48,mask);
+    return out;
+}
+
 // Each parcel keeps its window and display rhythm when the street-level
 // shell streams into separate wall sections or a room is revisited.
 fn pm_parcel(s: SurfaceIn) -> f32 {
@@ -515,6 +579,12 @@ fn pm_interior(s: SurfaceIn, aa: f32) -> SurfaceOut {
 fn game_surface(s: SurfaceIn) -> SurfaceOut {
     let aa=clamp(max(length(s.dx),length(s.dy))*0.56,0.012,0.5);
     var out=SurfaceOut(s.tint,s.n,s.rough,s.metal,vec3<f32>(0.0));
+    if s.kind==31u {
+        // The diffuser follows the street lighting transition at sunset and dawn.
+        let dusk=1.0-smoothstep(-.057,.224,light.sun_dir.y);
+        out.emission=vec3<f32>(22.0,15.3,8.6)*dusk;
+        return out;
+    }
     if s.kind==30u {
         // A steel-edged red case with a yellow and charcoal hazard band on all four sides.
         let u=select(s.local.x,s.local.z,abs(s.n.x)>.5);
@@ -540,7 +610,10 @@ fn game_surface(s: SurfaceIn) -> SurfaceOut {
     if s.kind>=24u && s.kind<=28u { return pm_interior(s,aa); }
     if s.kind==0u {
         out.albedo=vec3<f32>(.21,.25,.25);
-        if abs(s.n.y)>=.5 { out.albedo=pm_street(s.p.xz,s.tint,aa); }
+        if s.n.y>=.5 {
+            out.albedo=pm_street(s.p.xz,s.tint,aa);
+            out=pm_road_iron(s.p.xz,aa,out);
+        }
         return out;
     }
     if s.kind==1u || s.kind==2u || s.kind==3u || s.kind==8u { return pm_facade(s,aa); }
