@@ -23,8 +23,12 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
     t.set("reset", lua.create_function(move |_, tag: Option<String>| {
         let mut c = lock(&c);
         sim(&c, "vehicles.reset")?;
-        let fleet = Fleet::new(c.world.entities.values()
-            .filter(|e| e.solid && tag.as_ref().is_none_or(|name| name == &e.tag)).map(|e| e.bounds()));
+        let solids = c.world.entities.values().filter(|e| e.solid && tag.as_ref().is_none_or(|name| name == &e.tag));
+        let mut fields = Vec::new();
+        let mut fleet = Fleet::new(solids.filter_map(|e| {
+            if let Some(field) = e.terrain() { fields.push(field); None } else { Some(e.bounds()) }
+        }));
+        for field in fields { fleet.add_heightfield(field); }
         c.world.fleet = Some(fleet);
         Ok(())
     })?)?;

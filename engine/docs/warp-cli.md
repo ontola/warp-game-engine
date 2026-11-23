@@ -512,6 +512,12 @@ script it runs only for a captured frame. Cameras, the HUD, the sky and the
 light may be set anywhere. Set cameras in `tick` when sound positions
 matter, because the listeners follow them.
 
+### Collision terrain from Luau
+
+`world.heightfield({origin=vector.create(x,y,z), spacing=32, columns=20, heights=samples, tag="city", grip="grass", roads=routes})` creates a collision entity and returns its ID. Each row of samples runs along +X, successive rows along +Z. Heights are metres above the origin. The triangle diagonal connects the +X and +Z corners of each grid cell. Render the matching terrain separately.
+
+Walkers, world rays and overlap queries use the grid. Call `vehicles.reset("city")` after installing the static terrain to include it in the fleet's collision snapshot. Each optional road has `points={{worldX,worldZ}, ...}`, a total `width` in metres, and a `grip` such as `"gravel"` or `"asphalt"`. The first matching road supplies tyre grip. Other terrain uses the base grip.
+
 ### Your own shader
 
 Optional `lighting.wgsl` and `finish.wgsl` files control the lit colour and the per-view opaque image. See [Artist lighting and image effects](materials.md#artist-lighting-and-image-effects) for the signatures and a playable example.
