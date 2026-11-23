@@ -320,6 +320,15 @@ impl World {
         if let Some(effects) = &mut self.explosions { effects.set_baked_smoke(enabled); }
     }
 
+    pub(crate) fn render_effects(&mut self) -> &mut render::fx::Effects {
+        let baked = self.baked_explosion_smoke;
+        self.explosions.get_or_insert_with(|| {
+            let mut effects = render::fx::Effects::with_explosion_budget(render::fx::ExplosionBudget::LOW);
+            effects.set_baked_smoke(baked);
+            effects
+        })
+    }
+
     pub fn capacity(&self) -> usize { self.slots.capacity() }
 
     /// The game folder.

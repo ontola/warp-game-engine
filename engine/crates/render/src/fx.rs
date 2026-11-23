@@ -252,7 +252,7 @@ impl Puff {
 
 /// A point light that flashes and fades (Godot's blast lights).
 #[derive(Clone, Copy, Debug)]
-pub struct LightPop { pub pos: Vec3, pub birth: f32, pub kind: u8, pub radius: f32, pub color: Vec3 }
+pub struct LightPop { pub pos: Vec3, pub birth: f32, pub kind: u8, pub radius: f32, pub color: Vec3, pub light_range: Option<f32> }
 
 /// Godot TRANS_EXPO EASE_OUT.
 fn expo_out(t: f32) -> f32 { if t >= 1.0 { 1.0 } else { 1.0 - 2f32.powf(-10.0 * t) } }
@@ -384,7 +384,7 @@ impl Effects {
     /// A full blast at `time` (seconds on the clock passed to `flush`):
     /// smoke, fireball, flame tongues, embers, heat shell and lights.
     /// `color` tints embers (Godot passes the bullet colour).
-    fn full_explosion(&mut self, time: f32, pos: Vec3, radius: f32, color: Vec3) {
+    fn full_explosion(&mut self, time: f32, pos: Vec3, radius: f32, color: Vec3, light_range: Option<f32>) {
         let r = radius.max(0.5);
         // Consume the same recipe RNG in either mode: enabling volume smoke
         // must not change the subsequent fire, embers or their trajectories.
@@ -420,8 +420,8 @@ impl Effects {
             self.puffs.push(Puff { center_kind: pos.extend(HEAT).to_array(), ax: [r * 2.2, 0.0, 0.0, 0.0], timing: [time, duration, 0.0, 0.0],
                 extra: [strength, 0.0, 0.0, 0.0], body: [0.0, 0.0, 0.0, 1.0], ..Default::default() });
         }
-        self.pops.push(LightPop { pos, birth: time, kind: 0, radius: r, color });
-        self.pops.push(LightPop { pos, birth: time, kind: 1, radius: r, color });
+        self.pops.push(LightPop { pos, birth: time, kind: 0, radius: r, color, light_range });
+        self.pops.push(LightPop { pos, birth: time, kind: 1, radius: r, color, light_range });
         self.changed = true;
     }
 
@@ -621,8 +621,17 @@ impl Effects {
                 (e, c, range)
             };
             if energy <= 0.0 { continue; }
-            out.push(LocalLight { position: p.pos, direction: Vec3::NEG_Y, intensity_cd: (color * energy * self.light_scale).min(Vec3::splat(MAX_CD)), range_m: range.min(200.0),
-                inner_cos: -0.99, outer_cos: -1.0, source_radius_m: (r * 0.3).clamp(0.2, 1.0), falloff });
+            // With a specified light radius, concentrate the flash on nearby
+            // surfaces. Both sources keep the same fixed reach throughout their decay.
+            let (power, reach, falloff) = match p.light_range {
+                Some(reach) => {
+                    let relative_reach = if p.kind == 0 { 1.0 } else { 0.7 };
+                    (energy * 0.22, reach * relative_reach, 2.0)
+                }
+                None => (energy, range.min(200.0), falloff),
+            };
+            out.push(LocalLight { position: p.pos, direction: Vec3::NEG_Y, intensity_cd: (color * power * self.light_scale).min(Vec3::splat(MAX_CD)), range_m: reach,
+                inner_cos: -0.99, outer_cos: -1.0, source_radius_m: (r * 0.3).clamp(0.2, 1.0).min(reach * 0.5), falloff });
         }
         out
     }
@@ -1001,7 +1010,7 @@ impl FxRenderer {
         let light = crate::Lighting::default();
         let mut sample = Effects::default();
         sample.set_baked_smoke(baked);
-        sample.full_explosion(0., Vec3::new(0., -1., -12.), 6., Vec3::ONE);
+        sample.full_explosion(0., Vec3::new(0., -1., -12.), 6., Vec3::ONE, None);
         let saved_source = std::mem::take(&mut self.source);
         let saved_time = self.time;
         self.set(gpu, 0.12, Some(&sample.puffs));
@@ -1254,10 +1263,33 @@ mod tests {
     }
 
     #[test]
+    fn local_blast_light_keeps_the_same_fire_and_smoke_and_lights_the_impact() {
+        for budget in [ExplosionBudget::LOW, ExplosionBudget::MINIMUM] {
+            let mut arena = Effects::with_explosion_budget(budget);
+            let mut local = Effects::with_explosion_budget(budget);
+            arena.explosion(0.0, Vec3::ZERO, 5.0, Vec3::ONE);
+            local.explosion_with_light_range(0.0, Vec3::ZERO, 5.0, Vec3::ONE, Some(12.0));
+            arena.advance(0.0);
+            local.advance(0.0);
+            assert_eq!(arena.puffs, local.puffs);
+            let original = arena.lights(0.0);
+            let lights = local.lights(0.0);
+            assert_eq!(original.len(), lights.len());
+            assert!(lights.iter().any(|l| l.range_m == 12.0));
+            for (old, new) in original.iter().zip(lights) {
+                assert!(new.validated().is_ok());
+                assert_eq!(new.falloff, 2.0);
+                assert!(new.range_m <= 12.0 && new.range_m < old.range_m);
+                assert!(new.intensity_cd.x > 0.0 && new.intensity_cd.x < old.intensity_cd.x);
+            }
+        }
+    }
+
+    #[test]
     fn fireball_light_has_stable_reach_and_a_soft_short_tail() {
         for radius in [0.5, 6.5, 24.0, 50.0] {
             let mut fx = Effects::default();
-            fx.pops.push(LightPop { pos: Vec3::ZERO, birth: 0.0, kind: 1, radius, color: Vec3::ONE });
+            fx.pops.push(LightPop { pos: Vec3::ZERO, birth: 0.0, kind: 1, radius, color: Vec3::ONE, light_range: None });
             let life = (0.25_f32 + radius * 0.02).clamp(0.30, 0.75);
             let first = fx.lights(0.0)[0];
             let mut previous = first.intensity_cd.length();

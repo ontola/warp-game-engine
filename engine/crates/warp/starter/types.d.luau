@@ -142,7 +142,8 @@ declare fx: {
     -- Growing Guns fire, smoke, embers, heat distortion and local lights in all views.
     -- Radius is in metres (0 < radius <= 200). This visual effect uses no entity slots.
     warm_explosions: () -> (),
-    explosion: (pos: Vec, radius: number) -> (),
+    explosion: (pos: Vec, radius: number, lightRange: number?) -> (),
+    gib_mist: (pos: Vec, intensity: number) -> (),
 	-- Pieces flying out from pos: each at 25-100 % of speed (m/s), living
 	-- 50-100 % of life (s) and shrinking. flat: in the ground plane only;
 	-- stretch: seconds of velocity as length (streaks); gravity: m/s^2 down.

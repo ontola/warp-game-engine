@@ -792,22 +792,31 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             c.world.explosions_prepared.get_or_insert(false);
             Ok(())
         })),
-        ("explosion", f!(core, move |_, (pos, radius): (Value, Value)| {
+        ("explosion", f!(core, move |_, (pos, radius, light_range): (Value, Value, Option<f32>)| {
             let pos = vec3(&pos, "fx.explosion position")?;
             let radius = number(&radius, "fx.explosion radius")?;
             if !pos.is_finite() || !radius.is_finite() || radius <= 0.0 || radius > 200.0 {
                 return Err(rt("fx.explosion needs a finite position and a radius in (0, 200] metres"));
             }
+            if light_range.is_some_and(|reach| !(1.0..=500.0).contains(&reach)) {
+                return Err(rt("fx.explosion light range must be 1 to 500 metres"));
+            }
             let mut c = lock(&core);
             sim(&c, "fx.explosion")?;
             let time = c.tick as f32 / c.tick_rate;
-            let baked = c.world.baked_explosion_smoke;
-            let explosions = c.world.explosions.get_or_insert_with(|| {
-                let mut effects = render::fx::Effects::with_explosion_budget(render::fx::ExplosionBudget::LOW);
-                effects.set_baked_smoke(baked);
-                effects
-            });
-            explosions.explosion(time, pos, radius, Vec3::new(1.0, 0.70, 0.20));
+            c.world.render_effects().explosion_with_light_range(time, pos, radius, Vec3::new(1.0, 0.70, 0.20), light_range);
+            Ok(())
+        })),
+        ("gib_mist", f!(core, move |_, (pos, intensity): (Value, Value)| {
+            let pos = vec3(&pos, "fx.gib_mist position")?;
+            let intensity = number(&intensity, "fx.gib_mist intensity")?;
+            if !pos.is_finite() || !intensity.is_finite() || !(0.35..=2.8).contains(&intensity) {
+                return Err(rt("fx.gib_mist needs a finite position and an intensity in [0.35, 2.8]"));
+            }
+            let mut c = lock(&core);
+            sim(&c, "fx.gib_mist")?;
+            let time = c.tick as f32 / c.tick_rate;
+            c.world.render_effects().gib_mist(time, pos, intensity);
             Ok(())
         })),
         ("burst", f!(core, move |_, (pos, opts): (Value, Option<Table>)| {
