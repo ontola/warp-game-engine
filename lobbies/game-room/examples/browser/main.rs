@@ -127,6 +127,7 @@ pub(crate) mod page {
 
     fn set_session(h: &mut Host, game: Option<&str>, phase: &str) {
         warp::web::reset_story_edit();
+        #[cfg(target_arch = "wasm32")]
         if let Some(root) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.document_element()) {
             let _ = match game.filter(|_| phase == "running") {
                 Some(id) => root.set_attribute("data-playing", id),
@@ -719,12 +720,14 @@ pub(crate) mod page {
     pub fn switch_game(name: String) { start(name); }
 
     /// Author code runs in a disposable Web Worker with its own VM and memory.
+    #[cfg(target_arch = "wasm32")]
     #[wasm_bindgen]
     pub fn evaluate_story(source: &str) -> Result<String, wasm_bindgen::JsValue> {
         if web_sys::window().is_some() { return Err("Story scripts run in the editor worker".into()); }
         warp::story::evaluate(source).map(|value| value.to_string()).map_err(Into::into)
     }
 
+    #[cfg(target_arch = "wasm32")]
     #[wasm_bindgen]
     pub fn start_story(game: &str, data: &str) -> Result<(), wasm_bindgen::JsValue> {
         if !with(|h| h.on_screen.as_deref() == Some(game) && h.loading.is_none()) {
@@ -733,6 +736,7 @@ pub(crate) mod page {
         warp::web::queue_story(data).map_err(Into::into)
     }
 
+    #[cfg(target_arch = "wasm32")]
     #[wasm_bindgen]
     pub fn story_reply() -> Option<String> { warp::web::story_reply() }
 
