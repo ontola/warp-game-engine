@@ -1,6 +1,7 @@
 -- Port Meridian. Streets, sidewalk loops and collision all use metres in the
 -- same coordinate system. Buildings and civic landmarks are generated once.
 local room = require("room")
+local furniture = require("street_furniture")
 local cape = require("west-cape")
 local city = { STEP = 56, BOUND = 178 }
 local v = vector.create
@@ -313,13 +314,6 @@ local function plantBlock(s,ix,iz,x,z,plaza,garden,pad,lawns)
     end
 end
 
-local function streetLamp(s,x,z)
-    box(x,2.8,z,.18,5.6,.18,METAL)
-    box(x-1,5.52,z,2.1,.17,.18,METAL)
-    box(x-1.87,5.42,z,.78,.18,.54,"#ffdd9e",nil,false,{emissive=1.1})
-    table.insert(s.lamps,v(x-1.87,5.23,z))
-end
-
 -- Furnish the corners where Exchange Avenue meets the tram route. The small
 -- plinths and tree grates sit behind the continuous sidewalk patrol loops.
 local function crossing(x,z,side)
@@ -457,11 +451,11 @@ function city.build(seed)
                 local treeX = if ix==-1 or ix==1 then x+5 else x
                 table.insert(s.plantSites,v(treeX,0,z+18))
             end
-            if (ix+iz)%2==0 then streetLamp(s,x-20.9,z+(if plaza then 20 else -15)) end
         end
     end
     grass.set(lawns)
     avenue(s)
+    furniture.build(s,STEP,noise)
     for i,pos in ipairs(s.plantSites) do
         local phase = (seed % 283 + i * 173) % 283
         box(pos.x,.035,pos.z,TREE_GRATE,.04,TREE_GRATE,"#747e75",17)
