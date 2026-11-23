@@ -582,7 +582,7 @@ fn game_surface(s: SurfaceIn) -> SurfaceOut {
     if s.kind==31u {
         // The diffuser follows the street lighting transition at sunset and dawn.
         let dusk=1.0-smoothstep(-.057,.224,light.sun_dir.y);
-        out.emission=vec3<f32>(22.0,15.3,8.6)*dusk;
+        out.emission=vec3<f32>(82.0,61.0,39.0)*dusk;
         return out;
     }
     if s.kind==30u {
