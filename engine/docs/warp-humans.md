@@ -1,5 +1,11 @@
 # Warp Humans stadium review
 
+## Falls in Luau games
+
+Calling `humans.ragdoll` transfers the fitted person’s current pose to eleven connected rigid bodies. Their shoulders, elbows, spine, neck, hips and knees have joint limits. During the first 0.19 seconds the knees and hips flex, the forearms draw in and the chin tucks. This extra muscle tension holds for 0.28 seconds and fades over the next 0.78 seconds. Ground and vehicle contact can interrupt the motion throughout the fall. The same response works with procedural body proportions and needs no fall animation asset. For a fall caused by a moving object, pass the person’s current world velocity and angular velocity. See the [Luau human API](warp-cli.md) and [joint controls](physics.md#ragdoll-joint-limits-and-muscle-response).
+
+## Stadium playtest
+
 Play a full desktop Growing Guns match with one local player, three bots and the procedural spectators:
 
 ```sh

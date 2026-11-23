@@ -121,7 +121,7 @@ that tumble, ragdolls and gibs. Its deterministic gameplay stays on
 - Measured anatomical profiles, coupled swing/twist envelopes and skin-aware dismemberment for humanoid rigs.
 
 
-## Passive ragdoll joints
+## Ragdoll joint limits and muscle response
 
 `Ragdoll::set_angular_profile` adds three independent angular limits and
 force-based damped motors. Supply parent/child local joint frames calibrated
@@ -132,6 +132,12 @@ soft-zone width, weak rest stiffness, edge stiffness, damping and a torque cap.
 spring with an edge spring whose stiffness rises quadratically over the soft
 zone; the solver still enforces the hard boundary. Motor forces do not wake a
 sleeping body on their own. Removing a rig also removes its passive controls.
+
+With `Ragdoll::set_angular_profile_with_brace`, a joint can also pull briefly
+towards a second, bind-relative target. A `JointBrace` sets that target, the
+spring and damping, and the time to ramp up, hold and relax. The solver applies
+both drives through the same torque cap and hard limits. Forces act between
+the two connected bodies. Warp Humans uses this for a protective tuck on a fall.
 
 The Growing Guns profile is game tuning, not measured anatomical data. Its
 model assets contain bind transforms and animation, **no** joint ROM or muscle
@@ -151,7 +157,7 @@ limits and motors; the progressive response is implemented here.
 Limitations: three independent angular coordinates approximate anatomy; they
 are not a coupled shoulder swing cone or a musculoskeletal model. Self-collision
 within one corpse is still disabled. Hand/foot articulation, active balance,
-protective reflexes and injury-dependent muscle tone are not modeled. Hard
+and injury-dependent muscle tone remain open. Growing Guns uses its passive profile. Hard
 limits are numerical solver constraints and may transiently overshoot under
 large impulses. Tuning and tests do not establish anatomical accuracy.
 
