@@ -1,6 +1,7 @@
 -- Resolve each seat's weapon against shared street crowds, interior residents,
 -- rivals and authored cast. Projectiles keep flying after a weapon switch.
 local Cast=require("story_cast")
+local population=require("population")
 local crowd=require("kit/crowd")
 local fx=require("combat_fx")
 local explosions=require("explosions")
@@ -372,10 +373,13 @@ local function shoot(state,id,player,seat,input,dt)
 	player.onTarget=target~=nil
 	if not pressed then return end
 	if isLauncher then
-		if launcher.fire(state.combat.projectiles,id,player,seat,point,ray,spec.range) then sidearm.recoil(player,spec) end
+		if not launcher.fire(state.combat.projectiles,id,player,seat,point,ray,spec.range) then return end
+		sidearm.recoil(player,spec)
+	elseif not sidearm.discharge(player,seat,spec,gun,dt) then
 		return
 	end
-	if not sidearm.discharge(player,seat,spec,gun,dt) then return end
+	population.gunshot(state.population,seat.pos,seat.building)
+	if isLauncher then return end
 	local spreads=spec.spread and spec.spread>0 and sidearm.pattern(ray,spec.spread,id,player.shotNumber)
 	local contacts={}
 	local tracePoint,left,right=point,nil,nil

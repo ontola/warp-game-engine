@@ -1,5 +1,6 @@
 -- The city keeps only a seed and footprint for each ground floor. This module
 -- builds one furnished, walkable floor when a pedestrian approaches a door or window.
+local refuge = require("refuge")
 local room = {}
 local v = vector.create
 local WALL, FLOOR, CEILING_SLAB = .23, .024, .17
@@ -286,11 +287,17 @@ end
 
 function room.build(b)
 	local ids, activities = {}, {}
+	local area = refuge.area(b.x,b.z,b.w-2*WALL,b.d-2*WALL)
 	local draw = sampler(b.seed)
 	local mirror, fabric, wood = style(b.kind, draw)
 	local function point(x,y,z) return v(b.x+mirror*x,y,b.z+z) end
 	local function put(x,y,z,w,h,d,look,solid)
 		local blocking = solid ~= false
+		-- The area boundary already covers the envelope. Keep only fixtures
+		-- at body height, using the same mirrored footprint as their colliders.
+		if blocking and y-h/2<1.85 and y+h/2>.10 then
+			refuge.block(area,b.x+mirror*x,b.z+z,w,d)
+		end
 		local id = world.spawn("cube", {
 			pos=point(x,y,z), size=v(w,h,d),
 			color=look.color, surface=look.surface, emissive=look.emissive,
@@ -310,7 +317,7 @@ function room.build(b)
 	-- seated root is on the floor under the hips; +Z is forward for Warp Humans.
 	local function activity(role,pose,x,z,yaw,group,endX,endZ)
 		table.insert(activities,{
-			role=role, pose=pose, pos=point(x,0,z), yaw=mirror*yaw, group=group,
+			role=role, pose=pose, pos=point(x,0,z), yaw=mirror*yaw, group=group, refuge=area,
 			to=if endX then point(endX,0,endZ) else nil,
 		})
 	end

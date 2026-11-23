@@ -1,6 +1,7 @@
 -- Port Meridian. Streets, sidewalk loops and collision all use metres in the
 -- same coordinate system. Buildings and civic landmarks are generated once.
 local room = require("room")
+local refuge = require("refuge")
 local furniture = require("street_furniture")
 local cape = require("west-cape")
 local city = { STEP = 56, BOUND = 178 }
@@ -254,7 +255,8 @@ function city.set_clock(s,hour)
 end
 local function park(s,x,z,plaza,lawns)
     box(x,.018,z,PARK_WIDTH,.036,PARK_WIDTH,if plaza then "#d0b78f" else "#657d49",if plaza then PLAZA else LAWN)
-    table.insert(s.parks,{x=x,z=z})
+    local area = refuge.area(x,z,PARK_WIDTH,PARK_WIDTH)
+    table.insert(s.parks,{x=x,z=z,refuge=area})
     if plaza then
         -- Ferry exchange: an illuminated four-faced clock on a stepped pier.
         obstacle(s,x,.27,z,5.4,.54,5.4,LIMESTONE)
@@ -274,6 +276,7 @@ local function park(s,x,z,plaza,lawns)
         end
         for _,i in {-1,1} do
             box(x+9*i,.52,z+11,3.5,.22,.8,"#976d4e")
+            refuge.block(area,x+9*i,z+11,3.5,.8)
             for _,endX in {-1,1} do box(x+9*i+endX*1.1,.23,z+11,.22,.46,.6,METAL) end
         end
     end
@@ -288,11 +291,16 @@ local function streetTree(s,x,z,yaw,scale,garden)
     if garden then table.insert(garden.cutouts,{pos=pos,width=1.35*scale,depth=1.35*scale}) end
 end
 
-local function shrubBed(x,z,yaw,scale,garden)
+local function shrubBed(x,z,yaw,scale,garden,area)
     local pos=v(x,if garden then .036 else 0,z)
     world.spawn("assets/plants/shrub-bed.glb",{pos=pos,rot=v(0,yaw,0),
         size=v(scale,scale,scale),solid=false,tag="shrub-bed"})
-    if garden then table.insert(garden.cutouts,{pos=pos,width=3.8*scale,depth=1.6*scale,yaw=yaw}) end
+    local width, depth=3.8*scale,1.6*scale
+    if garden then table.insert(garden.cutouts,{pos=pos,width=width,depth=depth,yaw=yaw}) end
+    if area then
+        local s,c=math.abs(math.sin(yaw)),math.abs(math.cos(yaw))
+        refuge.block(area,x,z,width*c+depth*s,width*s+depth*c)
+    end
 end
 
 local function plantBlock(s,ix,iz,x,z,plaza,garden,pad,lawns)
@@ -300,10 +308,11 @@ local function plantBlock(s,ix,iz,x,z,plaza,garden,pad,lawns)
     local scale=.87+.23*noise(s.seed,ix,iz,82)
     if plaza or garden then
         local turf=if garden then lawns else nil
+        local area=s.parks[#s.parks].refuge
         for _,side in {-1,1} do
             streetTree(s,x+side*13.5,z+side*2.8,turn+side,scale,turf)
-            shrubBed(x+side*3.4,z+side*15.5,turn*.05,1.1,turf)
-            if garden then shrubBed(x+side*15.7,z-side*4.8,math.pi*.5,1,turf) end
+            shrubBed(x+side*3.4,z+side*15.5,turn*.05,1.1,turf,area)
+            if garden then shrubBed(x+side*15.7,z-side*4.8,math.pi*.5,1,turf,area) end
         end
     elseif not pad and ix<2 and (ix+iz)%2==0 then
         -- Behind the houses, in the furnishing strip inside the sidewalk loop.
@@ -460,6 +469,13 @@ function city.build(seed)
         local phase = (seed % 283 + i * 173) % 283
         box(pos.x,.035,pos.z,TREE_GRATE,.04,TREE_GRATE,"#747e75",17)
         streetTree(s,pos.x,pos.z,phase*2*math.pi/283,.74+.40*phase/283,nil)
+    end
+    -- Street-tree trunks, clock plinths and street furniture are already
+    -- indexed by block. The lawn and plaza both fit inside a single block.
+    for _,p in s.parks do
+        for _,b in s.blocks[city.block_index(p.x,p.z)] do
+            refuge.block(p.refuge,(b.x0+b.x1)/2,(b.z0+b.z1)/2,b.x1-b.x0,b.z1-b.z0)
+        end
     end
     harbor()
     s.cape = cape.build(seed)

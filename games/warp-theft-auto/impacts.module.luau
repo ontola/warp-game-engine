@@ -259,7 +259,8 @@ local function person(pop,p,actor,seat,dt,boxes,grid,resident)
 		-- Keep the walker's momentum; the moving chassis supplies the entire
 		-- collision impulse at the actual bone/bumper contact in the solver.
 		if humans.ragdoll(actor,(p.pos-before)/dt,util.ZERO) then
-			local home=if p.impact then p.impact.home else p.pos
+			local home=if p.impact then p.impact.home elseif p.panic and p.panic.home then p.panic.home else p.pos
+			p.panic=nil
 			p.impact={stage="down",elapsed=0,home=home,vehicle=vehicle.id}
 			road.bumper(pop,p,actor,seat,resident,vehicle,speed)
 			p.externalPose=true
@@ -267,7 +268,8 @@ local function person(pop,p,actor,seat,dt,boxes,grid,resident)
 			if seat then p.speed=0; p.walk.vel=util.ZERO; p.nearby=nil end
 		end
 	elseif vehicle and vector.magnitude(out)>0 then
-		local home=p.pos
+		local home=if p.panic and p.panic.home then p.panic.home else p.pos
+		p.panic=nil
 		place(p,p.pos+out,actor,seat)
 		if not seat and not p.impact then
 			p.impact={home=home,elapsed=0}
@@ -308,7 +310,7 @@ function impacts.visitResidents(pop, origin, endpoint, visit)
 	indexResidents(pop)
 	if not streetCells then return end
 	local age=math.clamp((pop.elapsed-sampleTime)/.4,0,1)
-	local margin=1.5 -- capsule width and travel between street snapshots
+	local margin=3 -- capsule width plus up to .4 seconds of sprinting between snapshots
 	for x=math.floor((math.min(origin.x,endpoint.x)-margin)/CELL),math.floor((math.max(origin.x,endpoint.x)+margin)/CELL) do
 		for z=math.floor((math.min(origin.z,endpoint.z)-margin)/CELL),math.floor((math.max(origin.z,endpoint.z)+margin)/CELL) do
 			for _,row in streetCells[cell(x,z)] or EMPTY do
@@ -325,6 +327,7 @@ end
 -- Remove the living representations before custody of the fitted rig moves
 -- to the corpse roster. Native removal normally reveals the last street LOD.
 local function residentDeath(pop,fleet,id,c,actor,gibbed)
+	c.panic=nil
 	if id<=pop.streetCount then humans.hide_distant("resident",id) end
 	pop.pedestrians.active[id]=nil
 	if pop.impactResidents then pop.impactResidents[id]=nil end
