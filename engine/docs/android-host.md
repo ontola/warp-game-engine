@@ -85,8 +85,9 @@ Measured on a Galaxy Tab S9+ (Adreno 740) and a Xiaomi 13 class phone
   simple one (`KERN_SIMPLE_LIGHTING`) 9.5 ms at 1080 lines. The host turns
   it on, and the 3D view starts at 1080 lines (adaptive quality lowers it).
 - The 830's driver drops indirect draws: only emissive and transparent
-  things showed. The host draws with bounded direct draws
-  (`KERN_SIMPLE_CULL`, `KERN_BOUNDED_DRAWS`).
+  things showed. On Adreno 8xx the host draws with bounded direct draws
+  (`KERN_SIMPLE_CULL`, `KERN_BOUNDED_DRAWS`); not on the 740, where they
+  likely cost Spellstorm its walls and wizards.
 - Texture arrays use the desktop sizes (render feature `phone`); the 512 px
   headset layers cut off and stretched the room's painted screens.
 - `env=NAME:VALUE,NAME:VALUE` in the query sets renderer switches for a test
