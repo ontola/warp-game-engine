@@ -5,10 +5,9 @@ import argparse
 from collections import defaultdict
 from dataclasses import dataclass, field
 import gzip
-import json
 import math
 from pathlib import Path
-import struct
+from mesh_glb import glb
 
 ROOT = Path(__file__).resolve().parents[1]
 # Walkable bank top in metres (x, south, north). The city plate starts at x=-178.
@@ -208,35 +207,6 @@ def road(mesh, connector, loop):
 
 
 
-def glb(groups):
-    data, views, accs, mats, prims = bytearray(), [], [], [], []
-    def accessor(values,fmt,component,kind,bounds=False):
-        data.extend(bytes(-len(data)%4))
-        offset = len(data)
-        pack = struct.Struct('<'+fmt).pack
-        for v in values: data.extend(pack(*v))
-        views.append({'buffer':0,'byteOffset':offset,'byteLength':len(data)-offset})
-        acc = {'bufferView':len(views)-1,'componentType':component,'count':len(values),'type':kind}
-        if bounds: acc.update(min=list(map(min,zip(*values))),max=list(map(max,zip(*values))))
-        accs.append(acc)
-        return len(accs)-1
-    for name,color in COLORS.items():
-        group=groups[name]
-        assert group.indices
-        mats.append({'name':name,'pbrMetallicRoughness':{'baseColorFactor':[*color,1],'roughnessFactor':1,'metallicFactor':0}})
-        prims.append({'material':len(mats)-1,'attributes':{
-            'POSITION':accessor(group.points,'3f',5126,'VEC3',True),'NORMAL':accessor(group.normals,'3f',5126,'VEC3')},
-            'indices':accessor([(i,) for i in group.indices],'H',5123,'SCALAR')})
-    doc={'asset':{'version':'2.0','generator':'Port Meridian west cape'},'scene':0,'scenes':[{'nodes':[0]}],
-         'nodes':[{'mesh':0}],'meshes':[{'primitives':prims}],'buffers':[{'byteLength':len(data)}],
-         'materials':mats,'bufferViews':views,'accessors':accs}
-    desc=json.dumps(doc,separators=(',',':')).encode()
-    desc+=b' '*(-len(desc)%4)
-    data.extend(bytes(-len(data)%4))
-    chunks=struct.pack('<I4s',len(desc),b'JSON')+desc+struct.pack('<I4s',len(data),b'BIN\0')+data
-    return struct.pack('<4sII',b'glTF',2,12+len(chunks))+chunks
-
-
 def luau(paths):
     def row(values):
         return '{'+','.join(f'{n:g}' for n in values)+'}'
@@ -259,7 +229,9 @@ def bake(check):
     mesh=defaultdict(Group)
     ground(mesh)
     road(mesh,*paths)
-    geometry=glb(mesh)
+    materials = [{'name':name,'pbrMetallicRoughness':{'baseColorFactor':[*color,1],'roughnessFactor':1,'metallicFactor':0}}
+                 for name,color in COLORS.items()]
+    geometry=glb(mesh,materials,'Port Meridian west cape')
     wire=len(gzip.compress(geometry,compresslevel=6,mtime=0))
     assert wire<=20000, f'Coast download exceeds budget: {wire}'
     outputs={ROOT/'assets/west-cape.glb':geometry, ROOT/'west-cape-data.module.luau':luau(paths)}
