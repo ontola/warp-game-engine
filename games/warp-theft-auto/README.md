@@ -37,6 +37,10 @@ A new round generates a new city seed. Pass `--seed 1948` to replay a layout. Th
 
 Walk through the entrance under the lit strip to enter any office, hotel or dock warehouse. The ground floors have reception desks, conference areas, hotel suites or freight racks. You can walk back out through the same doorway.
 
+Each of the twelve traffic cars has a seated Warp Human driver. You can see and hit the driver through the windows. A metal door or pillar can stop the shot. Taking a slow car makes its driver step out and run. Trapped drivers also try to get out when their escape stalls or the car catches fire.
+
+Traffic drivers flee when a shot strikes their car or passes close to its body. They accelerate, take intersections without waiting, and leave less braking room. A driver facing the shooter may turn around into the opposite lane. After several quiet seconds the driver returns to normal speed and yields again.
+
 Take a parked car or wait alongside a traffic car at a stop. Slow down to get out. A helicopter must land first. On the map, white marks your position and heading, coral marks other players, teal marks available helicopters, and gold marks the current job.
 
 Every player starts with the pistol equipped. The wheel also contains a grenade launcher, the stock Growing Guns rifle, and its Shotgun, Uzi and Sniper upgrades. Hold the trigger to repeat Growing Guns shots. Their magazines refill after the last round. Aiming the sniper narrows the field of view. Each player can change weapons independently while the city keeps moving. The launcher fires a visible projectile that arcs through the scene. The fireball has a 5.5 m effect radius. Damage reaches 17 m, falls off quadratically, and stops at cover. Close hits on people produce Growing Gunsâ€™ red mist and fragments from their current pose. Nearby fallen people keep their last physical pose. A second shot can move a limb, and a close explosion can fragment the body. Wheels can hit a fallen pedestrian on a later pass. These follow-up hits give no additional defeat credit.

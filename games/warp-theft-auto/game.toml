@@ -26,6 +26,14 @@ variety = 9
 age = [22, 77]
 seed = 51
 
+[humans.driver]
+count = 12
+reserved = 12
+variety = 4
+age = [21, 67]
+height = [1.61, 1.82]
+seed = 219
+
 [humans.rival]
 count = 2
 variety = 2

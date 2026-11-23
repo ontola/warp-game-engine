@@ -245,6 +245,36 @@ local function sphereEntry(offset,ray,radius)
 	return along-math.sqrt(disc)
 end
 
+-- All split-screen seats and pellets see the same fitted pose this tick.
+local seatedJoints, sampledTick = {}, nil
+
+-- The seated driver's head and torso follow the fitted rig, including
+-- different body sizes and the bend of the seated pose.
+function sidearm.seatedHit(origin,ray,actor,feet,range)
+	local d=feet+v(0,1,0)-origin
+	local along=math.clamp(vector.dot(d,ray),0,range)
+	local miss=d-ray*along
+	if vector.dot(miss,miss)>1.25^2 then return nil end
+	local tick=game.tick()
+	if sampledTick~=tick then table.clear(seatedJoints); sampledTick=tick end
+	local sample=seatedJoints[actor]
+	if not sample then
+		local head,chest,hips=humans.head(actor),humans.joint(actor,"chest"),humans.joint(actor,"hips")
+		if not head or not chest or not hips then return nil end
+		sample={head,chest,(hips+chest)*.5}
+		seatedJoints[actor]=sample
+	end
+	local head,chest,middle=sample[1],sample[2],sample[3]
+	local h=sphereEntry(origin-head,ray,.16)
+	local upper=sphereEntry(origin-chest,ray,.225)
+	local lower=sphereEntry(origin-middle,ray,.225)
+	local t=math.min(h,upper,lower)
+	if t<=range then
+		local joint=if t==h then head elseif t==upper then chest else middle
+		return t,origin+ray*t,t==h,math.clamp(vector.dot(joint-origin,ray),t,range)
+	end
+end
+
 -- First contact with a vertical capsule. Compare all candidates before the one
 -- cover query. The impact point is on the near surface, including at steep angles.
 function sidearm.intersect(origin,ray,feet,pos,range,height)

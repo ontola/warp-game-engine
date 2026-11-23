@@ -10,6 +10,7 @@ local corpses=require("corpses")
 local sidearm=require("sidearm")
 local launcher=require("launcher")
 local cars=require("vehicles")
+local traffic=require("traffic")
 local catalog=require("weapon_catalog")
 local combat={}
 local v=vector.create
@@ -93,6 +94,12 @@ end
 
 local function visitPeople(state,minimum,maximum,visit)
 	local s,cast=state.combat,state.storyCast
+	local drivers=state.fleet.drivers
+	if drivers then
+		for key,p in drivers.people do
+			if not p.dead then visit("driver",key,p,p.pos,p.actor) end
+		end
+	end
 	if cast then
 		for key,p in cast.people do
 			if not p.shot and not p.dead then visit("cast",key,p,p.pos,p.actor) end
@@ -141,8 +148,20 @@ local function targetOnRay(state,origin,ray,from,distance,projectile,limited)
 		if not projectile and kind=="cast" and story and key==story.contractPerson then
 			range=if limited then math.min(range,story.contractRange) else story.contractRange
 		end
-		local along,point
-		if actor and p.impact and p.impact.stage=="down" then
+		local along,point,head,cabin
+		if kind=="driver" and p.rideId then
+			-- The grenade hits the car's shell. A bullet can enter the cabin.
+			if projectile then return end
+			local inside
+			along,point,head,inside=sidearm.seatedHit(origin,ray,actor,feet,range)
+			if along then
+				cabin=state.fleet.vehicles[p.rideId]
+				-- Even if the rounded hit volume grazing the face extends beyond
+				-- the roof, test the line through to its centre against the car.
+				local entry=vehicles.raycast(cabin.native,cars.contactProfile,origin,ray,inside)
+				if entry and not cars.cabinOpening(cabin,origin,origin+ray*entry,origin+ray*inside) then return end
+			end
+		elseif actor and p.impact and p.impact.stage=="down" then
 			along=humans.ragdoll_raycast(actor,origin,ray,range)
 			if along then point=origin+ray*along end
 		else
@@ -150,7 +169,7 @@ local function targetOnRay(state,origin,ray,from,distance,projectile,limited)
 		end
 		if along and (not (projectile or limited) or along<=distance) and (not target or along<target.along or
 			(along==target.along and kind==target.kind and key<target.key)) then
-			target={kind=kind,key=key,along=along,point=point,feet=feet,actor=actor,person=p,velocity=velocity,head=not p.impact and point.y>=pos.y+height*.82}
+			target={kind=kind,key=key,along=along,point=point,feet=feet,actor=actor,person=p,velocity=velocity,cabin=cabin,head=if head~=nil then head else not p.impact and point.y>=pos.y+height*.82}
 		end
 	end)
 	corpses.visit(state.population,origin,origin+ray*distance,function(id,_,feet,actor)
@@ -161,7 +180,7 @@ local function targetOnRay(state,origin,ray,from,distance,projectile,limited)
 	end)
 	local limit=if target then math.max(0,target.along-.001) else distance
 	if limit<=0 then return target,if target then target.point else origin end
-	local car,carPoint,carDistance=cars.raycast(state.fleet,origin,ray,limit)
+	local car,carPoint,carDistance=cars.raycast(state.fleet,origin,ray,limit,if target then target.cabin else nil)
 	if car then
 		target={kind="car",key=car.index,car=car,along=carDistance,point=carPoint}
 		limit=math.max(0,carDistance-.001)
@@ -199,6 +218,10 @@ local function hitTarget(state,target,ray,blast,damage,gibbed)
 	end
 	if target.kind=="resident" then
 		return impacts.shootResident(state.population,state.fleet,key,target.feet,push,gibbed,target.point,target.velocity),true
+	elseif target.kind=="driver" then
+		if not state.fleet.drivers:kill(key,push,gibbed,target.point) then return false,false end
+		traffic.driverDown(state.fleet,target.person)
+		return true,true
 	elseif target.kind=="cast" then
 		local p=cast.people[key]
 		if not cast:kill(key,push,gibbed,target.point) then return false,false end
@@ -261,6 +284,41 @@ local function blastBlocked(fleet,center,delta,distance,receiver,sourceCar)
 	if limit<=0 then return false end
 	local ray=delta/distance
 	return cars.raycast(fleet,center,ray,limit,receiver,sourceCar)~=nil or sceneHit(fleet,center,ray,limit)~=nil
+end
+
+local NEAR_MISS=2.5
+
+-- Find the nearest part of this car to the finite bullet path. Projecting
+-- the hull point back onto the line also works for oblique passes by a bumper.
+local function passesDriver(fleet,car,start,dir,length)
+	local center=car.pos+v(0,.78,0)
+	local along=math.clamp(vector.dot(center-start,dir),0,length)
+	local point=start+dir*along
+	local hull=cars.closestPoint(car,point,NEAR_MISS)
+	if not hull then return false end
+	along=vector.dot(hull-start,dir)
+	if along<0 or along>length then return false end
+	point=start+dir*along
+	local gap=hull-point
+	local distance=vector.magnitude(gap)
+	return distance<=NEAR_MISS and (distance<.04 or not blastBlocked(fleet,point,gap,distance,car))
+end
+
+local function warnDrivers(fleet,start,dir,length,hit,source,warned)
+	for _,id in fleet.traffic do
+		local car=fleet.vehicles[id]
+		if not car or not car.auto or car.owner or car.wrecked or warned[id] then continue end
+		if (hit and hit.kind=="car" and car==hit.car) or (length>0 and passesDriver(fleet,car,start,dir,length)) then
+			warned[id]=traffic.frighten(car,source)
+		end
+	end
+end
+
+local function grenadeSweep(state,shot,dir,reach)
+	local target,point,solid=targetOnRay(state,shot.pos,dir,shot.pos,reach,true)
+	shot.warned=shot.warned or {}
+	warnDrivers(state.fleet,shot.pos,dir,vector.dot(point-shot.pos,dir),target,shot.source or shot.pos,shot.warned)
+	return target,point,solid
 end
 
 local function blastDamage(state,owner,center,radius,target,forward,sourceCar,grenade)
@@ -384,6 +442,7 @@ local function shoot(state,id,player,seat,input,dt)
 	local contacts={}
 	local tracePoint,left,right=point,nil,nil
 	local lo,hi=math.huge,-math.huge
+	local warned={}
 	local side=if spreads and spec.pellets>1 then vector.cross(ray,v(0,1,0)) else nil
 	for pellet=1,spec.pellets or 1 do
 		local hit,endPoint,dir=target,point,ray
@@ -391,6 +450,11 @@ local function shoot(state,id,player,seat,input,dt)
 			dir=spreads()
 			hit,endPoint=targetOnRay(state,origin,dir,seat.pos,spec.range,false,true)
 		end
+		-- Aiming traces from the camera. Only the part past the firing player
+		-- passes traffic, and each pellet ends at its own first contact.
+		local offset=math.max(0,vector.dot((player.tip or seat.pos)-origin,dir))
+		local start=origin+dir*offset
+		warnDrivers(state.fleet,start,dir,vector.dot(endPoint-start,dir),hit,seat.pos,warned)
 		if pellet==1 then tracePoint=endPoint end
 		if side then
 			local offset=vector.dot(side,dir)
@@ -437,7 +501,10 @@ local function roadDamage(state,hit)
 	local killed=false
 	if hit.lethal and not hit.seat then
 		local push=dir*math.min(speed*.5,9)+v(0,1,0)
-		if hit.resident then
+		if p.trafficCar then
+			killed=state.fleet.drivers:kill(tostring(p.trafficCar),push)
+			if killed then traffic.driverDown(state.fleet,p) end
+		elseif hit.resident then
 			killed=impacts.shootResident(state.population,state.fleet,hit.resident,p.pos,push,false)
 		else
 			for key,enemy in s.enemies do
@@ -484,7 +551,7 @@ function combat.tick(state,dt,input)
 		end
 	end
 	s.projectiles=s.projectiles or {}
-	launcher.advance(state,dt,targetOnRay,detonate)
+	launcher.advance(state,dt,grenadeSweep,detonate)
 	cars.tickFires(fleet,dt,function(car)
 		explodeCar(state,car,car.fireOwner or 0,v(0,1,0),false)
 	end)

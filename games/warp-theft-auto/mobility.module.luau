@@ -36,7 +36,7 @@ end
 local function nearest(m, p)
 	local best, distance = nil, BOARD
 	for i, car in m.vehicles do
-		if car.owner or car.storyDriver or car.wrecked or math.abs(car.speed) > FAST then continue end
+		if car.owner or (car.storyDriver and car.storyDriver~=car.driverActor) or car.wrecked or math.abs(car.speed) > FAST then continue end
 		local d = vector.magnitude(p.pos-car.pos)
 		if d < distance then best, distance = i, d end
 	end
@@ -95,7 +95,12 @@ local function interact(m,p)
 		local i = nearest(m,p)
 		if i then
 			local car = m.vehicles[i]
-			car.owner, car.auto = p.id, nil
+			if car.driverActor then
+				local key=tostring(i)
+				if not m.drivers:dismount(key,true) then return end
+				m.drivers.people[key].escapeSource=p.pos
+			end
+			car.owner, car.auto, car.driver, car.panic = p.id, nil, nil, nil
 			p.mode = if car.kind=="car" then "drive" else "fly"
 			p.vehicle, p.nearby, p.view, p.pitch = i, nil, car.yaw, 0
 		end
@@ -184,7 +189,14 @@ function mobility.tick(m,dt,input)
 		if car.kind=="car" then
 			if car.active then models.sync(car) end
 			local contact=contacts[car.native]
-			if contact then models.hit(car,contact.point,math.clamp((contact.deltaV-1.2)/14,0,1)) end
+			if contact then
+				if car.panic and car.driver and contact.deltaV>=3 then
+					-- A crash near the end of a panic can leave the driver pinned
+					-- after gunfire stops. Give them time to escape on foot.
+					car.driver.crashWatchUntil=game.time()+7
+				end
+				models.hit(car,contact.point,math.clamp((contact.deltaV-1.2)/14,0,1))
+			end
 		end
 		if car.releaseWhenEmpty and not car.owner then mobility.release_car(m,car) end
 	end
