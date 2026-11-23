@@ -164,7 +164,22 @@ fn walking_shooters_keep_both_hands_on_their_own_weapon_through_aim_and_recoil()
     tick(&mut game,[Controls::default();2],16);
     check(&mut game, r#"
         state.checkHold(1,vector.create(.072,-.012,.045))
-        state.checkHold(2,vector.create(.065,.05,.245))
+        state.checkHold(2,vector.create(.083,.028,.245))
+        state.checkMuzzle=function(id,tag)
+            local p=state.combat.players[id]
+            local forward=vector.create(math.sin(p.turn.y)*math.cos(p.turn.x),-math.sin(p.turn.x),math.cos(p.turn.y)*math.cos(p.turn.x))
+            local muzzle=-math.huge
+            for _,partId in world.find(tag) do
+                local part=world.get(partId)
+                if part.parent==p.prop then
+                    local half=if part.shape=="capsule" then part.size.y else part.size.z*.5
+                    muzzle=math.max(muzzle,vector.dot(part.world_pos-world.get(p.prop).pos,forward)+half)
+                end
+            end
+            local tip=vector.dot(p.tip-world.get(p.prop).pos,forward)
+            assert(math.abs(tip-muzzle)<.003,"muzzle flash must start at the end of the rendered barrel")
+        end
+        state.checkMuzzle(2,"launcher-part")
         assert(state.combat.players[1].turn.x>.75)
         state.carry=humans.joint(state.population.avatars[1],"hand_r").y
     "#);
@@ -188,8 +203,11 @@ fn walking_shooters_keep_both_hands_on_their_own_weapon_through_aim_and_recoil()
     check(&mut game, r#"
         assert(state.fleet.players[1].speed>1 and state.combat.players[1].kick<.005)
         state.checkHold(1,vector.create(.072,-.012,.045))
-        state.checkHold(2,vector.create(.065,.05,.245))
+        state.checkHold(2,vector.create(.083,.028,.245))
+        state.fleet.players[2].weapon="sniper"
     "#);
+    tick(&mut game,[strafe,aim()],2);
+    check(&mut game, r#"state.checkMuzzle(2,"growing-gun-part")"#);
 }
 
 #[test]
