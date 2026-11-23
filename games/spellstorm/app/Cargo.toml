@@ -35,6 +35,6 @@ hecs = "0.10"
 naga = { version = "30", features = ["wgsl-in"] }
 tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 
-# The browser build (web.rs): std::time::Instant panics there.
-[target.'cfg(target_arch = "wasm32")'.dependencies]
+# The browser build and the Android host (web.rs): std::time::Instant panics in a browser.
+[target.'cfg(any(target_arch = "wasm32", target_os = "android"))'.dependencies]
 web-time = "1.1"

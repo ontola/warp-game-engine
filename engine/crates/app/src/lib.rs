@@ -42,13 +42,22 @@ pub mod web;
 /// A host in this program takes the game back to its lobby (a browser page
 /// with its room, [`web::on_exit`]): games offer "Back to lobby" then.
 pub fn host_takes_back() -> bool {
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
     { web::takes_back() }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     { false }
 }
 #[cfg(target_arch = "wasm32")]
 mod web_pads;
+/// The Android shell (a NativeActivity with Vulkan): the browser shell's
+/// API ([`web`] there), so the Game Room's browser host runs natively on a
+/// phone. See engine/docs/android-host.md.
+#[cfg(target_os = "android")]
+pub mod android;
+#[cfg(target_os = "android")]
+pub use android as web;
+#[cfg(target_os = "android")]
+mod android_pads;
 pub use frame_rate::FrameRate;
 
 pub use input::{Buttons, Controls, Device, Devices, Pointer, Tuning};

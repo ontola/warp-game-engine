@@ -108,7 +108,10 @@ parser.add_argument('--glb', action='append', default=[], help='a GLB to copy in
 parser.add_argument('--warp', action='store_true', help='build the Game Room with Luau games (lobbies/game-room/examples/browser/main.rs)')
 parser.add_argument('--bare', action='store_true', help='with --warp: the games without the room (examples/warp_web.rs)')
 parser.add_argument('--games', default=','.join(WARP_GAMES), help='games/ folders to serve with --warp (comma separated)')
+parser.add_argument('--assets-only', metavar='DIR', help="with --warp: only the room's files and the games (no wasm, no page) into DIR: the Android host's bundle (build-android-host.py)")
 args = parser.parse_args()
+if args.assets_only:
+    OUT = Path(args.assets_only).resolve()
 if args.warp:
     args.package, args.example = ('warp', 'warp_web') if args.bare else ('game-room', 'browser')
 
@@ -212,6 +215,14 @@ def copy_games(names):
                          'players': f'{lo}-{hi}' if lo != hi else str(lo), 'min_players': lo, 'max_players': hi, 'has_cover': cover.exists(), 'bots': 0, 'builtin': True})
     (out / 'index.json').write_text(json.dumps(names))
     (out / 'library.json').write_text(json.dumps(library))
+
+if args.assets_only:
+    # What the Android host fetches from its APK (app::android::fetch): the
+    # games, the shelf, the covers and the baked room light.
+    OUT.mkdir(parents=True, exist_ok=True)
+    copy_games([g for g in args.games.split(',') if g])
+    subprocess.run(['cargo', 'run', '--release', '-p', 'game-room', '--', 'bake-light', '--out', str(OUT / 'room-light.bin')], cwd=ROOT, check=True)
+    sys.exit(0)
 
 if not args.no_build:
     lock = (ROOT / 'Cargo.lock').read_text()

@@ -15,18 +15,24 @@
 //! controller or the QR code until someone joins), `?game=NAME` starts in that game instead of the room,
 //! `?cloud=URL` the Splitscreen Club cloud (default: the page's own origin;
 //! `?cloud=off` plays without one). See engine/docs/browser.md.
+//!
+//! The same host runs natively in the Android app (lobbies/game-room/android,
+//! engine/docs/android-host.md): app::web is the Android shell there, the
+//! page's HTML hints are lines over the picture (app::android::banner) and
+//! the address's query is the intent's `query` extra.
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
 mod builtin;
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
 mod cloud;
 
-#[cfg(target_arch = "wasm32")]
-mod page {
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
+pub(crate) mod page {
     use app::{Buttons, Config, Controls, Device, Draw, Frame, Game};
     use game_room::live::Lobby;
     use serde_json::{json, Value};
     use std::cell::RefCell;
+    #[cfg(target_arch = "wasm32")]
     use wasm_bindgen::prelude::wasm_bindgen;
 
     /// Shelf colours for the games, in library order.
@@ -69,7 +75,7 @@ mod page {
         pub(crate) phone: Vec<bool>,
         /// The next new player's id number (ids stay when others leave).
         next_id: usize,
-        pub(crate) cloud: crate::cloud::Cloud,
+        pub(crate) cloud: super::cloud::Cloud,
         /// A key pressed since the room last ticked (its buttons).
         key: Option<u32>,
         /// The room log for the cloud room's phones, oldest first (its
@@ -121,7 +127,7 @@ mod page {
 
     fn set_session(h: &mut Host, game: Option<&str>, phase: &str) {
         // One id per session, kept over pause and resume (the cloud's insights count it).
-        let id = match &h.party["active_session"] { s if game.is_some_and(|g| s["game"] == g) => s["id"].clone(), _ => json!(crate::cloud::uuid()) };
+        let id = match &h.party["active_session"] { s if game.is_some_and(|g| s["game"] == g) => s["id"].clone(), _ => json!(super::cloud::uuid()) };
         h.party["active_session"] = match game { Some(g) => json!({"id": id, "game": g, "phase": phase}), None => Value::Null };
         h.dirty = true;
         h.cloud.refresh = true;
@@ -370,8 +376,16 @@ mod page {
     fn empty_room(empty: bool) {
         thread_local! { static SHOWN: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) }; }
         if SHOWN.with(|s| s.replace(Some(empty))) == Some(empty) { return; }
-        let Some(root) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.document_element()) else { return };
-        let _ = if empty { root.set_attribute("data-empty", "") } else { root.remove_attribute("data-empty") };
+        #[cfg(target_os = "android")]
+        {
+            const EMPTY: &str = "Press A on a controller to join, or scan the room's code with your phone";
+            if empty { app::web::banner(EMPTY, None) } else { app::web::clear_banner(Some(EMPTY)) }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let Some(root) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.document_element()) else { return };
+            let _ = if empty { root.set_attribute("data-empty", "") } else { root.remove_attribute("data-empty") };
+        }
     }
 
     /// A key pressed while nobody plays on the keyboard: the page shows
@@ -381,11 +395,16 @@ mod page {
         if LAST.with(|l| l.get().is_some_and(|t| t.elapsed().as_secs_f32() < 4.0)) { return; }
         LAST.with(|l| l.set(Some(web_time::Instant::now())));
         app::web::log("keyboard: a key, nobody on it; Enter joins");
-        let Some(root) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.document_element()) else { return };
-        // Off, a layout, on: the animation runs again.
-        let _ = root.remove_attribute("data-key-hint");
-        let _ = root.get_bounding_client_rect();
-        let _ = root.set_attribute("data-key-hint", "");
+        #[cfg(target_os = "android")]
+        app::web::banner("Press Enter to join", Some(4.0));
+        #[cfg(target_arch = "wasm32")]
+        {
+            let Some(root) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.document_element()) else { return };
+            // Off, a layout, on: the animation runs again.
+            let _ = root.remove_attribute("data-key-hint");
+            let _ = root.get_bounding_client_rect();
+            let _ = root.set_attribute("data-key-hint", "");
+        }
     }
 
     /// In a game, a controller (or the keyboard: `keyboard`) nobody plays
@@ -406,20 +425,33 @@ mod page {
 
     fn show_hint(key: &str, text: &str) {
         app::web::log(&format!("hint: {text}"));
-        let Some(doc) = web_sys::window().and_then(|w| w.document()) else { return };
-        if let Some(e) = doc.get_element_by_id("join-key") { e.set_text_content(Some(key)); }
-        if let Some(e) = doc.get_element_by_id("join-text") { e.set_text_content(Some(text)); }
-        let Some(root) = doc.document_element() else { return };
-        let _ = root.remove_attribute("data-join-hint");
-        let _ = root.get_bounding_client_rect();
-        let _ = root.set_attribute("data-join-hint", "");
+        #[cfg(target_os = "android")]
+        { let _ = key; app::web::banner(text, Some(4.0)); }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let Some(doc) = web_sys::window().and_then(|w| w.document()) else { return };
+            if let Some(e) = doc.get_element_by_id("join-key") { e.set_text_content(Some(key)); }
+            if let Some(e) = doc.get_element_by_id("join-text") { e.set_text_content(Some(text)); }
+            let Some(root) = doc.document_element() else { return };
+            let _ = root.remove_attribute("data-join-hint");
+            let _ = root.get_bounding_client_rect();
+            let _ = root.set_attribute("data-join-hint", "");
+        }
     }
 
     /// The first game this page starts: the page shows for a few seconds how
     /// to get back to the room (`<html data-back-hint>`, see index.html).
     fn back_hint() {
-        let Some(root) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.document_element()) else { return };
-        if !root.has_attribute("data-back-hint") { let _ = root.set_attribute("data-back-hint", ""); }
+        #[cfg(target_os = "android")]
+        {
+            thread_local! { static SHOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+            if !SHOWN.with(|s| s.replace(true)) { app::web::banner("Back on a controller brings you back to the room", Some(5.0)); }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let Some(root) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.document_element()) else { return };
+            if !root.has_attribute("data-back-hint") { let _ = root.set_attribute("data-back-hint", ""); }
+        }
     }
 
     /// The room on screen: its lobby, and the page's host answering it.
@@ -452,7 +484,7 @@ mod page {
                 }),
                 "room_pickup" => {
                     let seat = msg["player_id"].as_str().and_then(|p| with(|h| seat_of(h, p)));
-                    if let (Some(pending), Some(seat)) = (msg["pending"].as_str(), seat) { crate::cloud::pickup(pending.to_string(), seat); }
+                    if let (Some(pending), Some(seat)) = (msg["pending"].as_str(), seat) { super::cloud::pickup(pending.to_string(), seat); }
                 }
                 _ => {}
             }
@@ -524,9 +556,9 @@ mod page {
             Some((id, folder, h.players))
         });
         let Some((game, folder, players)) = found else { app::web::log(&format!("{game}: not on this page, or a game is loading")); return };
-        wasm_bindgen_futures::spawn_local(async move {
+        app::web::spawn(async move {
             let t0 = web_time::Instant::now();
-            let loaded = match crate::builtin::load(&folder, players).await {
+            let loaded = match super::builtin::load(&folder, players).await {
                 Some(l) => l,
                 None => warp::web::load(&folder, Some(players)).await.map(|(c, g)| (c, Box::new(g) as Box<dyn Game>)),
             };
@@ -587,11 +619,12 @@ mod page {
     }
 
     pub fn main() {
+        #[cfg(target_arch = "wasm32")]
         script::web::init();
         app::web::install_panic_hook();
         // After the room is up, loading a game shows on its TV only.
         app::web::quiet_progress();
-        wasm_bindgen_futures::spawn_local(async {
+        app::web::spawn(async {
             if let Err(e) = run().await { app::web::progress(Some(0.3), &format!("Could not start: {e}")); app::web::log(&e); }
         });
     }
@@ -600,7 +633,7 @@ mod page {
         let library: Vec<Value> = serde_json::from_slice(&app::web::fetch("games/library.json").await?).map_err(|e| format!("games/library.json: {e}"))?;
         let players = warp::web::param("players").and_then(|p| p.parse().ok()).unwrap_or(0usize).min(MAX_SEATS);
         // The room's QR code on the loading screen while the room is built.
-        crate::cloud::register_early();
+        super::cloud::register_early();
         app::web::progress(Some(0.2), "Building the Game Room");
         let t0 = web_time::Instant::now();
         let mut options = game_room::stage::Options::default();
@@ -641,7 +674,7 @@ mod page {
         let covers: Vec<(String, String)> = with(|h| h.party["library"].as_array().into_iter().flatten()
             .filter(|g| g["has_cover"] == true)
             .filter_map(|g| Some((g["id"].as_str()?.to_string(), format!("games/{}/cover.png", g["folder"].as_str()?)))).collect());
-        wasm_bindgen_futures::spawn_local(async move {
+        app::web::spawn(async move {
             for (game, url) in covers {
                 match app::web::fetch(&url).await {
                     Ok(png) => with(|h| h.covers.push((game, png))),
@@ -652,22 +685,25 @@ mod page {
         app::web::on_exit(leave);
         app::web::on_devices(|d| with(|h| devices(h, d)));
         app::web::run(room_config(), Box::new(Room { lobby }));
-        crate::cloud::start(players);
+        super::cloud::start(players);
         if let Some(game) = warp::web::param("game") { start(game); }
         Ok(())
     }
 
     /// Start game `name` (folder or store id) from the page (its buttons), as the shelf's Play does.
-    #[wasm_bindgen]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
+    #[cfg_attr(target_os = "android", allow(dead_code))]
     pub fn switch_game(name: String) { start(name); }
 
     /// Claim waiting profile `pending` (its id) for seat `seat`, as a player
     /// at a door does (for tests, and pages with their own controls).
-    #[wasm_bindgen]
-    pub fn pick_up(pending: String, seat: usize) { crate::cloud::pickup(pending, seat); }
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
+    #[cfg_attr(target_os = "android", allow(dead_code))]
+    pub fn pick_up(pending: String, seat: usize) { super::cloud::pickup(pending, seat); }
 
     /// Back to the room, as Back on a pad does.
-    #[wasm_bindgen]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
+    #[cfg_attr(target_os = "android", allow(dead_code))]
     pub fn back_to_room() { leave(app::web::Exit::Back); }
 }
 
@@ -675,4 +711,5 @@ mod page {
 fn main() { page::main(); }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
 fn main() { eprintln!("browser is the Game Room's browser build: engine/tools/build-web.py --warp (engine/docs/browser.md)"); }

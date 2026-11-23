@@ -29,6 +29,7 @@ pub mod world;
 pub use game::{LuaGame, Overrides};
 
 pub mod storage;
-/// Luau games in a browser: fetched game folders, WebAudio, the page's query.
-#[cfg(target_arch = "wasm32")]
+/// Luau games in a browser (and the Android host, app::android): fetched
+/// game folders, one sound output, the page's query.
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
 pub mod web;

@@ -200,7 +200,9 @@ pub fn shot(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(target_os = "android")]
+/// The Quest build's entry; the Android phone host (lobbies/game-room/android)
+/// has its own and turns this off (default feature `quest`).
+#[cfg(all(target_os = "android", feature = "quest"))]
 #[unsafe(no_mangle)]
 fn android_main(app: android_activity::AndroidApp) {
     android_logger::init_once(android_logger::Config::default().with_tag("WarpXR").with_max_level(log::LevelFilter::Info));

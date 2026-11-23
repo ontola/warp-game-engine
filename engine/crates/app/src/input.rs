@@ -142,11 +142,16 @@ fn pad_button(b: PadButton) -> u32 {
     }
 }
 
-#[cfg(any(not(target_os = "android"), test))]
 fn shape(v: f32, t: &Tuning) -> f32 {
     let a = v.abs();
     if a < t.deadzone { 0.0 } else { v.signum() * ((a - t.deadzone) / (1.0 - t.deadzone)).powf(t.curve) }
 }
+
+/// Where the pad readings come from without gilrs.
+#[cfg(target_arch = "wasm32")]
+use crate::web_pads as pads;
+#[cfg(target_os = "android")]
+use crate::android_pads as pads;
 
 #[derive(Default)]
 struct Keyboard { keys: HashSet<KeyCode>, mouse: u32, look: [f64; 2], pressed: u32 }
@@ -190,12 +195,13 @@ pub struct Devices {
     /// Live rumble per pad; dropping an effect stops it.
     #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
     rumble: std::collections::HashMap<GamepadId, gilrs::ff::Effect>,
-    /// Browser pads (crate::web_pads): (getGamepads slot, buttons held at
-    /// the last poll, presses since the last tick), and the latest readings.
-    #[cfg(target_arch = "wasm32")]
+    /// Browser pads (crate::web_pads) and Android's (crate::android_pads):
+    /// (slot or device id, buttons held at the last poll, presses since the
+    /// last tick), and the latest readings.
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
     web_pads: Vec<(u32, u32, u32)>,
-    #[cfg(target_arch = "wasm32")]
-    web_readings: Vec<crate::web_pads::Reading>,
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+    web_readings: Vec<pads::Reading>,
 }
 
 impl Devices {
@@ -208,8 +214,8 @@ impl Devices {
             #[cfg(not(any(target_os = "android", target_arch = "wasm32")))] gilrs,
             #[cfg(not(any(target_os = "android", target_arch = "wasm32")))] pads,
             #[cfg(not(any(target_os = "android", target_arch = "wasm32")))] rumble: Default::default(),
-            #[cfg(target_arch = "wasm32")] web_pads: Vec::new(),
-            #[cfg(target_arch = "wasm32")] web_readings: Vec::new() }
+            #[cfg(any(target_arch = "wasm32", target_os = "android"))] web_pads: Vec::new(),
+            #[cfg(any(target_arch = "wasm32", target_os = "android"))] web_readings: Vec::new() }
     }
 
     /// Vibrate local pad `pad` (in `controls` order, after the keyboard):
@@ -246,9 +252,7 @@ impl Devices {
     }
     #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
     pub fn pad_count(&self) -> usize { self.pads.len() }
-    #[cfg(target_os = "android")]
-    pub fn pad_count(&self) -> usize { 0 }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
     pub fn pad_count(&self) -> usize { self.web_pads.len() }
 
     pub fn key(&mut self, code: KeyCode, state: ElementState, repeat: bool) {
@@ -367,14 +371,11 @@ impl Devices {
         self.pointer.wheel = 0.0;
     }
 
-    /// Drain pad events (edges) once per frame.
-    #[cfg(target_os = "android")]
-    pub fn poll(&mut self) {}
-    /// Read the browser's pads once per frame: new pads join in the order
-    /// they appear, presses collect until the next tick.
-    #[cfg(target_arch = "wasm32")]
+    /// Read the browser's (or Android's) pads once per frame: new pads join
+    /// in the order they appear, presses collect until the next tick.
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
     pub fn poll(&mut self) {
-        let readings = crate::web_pads::read();
+        let readings = pads::read();
         self.web_pads.retain(|p| readings.iter().any(|r| r.index == p.0));
         for r in &readings {
             match self.web_pads.iter_mut().find(|p| p.0 == r.index) {
@@ -403,7 +404,7 @@ impl Devices {
         if self.keyboard_enabled { v.push(Device::Keyboard); }
         #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
         if let Some(g) = &self.gilrs { v.extend(self.pads.iter().filter(|p| g.gamepad(p.0).is_connected()).map(|p| Device::Pad(usize::from(p.0) as u32))); }
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(any(target_arch = "wasm32", target_os = "android"))]
         v.extend(self.web_pads.iter().map(|p| Device::Pad(p.0)));
         v
     }
@@ -418,8 +419,6 @@ impl Devices {
     /// One tick of every connected device's input, keyboard first, then
     /// pads; consumes edges and mouse motion.
     pub fn device_controls(&mut self, dt: f32) -> Vec<(Device, Controls)> {
-        #[cfg(target_os = "android")]
-        let _ = dt;
         let t = self.tuning;
         let mut devices = Vec::new();
         if self.keyboard_enabled {
@@ -475,7 +474,7 @@ impl Devices {
                 }));
             }
         }
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(any(target_arch = "wasm32", target_os = "android"))]
         for (index, _, pressed) in &mut self.web_pads {
             let Some(r) = self.web_readings.iter().find(|r| r.index == *index) else { continue };
             let aim = [shape(r.sticks[2], &t), shape(r.sticks[3], &t)];

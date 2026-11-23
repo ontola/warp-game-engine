@@ -51,7 +51,7 @@ pub fn sound() -> Option<audio::synth::SoundSender> {
                 Box::new(mix)
             }) {
                 Ok(speaker) => {
-                    app::web::log(&format!("sound: WebAudio, {} Hz, {} channels", speaker.rate, speaker.channels));
+                    app::web::log(&format!("sound: {} Hz, {} channels", speaker.rate, speaker.channels));
                     *s = Some((speaker, sender.expect("made in open")));
                 }
                 Err(e) => app::web::log(&format!("sound off: {e}")),
@@ -62,6 +62,11 @@ pub fn sound() -> Option<audio::synth::SoundSender> {
 }
 
 /// A value from the page's query string (`?game=neon-siege&players=2`).
+#[cfg(target_os = "android")]
+pub fn param(k: &str) -> Option<String> { app::web::query_param(k) }
+
+/// A value from the page's query string (`?game=neon-siege&players=2`).
+#[cfg(target_arch = "wasm32")]
 pub fn param(k: &str) -> Option<String> {
     let query = web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default();
     query.trim_start_matches('?').split('&').find_map(|kv| kv.split_once('=').filter(|(key, _)| *key == k).map(|(_, v)| v.to_owned()))
