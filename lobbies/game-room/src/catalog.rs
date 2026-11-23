@@ -26,9 +26,10 @@ pub use crate::paint::Cover;
 
 #[derive(Default)]
 pub struct Catalog {
-    /// Open, with the shelf offset easing towards its slot (for the slide).
+    /// Open; the first row shown (eased towards `scroll`, in rows).
     pub open: bool,
     pub shown: f32,
+    scroll: f32,
     /// When it opened, for the fade in.
     pub opened_at: f32,
     /// The covers decoded so far (None: none or undecodable).
@@ -41,8 +42,29 @@ pub struct Catalog {
 }
 
 /// What the catalog draws where: per visible game, its shelf index and
-/// rectangle (middle last), and the play, queue and close buttons.
-pub struct Layout { pub cards: Vec<(usize, [f32; 4])>, pub buttons: Vec<(&'static str, [f32; 4])> }
+/// rectangle, the grid's area (cards clip to it), and the play, queue and
+/// close buttons.
+pub struct Layout { pub cards: Vec<(usize, [f32; 4])>, pub area: [f32; 4], pub buttons: Vec<(&'static str, [f32; 4])> }
+
+/// The grid on a screen of `size` for `n` games: columns, card size, gap,
+/// the area it scrolls in and how many rows fit there.
+struct Grid { cols: usize, card: [f32; 2], gap: f32, area: [f32; 4], rows: usize }
+
+fn grid(size: [u32; 2], n: usize) -> Grid {
+    let (w, h) = (size[0] as f32, size[1] as f32);
+    let scale = h / 1080.0;
+    let area = [48.0 * scale, 112.0 * scale, w - 96.0 * scale, h - 112.0 * scale - 250.0 * scale];
+    let gap = 28.0 * scale;
+    // Two rows of covers, up to 30% of the screen high each, never so
+    // wide that fewer than three fit across.
+    let card_h = (h * 0.3).min((area[3] - gap) / 2.0);
+    let mut card = [card_h * 0.75, card_h];
+    let mut cols = (((area[2] + gap) / (card[0] + gap)).floor() as usize).max(1);
+    if cols < 3 { cols = 3; card[0] = (area[2] - gap * 2.0) / 3.0; card[1] = card[0] / 0.75; }
+    cols = cols.min(n.max(1));
+    let rows = (((area[3] + gap) / (card[1] + gap)).floor() as usize).max(1);
+    Grid { cols, card, gap, area, rows }
+}
 
 impl Lobby {
     /// The catalog view is showing (chosen, and there are games for it).
@@ -59,7 +81,9 @@ impl Lobby {
     fn show_catalog(&mut self, open: bool) {
         if open && !self.catalog.open {
             self.catalog.opened_at = self.time;
-            self.catalog.shown = self.host.shelf_offset as f32;
+            let cols = grid(self.hud_size, self.host.shelf_games().len()).cols;
+            self.catalog.scroll = (self.host.shelf_offset / cols) as f32;
+            self.catalog.shown = self.catalog.scroll;
             self.catalog.sticks.clear();
             self.menus.remove(crate::mouse::MOUSE);
         }
@@ -96,12 +120,15 @@ impl Lobby {
         // its neighbours' covers too.
         self.decode_covers();
         if !self.catalog_open() { return; }
-        let n = self.host.shelf_games().len() as f32;
-        // Ease towards the shelf offset the short way round.
-        let target = self.host.shelf_offset as f32;
-        let mut d = (target - self.catalog.shown).rem_euclid(n);
-        if d > n / 2.0 { d -= n; }
-        self.catalog.shown = if d.abs() < 0.002 { target } else { (self.catalog.shown + d * (1.0 - (-delta * 14.0).exp())).rem_euclid(n) };
+        // Scroll (in rows) so the chosen game's row shows, eased.
+        let n = self.host.shelf_games().len();
+        let g = grid(self.hud_size, n);
+        let row = (self.host.shelf_offset / g.cols) as f32;
+        let last = (n.div_ceil(g.cols).saturating_sub(g.rows)) as f32;
+        let target = self.catalog.scroll.clamp(row - g.rows as f32 + 1.0, row).clamp(0.0, last);
+        self.catalog.scroll = target;
+        let d = target - self.catalog.shown;
+        self.catalog.shown = if d.abs() < 0.002 { target } else { self.catalog.shown + d * (1.0 - (-delta * 14.0).exp()) };
     }
 
     fn decode_covers(&mut self) {
@@ -122,8 +149,16 @@ impl Lobby {
         let stick_was = id.and_then(|id| self.catalog.sticks.insert(id.into(), stick)).unwrap_or([0.0; 2]);
         let left = pressed & (BTN_LB | BTN_LEFT) != 0 || (stick[0] < -0.6 && stick_was[0] >= -0.6);
         let right = pressed & (BTN_RB | BTN_RIGHT) != 0 || (stick[0] > 0.6 && stick_was[0] <= 0.6);
+        let up = pressed & BTN_UP != 0 || (stick[1] < -0.6 && stick_was[1] >= -0.6);
+        let down = pressed & BTN_DOWN != 0 || (stick[1] > 0.6 && stick_was[1] <= 0.6);
         if left { self.browse(-1); }
         if right { self.browse(1); }
+        // Up and down a row; not past the first or last one.
+        let n = self.host.shelf_games().len();
+        let cols = grid(self.hud_size, n).cols;
+        let at = self.host.shelf_offset;
+        if up && at >= cols { self.browse(-(cols as i64)); }
+        if down && at / cols < n.saturating_sub(1) / cols { self.browse(((at + cols).min(n - 1) - at) as i64); }
         if pressed & BTN_B != 0 { self.close_catalog(); return; }
         if pressed & (BTN_A | BTN_Y) != 0 { self.catalog_use(id, false); }
         if pressed & BTN_X != 0 { self.catalog_use(id, true); }
@@ -138,24 +173,29 @@ impl Lobby {
         self.use_station_as(id, station, queue);
     }
 
-    /// The mouse in the open catalog: the wheel browses, a click on a side
-    /// cover brings it to the middle, on the middle one (or Play) plays it.
+    /// The mouse in the open catalog: the wheel scrolls, a click on a cover
+    /// chooses it, on the chosen one (or Play) plays it.
     pub(crate) fn catalog_pointer(&mut self, p: Pointer, size: [u32; 2]) {
-        if p.wheel != 0.0 { self.browse(if p.wheel > 0.0 { -1 } else { 1 }); }
+        if p.wheel != 0.0 {
+            let n = self.host.shelf_games().len();
+            let g = grid(size, n);
+            let last = n.div_ceil(g.cols).saturating_sub(g.rows) as f32;
+            self.catalog.scroll = (self.catalog.scroll + if p.wheel > 0.0 { -1.0 } else { 1.0 }).clamp(0.0, last);
+        }
         let (Some(at), true) = (p.position, p.pressed) else { return };
         let layout = catalog_layout(self, size);
         if let Some((name, _)) = layout.buttons.iter().find(|(_, r)| inside(*r, at)) {
             match *name { "play" => self.catalog_use(None, false), "queue" => self.catalog_use(None, true), _ => self.close_catalog() }
             return;
         }
-        // The middle card is drawn last, so look from the end.
-        match layout.cards.iter().rev().find(|(_, r)| inside(*r, at)) {
+        if !inside(layout.area, at) { return; }
+        match layout.cards.iter().find(|(_, r)| inside(*r, at)) {
             Some(&(i, _)) if i == self.host.shelf_offset => self.catalog_use(None, false),
             Some(&(i, _)) => {
-                let n = self.host.shelf_games().len() as i64;
-                let mut step = (i as i64 - self.host.shelf_offset as i64).rem_euclid(n);
-                if step > n / 2 { step -= n; }
-                self.browse(step);
+                // Choosing by mouse leaves the scroll where it is.
+                let scroll = self.catalog.scroll;
+                self.browse(i as i64 - self.host.shelf_offset as i64);
+                self.catalog.scroll = scroll;
             }
             None => {}
         }
@@ -186,48 +226,40 @@ fn store_view(catalog: bool) {
     let _ = std::fs::write(file, if catalog { "catalog" } else { "room" });
 }
 
+fn intersect(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    let (x0, y0) = (a[0].max(b[0]), a[1].max(b[1]));
+    let (x1, y1) = ((a[0] + a[2]).min(b[0] + b[2]), (a[1] + a[3]).min(b[1] + b[3]));
+    [x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0)]
+}
+
 fn inside(r: [f32; 4], p: [f32; 2]) -> bool { p[0] >= r[0] && p[0] <= r[0] + r[2] && p[1] >= r[1] && p[1] <= r[1] + r[3] }
 
-/// Where the cards and buttons go on a screen of `size`: the middle cover
-/// tall, two each side smaller and further back.
+/// Where the cards and buttons go on a screen of `size`: the games in a
+/// grid (scrolled by rows), the buttons under it.
 pub fn catalog_layout(lobby: &Lobby, size: [u32; 2]) -> Layout {
     let (w, h) = (size[0] as f32, size[1] as f32);
     let n = lobby.host.shelf_games().len();
+    let g = grid(size, n);
     let mut cards = vec![];
-    if n == 0 { return Layout { cards, buttons: vec![] }; }
-    // Tall enough to be big, narrow enough that neighbours show on a narrow screen.
-    let card_h = (h * 0.56).min(w * 0.42 / 0.75);
-    let card_w = card_h * 0.75;
-    let (cx, cy) = (w / 2.0, h * 0.44);
-    let shown = lobby.catalog.shown;
-    let reach = 2.min((n as i64 - 1) / 2 + (n as i64 - 1) % 2) as i64;
-    let mut order: Vec<(f32, usize)> = vec![];
-    for k in -reach..=reach {
-        let i = (shown.round() as i64 + k).rem_euclid(n as i64) as usize;
-        let mut off = i as f32 - shown;
-        if off > n as f32 / 2.0 { off -= n as f32; }
-        if off < -(n as f32) / 2.0 { off += n as f32; }
-        order.push((off, i));
+    if n == 0 { return Layout { cards, area: g.area, buttons: vec![] }; }
+    let width = g.cols as f32 * g.card[0] + (g.cols as f32 - 1.0) * g.gap;
+    let x0 = g.area[0] + (g.area[2] - width) / 2.0;
+    // Fewer rows than fit: centred in the area.
+    let rows = n.div_ceil(g.cols);
+    let height = rows as f32 * g.card[1] + (rows as f32 - 1.0) * g.gap;
+    let y0 = g.area[1] + ((g.area[3] - height) / 2.0).max(0.0) - lobby.catalog.shown * (g.card[1] + g.gap);
+    for i in 0..n {
+        let (col, row) = ((i % g.cols) as f32, (i / g.cols) as f32);
+        let r = [x0 + col * (g.card[0] + g.gap), y0 + row * (g.card[1] + g.gap), g.card[0], g.card[1]];
+        if r[1] + r[3] > g.area[1] - g.gap && r[1] < g.area[1] + g.area[3] + g.gap { cards.push((i, r)); }
     }
-    // Far ones first, so the middle one draws over its neighbours.
-    order.sort_by(|a, b| b.0.abs().total_cmp(&a.0.abs()));
-    order.dedup_by_key(|o| o.1);
-    for (off, i) in order {
-        let scale = 1.0 - 0.2 * off.abs().min(2.5);
-        let (cw, ch) = (card_w * scale, card_h * scale);
-        // Each card tucks a little under the one in front of it.
-        let a = off.abs();
-        let along = if a <= 1.0 { 0.74 * a } else { 0.74 + 0.56 * (a - 1.0) };
-        let x = cx + off.signum() * along * card_w - cw / 2.0;
-        cards.push((i, [x, cy - ch / 2.0, cw, ch]));
-    }
-    let bh = (h * 0.06).max(36.0);
-    let y = cy + card_h / 2.0 + h * 0.1;
+    let bh = (h * 0.05).max(34.0);
+    let y = g.area[1] + g.area[3] + h * 0.1;
     let bw = bh * 3.6;
     let gap = bh * 0.4;
-    let x0 = cx - (bw * 3.0 + gap * 2.0) / 2.0;
-    let buttons = vec![("play", [x0, y, bw, bh]), ("queue", [x0 + bw + gap, y, bw, bh]), ("close", [x0 + 2.0 * (bw + gap), y, bw, bh])];
-    Layout { cards, buttons }
+    let bx = w / 2.0 - (bw * 3.0 + gap * 2.0) / 2.0;
+    let buttons = vec![("play", [bx, y, bw, bh]), ("queue", [bx + bw + gap, y, bw, bh]), ("close", [bx + 2.0 * (bw + gap), y, bw, bh])];
+    Layout { cards, area: g.area, buttons }
 }
 
 use crate::paint::fill_uv;
@@ -327,44 +359,36 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
     let mouse = lobby.mouse.at;
     let mut opens: Vec<(usize, [f32; 4], [f32; 4])> = vec![];
     let queue = lobby.host.upcoming();
+    // A little past the area, so the chosen card's frame is not cut off.
+    let pad = 8.0 * scale;
+    let area = [layout.area[0] - pad, layout.area[1] - pad, layout.area[2] + 2.0 * pad, layout.area[3] + 2.0 * pad];
+    // All cards in one layer: they never overlap (the HUD has few layers).
+    c.over();
+    c.clip_to(Some(area));
     for &(i, r) in &layout.cards {
-        c.over();
         let mid = i == middle;
-        let hover = mouse.is_some_and(|m| inside(r, m));
-        // A soft shadow, then the cover or a title card.
-        c.style_box([r[0] - 6.0 * scale, r[1] + 10.0 * scale, r[2] + 12.0 * scale, r[3] + 8.0 * scale], [18.0 * scale; 4], rgba(0.0, 0.0, 0.0, 0.45 * fade), None);
+        let hover = mouse.is_some_and(|m| inside(r, m) && inside(layout.area, m));
+        c.style_box([r[0] - 4.0 * scale, r[1] + 8.0 * scale, r[2] + 8.0 * scale, r[3] + 4.0 * scale], [14.0 * scale; 4], rgba(0.0, 0.0, 0.0, 0.45 * fade), None);
         if mid || hover {
             let b = 5.0 * scale;
-            c.style_box([r[0] - b, r[1] - b, r[2] + 2.0 * b, r[3] + 2.0 * b], [14.0 * scale; 4], if mid { TEXT } else { DIM }.with_alpha(fade), None);
+            c.style_box([r[0] - b, r[1] - b, r[2] + 2.0 * b, r[3] + 2.0 * b], [12.0 * scale; 4], if mid { TEXT } else { DIM }.with_alpha(fade), None);
         }
-        // Further back is darker (one layer per card: the HUD has few).
-        let big = layout.cards.last().map_or(r[3], |c| c.1[3]);
-        let far = (1.0 - r[3] / big) / 0.2;
-        let k = if mid { 1.0 } else if hover { 0.85 } else { (0.68 - 0.18 * far).max(0.3) };
-        // The part no nearer card covers: a card's title sits there, and
-        // nothing of it is drawn under the cards in front.
-        let (mut x0, mut x1) = (r[0], r[0] + r[2]);
-        for &(j, n) in layout.cards.iter().skip_while(|c| c.0 != i).skip(1) {
-            if j == i { continue; }
-            if n[0] > r[0] && n[0] < x1 { x1 = n[0]; }
-            if n[0] + n[2] < r[0] + r[2] && n[0] + n[2] > x0 { x0 = n[0] + n[2]; }
-        }
-        let open = [x0, r[1], (x1 - x0).max(1.0), r[3]];
+        let k = if mid { 1.0 } else if hover { 0.9 } else { 0.72 };
+        let open = intersect(r, area);
         opens.push((i, r, open));
-        c.clip_to(Some(open));
         match cover(i) {
             Some(art) => { c.provide(art.image, &art.picture); c.image(r, art.image, fill_uv(art.size, r), rgba(k, k, k, fade)); }
-            None => title_card(c, &shelf[i], r, open, k, fade),
+            None => title_card(c, &shelf[i], r, r, k, fade),
         }
-        c.clip_to(None);
     }
+    c.clip_to(None);
     c.over();
     // Over the cards, each only where its card shows: a loading game's
     // progress, and a queued game's place in the queue.
     for &(i, r, open) in &opens {
         let game = &shelf[i].id;
         c.clip_to(Some(open));
-        let k = r[3] / opens.last().map_or(r[3], |o| o.1[3]);
+        let k = 0.8;
         if let Some(percent) = lobby.host.loading_shown(game) {
             let bh = (34.0 * scale * k).floor();
             let band = [r[0], r[1] + r[3] - bh * 1.9, r[2], bh * 1.9];
@@ -388,7 +412,7 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
     }
     c.clip_to(None);
     let station = lobby.host.station_at((game_room_sim::layout::GAME_SHELF.0 + game_room_sim::layout::GAME_SHELF.1) / 2.0, None);
-    let card_bottom = layout.cards.last().map_or(h * 0.72, |c| c.1[1] + c.1[3]);
+    let card_bottom = layout.area[1] + layout.area[3];
     let title = if shelf[middle].title.is_empty() { "Game" } else { &shelf[middle].title };
     c.text(faces.bold, [0.0, card_bottom + 58.0 * scale], title, TextAlign::Center, w, (44.0 * scale).floor(), TEXT.with_alpha(fade));
     if let Some(s) = station.as_ref().filter(|s| !s.enabled) {
@@ -430,6 +454,6 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
             c.text(faces.regular, [qx + fs * 2.6, qy + qh - fs * 0.6], &format!("+{} more", queue.len() - shown), TextAlign::Left, -1.0, (fs * 0.8).floor(), DIM.with_alpha(fade));
         }
     }
-    let hint = "LB / RB browse  ·  click a cover to bring it to the middle  ·  R3 or B: back to the room";
+    let hint = "Stick or D-pad: choose  ·  A play  ·  X queue  ·  R3 or B: back to the room";
     c.text(faces.regular, [0.0, h - 36.0 * scale], hint, TextAlign::Center, w, (19.0 * scale).floor(), DIM.with_alpha(fade));
 }
