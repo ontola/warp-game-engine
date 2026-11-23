@@ -547,3 +547,29 @@ fn threatened_traffic_rolls_through_its_usual_stop() {
     let fleeing=run(true);
     assert!(calm<1. && fleeing>calm+3.,"intersection travel after 1.35s: {calm:.2} m calm, {fleeing:.2} m frightened");
 }
+
+#[test]
+fn a_driver_pinned_while_slowing_after_an_escape_leaves_the_car() {
+    let mut game=traffic_game();
+    traffic_ticks(&mut game,22);
+    game.luau(r#"
+        local f,c=state.fleet,state.motorist
+        local heading=vector.create(-math.sin(c.yaw),0,-math.cos(c.yaw))
+        local seat=f.players[2]
+        world.place(seat.body,c.pos+heading*16+vector.create(0,.85,0))
+        seat.view,seat.pitch=math.atan2(heading.x,heading.z),-.048
+        state.runner=f.drivers.people[tostring(c.index)]
+    "#).unwrap();
+    traffic_ticks(&mut game,1);
+    shoot_from_second_seat(&mut game);
+    game.luau("assert(state.motorist.panic and state.motorist.driver.step==-1)").unwrap();
+    let mut crashed_while_slowing=false;
+    for _ in 0..135 {
+        traffic_ticks(&mut game,7);
+        let crashed=game.luau("local c=state.motorist; return not c.panic and c.damage.total>.20").unwrap();
+        if crashed=="true" { crashed_while_slowing=true; }
+        if game.luau("return state.runner.rideId==nil").unwrap()=="true" { break; }
+    }
+    assert!(crashed_while_slowing);
+    game.luau("assert(not state.runner.dead and not state.runner.rideId and not state.motorist.auto)").unwrap();
+}
