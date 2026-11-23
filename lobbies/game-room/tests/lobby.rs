@@ -283,7 +283,7 @@ fn the_catalog_shows_every_game_and_plays_the_middle_one() {
         lobby.input("p0", 0, [0.0; 2]);
         lobby.update(1.0 / 60.0);
     };
-    use game_room_sim::world::{BTN_A, BTN_B, BTN_BACK, BTN_RB, BTN_RS};
+    use game_room_sim::world::{BTN_A, BTN_B, BTN_BACK, BTN_DOWN, BTN_LEFT, BTN_RB, BTN_RS};
     // A player that joined holds nothing at first (input waits for a release).
     lobby.input("p0", 0, [0.0; 2]);
     assert_eq!(lobby.host.shelf_games().len(), 3);
@@ -312,16 +312,20 @@ fn the_catalog_shows_every_game_and_plays_the_middle_one() {
     let start = lobby.host.shelf_offset;
     press(&mut lobby, BTN_RB);
     assert_eq!(lobby.host.shelf_offset, (start + 1) % 3, "RB browses");
+    press(&mut lobby, BTN_DOWN);
+    assert_eq!(lobby.host.shelf_offset, (start + 1) % 3, "one row of three: down stays");
+    press(&mut lobby, BTN_LEFT);
+    assert_eq!(lobby.host.shelf_offset, start, "left browses back");
     let _ = game_room::hud::draw(&lobby, [1920, 1080], 1.0);
 
-    // The mouse clicks a side cover to bring it to the middle.
+    // The mouse clicks another cover to choose it.
     let size = [1920, 1080];
     for _ in 0..60 { lobby.update(1.0 / 60.0); }
     let layout = game_room::catalog::catalog_layout(&lobby, size);
     let &(side, r) = layout.cards.iter().find(|(i, _)| *i != lobby.host.shelf_offset).unwrap();
     app::Game::pointer(&mut lobby, app::Pointer { position: Some([r[0] + 4.0, r[1] + r[3] / 2.0]), moved: true, pressed: true, ..Default::default() }, size);
     lobby.update(1.0 / 60.0);
-    assert_eq!(lobby.host.shelf_offset, side, "a click on a side cover brings it to the middle");
+    assert_eq!(lobby.host.shelf_offset, side, "a click on another cover chooses it");
 
     // A plays it now; the room stays in the catalog view for after the game.
     let game = lobby.show.shelf[side].id.clone();

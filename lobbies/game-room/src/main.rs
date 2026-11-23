@@ -87,7 +87,9 @@ fn run() -> Result<(), String> {
         // covers games in this repo ship (games/*/assets/gamenight/cover.png).
         if flag("--catalog") || flag("--shelf") {
             let mut party = lobby.host.party.clone();
-            let games = [("dead-miles", "Dead Miles", "#b5482f"), ("relay-keepers", "Relay Keepers", "#3fb6a8"), ("neon-siege", "Neon Siege", "#ff3df0"), ("spellstorm", "Spellstorm", "#7c5cff"), ("sideways", "Sideways", "#f2a93b")];
+            let games = [("dead-miles", "Dead Miles", "#b5482f"), ("relay-keepers", "Relay Keepers", "#3fb6a8"), ("neon-siege", "Neon Siege", "#ff3df0"), ("spellstorm", "Spellstorm", "#7c5cff"), ("sideways", "Sideways", "#f2a93b"),
+                ("space-racer", "Space Racer", "#3d8bff"), ("ball-kickers", "Ball Kickers", "#47c26b"), ("hexstead", "Hexstead", "#c9a227"), ("bombing-bugs", "Bombing Bugs", "#e2574c"),
+                ("stack-together", "Stack Together", "#ff8fb8"), ("pocket-aces", "Pocket Aces", "#2fa36b"), ("growing-guns", "Growing Guns", "#8a5cff"), ("hello-warp", "Hello Warp", "#3fb6a8")];
             party["library"] = serde_json::Value::Array(games.iter().map(|(id, title, color)| serde_json::json!({"id": id, "title": title, "color": color})).collect());
             party["playlist"] = serde_json::json!({"entries": [{"game": "dead-miles", "title": "Dead Miles"}, {"game": "relay-keepers", "title": "Relay Keepers"}, {"game": "spellstorm", "title": "Spellstorm"}], "current": null});
             party["warm_session"] = serde_json::json!({"game": "dead-miles", "phase": "preparing", "progress": 0.6});
