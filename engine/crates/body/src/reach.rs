@@ -210,7 +210,7 @@ impl TwoHandHold {
         let spacing = secondary - primary;
         // Find a weapon translation that both arms can reach, keeping the
         // closest placement to the sampled primary hand when it already fits.
-        let mut primary = primary;
+        let mut primary = self.right.closest_target(pose, primary);
         for _ in 0..8 {
             let wanted = primary + spacing;
             let miss = self.left.closest_target(pose, wanted) - wanted;

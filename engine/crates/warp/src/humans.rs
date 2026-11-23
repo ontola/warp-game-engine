@@ -125,6 +125,8 @@ pub struct Rig {
     /// The rig's own skeleton (a broad-shouldered T-pose): the legs every
     /// person shares, and the cycles fitted to them.
     skeleton: Skeleton,
+    /// Bind-space palm orientations for gripping a forward-facing prop.
+    palms: [Quat; 2],
     /// The captures' rest pose, from the library's own skeleton.
     capture: [Vec3; BONES],
     walk: Cycle,
@@ -163,7 +165,13 @@ impl Rig {
         };
         let mut capture = [Vec3::ZERO; BONES];
         for (bone, _) in JOINTS { capture[bone as usize] = rest_of(bone)?; }
-        let skeleton = Skeleton::new(bind, &capture);
+        let arms = body::reach::TwoHandHold::bind(character.joints()).ok_or("humans: incomplete arm rig")?;
+        let skeleton = Skeleton::new(bind, &capture, arms);
+        let palms = [false, true].map(|left| {
+            let back = if left { Vec3::X } else { Vec3::NEG_X };
+            let grip = Quat::from_mat3(&glam::Mat3::from_cols(Vec3::Z, back, Vec3::Z.cross(back)));
+            grip * render::humans::hand_frame(left).inverse()
+        });
         let bound = &skeleton.bound;
         let find = |n: &str| lib.clip(n).ok_or_else(|| format!("humans: no capture {n}"));
         let walk = Cycle::fit(&lib, bound, find("Walk_Loop")?)?;
@@ -176,14 +184,16 @@ impl Rig {
         for (pose, clip) in [("attack", "Sword_Attack"), ("punch", "Punch_Cross"), ("jab", "Punch_Jab"), ("hit", "Hit_Chest"), ("hit_head", "Hit_Head"), ("dead", "Death01"), ("down", "Death01"), ("cast", "Spell_Simple_Shoot"), ("roll", "Roll")] {
             clips.insert(pose, find(clip)?);
         }
-        Ok(Rig { character, lib, joint, skeleton, capture, walk, jog, sprint, idle, crouch, crouch_idle, clips })
+        Ok(Rig { character, lib, joint, skeleton, palms, capture, walk, jog, sprint, idle, crouch, crouch_idle, clips })
     }
 
     /// A person's skeleton: the rig's with the spine, head and arms where
     /// that person's body has them (`Character::warp_human_joints`).
     fn skeleton_of(&self, person: &render::humans::Instance) -> Result<Skeleton, String> {
         let joints = self.character.warp_human_joints(person)?;
-        Ok(Skeleton::new(std::array::from_fn(|b| joints[self.joint[b]].1.w_axis.truncate()), &self.capture))
+        let arms = body::reach::TwoHandHold::bind(joints.iter().map(|(name, bind)| (name.as_str(), *bind)))
+            .ok_or("humans: incomplete fitted arm rig")?;
+        Ok(Skeleton::new(std::array::from_fn(|b| joints[self.joint[b]].1.w_axis.truncate()), &self.capture, arms))
     }
 }
 
@@ -195,10 +205,11 @@ struct Skeleton {
     bind: [Vec3; BONES],
     to_rest: [Mat4; BONES],
     bound: Bound,
+    arms: body::reach::TwoHandHold,
 }
 
 impl Skeleton {
-    fn new(bind: [Vec3; BONES], capture: &[Vec3; BONES]) -> Self {
+    fn new(bind: [Vec3; BONES], capture: &[Vec3; BONES], arms: body::reach::TwoHandHold) -> Self {
         // Turn each arm and leg segment onto the capture's direction, keeping
         // its length. The trunk, neck and collarbones stand as the body has
         // them: both rests are upright, and where one skeleton puts a joint
@@ -228,7 +239,7 @@ impl Skeleton {
         }
         let to_rest: [Mat4; BONES] = std::array::from_fn(|b| Mat4::from_translation(rest[b]) * Mat4::from_quat(turn[b]) * Mat4::from_translation(-bind[b]));
         let spots: Vec<(Bone, [f32; 3])> = JOINTS.iter().map(|(bone, _)| (*bone, rest[*bone as usize].to_array())).collect();
-        Skeleton { bind, to_rest, bound: Bound::from_joints(&spots) }
+        Skeleton { bind, to_rest, bound: Bound::from_joints(&spots), arms }
     }
 
     fn rest(&self, b: Bone) -> Vec3 { self.bind[b as usize] }
@@ -240,11 +251,26 @@ pub const JOINT_NAMES: &[(&str, Bone)] = &[("head", Bone::Head), ("neck", Bone::
     ("hand_l", Bone::HandL), ("hand_r", Bone::HandR), ("knee_l", Bone::CalfL), ("knee_r", Bone::CalfR), ("foot_l", Bone::FootL), ("foot_r", Bone::FootR)];
 
 /// The poses a game can ask for (`humans.set(id, {pose = ...})`).
-pub const POSES: &[&str] = &["walk", "idle", "sit", "crouch", "feed", "rise", "wave", "reach", "raise", "strike", "aim", "shove", "attack", "punch", "jab", "hit", "hit_head", "dead", "down", "cast", "roll"];
+pub const POSES: &[&str] = &["walk", "idle", "sit", "crouch", "feed", "rise", "wave", "reach", "raise", "strike", "aim", "hold", "shove", "attack", "punch", "jab", "hit", "hit_head", "dead", "down", "cast", "roll"];
 
 /// A person's gait between two ticks.
 #[derive(Clone, Copy, Default, Debug)]
 struct Gait { phase: f32, speed: f32 }
+
+/// Two wrist contacts for a held prop. Grip and support are expressed in
+/// metres, relative to the right shoulder and the primary wrist respectively.
+#[derive(Clone, Copy, Debug)]
+pub struct Hold {
+    pub grip: Vec3,
+    pub support: Vec3,
+    pub pitch: f32,
+}
+
+impl Default for Hold {
+    fn default() -> Self {
+        Self { grip: Vec3::new(0.08, -0.22, 0.24), support: Vec3::new(0.075, 0.02, 0.16), pitch: 0.0 }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Person {
@@ -266,6 +292,8 @@ pub struct Person {
     from: Gait,
     to: Gait,
     pub pose: String,
+    pub hold: Hold,
+    prev_hold: Hold,
     /// Progress through the pose, 0..1 (an attack's swing, a fall).
     pub t: f32,
     prev_t: f32,
@@ -406,7 +434,7 @@ impl Humans {
         let size = if p.cfg.distant > 0 { p.street_size(pool, look) } else { Vec3::ONE };
         let id = self.next;
         self.next += 1;
-        self.people.insert(id, Person { pool: pool.to_string(), slot, look, size, resident, pos, yaw, visible: true, prev_pos: pos, prev_yaw: yaw, legs: 0.0, prev_legs: 0.0, from: gait, to: gait, pose: "walk".into(), t: 0.0, prev_t: 0.0, tired: 0.0, prev_tired: 0.0, coil: 0.0, prev_coil: 0.0, jolt: Vec2::ZERO, prev_jolt: Vec2::ZERO, jolt_v: Vec2::ZERO, age: (hash(id as u64, 7) % 1000) as f32 * 0.01, fresh: true });
+        self.people.insert(id, Person { pool: pool.to_string(), slot, look, size, resident, pos, yaw, visible: true, prev_pos: pos, prev_yaw: yaw, legs: 0.0, prev_legs: 0.0, from: gait, to: gait, pose: "walk".into(), hold: Hold::default(), prev_hold: Hold::default(), t: 0.0, prev_t: 0.0, tired: 0.0, prev_tired: 0.0, coil: 0.0, prev_coil: 0.0, jolt: Vec2::ZERO, prev_jolt: Vec2::ZERO, jolt_v: Vec2::ZERO, age: (hash(id as u64, 7) % 1000) as f32 * 0.01, fresh: true });
         Ok(Some(id))
     }
 
@@ -462,6 +490,7 @@ impl Humans {
             p.prev_pos = p.pos;
             p.prev_yaw = p.yaw;
             p.prev_t = p.t;
+            p.prev_hold = p.hold;
             p.prev_tired = p.tired;
             p.prev_coil = p.coil;
         }
@@ -530,6 +559,22 @@ impl Humans {
 
     pub fn ragdoll_hit(&mut self, id: u32, point: Vec3, velocity: Vec3) -> Result<bool, String> {
         self.dolls.hit(id, point, velocity)
+    }
+
+    /// Release a moving character into physics, then change the velocity of the struck limb.
+    /// A second hit adds to the existing rig, including when it has settled.
+    pub(crate) fn ragdoll_impact(&mut self, id: u32, point: Vec3, kick: Vec3, carried: Option<Vec3>, tick_rate: f32) -> Result<bool, String> {
+        if !point.is_finite() || !kick.length_squared().is_finite() || carried.is_some_and(|v| !v.length_squared().is_finite()) {
+            return Err("ragdoll impact needs finite motion and contact".into());
+        }
+        if !self.dolls.has(id) {
+            let Some(p) = self.people.get(&id) else { return Ok(false); };
+            let delta = p.pos - p.prev_pos;
+            // A spawn or scripted warp has no continuous motion to hand off.
+            let velocity = carried.unwrap_or_else(|| if p.fresh || delta.length_squared() > 9.0 { Vec3::ZERO } else { delta * tick_rate });
+            self.ragdoll_with_motion(id, velocity, Some(Vec3::ZERO))?;
+        }
+        self.dolls.hit(id, point, kick)
     }
 
     pub(crate) fn ragdoll_with_motion(&mut self, id: u32, push: Vec3, spin: Option<Vec3>) -> Result<bool, String> {
@@ -984,6 +1029,21 @@ fn pose(rig: &Rig, body: &Skeleton, p: &Person, zombie: bool, alpha: f32, palett
         }
         "shove" => { let a = 1.2 + 0.3 * (t * PI).sin(); raise(palette, true, a, -0.1); raise(palette, false, a, -0.1); }
         "aim" => raise(palette, false, 1.45, -0.05),
+        "hold" => {
+            let angle = p.prev_hold.pitch + (p.hold.pitch - p.prev_hold.pitch) * alpha;
+            let grip = p.prev_hold.grip.lerp(p.hold.grip, alpha);
+            let support = p.prev_hold.support.lerp(p.hold.support, alpha);
+            let tilt = Quat::from_rotation_x(-angle);
+            let shoulder = at(Bone::UpperArmR, palette);
+            // Offsets follow the prop in metres even on scaled crowd instances.
+            let wrist = shoulder + tilt * grip / p.size;
+            body.arms.apply(palette, wrist, wrist + tilt * support / p.size);
+            body.arms.orient_primary(palette, tilt * rig.palms[0]);
+            body.arms.orient_support(palette, tilt * rig.palms[1]);
+            let neck = at(Bone::Neck, palette);
+            turn(palette, &[rig.joint[Bone::Neck as usize], rig.joint[Bone::Head as usize]],
+                neck, Quat::from_rotation_x(-angle * t * 0.62));
+        }
         // Over here: the right hand high, waving side to side.
         "wave" => raise(palette, false, 2.6, 0.15 + 0.35 * (p.age * 7.0).sin()),
         _ if reach > 0.0 => {
@@ -1154,6 +1214,33 @@ mod tests {
         assert!(delta.x > 0.018 && delta.x < 0.047, "inherited sideways motion {delta}");
         assert!(delta.y < 0.005, "no upward launch on passive release: {delta}");
         assert!(people.ragdoll_with_motion(id, Vec3::ZERO, Some(Vec3::NAN)).is_err());
+    }
+
+    #[test]
+    fn point_impact_keeps_walk_motion_and_only_adds_velocity_at_the_contact() {
+        let cfg = BTreeMap::from([("resident".to_string(), HumanPool { count: 1, ..Default::default() })]);
+        let travel = |step: f32, kick: Vec3| {
+            let mut people = Humans::new(&cfg);
+            let id = people.spawn("resident", Vec3::ZERO, 0.).unwrap().unwrap();
+            people.tick(1. / 60.);
+            people.tick_start();
+            people.people.get_mut(&id).unwrap().pos.x += step;
+            let hand = people.joint(id, "hand_l").unwrap();
+            let hips = people.joint(id, "hips").unwrap();
+            assert!(people.ragdoll_impact(id, hand, kick, None, 60.).unwrap());
+            // A further hit on a moving rig must never reapply carried motion.
+            assert!(people.ragdoll_impact(id, hand, Vec3::ZERO, Some(Vec3::splat(35.)), 60.).unwrap());
+            people.tick(1. / 60.);
+            (people.joint(id, "hips").unwrap() - hips, people.joint(id, "hand_l").unwrap() - hand)
+        };
+        let stationary = travel(0., Vec3::Z * 6.);
+        let walking = travel(3. / 60., Vec3::Z * 6.);
+        let unstruck = travel(3. / 60., Vec3::ZERO);
+        let teleported = travel(10., Vec3::ZERO);
+        assert!((walking.0.x - stationary.0.x - 0.05).abs() < 0.012, "{walking:?} vs {stationary:?}");
+        assert!((walking.1.z - unstruck.1.z) > 0.02, "{walking:?} vs {unstruck:?}");
+        assert!((walking.0.z - unstruck.0.z).abs() < 0.015, "the hand takes the initial impulse");
+        assert!(teleported.0.x.abs() < 0.02, "a scripted placement must not launch the body");
     }
 
     #[test]
