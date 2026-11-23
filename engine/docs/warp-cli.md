@@ -217,7 +217,7 @@ keyboard mapping is in `app::input`.
 | Table | Functions |
 | --- | --- |
 | `world` | `spawn(shape, opts, parent?) -> id`, `set_parent(id, parent?)`, `set(id, opts)`, `place(id, pos, yaw?)`, `warm(shape, look)`, `get(id) -> entity or nil`, `exists(id)`, `remove(id)`, `clear()`, `find(tag) -> ids`, `count()`, `raycast(origin, dir, max?, query?) -> hit or nil`, `overlap(center, radius, query?) -> ids`, `move(id, vel, dt, query?) -> vel, grounded` |
-| `fx` | `warm_explosions()`, `explosion(pos, radius, lightRange?)`, `gib_mist(pos, intensity)`, `burst(pos, {color, emissive, shape, count, speed, life, size, stretch, gravity, flat})`, `ring(pos, {color, emissive, radius, life, width, segments})`, `count() -> particles, rings` |
+| `fx` | `warm_explosions()`, `explosion(pos, radius, lightRange?)`, `gib_mist(pos, intensity)`, `flame(pos, width, height, life)`, `exhaust_smoke(pos, radius)`, `burst(pos, {color, emissive, shape, count, speed, life, size, stretch, gravity, flat})`, `ring(pos, {color, emissive, radius, life, width, segments})`, `count() -> particles, rings` |
 | `players` | `list() -> players`, `get(id) -> player or nil`, `count()`, `rumble(id, strength, seconds?)` |
 | `camera` | `set(player, {pos, target, fov})`, `get(player)`, `views({[player] = view})` (who shares which part of a split screen; views from 1, so a game can split when players walk apart) |
 | `sound` | `play(name, {at, db, pitch, <param> = value}) -> handle`, `set_param(handle, param, value)`, `stop(handle)`, `list()` |
@@ -289,6 +289,9 @@ keyboard mapping is in `app::input`.
   For example, `fx.explosion(pos, 5, 12)` lights surfaces within 12 metres
   using inverse-square falloff while retaining the five-metre blast recipe.
   `fx.gib_mist(pos, intensity)` emits the Growing Guns impact mist, with intensity from 0.35 to 2.8.
+  A moving fire can emit short `fx.flame(pos, width, height, life)` tongues and rising
+  `fx.exhaust_smoke(pos, radius)` puffs. Their dimensions are in metres and lifetime
+  is in seconds. They share the scene's effects pass and consume no entity slots.
   Call `fx.warm_explosions()` in `init` to upload the selected smoke and draw
   the first blast offscreen during loading. Games supply sounds and gameplay
   responses separately.

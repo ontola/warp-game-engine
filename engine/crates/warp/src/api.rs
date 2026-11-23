@@ -822,6 +822,28 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             c.world.render_effects().explosion_with_light_range(time, pos, radius, Vec3::new(1.0, 0.70, 0.20), light_range);
             Ok(())
         })),
+        ("flame", f!(core, move |_, (pos, width, height, life): (Value, f32, f32, f32)| {
+            let pos = vec3(&pos, "fx.flame position")?;
+            if !pos.is_finite() || !(0.05..=4.).contains(&width) || !(0.1..=8.).contains(&height) || !(0.1..=4.).contains(&life) {
+                return Err(rt("fx.flame needs a finite position, width 0.05..4 m, height 0.1..8 m and lifetime 0.1..4 s"));
+            }
+            let mut c = lock(&core);
+            sim(&c, "fx.flame")?;
+            let time = c.tick as f32 / c.tick_rate;
+            c.world.render_effects().flame(time, pos, width, height, life);
+            Ok(())
+        })),
+        ("exhaust_smoke", f!(core, move |_, (pos, radius): (Value, f32)| {
+            let pos = vec3(&pos, "fx.exhaust_smoke position")?;
+            if !pos.is_finite() || !(0.1..=8.).contains(&radius) {
+                return Err(rt("fx.exhaust_smoke needs a finite position and a radius in [0.1, 8] metres"));
+            }
+            let mut c = lock(&core);
+            sim(&c, "fx.exhaust_smoke")?;
+            let time = c.tick as f32 / c.tick_rate;
+            c.world.render_effects().exhaust_smoke(time, pos, radius);
+            Ok(())
+        })),
         ("gib_mist", f!(core, move |_, (pos, intensity): (Value, Value)| {
             let pos = vec3(&pos, "fx.gib_mist position")?;
             let intensity = number(&intensity, "fx.gib_mist intensity")?;
