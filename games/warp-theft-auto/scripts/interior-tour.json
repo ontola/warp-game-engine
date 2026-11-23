@@ -1,0 +1,25 @@
+{
+  "size": [1280,720],
+  "steps": [
+    {"ticks":30},
+    {"expect":"/state/interiors/count","equals":0},
+    {"cmd":"lua local p=state.fleet.players[1]; for _,b in state.city.buildings do if b.kind=='office' and b.x==28 then world.place(p.body,b.door+vector.create(0,.85,6)); p.view=0; break end end","ticks":24,"capture":"office-entrance.png"},
+    {"expect":"/state/interiors/count","equals":0},
+    {"mv":[0,1],"ticks":208},
+    {"cmd":"lua state.fleet.players[1].view=0.48","ticks":24,"bench":240,"capture":"office.png"},
+    {"expect":"/room_lighting/baked","equals":1},
+    {"expect":"/state/interiors/count","equals":1},
+    {"cmd":"lua state.fleet.players[1].view=0","mv":[0,-1],"ticks":252},
+    {"expect":"/state/interiors/count","equals":0},
+    {"cmd":"lua local p=state.fleet.players[1]; for _,b in state.city.buildings do if b.kind=='hotel' then world.place(p.body,b.door+vector.create(0,.85,5)); p.view=0; break end end","ticks":12},
+    {"mv":[0,1],"ticks":190},
+    {"cmd":"lua state.fleet.players[1].view=-0.46","ticks":24,"bench":240,"capture":"hotel.png"},
+    {"expect":"/room_lighting/baked","equals":1},
+    {"cmd":"lua local p=state.fleet.players[1]; for _,b in state.city.buildings do if b.kind=='warehouse' then world.place(p.body,b.door+vector.create(0,.85,5)); p.view=0; break end end; state.clock.hour=21","ticks":12},
+    {"mv":[0,1],"ticks":193},
+    {"cmd":"lua state.fleet.players[1].view=0.42","ticks":24,"bench":240,"capture":"warehouse-night.png"},
+    {"expect":"/room_lighting/baked","equals":1},
+    {"expect":"/state/interiors/count","equals":1},
+    {"expect":"/errors","equals":[]}
+  ]
+}

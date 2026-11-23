@@ -112,13 +112,14 @@ my-game/
 | `seed` | 1 | Seed of the `random` generator. `--seed` overrides it. |
 | `fresh_seed` | false | A new seed for every round played: `warp run` picks one at launch and New round in the start menu another. `--seed`, scripts and tests keep `seed`. |
 | `sky` | `gradient` | The sky at start. `--sky` overrides it; scripts call `sky.set`. |
+| `room_lighting` | false | Enable shadowed panels and up to four streamed indoor lighting volumes. [Luau room lighting](interior-light.md#streamed-ground-floors-in-luau) |
 | `max_entities` | 1024 | Entities alive at once (render slots reserved up front). |
 | `size` | `[1280, 720]` | Window size in pixels. |
 | `hdr` | unset | `true` asks for HDR output on an HDR screen (highlights brighter than SDR white), `false` refuses it; unset follows `WARP_HDR`. F10 overrides it. See [hdr-and-exposure](hdr-and-exposure.md). |
 | `split_layout` | `"stacked"` | How two views share the screen: `"stacked"` (top and bottom) or `"side"` (left and right). |
 | `steps` | 200000 | Luau step budget per hook call (see [scripting](scripting.md#limits)). |
 | `memory_mb` | 64 | Luau memory cap. |
-| `[humans.NAME]` | none | A pool of Warp Humans: `count` (1 to 256 alive at once), `variety` (different people fitted at load, 1 to 16, default 4), `style` (`"person"` or `"zombie"`), `skin` and `shirt` (`"#rrggbb"`, default seeded), `height` (`[1.6, 1.9]` m), `age` (`[low, high]` in years, 18 to 100; the pool's people are spread over it; default seeded, mostly young adults), `seed`. At most 256 in all. Each one costs about 2 MB of GPU skinning memory, so on a device that binds less than all pools need (128 MB on some), every pool is cut by the same share and a line in the log says so. |
+| `[humans.NAME]` | none | A pool of Warp Humans: `count` (1 to 256 alive at once), `variety` (different people fitted at load, 1 to 16, default 4), `style` (`"person"` or `"zombie"`), `skin` and `shirt` (`"#rrggbb"`, default seeded), `height` (`[1.6, 1.9]` m), `age` (`[low, high]` in years, 18 to 100; the pool's people are spread over it; default seeded, mostly young adults), `seed`. At most 256 in all. Each one costs about 2 MB of GPU skinning memory, so on a device that binds less than all pools need (128 MB on some), the engine keeps each pool’s `reserved` minimum (default 1) and shares the remaining capacity proportionally. A line in the log reports the resulting counts. |
 
 Regular scripts outside `sounds/`, `assets/` and `scripts/` run their hooks
 in path order. Type definitions (`*.d.luau`) are skipped.
@@ -216,13 +217,15 @@ keyboard mapping is in `app::input`.
 | Table | Functions |
 | --- | --- |
 | `world` | `spawn(shape, opts, parent?) -> id`, `set_parent(id, parent?)`, `set(id, opts)`, `place(id, pos, yaw?)`, `warm(shape, look)`, `get(id) -> entity or nil`, `exists(id)`, `remove(id)`, `clear()`, `find(tag) -> ids`, `count()`, `raycast(origin, dir, max?, query?) -> hit or nil`, `overlap(center, radius, query?) -> ids`, `move(id, vel, dt, query?) -> vel, grounded` |
-| `fx` | `burst(pos, {color, emissive, shape, count, speed, life, size, stretch, gravity, flat})`, `ring(pos, {color, emissive, radius, life, width, segments})`, `count() -> particles, rings` |
+| `fx` | `warm_explosions()`, `explosion(pos, radius, lightRange?)`, `gib_mist(pos, intensity)`, `burst(pos, {color, emissive, shape, count, speed, life, size, stretch, gravity, flat})`, `ring(pos, {color, emissive, radius, life, width, segments})`, `count() -> particles, rings` |
 | `players` | `list() -> players`, `get(id) -> player or nil`, `count()`, `rumble(id, strength, seconds?)` |
 | `camera` | `set(player, {pos, target, fov})`, `get(player)`, `views({[player] = view})` (who shares which part of a split screen; views from 1, so a game can split when players walk apart) |
 | `sound` | `play(name, {at, db, pitch, <param> = value}) -> handle`, `set_param(handle, param, value)`, `stop(handle)`, `list()` |
 | `hud` | `text(text, x, y, {size, color, align, width})`, `box(x, y, w, h, color)`, `size() -> w, h`, `measure(text, size?) -> w, h` (one line of `text` in the HUD font, in pixels), `view(player) -> x, y, w, h`, `project(pos, player?) -> x, y or nil` |
 | `post` | `set({bloom, bloom_radius, bloom_threshold, bloom_wide, contrast, saturation, vignette, grain, aberration})`, `reset()` |
-| `humans` | `spawn(pool, {pos, yaw})` → id or nil when the pool is full, `set(id, {pos, yaw, pose, t, tired, coil})`, `hit(id, dir)`, `ragdoll(id, push)`, `remove(id)`, `head(id)` and `joint(id, name)` → vector, `room(pool)` → free, total |
+| `grass` | `set({patches, cutouts, seed, growth, distance})` places native meadow blades on horizontal plots. `set(nil)` clears the field. |
+| `plants` | `grow({age, seed, pos, yaw, scale, species, look, full})` → id, `remove(id)`, `clear()`, `defaults()`, `status()` |
+| `humans` | `spawn(pool, {pos, yaw})` → id or nil when the pool is full, `set(id, {pos, yaw, pose, t, tired, coil, visible})`, `hit(id, dir)`, `ragdoll(id, push)`, `obstacles(boxes)`, `recover(id)`, `remove(id)`, `head(id)` and `joint(id, name)` → vector, `room(pool)` → free, total |
 | `lights` | `set({{pos, color, intensity, range}, ...})` (at most 32), `spots({{pos, dir, color, intensity, range, angle, inner}, ...})` (at most 8, with shadows), `clear()` |
 | `sky` | `set(name)`, `get()`, `warm(name)` (bake a sky you will switch to later in the background, so the switch does not stall a frame) |
 | `light` | `set({sun, sun_lux, sky_lux, exposure, exposure_min, exposure_max, exposure_bias, adapt_speed, fog_start, fog_end, fog_density})`, `reset()` |
@@ -230,7 +233,7 @@ keyboard mapping is in `app::input`.
 | `game` | `tick()`, `time()`, `dt()`, `players()`, `title()`, `finish()`, `log(text)` |
 
 - **Parenting**: pass a parent ID as the third argument of `world.spawn`. Move a subtree with `world.place`, change its parent with `world.set_parent` and read `world.get(id).world_pos`. See [parenting](parenting.md) for coordinates, collisions and lifetime.
-- **Entities**: `world.spawn` takes a shape (`"cube"`, `"sphere"`,
+- **Entities**: `world.spawn` takes a shape (`"cube"`, `"pane"`, `"sphere"`,
   `"capsule"`, an outline such as `"outline6"` or `"outline4:0.05"`, or a
   glTF path inside the game folder such as `"assets/crate.glb"`) and
   options: `pos`, `rot` (pitch, yaw, roll),
@@ -244,6 +247,21 @@ keyboard mapping is in `app::input`.
   outline is a hollow regular polygon lying flat (3 to 64 sides, corners
   on the 1 m box's circle, the first towards +X) whose edge is the given
   share of the box wide (default 0.06): neon line art seen from above.
+- **LOD proxy coverage.** On an opaque primitive, `coverage` from 0 to 1 controls
+  the fraction of pixels that keep the proxy and its depth. The GPU uses a stable
+  ordered pattern. The opaque detailed geometry behind it supplies the remaining
+  pixels. Proxies cast no shadows and do not enter room light bakes. Collision
+  follows `solid` separately. Use `world.warm("cube", look)` with `coverage=1`
+  to prepare one proxy material for every coverage value. Update it through
+  `world.set`; `coverage=false` restores the ordinary material. For independent
+  split-screen transitions, assign proxy copies to cameras with `hide_views`.
+  `players.list()` exposes each displayed player's zero-based `view` index.
+- **Window glass** uses a two-sided `"pane"` in local XY. For a 3 m wide,
+  2 m high window, spawn it with `size = vector.create(3, 2, 1)`. Its
+  collider is 4 mm thick at unit depth. Set `glass = 0.045` for lightly
+  scattering window glass, or use any scattering opacity from 0 to 1.
+  `color` sets the tint and `roughness` controls reflection sharpness.
+  `world.warm("pane", look)` prepares the material before streaming windows.
 - **Wires**: `world.spawn("wire", { points = {...}, edges = {...}, width = 0.05 })`
   is a 3D wire frame: glowing edges between points, one entity with one
   transform. `points` are vectors in the entity's own space (scaled by
@@ -260,7 +278,21 @@ keyboard mapping is in `app::input`.
   move every tick. `world.warm(shape, {color, emissive, roughness, metal})`
   prepares a look in `init` without spawning anything (see
   [Costs](#costs)).
-- **Effects**: `fx.burst(pos, opts)` throws `count` pieces (default 12
+- **Effects**. `fx.explosion(pos, radius)` plays the Growing Guns fireball, smoke,
+  embers, heat distortion and flash lighting in every view. Call it once in
+  init or tick with a radius in metres (0 < radius ≤ 200). The
+  effect pool admits bursts within Growing Guns' low-cost budget. Full-lighting
+  devices that support the 48 × 48 × 1,536 smoke texture use the shared baked
+  smoke animation. Simple-lighting profiles, smaller devices and blasts admitted
+  before a renderer exists use Growing Guns' procedural smoke billows.
+  To bound the flash near an impact, pass a third argument in metres (1–500).
+  For example, `fx.explosion(pos, 5, 12)` lights surfaces within 12 metres
+  using inverse-square falloff while retaining the five-metre blast recipe.
+  `fx.gib_mist(pos, intensity)` emits the Growing Guns impact mist, with intensity from 0.35 to 2.8.
+  Call `fx.warm_explosions()` in `init` to upload the selected smoke and draw
+  the first blast offscreen during loading. Games supply sounds and gameplay
+  responses separately.
+  `fx.burst(pos, opts)` throws `count` pieces (default 12
   cubes, 0.12 m) out from `pos`, each at 25 % to 100 % of `speed` (m/s) and
   living 50 % to 100 % of `life` (s), shrinking as they go; `flat` keeps
   them in the ground plane, `stretch` (seconds of velocity) draws them as
@@ -296,6 +328,9 @@ keyboard mapping is in `app::input`.
   `exposure_min` and `exposure_max`, shifted by `exposure_bias` stops, at
   `adapt_speed` per second. See [Exposure and HDR output](hdr-and-exposure.md),
   which also covers HDR screens (`WARP_HDR=1`, or F10).
+- **Runtime stories.** A game may export `apply_story(definition)` from its main module. Accept a validated definition by returning its title, or return `nil, message` to keep the current story. In the native console `story SOURCE` evaluates a Luau program returning plain data. The browser story editor evaluates the same language in a disposable worker, then sends the data to the game. Put a list of `{"title":"…","file":"story_name.module.luau"}` entries in the game's `stories.json` to expose its editable templates. [Example city and authoring guide](../../games/warp-theft-auto/README.md)
+- **Continuous daylight.** Call `sky.set_time(hour, weather)` from the world clock. Fractional hours wrap at midnight. All cameras share the sun direction, sky radiance and diffuse skylight. The renderer interpolates between simulation ticks and reuses the same atmosphere textures as the clock advances. `kit/daycycle` drives this API and exposes `lampLevel` to fade street lights through twilight.
+- **Volumetric clouds.** Call `sky.clouds(true)` to load the native cumulus layer or supply a table such as `sky.clouds({coverage = 0.5, base = 1400, thickness = 1000, wind_x = 5, wind_z = 1.5, aerial = false})`. Altitudes and distances are in metres, wind in metres per second. `coverage`, `density` and `shadow` control cover, optical density and sun attenuation. `steps`, `light_steps` and `far` control rendering cost and range. Set `aerial = false` to keep the current scene fog. The field follows simulation time across cameras and sky presets. `sky.clouds(false)` clears the volume. [Atmosphere and clouds](atmosphere.md)
 - **Post and lights**: `post.set` is the look after lighting: `bloom`
   (0 to 2), `bloom_radius` (blur rounds 1 to 6), `bloom_threshold`
   (exposed brightness where it starts), `bloom_wide` (true, the default: a
@@ -317,6 +352,12 @@ keyboard mapping is in `app::input`.
   at a low emissive (0.03) with soft wide bloom, a glossy dark deck and a
   lamp over each player. Neon Siege is Geometry Wars style: outlines at
   emissive 0.14 under a tight bloom, a camera straight down, no sky light.
+- **Grass.** Call `grass.set` during world generation. Replacing the field rebuilds the scene. Supply each horizontal rectangle as `{pos = vector.create(x, y, z), width = 18, depth = 12}`. `pos` is the centre at ground level. An optional `yaw` in radians rotates the rectangle around that centre. `cutouts` use the same shape for paths, paving or grates. All patches share the seed, growth scale (default 0.3) and blade draw distance (default 24 m). The GPU chooses detail for each camera. Keep the lawn’s ground material underneath for distant views.
+- **Plants**. `age` controls the number of growing seasons. Choose a small
+  set of ages, seeds, growth rules and looks for a grove. Placements with
+  the same recipe share a cook. Set each placement’s `pos`, `yaw` and
+  positive uniform `scale` to vary its position, facing and size. Scale
+  defaults to 1 and applies to both the mesh preview and the full forest.
 - **Humans**: Warp Humans, the engine's skinned people, from pools that
   game.toml reserves (`[humans.zombie] count = 40, style = "zombie"`), so
   spawning never rebuilds the renderer. Set each one's feet `pos` and
@@ -342,15 +383,40 @@ keyboard mapping is in `app::input`.
   a heavy hit): the chest and head swing that way and spring back.
   `ragdoll(id, push)` lets it go limp from the pose it stands in, thrown
   by `push` (m/s, in the world): eleven jointed capsules with loose
-  anatomical limits fall onto the ground under it (only that: no walls)
-  and freeze where they settle, within four seconds. It stays down through
-  `dead` and `down`; any other pose gets it up again. Up to 24 move at
-  once (the oldest freezes); it steps with the simulation, so replays
-  match. The `zombie` style stoops, lolls its head and holds its arms out.
+  anatomical limits fall onto a horizontal floor at the character's feet.
+  Pass an explicit third vector to release the rig with exact world linear and
+  angular velocity, e.g. `humans.ragdoll(id, walkingVelocity, vector.create(0, 0, 0))` for
+  a walker meeting a moving collider. Angular velocity is in radians per second.
+  Up to 24 rigs move at once on fixed physics ticks. A rig freezes when it
+  settles on fixed ground or a new fall needs the oldest active slot. After four
+  seconds the settling test tolerates small joint motion. A parked car supports
+  recovery while its passenger stays simulated until actually getting up.
+  `humans.obstacles(boxes)` supplies shared moving or parked collision boxes.
+  Give each box a stable numeric `id`, world center `pos`, full `size` and
+  optional `yaw` in radians. Supply `prevPos` and `prevYaw` for a first-tick
+  sweep. With `vehicle=carId` an obstacle uses the fleet car's actual compound
+  chassis at its consecutive road-physics poses, including pitch and roll.
+  To give a fleet model a more detailed contact skin, register
+  `vehicles.contact_profile(name, bottom, sections)` after `vehicles.reset`
+  and include `profile=name` on its obstacle. Describe 2 to 20 ordered
+  cross-sections with local `z`, full `width`, `top`, and optional `roofWidth`.
+  All lengths use metres relative to the chassis origin. Cars share one cooked
+  surface for each name. A moving chassis and its nearby ragdolls advance together
+  in up to four substeps per fixed tick, based on the distance travelled by the
+  contact skin. This lets the solver follow the bumper, bonnet and windscreen.
+  The box remains its proximity and standing-clearance bound. Pass up to 64 per tick. Only boxes near an active rig allocate
+  physics bodies. An empty list clears them. `humans.recover(id)` waits for
+  a settled body and clear space, returning nil while either is pending.
+  On success it returns the landed feet, starts `rise` at t=0 and releases
+  the ragdoll. Advance `t` from 0 to 1, then resume walking. Setting a pose
+  other than `dead` or `down` also ends a fall at the script's current position. The `zombie` style stoops, lolls its head and holds its arms out.
   `head(id)` is where the head is now (for glowing eyes or a hit test);
   `joint(id, name)` any of `head`, `neck`, `chest`, `hips`, `shoulder_l`,
   `elbow_l`, `hand_l`, `knee_l`, `foot_l` (and `_r`), say to put a weapon
   in a hand.
+  Set `visible = false` to hide the fitted actor while a player rides in a
+  vehicle. The actor keeps its identity, slot and joint queries. Restore
+  `visible = true` at the exit position to show that same person again.
   Looks only: they never collide, and the game keeps its own positions.
   Each human is a full skinned mesh skinned every frame, so keep pools to
   the crowd that is on screen. The rig is in `engine/assets/humans/rig`;

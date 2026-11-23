@@ -5,6 +5,9 @@
 
 /// (require name, source)
 pub const FILES: &[(&str, &str)] = &[
+    ("kit/car_damage", include_str!("../kit/car_damage.luau")),
+    ("kit/crowd", include_str!("../kit/crowd.luau")),
+    ("kit/daycycle", include_str!("../kit/daycycle.luau")),
     ("kit/util", include_str!("../kit/util.luau")),
     ("kit/timer", include_str!("../kit/timer.luau")),
     ("kit/controller", include_str!("../kit/controller.luau")),

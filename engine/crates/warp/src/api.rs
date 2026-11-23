@@ -102,6 +102,8 @@ pub struct LightOverride {
     /// `exposure = "auto"` and its tuning: the camera adapts like an eye.
     pub auto: Option<render::AutoExposure>,
     pub fog: [Option<f32>; 3],
+    /// Native aerial perspective and clouds, shared by every camera (`sky.clouds`).
+    pub sky_volume: Option<render::sky_volume::SkyVolume>,
 }
 
 /// The look after the scene is lit (`post.set`): bloom and the tone pass.
@@ -179,6 +181,7 @@ pub struct Core {
     pub light: LightOverride,
     pub post: Post,
     pub lamps: Vec<Lamp>,
+    pub(crate) rooms: crate::room_scene::RoomScene,
     pub spots: Vec<Spot>,
     /// Warp Humans (game.toml `[humans.NAME]` pools).
     pub humans: crate::humans::Humans,
@@ -189,6 +192,13 @@ pub struct Core {
     /// One shared view (game.toml `split = false`): every camera call is the viewer's.
     pub shared_view: bool,
     pub phase: Phase,
+}
+
+impl Core {
+    /// Interpolated simulation time for rendering between the last two fixed ticks.
+    pub(crate) fn render_time(&self, alpha: f32) -> f64 {
+        (self.tick as f64 - 1.0 + f64::from(alpha)).max(0.0) / f64::from(self.tick_rate)
+    }
 }
 
 pub type Shared = Arc<Mutex<Core>>;
@@ -267,6 +277,7 @@ fn options(t: &Table, allowed: &[&str], what: &str) -> mlua::Result<Vec<(String,
 pub fn shape(name: &str) -> mlua::Result<Shape> {
     Ok(match name {
         "cube" | "box" => Shape::Cube,
+        "pane" => Shape::Pane,
         "sphere" | "ball" => Shape::Sphere,
         "capsule" => Shape::Capsule,
         "wire" => Shape::Wire,
@@ -278,18 +289,44 @@ pub fn shape(name: &str) -> mlua::Result<Shape> {
             if !(3..=64).contains(&sides) || !(0.005..=0.5).contains(&width) { return Err(bad()); }
             Shape::Outline { sides, width: (width * 1000.0).round() as u32 }
         }
-        p if p.ends_with(".glb") || p.ends_with(".gltf") => Shape::Model(p.to_string()),
-        other => return Err(rt(format!("unknown shape {other:?}: cube, sphere, capsule, outline6 or a model path such as \"assets/crate.glb\""))),
+        p if p.ends_with(".glb") || p.ends_with(".gltf") || p.rsplit_once("#crush").is_some_and(|(file, n)|
+            (file.ends_with(".glb") || file.ends_with(".gltf")) && matches!(n.as_bytes(), [b'0'..=b'8'])) => Shape::Model(p.to_string()),
+        other => return Err(rt(format!("unknown shape {other:?}: cube, pane, sphere, capsule, outline6 or a model path such as \"assets/crate.glb\""))),
     })
 }
 
-const ENTITY_KEYS: &[&str] = &["shape", "pos", "rot", "size", "color", "emissive", "roughness", "metal", "surface", "solid", "visible", "shadow_only", "hide_views", "tag", "points", "edges", "width"];
+const ENTITY_KEYS: &[&str] = &["shape", "pos", "rot", "size", "color", "emissive", "roughness", "metal", "surface", "glass", "coverage", "solid", "visible", "shadow_only", "hide_views", "tag", "points", "edges", "width"];
 
 fn boolean(v: &Value, what: &str) -> mlua::Result<bool> {
     match v { Value::Boolean(b) => Ok(*b), _ => Err(rt(format!("{what}: expected true or false"))) }
 }
 
 fn number(v: &Value, what: &str) -> mlua::Result<f32> { num(v).ok_or_else(|| rt(format!("{what}: expected a number"))) }
+
+/// A complete weather declaration. Start with the native fair-weather defaults.
+fn cloud_volume(value: Value) -> mlua::Result<Option<render::sky_volume::SkyVolume>> {
+    use render::sky_volume::{Clouds, SkyVolume};
+    match value {
+        Value::Boolean(false) => Ok(None),
+        Value::Boolean(true) => Ok(Some(SkyVolume::default())),
+        Value::Table(t) => {
+            let mut volume = SkyVolume::default();
+            let mut wind = Clouds::default().wind;
+            for (key, value) in options(&t, &["coverage", "base", "thickness", "density", "wind_x", "wind_z", "shadow", "steps", "light_steps", "far", "aerial"], "sky.clouds")? {
+                match key.as_str() {
+                    "aerial" => volume.aerial = boolean(&value, &key)?,
+                    "wind_x" => wind.x = number(&value, &key)?,
+                    "wind_z" => wind.y = number(&value, &key)?,
+                    _ => volume.set(&format!("cloud_{key}"), number(&value, &key)?).map_err(rt)?,
+                }
+            }
+            // Validate the two wind components together (the limit is on speed).
+            volume.clouds.as_mut().unwrap().wind = wind;
+            Ok(Some(volume.validated().map_err(rt)?))
+        }
+        _ => Err(rt("sky.clouds expects true, false or a cloud settings table")),
+    }
+}
 
 /// Apply `world.spawn`/`world.set` options to an entity's fields.
 #[allow(clippy::too_many_arguments)]
@@ -313,7 +350,7 @@ fn apply(opts: &[(String, Value)], shape_: &mut Shape, look: &mut Look, pos: &mu
             "pos" => *pos = vec3(v, "pos")?,
             "rot" => *rot = vec3(v, "rot")?,
             "size" => *sz = size(v, "size")?,
-            "color" | "emissive" | "roughness" | "metal" | "surface" => { look_key(look, k, v)?; }
+            "color" | "emissive" | "roughness" | "metal" | "surface" | "glass" | "coverage" => { look_key(look, k, v)?; }
             "solid" => *solid = boolean(v, "solid")?,
             "visible" => *visible = boolean(v, "visible")?,
             "shadow_only" => *shadow_only = boolean(v, "shadow_only")?,
@@ -369,6 +406,24 @@ fn look_key(look: &mut Look, k: &str, v: &Value) -> mlua::Result<bool> {
         "emissive" => look.emissive = number(v, "emissive")?.max(0.0),
         "roughness" => look.roughness = number(v, "roughness")?,
         "metal" => look.metal = number(v, "metal")?,
+        "coverage" => look.coverage = match v {
+            Value::Boolean(false) => None,
+            _ => {
+                let coverage = number(v, "coverage")?;
+                if !(0.0..=1.0).contains(&coverage) {
+                    return Err(rt("coverage: a number from 0 to 1, or false"));
+                }
+                Some((coverage * 255.0).round() as u8)
+            }
+        },
+        "glass" => look.glass = match v {
+            Value::Nil | Value::Boolean(false) => None,
+            _ => {
+                let alpha = number(v, "glass")?;
+                if !(0.0..=1.0).contains(&alpha) { return Err(rt("glass: scattering opacity from 0 to 1, or false")); }
+                Some(alpha)
+            }
+        },
         "surface" => look.surface = match v {
             Value::Nil | Value::Boolean(false) => None,
             _ => {
@@ -431,6 +486,8 @@ fn entity_table(lua: &Lua, id: u32, e: &Entity) -> mlua::Result<Table> {
     t.raw_set("emissive", e.look.emissive)?;
     t.raw_set("roughness", e.look.roughness)?;
     t.raw_set("metal", e.look.metal)?;
+    if let Some(byte) = e.look.coverage { t.raw_set("coverage", f32::from(byte) / 255.0)?; }
+    if let Some(alpha) = e.look.glass { t.raw_set("glass", alpha)?; }
     if let Some(k) = e.look.surface { t.raw_set("surface", k)?; }
     t.raw_set("solid", e.solid)?;
     t.raw_set("visible", e.visible)?;
@@ -500,6 +557,7 @@ pub fn player_table(lua: &Lua, p: &Player) -> mlua::Result<Table> {
     t.raw_set("color", Value::Vector(Vector::new(p.color[0], p.color[1], p.color[2])))?;
     t.raw_set("bot", p.bot)?;
     t.raw_set("human", !p.bot)?;
+    if let Some(view) = p.view { t.raw_set("view", view)?; }
     if let Some(s) = p.seat { t.raw_set("seat", s)?; }
     if let Some(c) = p.couch { t.raw_set("couch", c)?; }
     Ok(t)
@@ -533,6 +591,7 @@ fn data_file(c: &Core, name: &str) -> mlua::Result<std::path::PathBuf> {
 
 pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
     crate::storage::register(lua, api, core.clone())?;
+    crate::vehicles::register(lua, api, core.clone())?;
     let table = |name: &str, fns: Vec<(&str, mlua::Function)>| -> mlua::Result<()> {
         let t = lua.create_table()?;
         for (k, f) in fns { t.raw_set(k, f)?; }
@@ -543,13 +602,46 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
         ($core:ident, $body:expr) => {{ let $core = core.clone(); lua.create_function($body)? }};
     }
 
+    table("grass", vec![("set", f!(core, move |_, opts: Option<Table>| {
+        let mut c = lock(&core);
+        sim(&c, "grass.set")?;
+        if let Some(opts) = opts {
+            options(&opts, &["patches", "cutouts", "seed", "growth", "distance"], "grass.set")?;
+            let rectangles = |key: &str| -> mlua::Result<Vec<crate::grass::Rect>> {
+                let Some(list) = opts.raw_get::<Option<Table>>(key)? else { return Ok(vec![]) };
+                list.sequence_values::<Table>().map(|t| {
+                    let t = t?;
+                    options(&t, &["pos", "width", "depth", "yaw"], "grass rectangle")?;
+                    crate::grass::Rect::new(vec3(&t.raw_get("pos")?, "grass rectangle pos")?,
+                        number(&t.raw_get("width")?, "grass rectangle width")?,
+                        number(&t.raw_get("depth")?, "grass rectangle depth")?,
+                        t.raw_get::<Option<f32>>("yaw")?.unwrap_or(0.)).map_err(rt)
+                }).collect()
+            };
+            let lawns = crate::grass::Lawns { patches: rectangles("patches")?, cutouts: rectangles("cutouts")?,
+                seed: opts.raw_get::<Option<u32>>("seed")?.unwrap_or(1),
+                growth: opts.raw_get::<Option<f32>>("growth")?.unwrap_or(0.3),
+                distance: opts.raw_get::<Option<f32>>("distance")?.unwrap_or(24.) };
+            let (field, footprints) = lawns.build().map_err(rt)?;
+            c.world.scene.meadow = Some(field);
+            c.world.scene.meadow_footprints = footprints;
+            c.world.rebuild = true;
+        } else if c.world.scene.meadow.take().is_some() {
+            c.world.scene.meadow_footprints.clear();
+            c.world.rebuild = true;
+        }
+        Ok(())
+    }))])?;
+
     table("plants", vec![
         ("grow", f!(core, move |_, opts: Table| {
-            let o = options(&opts, &["age", "seed", "pos", "yaw", "full", "species", "look"], "plants.grow")?;
+            let o = options(&opts, &["age", "seed", "pos", "yaw", "scale", "full", "species", "look"], "plants.grow")?;
             let get = |k: &str| o.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()).unwrap_or(Value::Nil);
             let age = num(&get("age")).ok_or_else(|| rt("plants.grow: needs age (years)"))?;
             if !(0.0..=2000.0).contains(&age) { return Err(rt("plants.grow: age 0 to 2000 years")); }
             let pos = match get("pos") { Value::Nil => Vec3::ZERO, v => vec3(&v, "plants.grow pos")? };
+            let scale = match get("scale") { Value::Nil => 1.0, v => number(&v, "plants.grow scale")? };
+            if !scale.is_finite() || scale <= 0.0 { return Err(rt("plants.grow scale: expected a positive finite number")); }
             let p = crate::plants::Plant {
                 species: merged(&render::plant_growth::Species::jeffrey_pine(), &get("species"), "plants.grow species")?,
                 look: merged(&render::plant_growth_assembly::Look::jeffrey_pine(), &get("look"), "plants.grow look")?,
@@ -557,6 +649,7 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
                 seed: num(&get("seed")).map_or(1, |s| s.max(0.0) as u64),
                 pos,
                 yaw: num(&get("yaw")).unwrap_or(0.0),
+                scale,
                 full: matches!(get("full"), Value::Boolean(true)),
             };
             let mut c = lock(&core);
@@ -635,7 +728,7 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             let s = shape(&name)?;
             let mut look = Look::default();
             if let Some(t) = opts {
-                for (k, v) in options(&t, &["color", "emissive", "roughness", "metal", "surface"], "world.warm")? { look_key(&mut look, &k, &v)?; }
+                for (k, v) in options(&t, &["color", "emissive", "roughness", "metal", "surface", "glass", "coverage"], "world.warm")? { look_key(&mut look, &k, &v)?; }
             }
             lock(&core).world.warm(&s, &look).map_err(rt)
         })),
@@ -647,16 +740,20 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
         ("remove", f!(core, move |_, id: u32| {
             let mut c = lock(&core);
             sim(&c, "world.remove")?;
-            Ok(c.world.remove(id))
+            let removed = c.world.remove(id);
+            if removed { c.rooms.check_geometry = true; }
+            Ok(removed)
         })),
         ("clear", f!(core, move |_, ()| {
             let mut c = lock(&core);
             sim(&c, "world.clear")?;
             c.world.clear();
+            c.rooms.clear();
             Ok(())
         })),
         ("find", f!(core, move |lua, tag: String| lua.create_sequence_from(lock(&core).world.find(&tag)))),
         ("count", f!(core, move |_, ()| Ok(lock(&core).world.entities.len()))),
+        ("capacity", f!(core, move |_, ()| Ok(lock(&core).world.capacity()))),
         ("raycast", f!(core, move |lua, (origin, dir, max, opts): (Value, Value, Option<f32>, Option<Table>)| {
             let (o, d) = (vec3(&origin, "raycast origin")?, vec3(&dir, "raycast direction")?);
             let f = filter(opts)?;
@@ -691,6 +788,39 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
     ])?;
 
     table("fx", vec![
+        ("warm_explosions", f!(core, move |_, ()| {
+            let mut c = lock(&core);
+            sim(&c, "fx.warm_explosions")?;
+            c.world.explosions_prepared.get_or_insert(false);
+            Ok(())
+        })),
+        ("explosion", f!(core, move |_, (pos, radius, light_range): (Value, Value, Option<f32>)| {
+            let pos = vec3(&pos, "fx.explosion position")?;
+            let radius = number(&radius, "fx.explosion radius")?;
+            if !pos.is_finite() || !radius.is_finite() || radius <= 0.0 || radius > 200.0 {
+                return Err(rt("fx.explosion needs a finite position and a radius in (0, 200] metres"));
+            }
+            if light_range.is_some_and(|reach| !(1.0..=500.0).contains(&reach)) {
+                return Err(rt("fx.explosion light range must be 1 to 500 metres"));
+            }
+            let mut c = lock(&core);
+            sim(&c, "fx.explosion")?;
+            let time = c.tick as f32 / c.tick_rate;
+            c.world.render_effects().explosion_with_light_range(time, pos, radius, Vec3::new(1.0, 0.70, 0.20), light_range);
+            Ok(())
+        })),
+        ("gib_mist", f!(core, move |_, (pos, intensity): (Value, Value)| {
+            let pos = vec3(&pos, "fx.gib_mist position")?;
+            let intensity = number(&intensity, "fx.gib_mist intensity")?;
+            if !pos.is_finite() || !intensity.is_finite() || !(0.35..=2.8).contains(&intensity) {
+                return Err(rt("fx.gib_mist needs a finite position and an intensity in [0.35, 2.8]"));
+            }
+            let mut c = lock(&core);
+            sim(&c, "fx.gib_mist")?;
+            let time = c.tick as f32 / c.tick_rate;
+            c.world.render_effects().gib_mist(time, pos, intensity);
+            Ok(())
+        })),
         ("burst", f!(core, move |_, (pos, opts): (Value, Option<Table>)| {
             let (p, b) = (vec3(&pos, "fx.burst position")?, burst(opts)?);
             let mut c = lock(&core);
@@ -774,6 +904,13 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             c.sounds.play(&name, &params, at, db, pitch, tick).map_err(rt)
         })),
         ("set_param", f!(core, move |_, (h, param, value): (u32, String, f32)| { lock(&core).sounds.set(h, &param, value); Ok(()) })),
+        ("move_to", f!(core, move |_, (h, at): (u32, Value)| {
+            let pos = vec3(&at, "sound.move_to position")?;
+            let c = lock(&core);
+            sim(&c, "sound.move_to")?;
+            c.sounds.move_to(h, pos.to_array());
+            Ok(())
+        })),
         ("stop", f!(core, move |_, h: u32| { lock(&core).sounds.stop(h); Ok(()) })),
         ("list", f!(core, move |lua, ()| { let c = lock(&core); let b = &c.sounds.bank; let mut names: Vec<String> = b.patches.keys().chain(b.sampled.keys()).cloned().collect(); names.sort(); names.dedup(); lua.create_sequence_from(names) })),
         ("has", f!(core, move |_, name: String| { let c = lock(&core); Ok(c.sounds.bank.has(&name)) })),
@@ -851,6 +988,26 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             Ok(())
         })),
         ("get", f!(core, move |_, ()| Ok(lock(&core).sky.name()))),
+        ("set_time", f!(core, move |_, (hour, look): (f32, Option<String>)| {
+            let mut c = lock(&core);
+            sim(&c, "sky.set_time")?;
+            if !hour.is_finite() { return Err(rt("sky.set_time needs a finite hour")); }
+            let hour = hour.rem_euclid(24.);
+            let weather = render::sky::WeatherLook::parse(look.as_deref().unwrap_or("clear")).map_err(rt)?;
+            let previous = match c.sky {
+                SkyChoice::Clock { hour: old, weather: w, .. }
+                    if w == weather && ((hour-old+12.).rem_euclid(24.)-12.).abs() < 0.25 => old,
+                _ => hour,
+            };
+            c.sky = SkyChoice::Clock { previous, hour, weather };
+            Ok(())
+        })),
+        ("clouds", f!(core, move |_, value: Value| {
+            let mut c = lock(&core);
+            sim(&c, "sky.clouds")?;
+            c.light.sky_volume = cloud_volume(value)?;
+            Ok(())
+        })),
         // Bake a sky the game will switch to later, in the background, so
         // the switch does not stall a frame (a bake is a few hundred ms).
         ("warm", f!(core, move |_, name: String| {
@@ -921,6 +1078,35 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
     ])?;
 
     table("lights", vec![
+        ("room", f!(core, move |_, (id, opts): (u32, Option<Table>)| {
+            let mut c = lock(&core);
+            sim(&c, "lights.room")?;
+            if !c.rooms.enabled { return Err(rt("lights.room needs room_lighting = true in game.toml")); }
+            let Some(t) = opts else { c.rooms.remove(id); return Ok(()); };
+            options(&t, &["min", "max", "entities", "panels"], "lights.room")?;
+            let min = vec3(&t.get("min")?, "room min")?;
+            let max = vec3(&t.get("max")?, "room max")?;
+            crate::room_lighting::grid(min, max).map_err(rt)?;
+            let ids = t.get::<Table>("entities")?.sequence_values::<u32>()
+                .take(c.world.capacity() + 1).collect::<mlua::Result<Vec<_>>>()?;
+            if ids.is_empty() || ids.len() > c.world.capacity() || ids.iter().any(|id| c.world.get(*id).is_none()) {
+                return Err(rt("lights.room needs live world entity IDs"));
+            }
+            let mut panels = Vec::new();
+            if let Some(list) = t.get::<Option<Table>>("panels")? {
+                for item in list.sequence_values::<Table>() {
+                    let t = item?;
+                    options(&t, &["pos", "color", "intensity", "range", "width", "depth"], "room panel")?;
+                    let pos = vec3(&t.get("pos")?, "panel pos")?;
+                    let rgb = color(&t.get("color")?, "room panel color")?;
+                    let linear = Vec3::new(rgb[0],rgb[1],rgb[2]).powf(2.2);
+                    let panel = crate::room_scene::panel(pos, linear, t.get("intensity")?, t.get("range")?, t.get("width")?, t.get("depth")?).map_err(rt)?;
+                    panels.push(panel);
+                    if panels.len() > 8 { return Err(rt("lights.room accepts at most eight ceiling panels")); }
+                }
+            }
+            c.rooms.set(id, min, max, ids, panels).map_err(rt)
+        })),
         ("set", f!(core, move |_, list: Table| {
             let mut lamps = Vec::new();
             for item in list.sequence_values::<Table>() {
@@ -974,23 +1160,30 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
         ("spawn", f!(core, move |_, (pool, opts): (String, Option<Table>)| {
             let mut c = lock(&core);
             sim(&c, "humans.spawn")?;
-            let (mut pos, mut yaw) = (Vec3::ZERO, 0.0);
+            let (mut pos, mut yaw, mut look, mut resident) = (Vec3::ZERO, 0.0, None, None);
             if let Some(t) = opts {
-                for (k, v) in options(&t, &["pos", "yaw"], "humans.spawn")? {
-                    match k.as_str() { "pos" => pos = vec3(&v, "humans.spawn pos")?, "yaw" => yaw = number(&v, "humans.spawn yaw")?, _ => unreachable!() }
+                for (k, v) in options(&t, &["pos", "yaw", "look", "resident"], "humans.spawn")? {
+                    match k.as_str() {
+                        "pos" => pos = vec3(&v, "humans.spawn pos")?,
+                        "yaw" => yaw = number(&v, "humans.spawn yaw")?,
+                        "look" => look = Some(t.raw_get::<usize>("look")?),
+                        "resident" => resident = Some(t.raw_get::<usize>("resident")?),
+                        _ => unreachable!(),
+                    }
                 }
             }
-            c.humans.spawn(&pool, pos, yaw).map_err(rt)
+            c.humans.spawn_with_look(&pool, pos, yaw, look, resident).map_err(rt)
         })),
         ("set", f!(core, move |_, (id, opts): (u32, Table)| {
             let mut c = lock(&core);
             sim(&c, "humans.set")?;
-            let o = options(&opts, &["pos", "yaw", "pose", "t", "tired", "coil"], "humans.set")?;
+            let o = options(&opts, &["pos", "yaw", "pose", "t", "tired", "coil", "visible"], "humans.set")?;
             let Some(p) = c.humans.people.get_mut(&id) else { return Ok(false) };
             let mut up = false;
             for (k, v) in o {
                 match k.as_str() {
                     "pos" => p.pos = vec3(&v, "humans.set pos")?,
+                    "visible" => p.set_visible(boolean(&v, "humans.set visible")?),
                     "yaw" => p.yaw = number(&v, "humans.set yaw")?,
                     "t" => p.t = number(&v, "humans.set t")?.clamp(0.0, 1.0),
                     "tired" => p.tired = number(&v, "humans.set tired")?.clamp(0.0, 1.0),
@@ -1007,11 +1200,47 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             if up { c.humans.stand(id); }
             Ok(true)
         })),
-        ("ragdoll", f!(core, move |_, (id, push): (u32, Option<Value>)| {
+        ("obstacles", f!(core, move |_, list: Table| {
+            let mut c = lock(&core);
+            sim(&c, "humans.obstacles")?;
+            let mut boxes = std::collections::BTreeMap::new();
+            for item in list.sequence_values::<Table>() {
+                let t = item?;
+                let id = t.raw_get::<u32>("id")?;
+                let pos = vec3(&t.raw_get("pos")?, "obstacle pos")?;
+                let size = vec3(&t.raw_get("size")?, "obstacle size")?;
+                let yaw = t.raw_get::<Option<f32>>("yaw")?.unwrap_or(0.);
+                let previous = t.raw_get::<Option<Value>>("prevPos")?.map(|v| vec3(&v, "obstacle prevPos")).transpose()?.unwrap_or(pos);
+                let previous_yaw = t.raw_get::<Option<f32>>("prevYaw")?.unwrap_or(yaw);
+                if !pos.is_finite() || !previous.is_finite() || !size.is_finite() || size.min_element() <= 0.
+                    || !yaw.is_finite() || !previous_yaw.is_finite() { return Err(rt("humans.obstacles needs finite poses and positive box sizes")); }
+                let shape = kern::collide::YawBox::new(pos, size, yaw);
+                let vehicle = t.raw_get::<Option<u32>>("vehicle")?;
+                let profile = t.raw_get::<Option<String>>("profile")?;
+                if vehicle.is_none() && profile.is_some() { return Err(rt("humans.obstacles profile needs a vehicle")); }
+                let chassis = vehicle.map(|car| {
+                    c.world.fleet.as_ref().and_then(|fleet| fleet.chassis_contact(car, profile.as_deref()))
+                        .ok_or_else(|| rt(format!("humans.obstacles: unknown vehicle {car} or contact profile")))
+                }).transpose()?;
+                if boxes.insert(id, crate::ragdoll::Obstacle { shape, previous, previous_yaw, chassis }).is_some() {
+                    return Err(rt("humans.obstacles needs a distinct id for each box"));
+                }
+                if boxes.len() > crate::ragdoll::MAX_OBSTACLES { return Err(rt("humans.obstacles takes up to 64 nearby boxes")); }
+            }
+            c.humans.set_obstacles(boxes);
+            Ok(())
+        })),
+        ("recover", f!(core, move |_, id: u32| {
+            let mut c = lock(&core);
+            sim(&c, "humans.recover")?;
+            Ok(c.humans.recover(id).map(vector).unwrap_or(Value::Nil))
+        })),
+        ("ragdoll", f!(core, move |_, (id, push, spin): (u32, Option<Value>, Option<Value>)| {
             let mut c = lock(&core);
             sim(&c, "humans.ragdoll")?;
             let push = match push { Some(v) => vec3(&v, "humans.ragdoll push")?, None => Vec3::ZERO };
-            c.humans.ragdoll(id, push).map_err(rt)
+            let spin = spin.map(|v| vec3(&v, "humans.ragdoll spin")).transpose()?;
+            c.humans.ragdoll_with_motion(id, push, spin).map_err(rt)
         })),
         ("remove", f!(core, move |_, id: u32| { let mut c = lock(&core); sim(&c, "humans.remove")?; Ok(c.humans.remove(id)) })),
         ("hit", f!(core, move |_, (id, dir): (u32, Value)| {
@@ -1027,9 +1256,42 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             }
             Ok(lock(&core).humans.joint(id, &name).map(vector).unwrap_or(Value::Nil))
         })),
-        ("room", f!(core, move |_, pool: String| {
-            let (free, all) = lock(&core).humans.room(&pool).ok_or_else(|| rt(format!("humans.room: no pool {pool:?}")))?;
-            Ok((free, all))
+        ("room", f!(core, move |_, (pool, body): (String, Option<usize>)| {
+            let c = lock(&core);
+            let (free, all) = match body { Some(body) => c.humans.body_room(&pool, body), None => c.humans.room(&pool) }
+                .ok_or_else(|| rt(format!("humans.room: unknown pool or body {pool:?} {body:?}")))?;
+            let (_, bodies, looks) = c.humans.distant_limits(&pool).unwrap();
+            Ok((free, all, bodies, looks))
+        })),
+        ("distant", f!(core, move |_, (pool, rows, fitted, seconds): (String, Table, Table, f32)| {
+            let mut c = lock(&core);
+            sim(&c, "humans.distant")?;
+            let (limit, _, variety) = c.humans.distant_limits(&pool).ok_or_else(|| rt(format!("humans.distant: no pool {pool:?}")))?;
+            let count = rows.raw_len();
+            if count > limit { return Err(rt(format!("humans.distant: {count} exceeds the {limit} reserved slots"))); }
+            if !seconds.is_finite() || seconds <= 0. { return Err(rt("humans.distant: expected a positive interval".to_string())); }
+            let mut samples = Vec::with_capacity(count);
+            for id in 1..=count {
+                let row: Table = rows.raw_get(id)?;
+                let pos = vec3(&row.raw_get("pos")?, "humans.distant pos")?;
+                let yaw = row.raw_get::<Option<f32>>("yaw")?.unwrap_or(0.);
+                let next = match row.raw_get::<Value>("nextPos")? {
+                    Value::Nil => pos, v => vec3(&v, "humans.distant nextPos")?,
+                };
+                let look = row.raw_get::<Option<usize>>("look")?.unwrap_or((id - 1) % variety);
+                if look >= variety { return Err(rt(format!("humans.distant: look outside 0..{variety}"))); }
+                let next_yaw = row.raw_get::<Option<f32>>("nextYaw")?.unwrap_or(yaw);
+                if !pos.is_finite() || !next.is_finite() || !yaw.is_finite() || !next_yaw.is_finite() {
+                    return Err(rt(format!("humans.distant: resident {id} needs finite positions and headings")));
+                }
+                samples.push(crate::distant_humans::Sample {
+                    pos, yaw, next, look, next_yaw,
+                    active: row.raw_get::<Option<bool>>("active")?.unwrap_or(true),
+                    fitted: fitted.raw_get::<Option<u32>>(id)?.is_some(),
+                });
+            }
+            c.humans.set_distant(&pool, samples, seconds);
+            Ok(())
         })),
     ])?;
 

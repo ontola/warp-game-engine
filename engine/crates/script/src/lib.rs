@@ -326,6 +326,13 @@ impl Host {
     /// returned table) with the memory cap lifted; see [`unguarded`].
     pub fn unguarded<R>(&self, f: impl FnOnce(&Lua) -> R) -> R { unguarded(&self.lua, self.limits.memory, f) }
 
+    /// A trusted data-validation hook may reject an editor submission. Start
+    /// it with a fresh budget without disabling the game's simulation hooks.
+    pub fn with_call_budget<R>(&self, f: impl FnOnce(&Lua) -> mlua::Result<R>) -> Result<R, String> {
+        self.steps.store(self.limits.steps, Ordering::Relaxed);
+        f(&self.lua).map_err(|e| short(&e))
+    }
+
     /// The limits this host was made with.
     pub fn limits(&self) -> Limits { self.limits }
 

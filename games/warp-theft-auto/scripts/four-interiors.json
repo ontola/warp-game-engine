@@ -1,0 +1,22 @@
+{
+  "size": [1920,1080],
+  "steps": [
+    {"ticks":20},
+    {"expect":"/state/interiors/count","equals":0},
+    {"cmd":"lua local i=1; for _,kind in {'office','hotel','warehouse','office'} do for _,b in state.city.buildings do if b.kind==kind and (i<4 or b.x>0) then world.place(state.fleet.players[i].body,b.door+vector.create(0,.85,3)); i+=1; break end end end","ticks":20},
+    {"expect":"/state/interiors/count","equals":4},
+    {"player":0,"mv":[0,1],"ticks":147},
+    {"player":1,"mv":[0,1],"ticks":147},
+    {"player":2,"mv":[0,1],"ticks":147},
+    {"player":3,"mv":[0,1],"ticks":147},
+    {"ticks":16},
+    {"expect":"/state/interiors/count","equals":4},
+    {"cmd":"lua local n=0; for _,p in state.fleet.players do if p.building then n+=1 end end; assert(n==4); local pieces=0; for _,ids in state.interiors.active do pieces+=#ids end; return {buildings=#state.city.buildings,pieces=pieces}"},
+    {"bench":520,"capture":"four-interiors.png"},
+    {"expect":"/room_lighting/baked","equals":4},
+    {"expect":"/room_lighting/bake_ms"},
+    {"expect":"/entities","max":1279},
+    {"bench":90},
+    {"expect":"/errors","equals":[]}
+  ]
+}

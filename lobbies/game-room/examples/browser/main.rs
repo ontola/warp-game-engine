@@ -126,6 +126,14 @@ pub(crate) mod page {
     }
 
     fn set_session(h: &mut Host, game: Option<&str>, phase: &str) {
+        warp::web::reset_story_edit();
+        #[cfg(target_arch = "wasm32")]
+        if let Some(root) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.document_element()) {
+            let _ = match game.filter(|_| phase == "running") {
+                Some(id) => root.set_attribute("data-playing", id),
+                None => root.remove_attribute("data-playing"),
+            };
+        }
         // One id per session, kept over pause and resume (the cloud's insights count it).
         let id = match &h.party["active_session"] { s if game.is_some_and(|g| s["game"] == g) => s["id"].clone(), _ => json!(super::cloud::uuid()) };
         h.party["active_session"] = match game { Some(g) => json!({"id": id, "game": g, "phase": phase}), None => Value::Null };
@@ -168,21 +176,25 @@ pub(crate) mod page {
         for (dev, c) in devices {
             // Any key on the keyboard: the keyboard on the room's table hops.
             // (WASD and the arrows move: they count as keys too.)
-            if *dev == Device::Keyboard && (c.pressed.0 != 0 || c.mv[0].abs().max(c.mv[1].abs()) > 0.5) {
+            let key_action = c.pressed.0 != 0 || c.mv != [0.0; 2];
+            // A solo game link already reserved one player. Their first movement,
+            // action or captured mouse look can claim that seat in this tick.
+            let solo_seat = h.on_screen.is_some() && h.bound.as_slice() == [None] && !h.phone[0];
+            if *dev == Device::Keyboard && key_action {
                 h.key = Some(c.pressed.0 | ((c.mv[0] > 0.0) as u32) << 30 | ((c.mv[1] > 0.0) as u32) << 31);
-                if !c.pressed.has(Buttons::START) && !h.bound.contains(&Some(Device::Keyboard)) {
+                if !solo_seat && !c.pressed.has(Buttons::START) && !h.bound.contains(&Some(Device::Keyboard)) {
                     if h.on_screen.is_some() { join_hint(true) } else { key_hint() }
                 }
             }
-            // A pad joins with A; the keyboard only
-            // with Enter, so typing or a stray key adds nobody.
+            // A pad joins with A. In the room or when adding another player,
+            // the keyboard joins with Enter, so typing doesn't add a player.
             // The keyboard joins when Enter comes back up, so that Enter
             // does not also open the new player's Start menu.
-            let enter = *dev == Device::Keyboard && c.held.has(Buttons::START);
+            let enter = *dev == Device::Keyboard && (c.held.has(Buttons::START) || c.pressed.has(Buttons::START));
             let released = *dev == Device::Keyboard && h.kb_enter && !enter;
             if *dev == Device::Keyboard { h.kb_enter = enter && !h.bound.contains(&Some(Device::Keyboard)); }
             let active = match dev {
-                Device::Keyboard => released,
+                Device::Keyboard => released || (solo_seat && !enter && (key_action || c.look != [0.0; 2])),
                 // As at home: A joins; anything else only jiggles the pads on the table.
                 Device::Pad(_) => c.pressed.has(Buttons::SOUTH),
             };
@@ -203,15 +215,15 @@ pub(crate) mod page {
                 }
             }
             if !active || h.bound.contains(&Some(*dev)) { continue; }
-            let seat = match (0..h.bound.len()).find(|&i| h.bound[i].is_none() && !h.phone[i]) {
-                Some(i) => i,
-                None if h.bound.len() < MAX_SEATS => add_player(h, false),
+            let (seat, new_player) = match (0..h.bound.len()).find(|&i| h.bound[i].is_none() && !h.phone[i]) {
+                Some(i) => (i, false),
+                None if h.bound.len() < MAX_SEATS => (add_player(h, false), true),
                 None => continue,
             };
             h.bound[seat] = Some(*dev);
-            // Into the running game, when it takes players
-            // (app::Game::player_joins); else from the next one.
-            if h.on_screen.is_some() {
+            // A reserved seat already has a player in the running game.
+            // Only adding a party seat needs another game player.
+            if new_player && h.on_screen.is_some() {
                 let info = &seats(h)[seat];
                 if app::web::game_takes_joins() { show_hint("✓", &format!("{} joined the game", info.name)); } else { next_game_hint(&info.name); }
                 app::web::player_joins(&info.name, info.color);
@@ -515,7 +527,14 @@ pub(crate) mod page {
         fn pointer(&mut self, pointer: app::Pointer, size: [u32; 2]) { self.lobby.pointer(pointer, size); }
         // The cursor points and clicks in the room: never captured.
         fn mouse_capture(&self) -> Option<bool> { Some(false) }
-        fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> { self.lobby.draw(frame) }
+        fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
+            // A direct link is already loading its game. Upload the lobby the
+            // first time someone visits it, including after a failed game load.
+            if frame.renderer().is_none() && with(|h| h.loading.is_some()) {
+                return Ok(Draw { cameras: Vec::new(), light: Default::default(), hud: render::hud::HudDrawList::new(frame.size) });
+            }
+            self.lobby.draw(frame)
+        }
         fn title(&self) -> Option<String> { self.lobby.title() }
         fn escape(&mut self) -> bool { self.lobby.escape() }
         fn hold_quality(&self) -> bool { self.lobby.hold_quality() }
@@ -668,7 +687,12 @@ pub(crate) mod page {
         // Nobody at the doors until the cloud room reports someone.
         let links = json!({"room": {"pending": []}, "linked": {}});
         lobby.set_links(links.clone());
-        with(|h| { h.party = party; h.players = players; h.base = players; h.bound = vec![None; players]; h.phone = vec![false; players]; h.next_id = players; h.links = links; h.own_looks = own_looks; });
+        with(|h| {
+            h.party = party; h.players = players; h.base = players; h.bound = vec![None; players];
+            h.phone = vec![false; players]; h.next_id = players; h.links = links; h.own_looks = own_looks;
+            // A direct game load can finish before the room's first device tick.
+            warp::web::set_seats(seats(h));
+        });
         // The catalog's covers, fetched after the room is up (it shows a
         // title card until a cover arrives).
         let covers: Vec<(String, String)> = with(|h| h.party["library"].as_array().into_iter().flatten()
@@ -695,6 +719,27 @@ pub(crate) mod page {
     #[cfg_attr(target_os = "android", allow(dead_code))]
     pub fn switch_game(name: String) { start(name); }
 
+    /// Author code runs in a disposable Web Worker with its own VM and memory.
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen]
+    pub fn evaluate_story(source: &str) -> Result<String, wasm_bindgen::JsValue> {
+        if web_sys::window().is_some() { return Err("Story scripts run in the editor worker".into()); }
+        warp::story::evaluate(source).map(|value| value.to_string()).map_err(Into::into)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen]
+    pub fn start_story(game: &str, data: &str) -> Result<(), wasm_bindgen::JsValue> {
+        if !with(|h| h.on_screen.as_deref() == Some(game) && h.loading.is_none()) {
+            return Err("Open the game before starting its story".into());
+        }
+        warp::web::queue_story(data).map_err(Into::into)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen]
+    pub fn story_reply() -> Option<String> { warp::web::story_reply() }
+
     /// Claim waiting profile `pending` (its id) for seat `seat`, as a player
     /// at a door does (for tests, and pages with their own controls).
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
@@ -708,7 +753,7 @@ pub(crate) mod page {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn main() { page::main(); }
+fn main() { if web_sys::window().is_some() { page::main(); } }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(dead_code)]

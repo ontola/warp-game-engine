@@ -130,7 +130,7 @@ pub(crate) fn cook_recipes(seed: u64, dry: f32, budget: MeadowBladeBudget,
     if !variant_patch_metres.is_finite() || (variant_patch_metres != 0.0 && !(4.0..=64.0).contains(&variant_patch_metres)) {
         return Err("windswept variant patches must be 0 or 4..64 metres".into());
     }
-    let mut result = MeadowGeometry { vertices: Vec::new(), variant_patch_metres, lod_ranges: [[[0; 2]; LODS]; VARIANTS],
+    let mut result = MeadowGeometry { vertices: Vec::new(), mown_turf: false, variant_patch_metres, lod_ranges: [[[0; 2]; LODS]; VARIANTS],
         lod_errors: [[0.0; LODS]; VARIANTS], branch_pivots: [[[0.0; 4]; BRANCHES]; VARIANTS],
         max_tuft_radius: 0.0, max_tuft_height: 0.0, max_anchor_radius: 0.0, max_blade_radius: 0.0 };
     for (variant, salt) in [101u64, 303, 707].into_iter().enumerate() {

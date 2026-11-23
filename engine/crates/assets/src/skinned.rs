@@ -12,6 +12,7 @@ use render::{
 use serde::Deserialize;
 mod warp_hair;
 mod warp_human;
+pub use warp_human::StreetMaterials;
 mod warp_skin;
 use std::{
     collections::HashMap,

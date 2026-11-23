@@ -48,6 +48,59 @@ impl Grid {
     }
 }
 
+/// An aux directory of independently replaceable room grids. Each slot keeps
+/// the world-space grid header, probes and separator planes from the baker.
+#[derive(Clone, Copy, Debug)]
+pub struct Atlas {
+    pub(crate) offset: usize,
+    slots: usize,
+    probes_per_slot: usize,
+}
+
+impl Atlas {
+    pub(crate) fn new(offset: usize, slots: usize, probes_per_slot: usize) -> Result<Self, String> {
+        if !(1..=4).contains(&slots) || !(8..=MAX_PROBES).contains(&probes_per_slot) {
+            return Err("an irradiance atlas needs 1 to 4 rooms and 8 to 65536 probes per room".into());
+        }
+        Ok(Self { offset, slots, probes_per_slot })
+    }
+
+    fn stride(self) -> usize { HEADER_WORDS + self.probes_per_slot * PROBE_WORDS }
+
+    pub(crate) fn words(self) -> usize { HEADER_WORDS + self.slots * (8 + self.stride()) }
+
+    pub(crate) fn header(self) -> [u32; HEADER_WORDS] {
+        [self.slots as u32, 0, 0, 0, 0, 0, 0, 8]
+    }
+
+    pub(crate) fn directory_entry(self, slot: usize) -> Result<usize, String> {
+        if slot >= self.slots { return Err("irradiance slot outside the reserved atlas".into()); }
+        Ok(self.offset + HEADER_WORDS + 8 * slot)
+    }
+
+    /// Directory entry (min, absolute grid offset, max, spare). An offset
+    /// of zero marks an empty room in shade.wgsl's irradiance_grid_at.
+    pub(crate) fn entry(self, slot: usize, min: Vec3, max: Vec3, packed: &[u32]) -> Result<[u32; 8], String> {
+        self.directory_entry(slot)?;
+        if !min.is_finite() || !max.is_finite() || !min.cmplt(max).all() {
+            return Err("invalid irradiance room bounds".into());
+        }
+        if packed.len() < HEADER_WORDS || packed[7] != 7 { return Err("expected packed sky and emission probes".into()); }
+        let grid = Grid {
+            origin: Vec3::new(f32::from_bits(packed[0]), f32::from_bits(packed[1]), f32::from_bits(packed[2])),
+            cell: f32::from_bits(packed[3]), dims: [packed[4], packed[5], packed[6]],
+        };
+        let count = grid.dims.iter().try_fold(1usize, |n, &d| n.checked_mul(d as usize));
+        if !count.is_some_and(|n| n <= self.probes_per_slot && packed.len() == HEADER_WORDS + n * PROBE_WORDS) {
+            return Err("packed grid exceeds its reserved slot or has the wrong length".into());
+        }
+        grid.validate()?;
+        let data = self.offset + HEADER_WORDS + self.slots * 8 + self.stride() * slot;
+        Ok([min.x.to_bits(), min.y.to_bits(), min.z.to_bits(), data as u32,
+            max.x.to_bits(), max.y.to_bits(), max.z.to_bits(), 0])
+    }
+}
+
 /// One probe: irradiance facing +x, -x, +y, -y, +z, -z.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Probe { pub axes: [Vec3; 6] }
@@ -327,6 +380,45 @@ impl BoxRoom {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn atlas_slots_hold_independent_world_grids_and_bounds() {
+        let mut scene = crate::scene::Scene::default();
+        scene.aux.extend([123, 456]);
+        scene.reserve_irradiance_atlas(4, 12).unwrap();
+        let atlas = scene.irradiance_atlas.unwrap();
+        assert_eq!(&scene.aux[..2], &[123, 456]);
+        assert_eq!(scene.aux[atlas.offset], 4);
+        assert_eq!(scene.aux[atlas.offset + 7], 8);
+        let mut previous_end = atlas.offset + HEADER_WORDS + 4 * 8;
+        for slot in 0..4 {
+            let min = Vec3::new(slot as f32 * 40.0, 0.0, -17.0);
+            let grid = Grid { origin: min, cell: 1.25, dims: [2 + (slot as u32 % 2), 2, 2] };
+            let max = min + Vec3::splat(1.1);
+            let probe = Probe { axes: [Vec3::splat(slot as f32 * 0.25); 6] };
+            let probes = vec![probe; grid.count()];
+            let planes = vec![[1.0, 0.0, 0.0, -min.x]; grid.count()];
+            let packed = pack_sky_emission(&grid, &probes, &probes, &planes).unwrap();
+            let entry = atlas.entry(slot, min, max, &packed).unwrap();
+            let directory = atlas.directory_entry(slot).unwrap();
+            assert_eq!(&scene.aux[directory..directory + 8], &[0; 8]);
+            let data = entry[3] as usize;
+            assert!(data >= previous_end && data + packed.len() <= scene.aux.len());
+            assert_eq!(entry[0], min.x.to_bits());
+            assert_eq!(entry[4], max.x.to_bits());
+            // A streamed slot accepts world-space separator planes unchanged.
+            assert_eq!(f32::from_bits(packed[HEADER_WORDS + 11]), -min.x);
+            previous_end = data + packed.len();
+        }
+        assert!(atlas.directory_entry(4).is_err());
+        let grid = Grid { origin: Vec3::ZERO, cell: 1.0, dims: [3, 3, 3] };
+        let probes = vec![Probe::default(); grid.count()];
+        let packed = pack_sky_emission(&grid, &probes, &probes, &[]).unwrap();
+        assert!(atlas.entry(0, Vec3::ZERO, Vec3::ONE, &packed).is_err());
+        assert!(scene.reserve_irradiance_volume(grid).is_err());
+        assert!(scene.reserve_irradiance_atlas(1, 12).is_err());
+    }
+
 
     fn room() -> BoxRoom {
         let wall = Vec3::splat(0.6);

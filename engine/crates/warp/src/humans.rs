@@ -240,7 +240,7 @@ pub const JOINT_NAMES: &[(&str, Bone)] = &[("head", Bone::Head), ("neck", Bone::
     ("hand_l", Bone::HandL), ("hand_r", Bone::HandR), ("knee_l", Bone::CalfL), ("knee_r", Bone::CalfR), ("foot_l", Bone::FootL), ("foot_r", Bone::FootR)];
 
 /// The poses a game can ask for (`humans.set(id, {pose = ...})`).
-pub const POSES: &[&str] = &["walk", "idle", "crouch", "feed", "rise", "wave", "reach", "raise", "strike", "aim", "shove", "attack", "punch", "jab", "hit", "hit_head", "dead", "down", "cast", "roll"];
+pub const POSES: &[&str] = &["walk", "idle", "sit", "crouch", "feed", "rise", "wave", "reach", "raise", "strike", "aim", "shove", "attack", "punch", "jab", "hit", "hit_head", "dead", "down", "cast", "roll"];
 
 /// A person's gait between two ticks.
 #[derive(Clone, Copy, Default, Debug)]
@@ -250,8 +250,13 @@ struct Gait { phase: f32, speed: f32 }
 pub struct Person {
     pub pool: String,
     slot: usize,
+    pub look: usize,
+    /// Relative to the slot's shared fitted body. Also scales joints and physics.
+    size: Vec3,
+    resident: Option<usize>,
     pub pos: Vec3,
     pub yaw: f32,
+    visible: bool,
     prev_pos: Vec3,
     prev_yaw: f32,
     /// The legs' turn from the facing towards where they walk (radians):
@@ -284,6 +289,14 @@ pub struct Person {
     fresh: bool,
 }
 
+impl Person {
+    /// A hidden actor keeps its model and slot, e.g. while riding in a vehicle.
+    pub fn set_visible(&mut self, visible: bool) {
+        self.fresh |= visible && !self.visible;
+        self.visible = visible;
+    }
+}
+
 struct Pool {
     cfg: HumanPool,
     zombie: bool,
@@ -298,6 +311,9 @@ struct Pool {
     /// Slots that have an actor: all of them, unless the device could not
     /// hold that many (then the first `cap`).
     cap: usize,
+    distant: crate::distant_humans::Distant,
+    wardrobe: Vec<(assets::skinned::StreetMaterials, Option<usize>)>,
+    looks: Vec<render::humans::Instance>,
 }
 
 #[derive(Default)]
@@ -329,10 +345,21 @@ impl Pool {
     /// The pool's `k`th person, from its seed and name.
     fn person(&self, name: &str, k: usize) -> render::humans::Instance {
         let seed = hash(hash(self.cfg.seed, name.bytes().fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64))), k as u64);
-        let [lo, hi] = self.cfg.height;
-        let height = lo + (hi - lo) * ((seed >> 11) % 1000) as f32 / 1000.0;
+        let height = render::humans::seeded_height(seed, self.cfg.height);
         let shirt = self.cfg.shirt.as_deref().and_then(parse_rgb);
         render::humans::Instance::person(seed, Vec3::ZERO, 0.0, &render::humans::Constraints { height_m: Some(height), shirt })
+    }
+
+    fn look_count(&self) -> usize { self.cfg.variety.max(1) * if self.cfg.distant > 0 { 8 } else { 1 } }
+
+    fn street_look(&self, name: &str, k: usize) -> render::humans::Instance {
+        let body = k % self.cfg.variety.max(1);
+        self.person(name, body).street_body(body).street_palette(&self.person(name, k + 257), self.cfg.shirt.is_none().then_some(k))
+    }
+
+    fn street_size(&self, name: &str, k: usize) -> Vec3 {
+        let source = self.person(name, k % self.cfg.variety.max(1)).body_scale();
+        self.person(name, k + 733).body_scale() / source
     }
 
     /// The skeleton of the person in `slot`.
@@ -351,36 +378,50 @@ impl Humans {
     pub fn new(cfg: &BTreeMap<String, HumanPool>) -> Self {
         // A browser fits each person on its one page thread before the
         // first frame (25 people took 150 s in Dead Miles): fewer there.
-        let fitted = |c: &HumanPool| HumanPool { variety: if cfg!(target_arch = "wasm32") { c.variety.min(BROWSER_VARIETY) } else { c.variety }, ..c.clone() };
-        let pools = cfg.iter().map(|(name, c)| (name.clone(), Pool { zombie: c.style == "zombie", cfg: fitted(c), models: Vec::new(), skeletons: OnceLock::new(), actors: Vec::new(), used: vec![false; c.count], cap: c.count })).collect();
+        let fitted = |c: &HumanPool| HumanPool { variety: if cfg!(target_arch = "wasm32") && c.distant == 0 { c.variety.min(BROWSER_VARIETY) } else { c.variety }, ..c.clone() };
+        let pools = cfg.iter().map(|(name, c)| (name.clone(), Pool { zombie: c.style == "zombie", cfg: fitted(c), models: Vec::new(), skeletons: OnceLock::new(), actors: Vec::new(), used: vec![false; c.count], cap: c.count, distant: Default::default(), wardrobe: Vec::new(), looks: Vec::new() })).collect();
         Humans { pools, next: 1, ..Default::default() }
     }
 
     pub fn is_empty(&self) -> bool { self.pools.is_empty() }
 
     pub fn spawn(&mut self, pool: &str, pos: Vec3, yaw: f32) -> Result<Option<u32>, String> {
+        self.spawn_with_look(pool, pos, yaw, None, None)
+    }
+
+    pub fn spawn_with_look(&mut self, pool: &str, pos: Vec3, yaw: f32, look: Option<usize>, resident: Option<usize>) -> Result<Option<u32>, String> {
         if !self.pools.contains_key(pool) {
             let names: Vec<_> = self.pools.keys().cloned().collect();
             return Err(format!("humans.spawn: no pool {pool:?} (game.toml has {})", if names.is_empty() { "none: add [humans.NAME]".into() } else { names.join(", ") }));
         }
         let p = self.pools.get_mut(pool).unwrap();
-        let Some(slot) = p.used[..p.cap].iter().position(|u| !u) else { return Ok(None) };
+        let variety = p.cfg.variety.max(1);
+        if look.is_some_and(|i| i >= p.look_count()) { return Err(format!("humans.spawn: look outside 0..{}", p.look_count())); }
+        let Some(slot) = (0..p.cap).find(|&i| !p.used[i] && look.is_none_or(|k| i % variety == k % variety)) else { return Ok(None) };
         p.used[slot] = true;
+        let gait = resident.and_then(|key| p.distant.gait(key))
+            .map_or(Gait::default(), |(phase, speed)| Gait { phase, speed });
+        if let Some(key) = resident { p.distant.set_fitted(key, true); }
+        let look = look.unwrap_or(slot % variety);
+        let size = if p.cfg.distant > 0 { p.street_size(pool, look) } else { Vec3::ONE };
         let id = self.next;
         self.next += 1;
-        self.people.insert(id, Person { pool: pool.to_string(), slot, pos, yaw, prev_pos: pos, prev_yaw: yaw, legs: 0.0, prev_legs: 0.0, from: Gait::default(), to: Gait::default(), pose: "walk".into(), t: 0.0, prev_t: 0.0, tired: 0.0, prev_tired: 0.0, coil: 0.0, prev_coil: 0.0, jolt: Vec2::ZERO, prev_jolt: Vec2::ZERO, jolt_v: Vec2::ZERO, age: (hash(id as u64, 7) % 1000) as f32 * 0.01, fresh: true });
+        self.people.insert(id, Person { pool: pool.to_string(), slot, look, size, resident, pos, yaw, visible: true, prev_pos: pos, prev_yaw: yaw, legs: 0.0, prev_legs: 0.0, from: gait, to: gait, pose: "walk".into(), t: 0.0, prev_t: 0.0, tired: 0.0, prev_tired: 0.0, coil: 0.0, prev_coil: 0.0, jolt: Vec2::ZERO, prev_jolt: Vec2::ZERO, jolt_v: Vec2::ZERO, age: (hash(id as u64, 7) % 1000) as f32 * 0.01, fresh: true });
         Ok(Some(id))
     }
 
     pub fn remove(&mut self, id: u32) -> bool {
         self.dolls.remove(id);
         let Some(p) = self.people.remove(&id) else { return false };
-        if let Some(pool) = self.pools.get_mut(&p.pool) { pool.used[p.slot] = false; }
+        if let Some(pool) = self.pools.get_mut(&p.pool) {
+            pool.used[p.slot] = false;
+            if let Some(key) = p.resident { pool.distant.resume_gait(key, p.to.phase); pool.distant.set_fitted(key, false); }
+        }
         true
     }
 
     pub fn clear(&mut self) {
-        for p in self.pools.values_mut() { p.used.fill(false); }
+        for p in self.pools.values_mut() { p.used.fill(false); p.distant.clear(); }
         self.people.clear();
         self.dolls.clear();
     }
@@ -390,13 +431,50 @@ impl Humans {
         self.pools.get(pool).map(|p| (p.used[..p.cap].iter().filter(|u| !**u).count(), p.cap))
     }
 
+    pub(crate) fn body_room(&self, name: &str, body: usize) -> Option<(usize, usize)> {
+        let p = self.pools.get(name)?;
+        let step = p.cfg.variety.max(1);
+        if body >= step { return None; }
+        let slots = (body..p.cap).step_by(step);
+        Some((slots.clone().filter(|&i| !p.used[i]).count(), slots.count()))
+    }
+
+    pub(crate) fn distant_limits(&self, name: &str) -> Option<(usize, usize, usize)> {
+        self.pools.get(name).map(|p| (p.cfg.distant, p.cfg.variety.max(1), p.look_count()))
+    }
+
+    /// Interpolated feet and appearance of a visible low-detail resident (one-based ID).
+    pub fn distant_pose(&self, pool: &str, resident: usize, alpha: f32) -> Option<(Vec3, usize)> {
+        self.pools.get(pool)?.distant.visible_pose(resident, alpha)
+    }
+
+    pub(crate) fn set_distant(&mut self, pool: &str, samples: Vec<crate::distant_humans::Sample>, seconds: f32) {
+        self.pools.get_mut(pool).unwrap().distant.replace(samples, seconds);
+    }
+
+    /// Save the previous tick before game scripts change positions and poses.
+    pub fn tick_start(&mut self) {
+        for p in self.people.values_mut() {
+            p.prev_pos = p.pos;
+            p.prev_yaw = p.yaw;
+            p.prev_t = p.t;
+            p.prev_tired = p.tired;
+            p.prev_coil = p.coil;
+        }
+    }
+
     /// A simulation tick has run: the legs advance by how far each person moved.
     pub fn tick(&mut self, dt: f32) {
+        for pool in self.pools.values_mut() { pool.distant.tick(dt); }
         let Ok(rig) = Rig::shared() else { return };
         for p in self.people.values_mut() {
             let zombie = self.pools.get(&p.pool).is_some_and(|pool| pool.zombie);
             let moved = (p.pos - p.prev_pos).with_y(0.0);
-            let teleport = p.fresh || moved.length() > 3.0;
+            let teleport = p.fresh || p.pos.distance_squared(p.prev_pos) > 9.0;
+            if teleport {
+                p.prev_pos = p.pos;
+                p.prev_yaw = p.yaw;
+            }
             p.from = p.to;
             p.from.phase = p.from.phase.rem_euclid(1.0);
             p.to.phase = p.from.phase;
@@ -420,13 +498,8 @@ impl Humans {
                 let metres = if matches!(p.pose.as_str(), "crouch" | "feed") { rig.crouch.metres } else { rig.walk.metres * w + rig.jog.metres * j + rig.sprint.metres * r };
                 // A zombie drags shorter steps at the same pace.
                 let stride = if zombie { 0.7 } else { 1.0 };
-                p.to.phase += sign * distance / (metres * stride * (p.to.speed / 0.85).clamp(0.2, 1.0).sqrt()).max(0.05);
+                p.to.phase += sign * distance / (metres * stride * p.size.y * (p.to.speed / 0.85).clamp(0.2, 1.0).sqrt()).max(0.05);
             }
-            p.prev_pos = p.pos;
-            p.prev_yaw = p.yaw;
-            p.prev_t = p.t;
-            p.prev_tired = p.tired;
-            p.prev_coil = p.coil;
             // The jolt springs back, overshooting once: a sway, not a snap.
             p.prev_jolt = p.jolt;
             p.jolt_v += (-p.jolt * 140.0 - p.jolt_v * 11.0) * dt;
@@ -440,18 +513,45 @@ impl Humans {
     /// Person `id` goes limp as it stands, thrown by `push` (world, m/s):
     /// a ragdoll until it gets up (any pose but `dead` or `down`) or goes.
     pub fn ragdoll(&mut self, id: u32, push: Vec3) -> Result<bool, String> {
+        self.ragdoll_with_motion(id, push, None)
+    }
+
+    pub(crate) fn ragdoll_with_motion(&mut self, id: u32, push: Vec3, spin: Option<Vec3>) -> Result<bool, String> {
         let Some(p) = self.people.get(&id) else { return Ok(false) };
         let rig = Rig::shared()?;
         let zombie = self.pools.get(&p.pool).is_some_and(|pool| pool.zombie);
         let mut palette = vec![Mat4::IDENTITY; rig.character.joint_count];
         let bind = self.skeleton(rig, p).bind;
         pose(rig, self.skeleton(rig, p), p, zombie, 1.0, &mut palette);
-        self.dolls.fall(id, &rig.joint, &bind, &palette, model_transform(p.pos, p.yaw), push)?;
+        self.dolls.fall(id, &rig.joint, &bind, &palette, model_transform(p.pos, p.yaw) * Affine3A::from_scale(p.size), push, spin)?;
         Ok(true)
     }
 
     /// Up again: the ragdoll goes, the poses take over.
     pub fn stand(&mut self, id: u32) { self.dolls.remove(id); }
+
+    /// Put the feet under the landed hips and start the authored rise clip.
+    /// A moving ragdoll (or a blocked recovery space) stays down.
+    pub fn recover(&mut self, id: u32) -> Option<Vec3> {
+        if !self.dolls.settled(id) { return None; }
+        let hips = self.joint(id, "hips")?;
+        let feet = self.dolls.standing_space(hips.with_y(self.people.get(&id)?.pos.y))?;
+        self.stand(id);
+        let person = self.people.get_mut(&id)?;
+        person.pos = feet;
+        person.prev_pos = feet;
+        person.pose = "rise".into();
+        person.t = 0.;
+        person.prev_t = 0.;
+        person.from = Gait::default();
+        person.to = Gait::default();
+        person.fresh = true;
+        Some(feet)
+    }
+
+    pub fn set_obstacles(&mut self, obstacles: BTreeMap<u32, crate::ragdoll::Obstacle>) {
+        self.dolls.obstacles = obstacles;
+    }
 
     /// Ragdolls still moving.
     pub fn falling(&self) -> usize { self.dolls.active() }
@@ -472,51 +572,72 @@ impl Humans {
                 for k in 0..pool.cfg.variety.max(1) {
                     // Spread over the pool's age range, in no order.
                     let age = pool.cfg.age.map(|[lo, hi]| lo + (hi - lo) * (hash(pool.cfg.seed ^ 0xa9e, k as u64) % 1000) as f32 / 999.);
-                    pool.models.push(rig.character.warp_human_person(&pool.person(name, k), skin, age)?);
+                    let model = if pool.cfg.distant > 0 {
+                        rig.character.warp_human_street(&pool.street_look(name, k), skin)?
+                    } else { rig.character.warp_human_person(&pool.person(name, k), skin, age)? };
+                    pool.models.push(model);
                 }
             }
         }
         // What every slot would cost, against what the device holds.
         let bytes = |n: usize| (n * render::skinning::VERTEX_BYTES) as u64;
         let taken: u64 = scene.skinning.actors.iter().map(|a| bytes(a.influences.len())).sum();
-        let per: BTreeMap<String, u64> = self.pools.iter().map(|(name, p)| {
-            let verts: usize = p.models.iter().map(|m| m.vertex_count()).sum::<usize>() / p.models.len().max(1);
-            (name.clone(), bytes(verts))
-        }).collect();
-        let wanted: u64 = self.pools.iter().map(|(name, p)| per[name] * p.cfg.count as u64).sum();
         let room = (budget / 100 * 95).saturating_sub(taken);
-        // The renderer's own limits on skinned actors and vertices count too.
-        let actors_free = render::skinning::MAX_ACTORS.saturating_sub(scene.skinning.actors.len()) as u64;
-        let verts_free = (render::skinning::MAX_VERTICES.saturating_sub(taken as usize / render::skinning::VERTEX_BYTES)) as u64;
-        let slots: u64 = self.pools.values().map(|p| p.cfg.count as u64).sum();
-        // The share of every pool that fits, in thousandths.
-        let mut share = 1000u64;
-        if wanted > room { share = share.min(room * 1000 / wanted.max(1)); }
-        if slots > actors_free { share = share.min(actors_free * 1000 / slots.max(1)); }
-        let wanted_verts = wanted / render::skinning::VERTEX_BYTES as u64;
-        if wanted_verts > verts_free { share = share.min(verts_free * 1000 / wanted_verts.max(1)); }
+        let actors_free = render::skinning::MAX_ACTORS.saturating_sub(scene.skinning.actors.len());
+        let bytes_free = room.min(bytes(render::skinning::MAX_VERTICES).saturating_sub(taken));
+        // Reserve player avatars first, then fit the same share of every pool's
+        // optional slots using the actual vertex count of each fitted identity.
+        let capacity = |cfg: &HumanPool, share: usize| {
+            let floor = cfg.reserved.max(1);
+            floor + (cfg.count - floor) * share / 1000
+        };
+        let fits = |share| {
+            let mut slots = 0;
+            let mut size = 0;
+            for pool in self.pools.values() {
+                let count = capacity(&pool.cfg, share);
+                slots += count;
+                size += (0..count).map(|i| bytes(pool.models[i % pool.models.len()].vertex_count())).sum::<u64>();
+            }
+            slots <= actors_free && size <= bytes_free
+        };
+        if !fits(0) { return Err("the device cannot fit the reserved Warp Human slots".into()); }
+        let mut share = 1000;
+        if !fits(share) {
+            let (mut lo, mut hi) = (0, share);
+            while hi - lo > 1 {
+                let mid = (lo + hi) / 2;
+                if fits(mid) { lo = mid; } else { hi = mid; }
+            }
+            share = lo;
+        }
         let mut note = None;
-        let mut total = 0u64;
         for (name, pool) in &mut self.pools {
-            pool.cap = if share >= 1000 { pool.cfg.count } else { ((pool.cfg.count as u64 * share / 1000) as usize).max(1) };
-            total += pool.cap as u64;
+            pool.cap = capacity(&pool.cfg, share);
             if pool.cap < pool.cfg.count {
-                note = Some(format!("humans: this device or renderer holds fewer skinned people than the pools ask ({} MB, {} actors), so every pool is cut to fit (e.g. {name}: {} of {})", room >> 20, actors_free, pool.cap, pool.cfg.count));
+                note = Some(format!("humans: {name} cut to {} of {} slots to fit {} MB and {actors_free} actors", pool.cap, pool.cfg.count, room >> 20));
             }
         }
-        if total > actors_free { return Err(format!("{total} people do not fit in the renderer's {actors_free} free skinned actors")); }
         for pool in self.pools.values_mut() {
             pool.actors.clear();
+            pool.wardrobe.clear();
             for k in 0..pool.cap {
                 let model = &pool.models[k % pool.models.len()];
                 // Falls and reaches go outside the walking bounds.
                 let handle = model.add_actor_with_bounds(scene, model_transform(HIDDEN, 0.0), model.min.min(Vec3::new(-2.2, -0.3, -2.2)), model.max.max(Vec3::new(2.2, 2.4, 2.2)))?;
+                if pool.cfg.distant > 0 { pool.wardrobe.push((model.street_materials(scene, handle), None)); }
                 pool.actors.push(handle);
                 palettes.push(vec![Mat4::IDENTITY; model.joint_count]);
             }
         }
         let end = scene.instances.len();
         if end > first_instance { scene.dynamic_instances.push(first_instance..end); }
+        for (name, pool) in &mut self.pools {
+            if pool.cfg.distant == 0 { continue; }
+            pool.looks = (0..pool.look_count()).map(|i| pool.street_look(name, i)).collect();
+            let sizes = (0..pool.look_count()).map(|i| pool.street_size(name, i)).collect();
+            pool.distant.attach(scene, pool.cfg.distant, &pool.looks, sizes, pool.cfg.variety.max(1), pool.cfg.skin.as_deref().and_then(parse_rgb));
+        }
         self.palettes = palettes;
         self.attached = true;
         Ok(note)
@@ -545,9 +666,17 @@ impl Humans {
             at += pool.actors.len();
         }
         for (id, p) in &self.people {
-            let Some(pool) = self.pools.get(&p.pool) else { continue };
+            if !p.visible { continue; }
+            let Some(pool) = self.pools.get_mut(&p.pool) else { continue };
             if p.slot >= pool.actors.len() { continue; }
             let k = index[&p.pool] + p.slot;
+            if let Some((materials, previous)) = pool.wardrobe.get_mut(p.slot) {
+                if *previous != Some(p.look) {
+                    let range = materials.dress(scene, &pool.looks[p.look], pool.cfg.skin.as_deref().and_then(parse_rgb));
+                    renderer.update_materials(gpu, range.start, &scene.materials[range])?;
+                    *previous = Some(p.look);
+                }
+            }
             let model = &pool.models[p.slot % pool.models.len()];
             let pos = p.prev_pos.lerp(p.pos, alpha);
             let turn = (p.yaw - p.prev_yaw + PI).rem_euclid(TAU) - PI;
@@ -556,7 +685,7 @@ impl Humans {
             if limp.is_none() { pose(rig, pool.skeleton(rig, &p.pool, p.slot), p, pool.zombie, alpha, &mut self.palettes[k]); }
             model.pose_face(&mut self.palettes[k], p.age);
             let h = pool.actors[p.slot];
-            let at = model_transform(pos, yaw) * Affine3A::from_translation(limp.unwrap_or(Vec3::ZERO));
+            let at = model_transform(pos, yaw) * Affine3A::from_scale(p.size) * Affine3A::from_translation(limp.unwrap_or(Vec3::ZERO));
             scene.update_instance(h.instance, h.mesh, at);
             shown[k] = true;
         }
@@ -573,6 +702,7 @@ impl Humans {
         if let (Some(&a), Some(&b)) = (instances.iter().min(), instances.iter().max()) {
             renderer.update_instances(gpu, a, &scene.instances[a..=b])?;
         }
+        for pool in self.pools.values() { pool.distant.draw(gpu, renderer, scene, alpha)?; }
         if self.first_actor == 0 && scene.skinning.actors.len() == self.palettes.len() {
             renderer.set_skinning_palettes(gpu, self.palettes.iter().map(|p| p.as_slice()).collect::<Vec<_>>().into_iter())?;
         } else {
@@ -608,7 +738,7 @@ impl Humans {
         let j = rig.joint[bone as usize];
         let lift = if bone == Bone::Head { 0.08 } else { 0.0 };
         let local = palette[j].transform_point3(skeleton.rest(bone) + Vec3::new(0.0, lift, 0.0)) + limp.unwrap_or(Vec3::ZERO);
-        Some(model_transform(p.pos, p.yaw).transform_point3(local))
+        Some(model_transform(p.pos, p.yaw).transform_point3(p.size * local))
     }
 }
 
@@ -640,10 +770,34 @@ fn turn(palette: &mut [Mat4], joints: &[usize], at: Vec3, q: Quat) {
     for &j in joints { palette[j] = m * palette[j]; }
 }
 
+/// Seat the fitted skeleton on a chair. Each knee follows its own thigh
+/// length, with the shoes level and supported by the floor under the chair.
+fn sit(rig: &Rig, body: &Skeleton, palette: &mut [Mat4]) {
+    let mut lower_body = 0.0;
+    for [hip, knee, ankle, toe] in [
+        [Bone::ThighL, Bone::CalfL, Bone::FootL, Bone::BallL],
+        [Bone::ThighR, Bone::CalfR, Bone::FootR, Bone::BallR],
+    ] {
+        let joints = [hip, knee, ankle, toe].map(|bone| rig.joint[bone as usize]);
+        let at = |bone: Bone, p: &[Mat4]| p[rig.joint[bone as usize]].transform_point3(body.rest(bone));
+        let foot_height = at(ankle, palette).y;
+        let thigh = (at(knee, palette) - at(hip, palette)).normalize();
+        let forward = Quat::from_rotation_arc(thigh, Vec3::new(0.0, -0.22, 0.98).normalize());
+        turn(palette, &joints, at(hip, palette), forward);
+        let shin = (at(ankle, palette) - at(knee, palette)).normalize();
+        let down = Quat::from_rotation_arc(shin, Vec3::new(0.0, -0.99, 0.10).normalize());
+        turn(palette, &joints[1..], at(knee, palette), down);
+        turn(palette, &joints[2..], at(ankle, palette), (down * forward).inverse());
+        lower_body += (foot_height - at(ankle, palette).y) * 0.5;
+    }
+    let drop = Mat4::from_translation(Vec3::Y * lower_body);
+    for &joint in &rig.joint { palette[joint] = drop * palette[joint]; }
+}
+
 fn pose(rig: &Rig, body: &Skeleton, p: &Person, zombie: bool, alpha: f32, palette: &mut [Mat4]) {
     let g = Gait { phase: p.from.phase + (p.to.phase - p.from.phase) * alpha, speed: p.from.speed + (p.to.speed - p.from.speed) * alpha };
     let t = (p.prev_t + (p.t - p.prev_t) * alpha).clamp(0.0, 1.0);
-    let moving = (g.speed / 0.6).clamp(0.0, 1.0);
+    let moving = if p.pose == "sit" { 0.0 } else { (g.speed / 0.6).clamp(0.0, 1.0) };
     let [w, j, r] = blend(g.speed);
     let mut layers = if matches!(p.pose.as_str(), "crouch" | "feed") {
         vec![Layer { clip: rig.crouch_idle, t: p.age, looped: true, w: 1.0 - moving }, rig.crouch.layer(g.phase, moving)]
@@ -679,7 +833,7 @@ fn pose(rig: &Rig, body: &Skeleton, p: &Person, zombie: bool, alpha: f32, palett
     let pose = body.bound.pose(&rig.lib, &layers);
     for (bone, _) in JOINTS { palette[rig.joint[bone as usize]] = pose[bone as usize] * body.to_rest[bone as usize]; }
     let legs = p.prev_legs + (p.legs - p.prev_legs) * alpha;
-    if legs.abs() > 0.01 && !matches!(p.pose.as_str(), "dead" | "down") {
+    if legs.abs() > 0.01 && !matches!(p.pose.as_str(), "dead" | "down" | "sit") {
         // Strafing: the hips and legs turn towards the walk, the waist
         // takes part of the twist, the chest keeps facing ahead.
         let hips = palette[rig.joint[Bone::Pelvis as usize]].transform_point3(body.rest(Bone::Pelvis));
@@ -714,9 +868,16 @@ fn pose(rig: &Rig, body: &Skeleton, p: &Person, zombie: bool, alpha: f32, palett
         for left in [true, false] {
             let side = if left { 1.0 } else { -1.0 };
             let [upper, fore, hand] = arm(left);
+            // Let the shoulder girdle settle from the mesh's half-raised bind
+            // pose. Rotate about the sternum end of each collarbone so the
+            // shoulder and the hanging arm follow together at any stature.
+            let clavicle = if left { Bone::ClavicleL } else { Bone::ClavicleR };
+            let collar = rig.joint[clavicle as usize];
+            turn(palette, &[collar, upper, fore, hand], at(clavicle, palette), Quat::from_rotation_z(-side * still * 0.10));
             let shoulder = at(if left { Bone::UpperArmL } else { Bone::UpperArmR }, palette);
-            // The capture's rest holds the arms a hand away from the hips.
-            turn(palette, &[upper, fore, hand], shoulder, Quat::from_rotation_z(-side * still * 0.10) * Quat::from_rotation_x(still * 0.04));
+            // Keep the capture's outward arm angle as the shoulder settles.
+            // Adducting the arm with the collarbone puts the fingers inside the hip.
+            turn(palette, &[upper, fore, hand], shoulder, Quat::from_rotation_z(side * still * 0.10) * Quat::from_rotation_x(still * 0.04));
             let elbow = at(if left { Bone::LowerArmL } else { Bone::LowerArmR }, palette);
             turn(palette, &[fore, hand], elbow, Quat::from_rotation_x(-still * (0.22 + 0.02 * breath)));
         }
@@ -795,6 +956,15 @@ fn pose(rig: &Rig, body: &Skeleton, p: &Person, zombie: bool, alpha: f32, palett
         // The blow: from high to low ahead over t.
         "strike" => { let a = 2.5 - 1.9 * t; raise(palette, true, a, 0.05); raise(palette, false, a, 0.05); }
         "reach" => { raise(palette, true, 1.35, 0.05); raise(palette, false, 1.35, 0.05); }
+        "sit" => {
+            for left in [true, false] {
+                let [_, elbow, hand] = arm(left);
+                raise(palette, left, 0.40, 0.05);
+                let pivot = at(if left { Bone::LowerArmL } else { Bone::LowerArmR }, palette);
+                turn(palette, &[elbow, hand], pivot, Quat::from_rotation_x(-0.75));
+            }
+            sit(rig, body, palette);
+        }
         "shove" => { let a = 1.2 + 0.3 * (t * PI).sin(); raise(palette, true, a, -0.1); raise(palette, false, a, -0.1); }
         "aim" => raise(palette, false, 1.45, -0.05),
         // Over here: the right hand high, waving side to side.
@@ -814,6 +984,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn city_wardrobes_share_atlas_and_geometry_and_recolor_the_assigned_actor_only() {
+        use std::collections::BTreeSet;
+        let mut h = Humans::new(&BTreeMap::from([("resident".into(), HumanPool {
+            count: 9, variety: 9, distant: 80, seed: 51, ..Default::default()
+        })]));
+        let mut scene = Scene::default();
+        h.attach(&mut scene, 1 << 30).unwrap();
+        let p = &h.pools["resident"];
+        assert_eq!((p.models.len(), p.looks.len(), scene.skinning.actors.len()), (9, 72, 9));
+        assert!(scene.generated_textures.is_empty() && scene.hair_grooms.is_empty());
+        let colors = |f: fn(&render::humans::Instance)->[f32;3]| p.looks.iter().map(|look| f(look).map(f32::to_bits)).collect::<BTreeSet<_>>().len();
+        assert_eq!(colors(|v| v.shirt_color()), 24);
+        assert!(colors(|v| v.skin_color().into()) > 40);
+        assert!(colors(|v| v.hair_and_brows(v.skin_color()).0.into()) >= 8);
+        let silhouettes: BTreeSet<_> = p.looks.iter().map(|v| (v.outfit(), v.hair_style())).collect();
+        assert_eq!(silhouettes.len(), 9);
+        let expected = p.looks[9];
+        assert_eq!(p.looks[0].body_scale(), expected.body_scale());
+        let builds: BTreeSet<_> = p.looks.iter().enumerate().map(|(i,l)|
+            (l.body_scale() * p.street_size("resident", i)).to_array().map(f32::to_bits)).collect();
+        assert_eq!(builds.len(), 72);
+        let old = scene.materials.clone();
+        let materials = p.wardrobe[0].0.dress(&mut scene, &expected, None);
+        let mut changed = 0;
+        for (i, (a, b)) in old.iter().zip(&scene.materials).enumerate() {
+            if a.tint != b.tint { assert!(materials.contains(&i)); changed += 1; }
+            assert_eq!((a.layer, a.flags), (b.layer, b.flags));
+        }
+        assert!(changed >= 5);
+        let mesh = &scene.meshes[p.actors[0].mesh];
+        let first = mesh.first_cluster as usize;
+        assert!(scene.clusters[first..first+mesh.cluster_count as usize].iter()
+            .all(|c| materials.contains(&(c.material as usize))));
+        assert_eq!(scene.instances.len(), 9+80);
+        let layers = scene.textures.len();
+        eprintln!("72 street looks: 24 shirt dyes, {} skin tints, {} hair tints, {} trousers, {} shoes, {layers} shared texture layers, {} material records",
+            colors(|v| v.skin_color().into()), colors(|v| v.hair_and_brows(v.skin_color()).0.into()), colors(|v| v.trouser_color()), colors(|v| v.shoe_color()), scene.materials.len());
+    }
+
+    #[test]
     fn a_crowd_fits_the_renderer() {
         // Dead Miles asks for 66; more than the old 64-actor limit.
         let mut cfg = BTreeMap::new();
@@ -831,7 +1041,8 @@ mod tests {
             assert_eq!(face.rgba.dimensions(), (64, 64));
             assert_eq!(face.normal.as_ref().unwrap().dimensions(), (64, 64));
         }
-        // A small device cuts every pool instead of failing.
+        // Player slots survive while the larger ambient pool shrinks.
+        cfg.get_mut("b").unwrap().reserved = 16;
         let mut h = Humans::new(&cfg);
         let mut scene = render::Scene::default();
         let note = h.attach(&mut scene, 64 << 20).unwrap().expect("a note that pools were cut");
@@ -839,6 +1050,7 @@ mod tests {
         let (free, total) = h.room("a").unwrap();
         assert!(total < 50 && free == total, "{free} of {total}");
         assert!(scene.skinning.actors.len() < 66);
+        assert_eq!(h.room("b"), Some((16, 16)));
     }
 
     #[test]
@@ -875,12 +1087,176 @@ mod tests {
     }
 
     #[test]
+    fn passive_ragdoll_starts_from_inherited_motion_without_a_launch() {
+        let cfg = BTreeMap::from([("resident".to_string(), HumanPool { count: 1, ..Default::default() })]);
+        let mut people = Humans::new(&cfg);
+        let id = people.spawn("resident", Vec3::ZERO, 0.).unwrap().unwrap();
+        people.tick(1. / 60.);
+        let hips = people.joint(id, "hips").unwrap();
+        assert!(people.ragdoll_with_motion(id, Vec3::X * 2., Some(Vec3::ZERO)).unwrap());
+        assert!(people.joint(id, "hips").unwrap().distance(hips) < 0.001);
+        people.tick(1. / 60.);
+        let delta = people.joint(id, "hips").unwrap() - hips;
+        assert!(delta.x > 0.018 && delta.x < 0.047, "inherited sideways motion {delta}");
+        assert!(delta.y < 0.005, "no upward launch on passive release: {delta}");
+        assert!(people.ragdoll_with_motion(id, Vec3::ZERO, Some(Vec3::NAN)).is_err());
+    }
+
+    #[test]
+    fn vehicle_ragdoll_travels_lands_and_recovers_beside_a_parked_chassis() {
+        use crate::ragdoll::Obstacle;
+        use kern::collide::YawBox;
+        let cfg = BTreeMap::from([("resident".to_string(), HumanPool { count: 2, ..Default::default() })]);
+        let land = |parked: bool| {
+            let mut people = Humans::new(&cfg);
+            let id = people.spawn("resident", Vec3::ZERO, 0.).unwrap().unwrap();
+            let shape = YawBox::new(Vec3::new(3.3, 0.85, 0.), Vec3::new(1.8, 1.7, 4.4), 0.);
+            if parked { people.set_obstacles(BTreeMap::from([(7, Obstacle {
+                shape, previous: shape.center, previous_yaw: 0., chassis: None,
+            })])); }
+            assert!(people.ragdoll(id, Vec3::X * 16.).unwrap());
+            assert!(people.recover(id).is_none());
+            for _ in 0..255 { people.tick(1. / 60.); }
+            let hips = people.joint(id, "hips").unwrap();
+            let feet = people.recover(id).expect("landed and ready to get up");
+            assert!(people.recover(id).is_none(), "the same fall recovers once");
+            assert!(feet.is_finite() && feet.y.abs() < 0.001);
+            assert_eq!(people.people[&id].pose, "rise");
+            assert_eq!(people.people[&id].pos, feet);
+            assert!(hips.y > -0.1, "body did not fall through its ground: {hips}");
+            if parked {
+                assert!(shape.push_out(feet + Vec3::Y * 0.85, 0.33, 0.85).is_none());
+                assert!(hips.x < shape.center.x - shape.half.x + 0.15, "hips penetrated parked chassis: {hips}");
+            }
+            feet
+        };
+        let open = land(false);
+        let parked = land(true);
+        assert!(open.x > 5. && parked.x + 2. < open.x, "open {open}, parked {parked}");
+    }
+
+    #[test]
+    fn an_old_ragdoll_keeps_riding_a_moving_support_and_falls_when_it_leaves() {
+        use crate::ragdoll::Obstacle;
+        use kern::collide::YawBox;
+        let cfg = BTreeMap::from([("resident".into(), HumanPool { count: 1, ..Default::default() })]);
+        let mut people = Humans::new(&cfg);
+        let id = people.spawn("resident", Vec3::ZERO, 0.).unwrap().unwrap();
+        people.tick(1. / 60.);
+        people.ragdoll_with_motion(id, Vec3::ZERO, Some(Vec3::ZERO)).unwrap();
+        let size = Vec3::new(10., 0.2, 10.);
+        let mut previous = Vec3::Y * -0.1;
+        let mut at_four = 0.;
+        for tick in 1..=360 {
+            let center = previous + Vec3::Y * 0.01;
+            people.set_obstacles(BTreeMap::from([(1, Obstacle {
+                shape: YawBox::new(center, size, 0.), previous, previous_yaw: 0., chassis: None,
+            })]));
+            people.tick(1. / 60.);
+            previous = center;
+            if tick == 240 { at_four = people.joint(id, "hips").unwrap().y; }
+        }
+        let carried = people.joint(id, "hips").unwrap().y;
+        assert!(carried > at_four + 1., "support moved 1.2m after four seconds: {at_four} -> {carried}");
+        assert!(people.recover(id).is_none(), "cannot get up on moving support");
+        people.set_obstacles(BTreeMap::from([(1, Obstacle {
+            shape: YawBox::new(previous, size, 0.), previous, previous_yaw: 0., chassis: None,
+        })]));
+        for _ in 0..180 { people.tick(1. / 60.); }
+        assert_eq!(people.falling(), 1, "keep the rig attached to its parked support");
+        assert!(people.dolls.settled(id), "can get up while supported and parked");
+        people.set_obstacles(BTreeMap::new());
+        for _ in 0..15 { people.tick(1. / 60.); }
+        let midair = people.joint(id, "hips").unwrap().y;
+        assert!(midair > 0.8 && midair < carried - 0.2 && people.falling() == 1, "rig still falls at {midair}");
+        for _ in 0..300 { people.tick(1. / 60.); }
+        assert_eq!(people.falling(), 0);
+        assert!(people.recover(id).is_some());
+    }
+
+    #[test]
+    fn contact_with_the_compact_rotates_the_doll_over_the_hood() {
+        use physics::vehicle::{CarSpec, fleet::{Fleet, Pedals}};
+        use kern::collide::YawBox;
+        use crate::ragdoll::Obstacle;
+
+        let road = YawBox::new(Vec3::new(0., -0.5, 0.), Vec3::new(40., 1., 200.), 0.);
+        let mut fleet = Fleet::new([road].into_iter());
+        let car = fleet.spawn(CarSpec::compact(), Vec3::new(0., 0., 18.), 0.);
+        fleet.drive(car, Some(Pedals { throttle: 0.85, ..Default::default() }));
+        let cfg = BTreeMap::from([("resident".to_string(), HumanPool { count: 1, ..Default::default() })]);
+        let mut people = Humans::new(&cfg);
+        let id = people.spawn("resident", Vec3::ZERO, 0.).unwrap().unwrap();
+        let mut contact_tick = None;
+        let mut on_hood = false;
+        let mut tilted = false;
+        for tick in 0..420 {
+            fleet.step(1. / 60.);
+            let hull = fleet.chassis_contact(car, None).unwrap();
+            let origin = hull.current.0;
+            if contact_tick.is_none() && origin.z <= 2.45 {
+                assert!(people.ragdoll_with_motion(id, Vec3::ZERO, Some(Vec3::ZERO)).unwrap());
+                contact_tick = Some(tick);
+            }
+            let Some(start) = contact_tick else { people.tick(1. / 60.); continue; };
+            let shape = YawBox::new(origin + Vec3::Y * 0.47, Vec3::new(1.96, 1.3, 4.44), 0.);
+            people.set_obstacles(BTreeMap::from([(car, Obstacle {
+                shape, previous: hull.previous.0 + Vec3::Y * 0.47, previous_yaw: 0., chassis: Some(hull.clone()),
+            })]));
+            people.tick(1. / 60.);
+            let chest = people.joint(id, "chest").unwrap();
+            let hips = people.joint(id, "hips").unwrap();
+            let head = people.joint(id, "head").unwrap();
+            let local = hull.current.1.inverse() * (chest - origin);
+            let across = local.z > -2.025 && local.z < -0.86 && local.x.abs() < 0.9 && local.y > 0.58;
+            on_hood |= across;
+            tilted |= across && (head - hips).normalize_or_zero().y < 0.75;
+            if tick - start == 110 { break; }
+        }
+        assert!(contact_tick.is_some() && on_hood, "torso never crossed above the hood");
+        assert!(tilted, "torso remained upright while passing over the hood");
+    }
+
+    #[test]
+    fn four_nearby_moving_chassis_push_four_ragdolls_and_release_their_colliders() {
+        use crate::ragdoll::Obstacle;
+        use kern::collide::YawBox;
+        let cfg = BTreeMap::from([("resident".to_string(), HumanPool { count: 4, ..Default::default() })]);
+        let mut people = Humans::new(&cfg);
+        let mut ids = vec![];
+        for seat in 0..4 {
+            let id = people.spawn("resident", Vec3::Z * (seat as f32 * 25.), 0.).unwrap().unwrap();
+            people.ragdoll(id, Vec3::ZERO).unwrap();
+            ids.push(id);
+        }
+        for tick in 0..36 {
+            let mut boxes = BTreeMap::new();
+            for car in 0..40 {
+                let previous = Vec3::new(-2.7 + tick as f32 * 0.14, 0.77, car as f32 * 25.);
+                let shape = YawBox::new(previous + Vec3::X * 0.14, Vec3::new(2., 1.54, 4.4), 0.);
+                boxes.insert(car, Obstacle { shape, previous, previous_yaw: 0., chassis: None });
+            }
+            people.set_obstacles(boxes);
+            people.tick(1. / 60.);
+            assert_eq!(people.dolls.obstacle_count(), 4);
+        }
+        for id in ids {
+            let hips = people.joint(id, "hips").unwrap();
+            assert!(hips.x > 1.5, "moving chassis displaced hips: {hips}");
+            people.remove(id);
+        }
+        people.tick(1. / 60.);
+        assert_eq!(people.dolls.obstacle_count(), 0);
+        assert_eq!(people.falling(), 0);
+    }
+
+    #[test]
     fn strafing_turns_the_legs_not_the_body() {
         let mut cfg = BTreeMap::new();
         cfg.insert("p".to_string(), HumanPool { count: 1, ..Default::default() });
         let mut h = Humans::new(&cfg);
         let a = h.spawn("p", Vec3::ZERO, 0.0).unwrap().unwrap();
-        let walk = |h: &mut Humans, step: Vec3| for _ in 0..60 { let p = h.people.get_mut(&a).unwrap(); p.pos += step / 60.0; h.tick(1.0 / 60.0); };
+        let walk = |h: &mut Humans, step: Vec3| for _ in 0..60 { h.tick_start(); let p = h.people.get_mut(&a).unwrap(); p.pos += step / 60.0; h.tick(1.0 / 60.0); };
         // Facing +z, walking +x: the legs turn right, the cycle runs forward.
         walk(&mut h, Vec3::X * 1.3);
         let p = &h.people[&a];
@@ -894,6 +1270,24 @@ mod tests {
         // Standing still: the legs come back under the body.
         walk(&mut h, Vec3::ZERO);
         assert!(h.people[&a].legs.abs() < 0.05);
+    }
+
+    #[test]
+    fn seated_people_rest_their_feet_on_the_floor_in_front_of_the_chair() {
+        let cfg = BTreeMap::from([("guest".into(), HumanPool::default())]);
+        let mut people = Humans::new(&cfg);
+        let feet = Vec3::new(4.0, 2.0, -3.0);
+        let id = people.spawn("guest", feet, 0.0).unwrap().unwrap();
+        let standing_ankle = people.joint(id, "foot_l").unwrap().y;
+        people.people.get_mut(&id).unwrap().pose = "sit".into();
+        let hip = people.joint(id, "hips").unwrap();
+        for (knee, foot) in [("knee_l", "foot_l"), ("knee_r", "foot_r")] {
+            let knee = people.joint(id, knee).unwrap();
+            let foot = people.joint(id, foot).unwrap();
+            assert!(knee.z > hip.z + 0.25 && foot.y < knee.y - 0.25);
+            assert!((foot.y - standing_ankle).abs() < 0.035);
+            assert!((0.45..0.85).contains(&(hip.y - feet.y)));
+        }
     }
 
     #[test]
@@ -926,6 +1320,48 @@ mod tests {
     }
 
     #[test]
+    fn local_player_hands_clear_the_shirt_and_hips_at_rest() {
+        let rig = Rig::shared().unwrap();
+        let cfg = HumanPool { seed: 45, count: 1, variety: 1, height: [1.63, 1.87], ..Default::default() };
+        let mut humans = Humans::new(&BTreeMap::from([("local".into(), cfg)]));
+        let id = humans.spawn("local", Vec3::ZERO, 0.).unwrap().unwrap();
+        let mut scene = Scene::default();
+        humans.attach(&mut scene, 1 << 30).unwrap();
+        let actor = &scene.skinning.actors[0];
+        let mut palette = actor.palette.clone();
+        let mut player = humans.people[&id].clone();
+        let body = humans.skeleton(rig, &player);
+        let arm_joints = [Bone::UpperArmL, Bone::LowerArmL, Bone::HandL, Bone::UpperArmR, Bone::LowerArmR, Bone::HandR].map(|b| rig.joint[b as usize] as u32);
+        for age in [0., 2.5, 6.] {
+            player.age = age;
+            pose(rig, body, &player, false, 1., &mut palette);
+            for (side, hand) in [(1., Bone::HandL), (-1., Bone::HandR)] {
+                let hand = rig.joint[hand as usize] as u32;
+                let mut palm = Vec::new();
+                let mut torso = Vec::new();
+                for (v, inf) in scene.vertices.iter().zip(&actor.influences) {
+                    let p = render::skinning::skin_position(v.pos.into(), inf, &palette);
+                    let mut arm_weight = 0.;
+                    let mut hand_weight = 0.;
+                    for (joint, weight) in inf.joints.iter().zip(inf.weights) {
+                        if arm_joints.contains(joint) { arm_weight += weight; }
+                        if *joint == hand { hand_weight += weight; }
+                    }
+                    if hand_weight > 0.95 { palm.push(p); }
+                    if arm_weight < 0.01 { torso.push(p); }
+                }
+                assert!(!palm.is_empty());
+                let lo = palm.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+                let hi = palm.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max);
+                let edge = torso.iter().filter(|p| (lo..=hi).contains(&p.y))
+                    .map(|p| side * p.x).reduce(f32::max).unwrap();
+                let visible = palm.iter().filter(|p| side * p.x > edge).count();
+                assert!(visible * 10 >= palm.len() * 9, "side {side} at {age}s: {visible}/{} hand vertices clear torso edge {edge} m", palm.len());
+            }
+        }
+    }
+
+    #[test]
     fn the_rig_loads_and_walks() {
         let rig = Rig::shared().unwrap();
         assert!(rig.walk.metres > 0.5 && rig.walk.metres < 3.0, "a walk cycle covers {} m", rig.walk.metres);
@@ -937,11 +1373,13 @@ mod tests {
         assert_eq!(h.spawn("zombie", Vec3::X, 0.0).unwrap(), None, "the pool is full");
         assert!(h.spawn("nobody", Vec3::X, 0.0).is_err());
         for i in 1..=60 {
+            h.tick_start();
             h.people.get_mut(&a).unwrap().pos = Vec3::new(0.0, 0.0, i as f32 * 1.3 / 60.0);
             h.tick(1.0 / 60.0);
         }
         let p = &h.people[&a];
         assert!(p.to.speed > 1.0 && p.to.speed < 1.6, "speed {}", p.to.speed);
+        assert!(p.prev_pos.z < p.pos.z, "rendering needs both tick endpoints");
         assert!(p.to.phase > 0.3, "the legs moved: phase {}", p.to.phase);
         let head = h.head(a).unwrap();
         assert!(head.y > 1.2 && head.y < 2.1, "head at {head}");

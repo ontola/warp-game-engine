@@ -11,7 +11,9 @@ pub mod api;
 pub mod config;
 pub mod face;
 pub mod game;
+mod grass;
 pub mod humans;
+mod distant_humans;
 pub mod kit;
 mod editor_menus;
 pub use live::knobs;
@@ -19,12 +21,16 @@ pub mod luajson;
 pub mod party;
 pub mod plants;
 pub mod ragdoll;
+mod room_lighting;
+mod room_scene;
 pub mod samples;
 pub mod sky;
 pub mod sounds;
 pub mod starter;
+pub mod story;
 pub mod surface;
 pub mod world;
+pub mod vehicles;
 
 pub use game::{LuaGame, Overrides};
 

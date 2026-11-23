@@ -65,7 +65,7 @@ pub(crate) fn raster_source() -> String {
         crate::shaders::game_mask(),
         crate::wind::common_source(),
         include_str!("shaders/grass_common.wgsl"),
-        concat!(include_str!("shaders/virtual_member.wgsl"), "\n", include_str!("shaders/raster.wgsl"))
+        concat!(include_str!("shaders/virtual_member.wgsl"), "\n", include_str!("shaders/lod_coverage.wgsl"), "\n", include_str!("shaders/raster.wgsl"))
     )
 }
 #[cfg(test)]

@@ -12,15 +12,17 @@ use kern::collide::{Mover, YawBox};
 use render::primitives;
 use render::scene::{Material, Scene, EMISSIVE, SURFACE};
 use render::slots::{SlotId, Slots};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Component, Path, PathBuf};
 
 /// Emissive 1 means this many nits: a clear glow in daylight.
 pub const EMISSIVE_NITS: f32 = 4000.0;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Shape {
     Cube,
+    /// A single XY quad facing +Z, for two-sided panes.
+    Pane,
     Sphere,
     Capsule,
     /// A hollow regular polygon in the XZ plane (`outline6`, `outline4:0.05`):
@@ -54,7 +56,7 @@ impl Wire {
 
 impl Shape {
     pub fn name(&self) -> String {
-        match self { Shape::Cube => "cube".into(), Shape::Sphere => "sphere".into(), Shape::Capsule => "capsule".into(), Shape::Outline { sides, width } => format!("outline{sides}:{}", *width as f32 / 1000.0), Shape::Model(p) => p.clone(), Shape::Wire => "wire".into() }
+        match self { Shape::Cube => "cube".into(), Shape::Pane => "pane".into(), Shape::Sphere => "sphere".into(), Shape::Capsule => "capsule".into(), Shape::Outline { sides, width } => format!("outline{sides}:{}", *width as f32 / 1000.0), Shape::Model(p) => p.clone(), Shape::Wire => "wire".into() }
     }
 }
 
@@ -68,16 +70,20 @@ pub struct Look {
     pub roughness: f32,
     pub metal: f32,
     pub surface: Option<u8>,
+    /// Scattering opacity of 4 mm architectural glass; None is opaque.
+    pub glass: Option<f32>,
+    /// Opaque screen-door coverage on a visual LOD proxy; the value lives in the instance.
+    pub coverage: Option<u8>,
 }
 
 impl Default for Look {
-    fn default() -> Self { Look { color: [0.8, 0.8, 0.8], emissive: 0.0, roughness: 0.7, metal: 0.0, surface: None } }
+    fn default() -> Self { Look { color: [0.8, 0.8, 0.8], emissive: 0.0, roughness: 0.7, metal: 0.0, surface: None, glass: None, coverage: None } }
 }
 
 impl Look {
-    fn key(&self) -> [i32; 7] {
+    fn key(&self) -> [i32; 9] {
         let q = |v: f32| (v.clamp(0.0, 1000.0) * 1000.0).round() as i32;
-        [q(self.color[0]), q(self.color[1]), q(self.color[2]), q(self.emissive), q(self.roughness), q(self.metal), self.surface.map_or(-1, i32::from)]
+        [q(self.color[0]), q(self.color[1]), q(self.color[2]), q(self.emissive), q(self.roughness), q(self.metal), self.surface.map_or(-1, i32::from), self.glass.map_or(-1, q), i32::from(self.coverage.is_some())]
     }
 }
 
@@ -110,11 +116,19 @@ pub struct Entity {
     /// A wire's slots, one per edge.
     edge_slots: Vec<SlotId>,
     mesh: usize,
+    /// A crush panel bends upward around the same inner faces as its compression.
+    crush_hinge: Vec3,
     /// Collision box at size 1: centre offset and half extents.
     local: (Vec3, Vec3),
 }
 
 impl Entity {
+    // Model-space Y shear. It vanishes on each hinge, so adjacent panel edges
+    // stay welded even when front and side compression happen together.
+    fn crush_slope(&self) -> Vec3 {
+        kern::crush::slope(self.crush_hinge, self.size)
+    }
+
     /// The collision box: rotated about Y only (pitch and roll are ignored).
     pub fn bounds(&self) -> YawBox {
         let (offset, half) = self.local;
@@ -125,8 +139,15 @@ impl Entity {
                 (pos, rot.to_euler(EulerRot::YXZ).0)
             }
         };
-        let center = pos + Quat::from_rotation_y(yaw) * (offset * self.size);
-        YawBox { center, half: half * self.size.abs(), yaw }
+        let mut scaled = offset * self.size;
+        let mut extents = half * self.size.abs();
+        if self.crush_hinge != Vec3::ZERO {
+            let slope = self.crush_slope();
+            scaled.y += slope.dot(offset - self.crush_hinge);
+            extents.y += slope.abs().dot(half);
+        }
+        let center = pos + Quat::from_rotation_y(yaw) * scaled;
+        YawBox { center, half: extents, yaw }
     }
 
     pub fn parent(&self) -> Option<u32> { self.parent }
@@ -145,7 +166,15 @@ impl Entity {
 
     fn transform(&self) -> Affine3A {
         let (rotation, position) = self.world_pose();
-        Affine3A::from_scale_rotation_translation(self.size, rotation, position)
+        let mut xf = Affine3A::from_scale_rotation_translation(self.size, rotation, position);
+        if self.crush_hinge != Vec3::ZERO {
+            let slope = self.crush_slope();
+            let up = glam::Vec3A::from(rotation * Vec3::Y);
+            xf.matrix3.x_axis += up * slope.x;
+            xf.matrix3.z_axis += up * slope.z;
+            xf.translation -= up * slope.dot(self.crush_hinge);
+        }
+        xf
     }
 }
 
@@ -174,18 +203,23 @@ impl Default for Spawn {
 /// Put an entity's slots where it is: one for a shape, one per edge for a
 /// wire (as many as fit), none while hidden.
 fn show(slots: &mut Slots, scene: &mut Scene, e: &mut Entity) {
+    let mask = if e.shadow_only { 0xff } else { e.hide_views };
+    let drawable = e.visible && e.look.coverage != Some(0);
     let Some(w) = &e.wire else {
-        match (e.visible, e.slot) {
+        match (drawable, e.slot) {
             (true, Some(slot)) => slots.set(scene, slot, e.mesh, e.transform()),
             (true, None) => e.slot = slots.add(scene, e.mesh, e.transform()),
             (false, Some(slot)) => { slots.remove(scene, slot); e.slot = None; }
             (false, None) => {}
         }
         // Every time: a reused slot keeps the flags of whatever had it before.
-        if let Some(slot) = e.slot { slots.hide_in_views(scene, slot, if e.shadow_only { 0xff } else { e.hide_views }); }
+        if let Some(slot) = e.slot {
+            slots.hide_in_views(scene, slot, mask);
+            slots.set_proxy_coverage(scene, slot, e.look.coverage);
+        }
         return;
     };
-    let want = if e.visible { w.edges.len() } else { 0 };
+    let want = if drawable { w.edges.len() } else { 0 };
     while e.edge_slots.len() > want { slots.remove(scene, e.edge_slots.pop().unwrap()); }
     let xf = e.transform();
     let width = w.width * e.size.abs().max_element();
@@ -200,6 +234,8 @@ fn show(slots: &mut Slots, scene: &mut Scene, e: &mut Entity) {
             Some(&slot) => slots.set(scene, slot, e.mesh, edge),
             None => match slots.add(scene, e.mesh, edge) { Some(slot) => e.edge_slots.push(slot), None => break },
         }
+        slots.hide_in_views(scene, e.edge_slots[i], mask);
+        slots.set_proxy_coverage(scene, e.edge_slots[i], e.look.coverage);
     }
 }
 
@@ -222,22 +258,30 @@ impl Filter {
     }
 }
 
-struct ModelInfo { mesh: usize, min: Vec3, max: Vec3 }
+struct ModelInfo { mesh: usize, min: Vec3, max: Vec3, crush_hinge: Vec3 }
 
 pub struct World {
+    pub(crate) fleet: Option<physics::vehicle::fleet::Fleet>,
     pub entities: BTreeMap<u32, Entity>,
     next: u32,
     pub scene: Scene,
     slots: Slots,
-    materials: HashMap<[i32; 7], u32>,
+    materials: HashMap<[i32; 9], u32>,
     meshes: HashMap<(usize, u32), usize>,
     models: HashMap<String, ModelInfo>,
+    /// Explicitly preloaded looks survive scene replacement even with no live instances.
+    warmed: BTreeMap<(Shape, [i32; 9]), Look>,
     /// Meshes or materials were added since the renderer was made.
     pub rebuild: bool,
     /// The shapes and looks that caused it (for the log).
     pub added: Vec<String>,
     dir: PathBuf,
     fx: Fx,
+    /// Renderer-owned particle drawing, shared by every seat, outside entity slots.
+    pub explosions: Option<render::fx::Effects>,
+    pub(crate) baked_explosion_smoke: bool,
+    /// None uses lazy loading; Some records whether the requested warmup ran on this renderer.
+    pub(crate) explosions_prepared: Option<bool>,
 }
 
 /// Effects the engine animates on its own (`fx.burst`, `fx.ring`): plain
@@ -287,10 +331,25 @@ impl World {
         let m = scene.add_material(material(&Look::default()));
         let cube = scene.add_mesh(&primitives::cube(m).mesh());
         let slots = Slots::reserve(&mut scene, max_entities);
-        let mut w = World { entities: BTreeMap::new(), next: 1, scene, slots, materials: HashMap::new(), meshes: HashMap::new(), models: HashMap::new(), rebuild: true, added: Vec::new(), dir: dir.to_path_buf(), fx: Fx::default() };
+        let mut w = World { fleet: None, entities: BTreeMap::new(), next: 1, scene, slots, materials: HashMap::new(), meshes: HashMap::new(), models: HashMap::new(), warmed: BTreeMap::new(), rebuild: true, added: Vec::new(), dir: dir.to_path_buf(), fx: Fx::default(), explosions: None, baked_explosion_smoke: false, explosions_prepared: None };
         w.materials.insert(Look::default().key(), m);
         w.meshes.insert((0, m), cube);
         w
+    }
+
+    /// New effects follow the renderer profile. Headless games use procedural billows.
+    pub(crate) fn set_baked_explosion_smoke(&mut self, enabled: bool) {
+        self.baked_explosion_smoke = enabled;
+        if let Some(effects) = &mut self.explosions { effects.set_baked_smoke(enabled); }
+    }
+
+    pub(crate) fn render_effects(&mut self) -> &mut render::fx::Effects {
+        let baked = self.baked_explosion_smoke;
+        self.explosions.get_or_insert_with(|| {
+            let mut effects = render::fx::Effects::with_explosion_budget(render::fx::ExplosionBudget::LOW);
+            effects.set_baked_smoke(baked);
+            effects
+        })
     }
 
     pub fn capacity(&self) -> usize { self.slots.capacity() }
@@ -298,9 +357,8 @@ impl World {
     /// The game folder.
     pub fn dir(&self) -> &Path { &self.dir }
 
-    /// Build the scene again from the entities alone: what attaching
-    /// vegetation needs (it must come last, and a scene cannot drop it).
-    /// Ids, effects and every entity stay; the renderer is rebuilt.
+    /// Rebuild the scene from live entities and preloaded looks before reattaching
+    /// vegetation, which must be added last. Entity IDs and effects stay live.
     pub fn fresh_scene(&mut self) -> Result<(), String> {
         let mut w = World::new(&self.dir, self.slots.capacity());
         w.scene.style = self.scene.style.clone();
@@ -308,11 +366,17 @@ impl World {
             let (mesh, _) = w.mesh(&e.shape, &e.look)?;
             let mut e = e.clone();
             e.mesh = mesh;
+            e.crush_hinge = w.crush_hinge(&e.shape);
             e.slot = None;
             e.edge_slots.clear();
             show(&mut w.slots, &mut w.scene, &mut e);
             w.entities.insert(id, e);
         }
+        for ((shape, _), look) in &self.warmed {
+            w.mesh(shape, look)?;
+        }
+        w.scene.meadow = self.scene.meadow.take();
+        w.scene.meadow_footprints = std::mem::take(&mut self.scene.meadow_footprints);
         self.entities = std::mem::take(&mut w.entities);
         self.scene = w.scene;
         self.slots = w.slots;
@@ -326,31 +390,58 @@ impl World {
     fn material(&mut self, look: &Look) -> u32 {
         if let Some(&m) = self.materials.get(&look.key()) { return m; }
         let m = self.scene.add_material(material(look));
+        if let Some(alpha) = look.glass {
+            self.scene.set_material_blend(m, alpha, true);
+            self.scene.set_material_refraction(m, render::scene::Refraction::WINDOW);
+            self.scene.graphics.refraction = true;
+        }
         self.materials.insert(look.key(), m);
         self.rebuild = true;
         m
     }
 
+    fn crush_hinge(&self, shape: &Shape) -> Vec3 {
+        match shape {
+            Shape::Model(path) => self.models.get(path).map_or(Vec3::ZERO, |m| m.crush_hinge),
+            _ => Vec3::ZERO,
+        }
+    }
+
     /// The mesh and unit collision box for a shape and look.
     fn mesh(&mut self, shape: &Shape, look: &Look) -> Result<(usize, (Vec3, Vec3)), String> {
+        if look.coverage.is_some() && (look.glass.is_some() || matches!(shape, Shape::Model(_))) {
+            return Err("coverage needs an opaque primitive with a Warp material".into());
+        }
         let half = Vec3::splat(0.5);
         let kind = match shape {
             Shape::Cube | Shape::Wire => 0,
             Shape::Sphere => 1,
             Shape::Capsule => 2,
+            Shape::Pane => 3,
             Shape::Outline { sides, width } => 3 + (*sides as usize) * 1000 + *width as usize,
             Shape::Model(path) => {
                 if !self.models.contains_key(path) {
-                    let file = self.asset(path)?;
-                    let model = assets::gltf::load(&mut self.scene, &file)?;
-                    self.models.insert(path.clone(), ModelInfo { mesh: model.mesh, min: model.min, max: model.max });
-                    self.rebuild = true;
+                    let base = path.rsplit_once("#crush").map_or(path.as_str(), |(base, _)| base);
+                    if !self.models.contains_key(base) {
+                        let file = self.asset(base)?;
+                        let model = assets::gltf::load(&mut self.scene, &file)?;
+                        for (i, part) in model.crush_sections {
+                            self.models.insert(format!("{base}#crush{i}"), ModelInfo { mesh: part.mesh, min: part.min, max: part.max, crush_hinge: part.hinge });
+                        }
+                        self.models.insert(base.to_owned(), ModelInfo { mesh: model.mesh, min: model.min, max: model.max, crush_hinge: Vec3::ZERO });
+                        self.rebuild = true;
+                    }
+                    if !self.models.contains_key(path) { return Err(format!("model has no section {path}")); }
                 }
                 let m = &self.models[path];
                 return Ok((m.mesh, ((m.min + m.max) * 0.5, ((m.max - m.min) * 0.5).max(Vec3::splat(1e-3)))));
             }
         };
-        let local = (Vec3::ZERO, if kind == 2 { Vec3::new(0.5, 1.0, 0.5) } else { half });
+        let local = (Vec3::ZERO, match shape {
+            Shape::Capsule => Vec3::new(0.5, 1.0, 0.5),
+            Shape::Pane => Vec3::new(0.5, 0.5, 0.002),
+            _ => half,
+        });
         let m = self.material(look);
         if let Some(&mesh) = self.meshes.get(&(kind, m)) { return Ok((mesh, local)); }
         let c = look.color.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
@@ -358,6 +449,7 @@ impl World {
         let mut p = match kind {
             0 => primitives::cube(m),
             1 => primitives::sphere(m, 16, 24),
+            3 => primitives::quad(m),
             // Radius 1, 2 m straight middle: halved below to 1 m wide, 2 m tall.
             2 => primitives::capsule(m, 2.0, 12, 20),
             _ => match shape {
@@ -392,7 +484,7 @@ impl World {
         if let Some(w) = &s.wire { local = w.bounds(); }
         let id = self.next;
         self.next += 1;
-        let mut e = Entity { parent: s.parent, frame, children: Vec::new(), shape: s.shape, look: s.look, pos: s.pos, rot: s.rot, size: s.size, solid: s.solid, visible: s.visible, shadow_only: s.shadow_only, hide_views: s.hide_views, tag: s.tag, wire: s.wire, slot: None, edge_slots: Vec::new(), mesh, local };
+        let mut e = Entity { crush_hinge: self.crush_hinge(&s.shape), parent: s.parent, frame, children: Vec::new(), shape: s.shape, look: s.look, pos: s.pos, rot: s.rot, size: s.size, solid: s.solid, visible: s.visible, shadow_only: s.shadow_only, hide_views: s.hide_views, tag: s.tag, wire: s.wire, slot: None, edge_slots: Vec::new(), mesh, local };
         show(&mut self.slots, &mut self.scene, &mut e);
         if let Some(parent) = s.parent { self.entities.get_mut(&parent).unwrap().children.push(id); }
         self.entities.insert(id, e);
@@ -400,6 +492,20 @@ impl World {
     }
 
     pub fn get(&self, id: u32) -> Option<&Entity> { self.entities.get(&id) }
+
+    /// Opaque render geometry for just these entities at their current world
+    /// transforms. Hidden entities have no slots; a wire contributes each edge.
+    pub fn room_occluders(&self, ids: &[u32]) -> Result<render::room_bake::Occluders, String> {
+        let mut instances = BTreeSet::new();
+        for &id in ids {
+            let e = self.get(id).ok_or_else(|| format!("no entity {id} (removed, or never spawned)"))?;
+            if e.look.coverage.is_some() { continue; }
+            for &slot in e.slot.iter().chain(&e.edge_slots) {
+                instances.insert(self.slots.instance(slot));
+            }
+        }
+        Ok(render::room_bake::Occluders::from_instances(&self.scene, instances))
+    }
 
     /// Change an entity; `f` edits it, then its mesh and slot follow.
     pub fn update(&mut self, id: u32, f: impl FnOnce(&mut Entity)) -> Result<(), String> {
@@ -415,8 +521,9 @@ impl World {
             return Err("shape: a wire stays a wire, and other shapes cannot become one (spawn a new entity)".into());
         }
         let moved_children = !e.children.is_empty() && (e.pos != old.pos || e.rot != old.rot);
-        if e.shape != old.shape || e.look != old.look {
+        if e.shape != old.shape || (e.look != old.look && e.look.key() != old.look.key()) {
             (e.mesh, e.local) = self.mesh(&e.shape, &e.look)?;
+            e.crush_hinge = self.crush_hinge(&e.shape);
         }
         if let Some(w) = &e.wire { e.local = w.bounds(); }
         show(&mut self.slots, &mut self.scene, &mut e);
@@ -477,14 +584,30 @@ impl World {
     }
 
     pub fn clear(&mut self) {
+        if self.scene.meadow.take().is_some() {
+            self.scene.meadow_footprints.clear();
+            self.rebuild = true;
+        }
+        self.fleet = None;
         let ids: Vec<u32> = self.entities.keys().copied().collect();
         for id in ids { self.remove(id); }
         self.fx = Fx::default();
+        if let Some(explosions) = &mut self.explosions { explosions.clear(); }
     }
 
     /// Add a shape and look's mesh now (in `init`), so spawning it later
     /// never stalls on a new renderer.
-    pub fn warm(&mut self, shape: &Shape, look: &Look) -> Result<(), String> { self.mesh(shape, look).map(|_| ()) }
+    pub fn warm(&mut self, shape: &Shape, look: &Look) -> Result<(), String> {
+        self.mesh(shape, look)?;
+        // Imported models carry their own materials and wire edges use the cube mesh.
+        let (shape, look) = match shape {
+            Shape::Model(_) => (shape.clone(), Look::default()),
+            Shape::Wire => (Shape::Cube, *look),
+            _ => (shape.clone(), *look),
+        };
+        self.warmed.entry((shape, look.key())).or_insert(look);
+        Ok(())
+    }
 
     /// Move an entity without touching anything else (the hot path).
     pub fn place(&mut self, id: u32, pos: Vec3, yaw: Option<f32>) -> Result<(), String> {
@@ -637,11 +760,12 @@ fn material(look: &Look) -> Material {
     let (flags, scale) = if look.emissive > 0.0 { (EMISSIVE, look.emissive * EMISSIVE_NITS) } else { (0, 1.0) };
     // The game's own surface decides its glow itself: `scale` hands it the
     // emissive in nits, and the EMISSIVE flag would add the tint on top.
-    if let Some(kind) = look.surface {
-        let scale = if look.emissive > 0.0 { look.emissive * EMISSIVE_NITS } else { 1.0 };
-        return Material { tint, layer: -2 - i32::from(kind), roughness: look.roughness.clamp(0.02, 1.0), flags: SURFACE, scale, metal: look.metal.clamp(0.0, 1.0) };
+    let (mut flags, mut layer) = look.surface.map_or((flags, -1), |kind| (SURFACE, -2 - i32::from(kind)));
+    if look.coverage.is_some() {
+        flags |= render::scene::NO_AMBIENT_OCCLUSION;
+        layer += render::scene::LOD_PROXY_LAYER_BIAS;
     }
-    Material { tint, layer: -1, roughness: look.roughness.clamp(0.02, 1.0), flags, scale, metal: look.metal.clamp(0.0, 1.0) }
+    Material { tint, layer, roughness: look.roughness.clamp(0.02, 1.0), flags, scale, metal: look.metal.clamp(0.0, 1.0) }
 }
 
 /// A sphere against a box rotated about Y.
@@ -672,6 +796,34 @@ mod tests {
         w.remove(id);
         w.spawn(Spawn::default()).unwrap();
         assert_eq!(mask(&w), 0, "the next one in that slot is seen");
+    }
+
+    #[test]
+    fn warmed_proxy_coverage_reuses_geometry_and_restores_shadow_and_view_flags() {
+        use render::scene::{HIDE_IN_VIEW_MASK, HIDE_IN_VIEW_SHIFT, HIT_FLASH_MASK, HIT_FLASH_SHIFT, NO_SHADOW};
+        let mut w = world();
+        let look = Look { surface: Some(20), coverage: Some(255), ..Default::default() };
+        w.warm(&Shape::Cube, &look).unwrap();
+        let meshes = w.scene.meshes.len();
+        let id = w.spawn(Spawn { look, solid: false, hide_views: 2, ..Default::default() }).unwrap();
+        let flags = |w: &World| w.scene.instances[w.slots.instance(w.get(id).unwrap().slot.unwrap())].flags;
+        let material = w.scene.materials.last().unwrap();
+        assert_eq!(material.layer - render::scene::LOD_PROXY_LAYER_BIAS, -22);
+        w.rebuild = false;
+        for byte in [176, 23, 1, 255] {
+            w.update(id, |e| e.look.coverage = Some(byte)).unwrap();
+            assert_eq!((flags(&w) & HIT_FLASH_MASK) >> HIT_FLASH_SHIFT, u32::from(byte));
+            assert_eq!((flags(&w) & HIDE_IN_VIEW_MASK) >> HIDE_IN_VIEW_SHIFT, 2);
+            assert_ne!(flags(&w) & NO_SHADOW, 0);
+        }
+        assert_eq!(w.room_occluders(&[id]).unwrap().triangles(), 0);
+        w.update(id, |e| e.look.coverage = Some(0)).unwrap();
+        assert!(w.get(id).unwrap().slot.is_none());
+        assert_eq!(w.scene.meshes.len(), meshes);
+        assert!(!w.rebuild, "a change of coverage must not rebuild any renderer");
+        w.update(id, |e| e.look.coverage = None).unwrap();
+        assert_eq!(flags(&w) & (NO_SHADOW | HIT_FLASH_MASK), 0);
+        assert!(w.room_occluders(&[id]).unwrap().triangles() > 0);
     }
 
     #[test]
@@ -710,6 +862,57 @@ mod tests {
         for _ in 0..14 { w.spawn(Spawn::default()).unwrap(); }
         assert!(w.spawn(Spawn::default()).unwrap_err().contains("max_entities"));
         assert!(w.spawn(Spawn { shape: Shape::Model("../x.glb".into()), ..Default::default() }).is_err());
+    }
+
+    #[test]
+    fn warmed_window_transmits_baked_light_and_keeps_a_thin_solid_pane() {
+        let mut w = World::new(Path::new("."), 8);
+        let look = Look { glass: Some(0.045), roughness: 0.055, ..Look::default() };
+        w.warm(&Shape::Pane, &look).unwrap();
+        w.fresh_scene().unwrap();
+        w.rebuild = false;
+        let id = w.spawn(Spawn { shape: Shape::Pane, look, size: Vec3::new(3.0, 2.0, 1.0), ..Default::default() }).unwrap();
+        assert!(!w.rebuild && w.scene.graphics.refraction);
+        let blend = &w.scene.blended_materials[&w.materials[&look.key()]];
+        assert!(blend.double_sided && blend.refraction == Some(render::scene::Refraction::WINDOW));
+        assert!(w.room_occluders(&[id]).unwrap().hit(Vec3::Z, Vec3::NEG_Z).is_none());
+        assert!(w.raycast(Vec3::Z, Vec3::NEG_Z, 2.0, &Filter::default()).is_some());
+        assert!(w.remove(id));
+    }
+
+    #[test]
+    fn warmed_look_survives_vegetation_scene_refresh_without_an_instance() {
+        let mut w = world();
+        let look = Look { color: [0.4, 0.7, 0.9], surface: Some(24), ..Default::default() };
+        w.warm(&Shape::Cube, &look).unwrap();
+        for _ in 0..2 {
+            w.fresh_scene().unwrap();
+            assert!(w.entities.is_empty());
+            w.rebuild = false;
+            w.added.clear();
+            let id = w.spawn(Spawn { shape: Shape::Cube, look, ..Default::default() }).unwrap();
+            assert!(!w.rebuild && w.added.is_empty(), "first use after refreshing plants must reuse the preloaded mesh");
+            w.remove(id);
+        }
+    }
+
+    #[test]
+    fn room_occluders_use_only_selected_visible_transformed_meshes() {
+        let mut w = world();
+        let root = w.spawn(Spawn { pos: Vec3::X, rot: Vec3::Y * std::f32::consts::FRAC_PI_2, visible: false, ..Default::default() }).unwrap();
+        let ball = w.spawn(Spawn { parent: Some(root), pos: Vec3::Z * 2., shape: Shape::Sphere, ..Default::default() }).unwrap();
+        let wire = Wire { points: vec![Vec3::ZERO, Vec3::X, Vec3::Y], edges: vec![[0,1],[1,2]], width: 0.1 };
+        let frame = w.spawn(Spawn { shape: Shape::Wire, wire: Some(wire), ..Default::default() }).unwrap();
+        let ball_mesh = w.room_occluders(&[root, ball, ball]).unwrap();
+        let center = Vec3::new(3., 0., 0.);
+        assert!(ball_mesh.triangles() > 12);
+        assert!(ball_mesh.hit(center + Vec3::Z * 2., Vec3::NEG_Z).is_some());
+        assert!(ball_mesh.hit(center + Vec3::new(0.45, 0.45, 2.), Vec3::NEG_Z).is_none(), "a sphere leaves the corners of its collision box empty");
+        let meshes = w.room_occluders(&[ball, frame]).unwrap();
+        assert_eq!(meshes.triangles(), ball_mesh.triangles() + 24);
+        assert_eq!(w.room_occluders(&[root]).unwrap().triangles(), 0);
+        w.remove(ball);
+        assert!(w.room_occluders(&[ball]).is_err());
     }
 
     #[test]

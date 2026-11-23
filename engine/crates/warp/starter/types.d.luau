@@ -68,6 +68,7 @@ export type EntityOptions = {
 	roughness: number?, -- 0 mirror .. 1 matte (default 0.7)
 	metal: number?, -- 0 .. 1
 	surface: number?, -- a kind (0 .. 255) of the game's own shader, surface.wgsl; false for none
+	coverage: (number | false)?, -- opaque primitive proxy coverage from 0 to 1; false restores the ordinary material
 	points: { Vec }?, -- "wire" only: points in the entity's own space (set them each tick to animate)
 	edges: { { number } }?, -- "wire" only: pairs of 1-based point numbers, or a flat list
 	width: number?, -- "wire" only: edge thickness in metres at size 1 (default 0.05)
@@ -84,13 +85,14 @@ export type Player = {
 	color: Vec, -- sRGB 0..1, the lobby's colour under Splitscreen Club
 	bot: boolean,
 	human: boolean,
+	view: number?, -- assigned zero-based camera index, including shared split-screen views
 	seat: number?, -- the Splitscreen Club seat
 	couch: number?, -- couch position from the lobby, 0 leftmost
 }
 
 export type Entity = {
 	id: number, parent: number?, world_pos: Vec, shape: string, pos: Vec, rot: Vec, size: Vec, color: Vec,
-	emissive: number, roughness: number, metal: number, surface: number?, solid: boolean, visible: boolean, shadow_only: boolean, hide_views: number, tag: string,
+	emissive: number, roughness: number, metal: number, surface: number?, coverage: number?, solid: boolean, visible: boolean, shadow_only: boolean, hide_views: number, tag: string,
 }
 
 export type Query = {
@@ -115,7 +117,7 @@ declare world: {
 	-- things that move every tick.
 	place: (id: number, pos: Vec, yaw: number?) -> (),
 	-- Prepare a shape and look in init, so spawning it later never stalls.
-	warm: (shape: string, look: { color: Color?, emissive: number?, roughness: number?, metal: number?, surface: number? }?) -> (),
+	warm: (shape: string, look: { color: Color?, emissive: number?, roughness: number?, metal: number?, surface: number?, coverage: (number | false)? }?) -> (),
 	-- An entity's fields, or nil once removed.
 	get: (id: number) -> Entity?,
 	exists: (id: number) -> boolean,
@@ -134,9 +136,14 @@ declare world: {
 	move: (id: number, vel: Vec, dt: number, opts: Query?) -> (Vec, boolean),
 }
 
--- Effects the engine animates and removes on its own: entities tagged "fx",
--- never solid, skipped when the world is full. Warm their look in init.
+-- Effects advance on the game clock. Bursts and rings use non-solid entities
+-- tagged "fx" and can warm their looks in init.
 declare fx: {
+    -- Growing Guns fire, smoke, embers, heat distortion and local lights in all views.
+    -- Radius is in metres (0 < radius <= 200). This visual effect uses no entity slots.
+    warm_explosions: () -> (),
+    explosion: (pos: Vec, radius: number, lightRange: number?) -> (),
+    gib_mist: (pos: Vec, intensity: number) -> (),
 	-- Pieces flying out from pos: each at 25-100 % of speed (m/s), living
 	-- 50-100 % of life (s) and shrinking. flat: in the ground plane only;
 	-- stretch: seconds of velocity as length (streaks); gravity: m/s^2 down.
@@ -175,6 +182,8 @@ declare sound: {
 	play: (name: string, opts: { [string]: number | Vec }?) -> number,
 	-- Change a parameter of a playing sound.
 	set_param: (handle: number, param: string, value: number) -> (),
+	-- Move a spatial sound along with its emitter.
+	move_to: (handle: number, pos: Vec) -> (),
 	-- Release a playing sound (looping sounds play until stopped).
 	stop: (handle: number) -> (),
 	list: () -> { string },
@@ -219,6 +228,9 @@ declare post: {
 -- spotlights, at most 8 (`spots`). intensity is about
 -- lux at 1 m (a few hundred under the night sky), range in metres.
 declare lights: {
+	-- Opt in with room_lighting = true. Static entities are baked when visited.
+	-- Set up to four rooms. Clear a room with lights.room(id, nil) on leaving.
+	room: (id: number, opts: { min: Vec, max: Vec, entities: {number}, panels: {{pos: Vec, color: Color, intensity: number, range: number, width: number, depth: number}}? }?) -> (),
 	set: (list: { { pos: Vec, color: Color?, intensity: number?, range: number? } }) -> (),
 	-- Spotlights that cast shadows, at most 8 (torches, headlights, a lamp
 	-- over a door): dir is where the beam points, angle the outer half-angle
@@ -231,33 +243,63 @@ declare lights: {
 
 -- Warp Humans from game.toml's [humans.NAME] pools: spawn returns nil when
 -- the pool is full. Set pos (feet) and yaw each tick; the legs follow.
--- pose: walk, idle, crouch, wave, reach, raise, strike, aim, shove, attack, punch, jab,
+-- pose: walk, idle, sit, crouch, wave, reach, raise, strike, aim, shove, attack, punch, jab,
 -- hit, hit_head, cast, roll, dead, down, feed (crouched, bent over something on the
 -- ground), rise (getting up off the ground over t); t is its progress, 0 to 1.
+-- The shared four-wheel vehicle simulation. Reset snapshots solid boxes once.
+declare vehicles: {
+	contact_profile: (name: string, bottom: number, sections: {{z:number, width:number, top:number, roofWidth:number?}}) -> (),
+	reset: (static_tag: string?) -> (),
+	spawn: (ground_pos: Vec, yaw: number?) -> number,
+	remove: (id: number) -> boolean,
+	drive: (id: number, controls: { throttle: number?, brake: number?, steer: number?, handbrake: number? }?) -> (),
+	step: (dt: number) -> (),
+	get: (id: number) -> { pos: Vec, rot: Vec, speed: number, rpm: number, gear: number, cut: boolean,
+		parked: boolean, torque: number, load: number, slip: number, contact: number, loose: number, soft: number, wheels: { Vec } }?,
+}
+
 declare humans: {
-	spawn: (pool: string, opts: { pos: Vec?, yaw: number? }?) -> number?,
+	spawn: (pool: string, opts: { pos: Vec?, yaw: number?, look: number?, resident: number? }?) -> number?,
 	-- tired 0..1: bent over, out of breath, over any pose; coil -1..1: wound up for a heavy blow (1), swung through (< 0)
-	set: (id: number, opts: { pos: Vec?, yaw: number?, pose: string?, t: number?, tired: number?, coil: number? }) -> boolean,
+	set: (id: number, opts: { pos: Vec?, yaw: number?, pose: string?, t: number?, tired: number?, coil: number?, visible: boolean? }) -> boolean,
 	-- A blow along dir (its length the strength, ~1 heavy): the upper body jolts and sways back
 	hit: (id: number, dir: Vec) -> boolean,
 	-- Limp from the pose it stands in, thrown by push (m/s); up again with any pose but dead/down
-	ragdoll: (id: number, push: Vec?) -> boolean,
+	ragdoll: (id: number, push: Vec?, spin: Vec?) -> boolean,
+	-- Replace the shared solid boxes for active ragdolls. Positions are box centers.
+	obstacles: (boxes: {{id:number, pos:Vec, size:Vec, yaw:number?, prevPos:Vec?, prevYaw:number?, vehicle:number?, profile:string?}}) -> (),
+	-- Once settled, start the rise pose and return landed feet. Advance rise with set(id,{pose="rise",t=...}).
+	recover: (id:number) -> Vec?,
 	remove: (id: number) -> boolean,
 	head: (id: number) -> Vec?,
 	-- head, neck, chest, hips, shoulder_l/r, elbow_l/r, hand_l/r, knee_l/r, foot_l/r
 	joint: (id: number, name: string) -> Vec?,
-	room: (pool: string) -> (number, number),
+	-- Free slots, total slots, number of fitted bodies and number of complete appearances.
+	room: (pool: string, body: number?) -> (number, number, number, number),
+	-- One cheap silhouette per array index, except IDs already in fitted. Interpolates
+	-- feet and heading toward nextPos/nextYaw over seconds. Reserve [humans.NAME].distant.
+	distant: (pool: string, rows: { {pos: Vec, yaw: number?, nextPos: Vec?, nextYaw: number?, active: boolean?, look: number?} }, fitted: {[number]: number}, seconds: number) -> (),
+}
+
+type GrassRect = { pos: Vec, width: number, depth: number, yaw: number? }
+
+declare grass: {
+    -- Replace the horizontal GPU grass field, or clear it with nil. Rectangles use
+    -- world metres and optional yaw in radians. The top of each ground surface is pos.y.
+    set: (opts: { patches: {GrassRect}, cutouts: {GrassRect}?, seed: number?,
+        growth: number?, distance: number? }?) -> (),
 }
 
 declare plants: {
 	-- A grown plant (a Jeffrey pine unless `species` changes its rules): its
 	-- age in years sets how many shoots, limbs and needle brushes it has, not
 	-- its scale. It cooks on a background thread and appears when done.
+	-- `scale` multiplies the cooked plant at this placement (default 1).
 	-- `species` and `look` override fields of plants.defaults() (unknown
 	-- names are an error). `full` also cooks the voxel levels and proxies
 	-- (LOD and far views; minutes for an old tree); without it a preview of
 	-- the source meshes takes a fraction of a second. Returns the plant's id.
-	grow: (opts: { age: number, seed: number?, pos: Vec?, yaw: number?, full: boolean?, species: { [string]: any }?, look: { [string]: any }? }) -> number,
+	grow: (opts: { age: number, seed: number?, pos: Vec?, yaw: number?, scale: number?, full: boolean?, species: { [string]: any }?, look: { [string]: any }? }) -> number,
 	remove: (id: number) -> boolean,
 	clear: () -> (),
 	-- Plants placed, shown, still cooking with nothing to show, failed (and the
@@ -271,7 +313,20 @@ declare plants: {
 	load: (name: string) -> any,
 }
 
+export type CloudSettings = {
+	coverage: number?, density: number?, shadow: number?,
+	base: number?, thickness: number?, far: number?,
+	wind_x: number?, wind_z: number?, steps: number?, light_steps: number?,
+	aerial: boolean?,
+}
+
 declare sky: {
+	-- Move the sun continuously. Hours wrap at midnight and weather defaults to clear.
+	set_time: (hour: number, weather: string?) -> (),
+	-- Set the shared native cumulus layer in init or tick. True uses fair-weather defaults.
+	-- Heights and distances are metres, wind is metres/second and density is per metre.
+	-- aerial=false keeps the game's surface fog. False disables the volume.
+	clouds: (settings: boolean | CloudSettings) -> (),
 	-- "gradient" or TIME[:WEATHER]: sunrise, morning, noon, afternoon, sunset,
 	-- night; clear, haze, mist ("sunset:haze"). A preset bakes in about 0.2 s.
 	set: (name: string) -> (),

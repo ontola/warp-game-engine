@@ -68,7 +68,8 @@ fn transparent_color(in: BlendVertex, front: bool) -> vec4<f32> {
     var sample = vec4<f32>(1.0);
     if m.layer >= 0 { let k = albedo_grad(m.layer, dx, dy); sample = textureSampleGrad(albedo, samp, in.uv, m.layer, dx * k, dy * k); }
     let alpha = clamp(sample.a * tri.alpha, 0.0, 1.0);
-    if alpha <= 0.0 { discard; }
+    let optical = (tri.flags & BLEND_REFRACTS) != 0u;
+    if alpha <= 0.0 && (!optical || sample.a <= 0.0) { discard; }
     if (m.flags & 1024u) != 0u {
         // Emissive surfaces are unlit, blended (signs, labels) or added. Fog may absorb their light, but adding
         // its scattering colour here would make the fog itself glow.
@@ -105,11 +106,28 @@ fn transparent_color(in: BlendVertex, front: bool) -> vec4<f32> {
     let diffuse = base * (1.0 - m.metal) / PI;
     let contact = contact_visibility(p + visibility_n * 0.025, visibility_n, refl, tri.owner);
     let bounce = gi.bounce.rgb * (gi.bounce.w * sky_vis + light.sun_dir.w * max(light.sun_dir.y, 0.0) * shadow);
-    let ambient = (sky_irradiance(n) * sky_vis + bounce * (1.0 - sky_vis)) * contact.x;
+    var ambient = (sky_irradiance(n) * sky_vis + bounce * (1.0 - sky_vis)) * contact.x;
     var reflection_vis = sky_vis;
     if (m.flags & 32u) != 0u || rough < 0.55 { reflection_vis = reflected_visibility(p, visibility_n, refl); }
     let spec_contact = mix(contact.y, contact.x, smoothstep(0.08, 0.6, rough));
-    let env = mix(bounce / PI, environment(refl, rough, bounce), reflection_vis) * spec_contact;
+    var env = mix(bounce / PI, environment(refl, rough, bounce), reflection_vis) * spec_contact;
+    if optical {
+        // A window is set into a wall. Sample the medium on the viewing side
+        // of its reveal, keeping the outdoor reflection on its street face.
+        let side = p + visibility_n * .20;
+        let root = u32(gi.params.w);
+        let indoor = irradiance_sample(side, n);
+        if indoor.value.w > 0.0 && aux_word(root + 7u) >= 1u {
+            let sky_in = sky_irradiance(n) * sky_vis * clamp(indoor.value.x, 0.0, 1.0);
+            let returned = sky_irradiance(vec3<f32>(0.0,1.0,0.0)) * indoor.value.y
+                + light.sun_color.rgb * light.sun_dir.w * max(indoor.value.z, 0.0) + indoor.emission * light.anim.y;
+            ambient = mix(ambient, (sky_in + returned) * contact.x, indoor.value.w);
+        }
+        if root == 0u || aux_word(root + 7u) != 8u || indoor.value.w > 0.0 {
+            let room = glass_room_reflection(side, refl, rough);
+            env = mix(env, room.rgb * spec_contact, room.a);
+        }
+    }
     let ndv = max(dot(n, v), 1e-4);
     var direct = diffuse * sun_e * max(dot(n, l), 0.0) + sun_e * ggx(n, v, l, rough, f0);
     var indirect = diffuse * ambient;
@@ -124,6 +142,18 @@ fn transparent_color(in: BlendVertex, front: bool) -> vec4<f32> {
     var rad = direct + indirect + specular + car_lamp_emission(m.flags, base, instances[tri.owner], p) * light.anim.y;
     if (m.flags & 1024u) != 0u { rad += m.tint * abs(m.scale) * light.anim.y; }
     let diagnostic_view = light.sky.z > 0.5 && light.sky.z < 7.5;
+    // Optical layers behind the first pane (and adapters without refraction)
+    // still reflect at grazing angles and transmit the opaque scene normally.
+    if optical && !refract_here && !diagnostic_view {
+        let fresnel = env_brdf(f0, rough, ndv);
+        let reflected = clamp(dot(fresnel, vec3<f32>(1.0/3.0)), 0.0, 1.0);
+        let cover = alpha + (1.0 - alpha) * reflected;
+        let spec_only = sun_e * ggx(n, v, l, rough, f0) + specular;
+        let surface = rad * alpha + (1.0 - alpha) * spec_only;
+        let froxel = froxel_fog_at(p);
+        let fogged = apply_distance_fog(surface / max(cover, 1e-4), distance(p, view.cam.xyz), -v) * froxel.a + froxel.rgb;
+        return vec4<f32>(fogged * cover, cover);
+    }
     if refract_here && !diagnostic_view {
         // The surface layer keeps its diffuse/scattering share (alpha) and
         // all of its reflection; the rest of the light comes through, bent.

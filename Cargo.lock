@@ -293,6 +293,7 @@ dependencies = [
  "glam 0.31.1",
  "gltf",
  "image",
+ "kern",
  "render",
  "serde",
  "serde_json",
@@ -4458,6 +4459,7 @@ dependencies = [
  "glam 0.31.1",
  "kern",
  "rapier3d",
+ "serde",
 ]
 
 [[package]]
@@ -5568,6 +5570,7 @@ version = "0.1.0"
 dependencies = [
  "gdcompat",
  "kern",
+ "physics",
  "rapier3d",
  "script",
  "serde",

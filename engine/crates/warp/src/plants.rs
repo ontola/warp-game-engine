@@ -35,6 +35,8 @@ pub struct Plant {
     pub seed: u64,
     pub pos: Vec3,
     pub yaw: f32,
+    /// Uniform size of this placement. Variations in size share one cooked plant.
+    pub scale: f32,
     /// Cook voxels and proxies too, not only the source meshes. The preview
     /// shows until the full cook is done, then the plant swaps to it.
     pub full: bool,
@@ -298,7 +300,7 @@ impl Plants {
                 meshes.insert((*part, bytes), id);
                 id
             }).collect();
-            let root = glam::Mat4::from_rotation_translation(Quat::from_rotation_y(p.yaw), p.pos);
+            let root = glam::Mat4::from_scale_rotation_translation(Vec3::splat(p.scale), Quat::from_rotation_y(p.yaw), p.pos);
             for (at, m) in &v.instances { scene.add_instance(ids[*at], Affine3A::from_mat4(root * *m)); }
             shown += 1;
         }
@@ -308,7 +310,7 @@ impl Plants {
             let key = p.key();
             let Some(Cooked::Full(c)) = self.cooked.get(&key) else { continue };
             let variant = match variants.iter().position(|(k, _)| *k == key) { Some(i) => i, None => { variants.push((key, c.clone())); variants.len() - 1 } };
-            roots.push(WorldRoot { id: u64::from(id), placement: RootPlacement { pos: p.pos, yaw: p.yaw, scale: 1.0, variant, up: Vec3::Y } });
+            roots.push(WorldRoot { id: u64::from(id), placement: RootPlacement { pos: p.pos, yaw: p.yaw, scale: p.scale, variant, up: Vec3::Y } });
         }
         if roots.is_empty() { return Ok(shown); }
         // Workaround: a single-branch plant (a seedling) as a GPU forest
@@ -337,14 +339,14 @@ mod tests {
     use super::*;
 
     fn pine(age: u32, x: f32) -> Plant {
-        Plant { species: Species::jeffrey_pine(), look: Look::jeffrey_pine(), age, seed: 1, pos: Vec3::new(x, 0.0, 0.0), yaw: 0.0, full: false }
+        Plant { species: Species::jeffrey_pine(), look: Look::jeffrey_pine(), age, seed: 1, pos: Vec3::new(x, 0.0, 0.0), yaw: 0.0, scale: 1.0, full: false }
     }
 
     #[test]
     fn previews_cook_in_the_background_and_attach_as_meshes() {
         let mut plants = Plants::default();
         plants.grow(pine(6, 0.0));
-        plants.grow(pine(6, 4.0));
+        plants.grow(Plant { scale: 1.5, ..pine(6, 4.0) });
         plants.grow(pine(80, 12.0));
         let started = web_time::Instant::now();
         while plants.status().1 < 3 {
@@ -357,6 +359,10 @@ mod tests {
         let mut scene = render::scene::Scene::default();
         assert_eq!(plants.attach(&mut scene).unwrap(), 3);
         println!("{:?}", plants.log);
+        let Cooked::Preview(young) = &plants.cooked[&pine(6, 0.0).key()] else { panic!("expected a shared preview") };
+        assert_eq!(plants.cooked.len(), 2, "size is per placement");
+        let scaled = &scene.instances[young.instances.len()];
+        assert!((scaled.scale / scene.instances[0].scale - 1.5).abs() < 1e-4);
         let meshes = scene.meshes.len();
         assert!(meshes >= 2 && scene.instances.len() > meshes, "{meshes} meshes, {} instances", scene.instances.len());
         assert!(scene.gpu_forest.is_none());

@@ -37,6 +37,8 @@ pub struct GpuMeadowVertex {
 #[derive(Clone, Debug)]
 pub struct MeadowGeometry {
     pub vertices: Vec<GpuMeadowVertex>,
+    /// Mown turf uses its cooked linear vertex palette on every source LOD.
+    pub mown_turf: bool,
     /// Zero preserves independently hashed source variants. Positive metres
     /// selects variants in coherent world-space patches on the GPU. This is
     /// a source recipe property, not a camera-dependent pool or extra layer.
@@ -72,6 +74,26 @@ impl MeadowGeometry {
     ) -> Result<Self, String> {
         crate::meadow_windswept::cook_recipes(seed, dry_season, budget, recipes, variant_patch_metres)
     }
+    /// Short mown turf. All three cuts retain the same blade roots and linear
+    /// root-to-tip palette. Its windswept ribbons use the shared native wind.
+    pub fn cook_mown_turf(seed: u64) -> Result<Self, String> {
+        use crate::meadow_windswept::{WindsweptRecipe, anchor_hash};
+        let recipes = [0.50, 0.55, 0.60].map(|height_scale| WindsweptRecipe {
+            height_scale, width_scale: 1.5, ..WindsweptRecipe::default()
+        });
+        let mut source = Self::cook_windswept_recipes(seed, 0.0, MeadowBladeBudget::Blades180, recipes, 0.0)?;
+        source.mown_turf = true;
+        let base = Vec3::new(0.16, 0.26, 0.085);
+        let tip = Vec3::new(0.29, 0.40, 0.135);
+        for vertex in &mut source.vertices {
+            let anchor = [vertex.anchor[0], vertex.anchor[1], vertex.anchor[2]];
+            let variation = (anchor_hash(anchor, 0x94d049bb) >> 8) as f32 / 16_777_216.0;
+            let rgb = base.lerp(tip, vertex.normal[3]) * (0.9 + variation * 0.2);
+            vertex.color = rgb.extend(0.94).to_array();
+        }
+        Ok(source)
+    }
+
     /// Cook only three reusable assets. Growth stays at one here and is
     /// applied once at the world root. A coarser requested level repeats the
     /// last accepted source level when that shape cannot simplify further.
@@ -101,7 +123,7 @@ impl MeadowGeometry {
     fn cook_shading(seed: u64, dry_season: f32, budget: MeadowBladeBudget, rounded: bool) -> Result<Self, String> {
         let mut result = Self {
             vertices: Vec::new(),
-            variant_patch_metres: 0.0,
+            variant_patch_metres: 0.0, mown_turf: false,
             lod_ranges: [[[0; 2]; LODS]; VARIANTS],
             lod_errors: [[0.0; LODS]; VARIANTS],
             branch_pivots: [[[0.0; 4]; BRANCHES]; VARIANTS],
@@ -393,7 +415,9 @@ pub struct MeadowField {
     pub cell: f32,
     pub width: u32,
     pub height: u32,
-    /// Terrain grid points [height, signed road clearance, valid (0/1), reserved].
+    /// Terrain grid points [height, signed road clearance, valid (0/1), certified road-plane radius].
+    /// A positive radius certifies a lower bound for clearance across each triangle of this cell
+    /// plus that radius beyond its edges. Zero uses the ordinary within-triangle test.
     /// Interpolate the native triangles split at local x+z <= 1; never
     /// bilinear interpolation across that diagonal or through invalid holes.
     pub samples: Vec<[f32; 4]>,

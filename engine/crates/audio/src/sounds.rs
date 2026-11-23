@@ -11,7 +11,7 @@ pub struct Sounds {
 #[cfg(test)]
 mod tests {
     use super::*;
-    const VOICES: &str = include_str!("../tests/fixtures/engine_voices.toml");
+    const VOICES: &str = include_str!("road-engines.toml");
 
     #[test]
     fn caller_text_controls_models_defaults_and_overrides() {

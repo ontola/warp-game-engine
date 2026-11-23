@@ -297,6 +297,7 @@ struct BrickSourceBindings {
 }
 pub struct MeadowRenderer {
     depth_pyramid: crate::depth_pyramid::DepthPyramid,
+    footprints: Vec<[f32; 4]>,
     settings: Settings,
     capacity: u32,
     dimension: u32,
@@ -330,6 +331,16 @@ pub struct MeadowRenderer {
     aggregate: Option<AggregateResources>,
     groups: Option<group_gpu::GpuGroups>,
 }
+// The placement shader measures horizontal distance to each root, including for
+// high cameras. Distance to the closest point of its rectangle is a lower bound.
+fn in_footprint_range(footprints: &[[f32; 4]], camera: glam::Vec3, radius: f32) -> bool {
+    footprints.is_empty() || footprints.iter().any(|&[x0, z0, x1, z1]| {
+        let dx = (x0 - camera.x).max(camera.x - x1).max(0.);
+        let dz = (z0 - camera.z).max(camera.z - z1).max(0.);
+        dx * dx + dz * dz <= radius * radius
+    })
+}
+
 fn buffer(gpu: &Gpu, label: &str, bytes: &[u8], usage: wgpu::BufferUsages) -> wgpu::Buffer {
     gpu.device
         .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -517,6 +528,9 @@ impl MeadowRenderer {
         if groups_enabled && !aggregate_enabled {
             return Err("KERN_MEADOW_GROUP_CACHE requires KERN_MEADOW_AGGREGATE=1".into());
         }
+        if scene.meadow_footprints.iter().any(|r| !r.iter().all(|v| v.is_finite()) || r[0] > r[2] || r[1] > r[3]) {
+            return Err("invalid meadow footprint".into());
+        }
         let index_streams = crate::meadow_index::MeadowIndices::build(&field.geometry)?;
         let indexed = !crate::switches::MEADOW_INDEXED.off();
         if field.width < 2
@@ -567,6 +581,8 @@ impl MeadowRenderer {
         // Header X/Y remain bitcast draw ranges. Z is an ordinary f32 world
         // patch scale; zero retains the original independent variant hash.
         packed[0][2] = field.geometry.variant_patch_metres;
+        // Header W selects the mown palette. Other fields retain analytic windswept pigment.
+        packed[0][3] = if field.geometry.mown_turf { 1.0 } else { 0.0 };
         let atlas_base = packed.len() as u32;
         let atlas = if aggregate_enabled {
             let atlas = crate::meadow_aggregate::AggregateAtlas::cook(&field.geometry)?;
@@ -685,7 +701,12 @@ impl MeadowRenderer {
                 20.0,
                 50.0,
                 1.0,
-                if crate::switches::MEADOW_OCCLUSION.off() {
+                // A near bounded lawn already has a cheap frustum/range test
+                // and ordinary depth testing. A full-resolution Hi-Z chain per
+                // split-screen view costs more than culling these few roots.
+                if crate::switches::MEADOW_OCCLUSION.off()
+                    || (field.geometry.mown_turf && !scene.meadow_footprints.is_empty()
+                        && field.radius <= 24.0 && !crate::switches::MEADOW_OCCLUSION.on()) {
                     0.0
                 } else {
                     1.0
@@ -1068,6 +1089,7 @@ impl MeadowRenderer {
         }
         Ok(Some(Self {
             depth_pyramid: crate::depth_pyramid::DepthPyramid::new(gpu),
+            footprints: scene.meadow_footprints.clone(),
             settings,
             capacity,
             dimension,
@@ -1116,6 +1138,8 @@ impl MeadowRenderer {
         gpu.queue.write_buffer(&self.ground, 0, bytemuck::cast_slice(samples));
         self.settings.field[0] = origin[0];
         self.settings.field[1] = origin[1];
+        // A replacement ground grid can admit roots beyond the authored field.
+        self.footprints.clear();
         if let Some(groups) = &self.groups { groups.invalidate(); }
         Ok(())
     }
@@ -1133,6 +1157,17 @@ impl MeadowRenderer {
         }
         Ok(reset)
     }
+    pub(crate) fn in_view_range(&self, camera: glam::Vec3, distance_scale: f32) -> bool {
+        let ranges = crate::debug_settings::meadow_ranges(
+            [self.settings.shape[3], self.settings.range[0]], distance_scale,
+        );
+        let radius = if self.aggregate.is_some() { ranges[1].max(ranges[3]) } else { ranges[1] };
+        // Edge trimming can keep a patch whose inner blades enter a lawn. Allow
+        // its anchor reach and the sampled terrain triangle across the boundary.
+        let margin = self.settings.support[0] + self.settings.field[2] * std::f32::consts::SQRT_2;
+        in_footprint_range(&self.footprints, camera, radius + margin)
+    }
+
     pub fn aggregate_enabled(&self) -> bool {
         self.aggregate.is_some()
     }
@@ -1191,6 +1226,10 @@ impl MeadowRenderer {
         for view in views.iter_mut().flatten() {
             view.prepared_visibility=None;view.hidden_used_this_frame=false;
             view.spatial_filter_enabled=false;
+            if let Some(target) = &mut view.targets {
+                target.capture_ready = false;
+                target.motion_written = false;
+            }
             if let Some(target)=view.aggregate.as_mut().and_then(|far|far.targets.as_mut()) {
                 target.capture_ready=false;target.motion_written=false;
             }
@@ -1460,7 +1499,7 @@ impl MeadowRenderer {
     /// Explicit source-only optical fixture access. No readback in rendering.
     pub(crate) fn source_fixture_layers(&self) -> Vec<wgpu::Texture> {
         self.views.lock().unwrap().iter().filter_map(|v|v.as_ref()?.targets.as_ref()
-            .map(|t|t.color_texture.clone())).collect()
+            .filter(|t| t.capture_ready).map(|t|t.color_texture.clone())).collect()
     }
     /// Synchronous, explicit diagnostic readback of the last encoded aggregate
     /// pass. Call only after its submission, and attach the host frame identity.
@@ -1492,6 +1531,7 @@ impl MeadowRenderer {
     pub fn motion_layer(&self, index: usize) -> Option<(wgpu::TextureView, wgpu::TextureView)> {
         let views = self.views.lock().unwrap();
         let v = views.get(index)?.as_ref()?;
+        if !v.targets.as_ref()?.motion_written { return None; }
         let t = if self.aggregate.is_some() {
             v.resolved.as_ref()?
         } else {
@@ -1662,12 +1702,16 @@ impl MeadowRenderer {
             }
             Self::ensure_motion(gpu, v.resolved.as_mut().unwrap(), motion);
         }
-        if !v.pyramid.as_ref().is_some_and(|p| p.size == size) {
-            v.pyramid = Some(self.depth_pyramid.target(gpu, size));
+        let cull_occluded = settings.distances[3] > 0.5;
+        // The generator always has a texture binding. With occlusion disabled
+        // its branch returns before sampling, so one untouched texel suffices.
+        let pyramid_size = if cull_occluded { size } else { (1, 1) };
+        if !v.pyramid.as_ref().is_some_and(|p| p.size == pyramid_size) {
+            v.pyramid = Some(self.depth_pyramid.target(gpu, pyramid_size));
         }
         let pyramid = v.pyramid.as_ref().unwrap();
         let opaque_view = v.opaque_view.get(opaque_depth);
-        if !prepared {self.depth_pyramid.encode(
+        if !prepared && cull_occluded {self.depth_pyramid.encode(
             gpu,
             enc,
             &opaque_view,
@@ -1708,7 +1752,7 @@ impl MeadowRenderer {
                 label: Some("meadow placement"),
                 timestamp_writes: times[0].map(|(query_set, i)| wgpu::ComputePassTimestampWrites {
                     query_set,
-                    beginning_of_pass_write_index: None,
+                    beginning_of_pass_write_index: (!cull_occluded).then_some(i),
                     end_of_pass_write_index: Some(i + 1),
                 }),
             });
@@ -2158,6 +2202,8 @@ impl MeadowRenderer {
             }
             pass.draw(0..3, 0..1);
         }
+        t.capture_ready = true;
+        t.motion_written = motion;
         Ok(())
     }
     /// Explicit readback only; normal gameplay never waits for GPU counters.
@@ -2166,6 +2212,7 @@ impl MeadowRenderer {
         let mut result = Vec::new();
         for (index, view) in views.iter().enumerate() {
             let Some(v) = view else { continue };
+            if !v.targets.as_ref().is_some_and(|t| t.capture_ready) { continue; }
             let args_bytes = ARGS_BYTES * if v.aggregate.is_some() { 2 } else { 1 };
             let read = gpu.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("meadow draw counts"),
@@ -2285,6 +2332,20 @@ impl MeadowRenderer {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bounded_meadow_follows_each_camera_across_disconnected_lawns() {
+        let lawns = [[-10., -5., 10., 5.], [90., -5., 110., 5.]];
+        for x in [0., 15., 50., 85., 100., 50., 0.] {
+            let camera = glam::Vec3::new(x, 60., 1.);
+            assert_eq!(super::in_footprint_range(&lawns, camera, 5.), x != 50.);
+        }
+        // Corners use Euclidean distance to the rectangle, just as
+        // the GPU measures distance to the roots rather than to a cell axis.
+        assert!(super::in_footprint_range(&lawns, glam::Vec3::new(13., 1., 9.), 5.));
+        assert!(!super::in_footprint_range(&lawns, glam::Vec3::new(13., 1., 9.1), 5.));
+        assert!(super::in_footprint_range(&[], glam::Vec3::splat(1000.), 5.));
+    }
+
     #[test]
     fn source_morph_camera_history_is_per_view_and_commits_only_after_all_views() {
         use glam::Vec3;

@@ -42,6 +42,21 @@ pub struct Banner {
     pub loading: Option<f32>,
 }
 
+/// A game's decoded cover: the image id it is drawn as, and its size.
+#[derive(Clone)]
+pub struct Cover { pub image: render::hud::HudImage, pub picture: std::sync::Arc<render::picture::Picture>, pub size: [u32; 2] }
+
+impl std::fmt::Debug for Cover {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "Cover({:?}, {:?})", self.image, self.size) }
+}
+
+/// The part of a `size` picture that fills `r` (centre crop).
+pub fn fill_uv(size: [u32; 2], r: [f32; 4]) -> [f32; 4] {
+    let ia = size[0] as f32 / size[1].max(1) as f32;
+    let ra = r[2] / r[3].max(1.0);
+    if ia > ra { let uw = ra / ia; [(1.0 - uw) / 2.0, 0.0, uw, 1.0] } else { let vh = ia / ra; [0.0, (1.0 - vh) / 2.0, 1.0, vh] }
+}
+
 /// Everything the painted screens show.
 #[derive(Clone, Debug, Default)]
 pub struct Show {
@@ -66,6 +81,8 @@ pub struct Show {
     /// The room QR code's dark modules, 0..1 (qr.rs).
     pub qr: Vec<[f32; 4]>,
     pub bumper_presses: [f32; 2],
+    /// Covers by game id (the ones decoded so far).
+    pub covers: std::collections::HashMap<String, Cover>,
 }
 
 /// Godot's draw calls on one screen's rectangle in an atlas draw list.
@@ -266,6 +283,21 @@ pub fn logo(c: &mut Canvas) {
     }
 }
 
+/// The game's cover over `r` when it has one, else its title card.
+pub fn art(c: &mut Canvas, show: &Show, game: &Game, r: [f32; 4], size: f32) {
+    match show.covers.get(&game.id) {
+        Some(art) => {
+            // A tall cover on a wide screen: keep its upper part, where the
+            // title usually is, rather than the middle.
+            let mut uv = fill_uv(art.size, r);
+            uv[1] *= 0.35;
+            c.provide(art.image, &art.picture);
+            c.image(r, art.image, uv, Color::WHITE);
+        }
+        None => title_card(c, game, r, size),
+    }
+}
+
 /// A game without artwork: its colour as a gradient, the title in caps.
 pub fn title_card(c: &mut Canvas, game: &Game, r: [f32; 4], size: f32) {
     let color = Color::from_string(&game.color, VIOLET);
@@ -301,7 +333,7 @@ pub fn tv(c: &mut Canvas, show: &Show) {
     let [w, h] = c.size;
     c.rect([0.0, 0.0, w, h], Color::hex("07060d"));
     let Some((game, banner)) = &show.tv else { return idle_tv(c, show) };
-    title_card(c, game, [0.0, 0.0, w, h], 64.0);
+    art(c, show, game, [0.0, 0.0, w, h], 64.0);
     c.over();
     c.rect([0.0, h - 120.0, w, 120.0], crate::godot::rgba(0.02, 0.02, 0.05, 0.78));
     left(c, if game.title.is_empty() { "Game" } else { &game.title }, [36.0, h - 58.0], 48.0, TEXT);
@@ -339,7 +371,7 @@ pub fn box_front(c: &mut Canvas, show: &Show) {
         return;
     }
     let game = &show.shelf[show.shelf_offset % show.shelf.len()];
-    title_card(c, game, [0.0, 0.0, w, h], if w > 220.0 { 32.0 } else { 16.0 });
+    art(c, show, game, [0.0, 0.0, w, h], if w > 220.0 { 32.0 } else { 16.0 });
 }
 
 /// main.gd `_draw_queue_preview`: the Up next cabinet.
@@ -355,7 +387,7 @@ pub fn queue_preview(c: &mut Canvas, show: &Show) {
         left(c, &b, [24.0, 256.0], 32.0, DIM);
         return;
     };
-    title_card(c, game, [0.0, 66.0, w, 272.0], 48.0);
+    art(c, show, game, [0.0, 66.0, w, 272.0], 48.0);
     loading_bar(c, [0.0, 326.0, w, 12.0], show.queue_loading);
     let title = short(&game.title, 32);
     let y = if show.queue_status.is_some() { 375.0 } else { 390.0 };

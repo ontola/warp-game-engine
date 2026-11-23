@@ -46,10 +46,65 @@ impl AngularProfile {
         (target, stiffness)
     }
 }
-pub(crate) struct PassiveJoint { pub handle: ImpulseJointHandle, pub profile: AngularProfile }
+/// An optional, short-lived muscle drive in the same bind-relative joint frame
+/// as the passive limits. The existing motor torque cap applies to the sum.
+#[derive(Clone, Copy, Debug)]
+pub struct JointBrace {
+    pub target: Vec3,
+    pub stiffness: f32,
+    pub damping: f32,
+    /// Time in seconds spent recruiting, holding and releasing the muscles.
+    pub ramp: f32,
+    pub hold: f32,
+    pub release: f32,
+}
+
+impl JointBrace {
+    fn valid(self, profile: AngularProfile) -> bool {
+        self.target.is_finite() && self.target.cmpge(profile.min).all() && self.target.cmple(profile.max).all()
+            && [self.stiffness,self.damping,self.ramp,self.hold,self.release].iter().all(|x| x.is_finite() && *x >= 0.)
+            && self.ramp > 0. && self.release > 0. && self.stiffness > 0.
+    }
+
+    fn weight(self, age: f32) -> f32 {
+        let t = (age / self.ramp).min((self.ramp + self.hold + self.release - age) / self.release).clamp(0., 1.);
+        t*t*(3.-2.*t)
+    }
+}
+
+pub(crate) struct PassiveJoint {
+    handle: ImpulseJointHandle,
+    profile: AngularProfile,
+    brace: Option<(JointBrace, f32)>,
+}
+
+impl PassiveJoint {
+    fn step(&mut self, dt: f32) -> AngularProfile {
+        let mut profile = self.profile;
+        if let Some((brace, age)) = &mut self.brace {
+            *age += dt;
+            if *age >= brace.ramp + brace.hold + brace.release {
+                self.brace = None;
+            } else {
+                let weight = brace.weight(*age);
+                let spring = brace.stiffness * weight;
+                if spring > 0. {
+                    let total = profile.stiffness + spring;
+                    profile.neutral = profile.neutral.lerp(brace.target, spring / total);
+                    profile.stiffness = total;
+                    profile.damping += brace.damping * weight;
+                }
+            }
+        }
+        profile
+    }
+}
+
 pub(crate) fn update_passive_joints(phys: &mut Physics) {
     phys.passive_joints.retain(|j| phys.world.impulse_joints.get(j.handle).is_some());
-    for passive in &phys.passive_joints {
+    let dt = phys.world.integration_parameters.dt;
+    for passive in &mut phys.passive_joints {
+        let profile = passive.step(dt);
         let Some(joint) = phys.world.impulse_joints.get_mut(passive.handle, false) else { continue };
         let Some(a) = phys.world.bodies.get(joint.body1()) else { continue };
         let Some(b) = phys.world.bodies.get(joint.body2()) else { continue };
@@ -60,8 +115,8 @@ pub(crate) fn update_passive_joints(phys: &mut Physics) {
         for (i, axis) in [JointAxis::AngX, JointAxis::AngY, JointAxis::AngZ].into_iter().enumerate() {
             // Same angular coordinate as Rapier's generic-joint motors.
             let angle = 2.0*q.to_array()[i].clamp(-1.0,1.0).asin();
-            let (target, stiffness) = passive.profile.response(i, angle);
-            joint.data.set_motor_position(axis, target, stiffness, passive.profile.damping);
+            let (target, stiffness) = profile.response(i, angle);
+            joint.data.set_motor_position(axis, target, stiffness, profile.damping);
         }
     }
 }
@@ -132,7 +187,14 @@ impl Ragdoll {
     /// Local anatomical frames define zero independently of the death pose.
     pub fn set_angular_profile(&self, phys: &mut Physics, part: usize,
         parent_frame: Quat, child_frame: Quat, profile: AngularProfile) -> Result<(), String> {
-        if !profile.valid() || !parent_frame.is_finite() || !child_frame.is_finite()
+        self.set_angular_profile_with_brace(phys, part, parent_frame, child_frame, profile, None)
+    }
+
+    /// Install the passive limits and optionally recruit a temporary local muscle
+    /// spring. The solver reacts against the parent, with no drive on the root.
+    pub fn set_angular_profile_with_brace(&self, phys: &mut Physics, part: usize,
+        parent_frame: Quat, child_frame: Quat, profile: AngularProfile, brace: Option<JointBrace>) -> Result<(), String> {
+        if brace.is_some_and(|drive| !drive.valid(profile)) || !profile.valid() || !parent_frame.is_finite() || !child_frame.is_finite()
             || (parent_frame.length_squared()-1.0).abs()>0.001
             || (child_frame.length_squared()-1.0).abs()>0.001 {
             return Err("invalid ragdoll angular profile or frame".into());
@@ -156,7 +218,7 @@ impl Ragdoll {
             }
         }
         phys.passive_joints.retain(|p| p.handle != handle);
-        phys.passive_joints.push(PassiveJoint { handle, profile });
+        phys.passive_joints.push(PassiveJoint { handle, profile, brace: brace.map(|b| (b, 0.)) });
         Ok(())
     }
 
@@ -263,6 +325,41 @@ mod tests {
             bits
         };
         assert_eq!(run(), run());
+    }
+
+    #[test]
+    fn temporary_brace_flexes_under_torque_then_releases_without_translating_the_body() {
+        let mut phys = Physics::new(Vec3::ZERO, 120.);
+        phys.substeps = 4;
+        let straight = [
+            Segment { start: Vec3::ZERO, end: Vec3::Y*0.6, radius: 0.1, parent: None, anchor: Vec3::ZERO },
+            Segment { start: Vec3::Y*0.6, end: Vec3::Y*1.2, radius: 0.1, parent: Some(0), anchor: Vec3::Y*0.6 },
+        ];
+        let rig = Ragdoll::spawn(&mut phys, &straight, Vec3::ZERO, Vec3::ZERO, 1).unwrap();
+        let profile = AngularProfile { neutral: Vec3::ZERO, ..passive_profile() };
+        let brace = JointBrace { target: Vec3::X*0.65, stiffness: 9., damping: 0.35,
+            ramp: 0.15, hold: 0.35, release: 0.40 };
+        assert_eq!(brace.weight(0.), 0.);
+        assert_eq!(brace.weight(0.25), 1.);
+        assert!(brace.weight(0.70) < 0.51);
+        assert!(rig.set_angular_profile_with_brace(&mut phys, 1, Quat::IDENTITY, Quat::IDENTITY,
+            profile, Some(JointBrace { target: Vec3::X*2., ..brace })).is_err());
+        rig.set_angular_profile_with_brace(&mut phys, 1, Quat::IDENTITY, Quat::IDENTITY, profile, Some(brace)).unwrap();
+        let rotation = |p: &Physics| {
+            let a = p.pose(rig.body(0)).unwrap().1;
+            let b = p.pose(rig.body(1)).unwrap().1;
+            let q = a.inverse()*b;
+            2.*(q.x*q.w.signum()).clamp(-1.,1.).asin()
+        };
+        let center = |p: &Physics| (p.pose(rig.body(0)).unwrap().0+p.pose(rig.body(1)).unwrap().0)*0.5;
+        let start = center(&phys);
+        for _ in 0..54 { phys.step(); }
+        assert!(rotation(&phys)>0.30, "brace failed to bend the joint: {}",rotation(&phys));
+        assert!(center(&phys).distance(start) < 0.002);
+        for _ in 0..1000 { phys.step(); }
+        assert!(phys.passive_joints[0].brace.is_none());
+        assert!(rotation(&phys).abs()<0.06, "passive neutral was not restored");
+        assert!(center(&phys).distance(start) < 0.003);
     }
 
     #[test]

@@ -101,7 +101,7 @@ fn meadow_source_vertex(vertex:u32,owner:u32,lod:u32,capacity:u32)->MeadowVertex
     let blade_tint=select(mix(vec3<f32>(0.91,0.94,0.86),vec3<f32>(1.10,1.04,0.98),height),vec3<f32>(1.0),anchor.w>0.0);
     out.color=vec4<f32>(color.rgb*pigment*blade_tint*meadow.edits.rgb,color.w);
     out.blade_color=vec4<f32>(0.0);out.pigment=0u;
-    if anchor.w>0.0 {
+    if anchor.w>0.0 && meadow_recipe[0].w<0.5 {
         // The authored 6/3/1-segment cuts retain one contiguous triangle
         // stream per blade (33/15/3 vertices), including its basal colour.
         let stride=array<u32,3>(33u,15u,3u)[lod];
@@ -150,6 +150,7 @@ fn meadow_color_with_geometric(in:MeadowVertex,geometric:vec3<f32>)->vec4<f32> {
     let l=light.sun_dir.xyz;var shadow=1.0;
     if light.sun_dir.w>0.0 {
         shadow=mix(1.0,shadow_at_surface(p,n*sign(dot(n,l)+1e-4),geo_n,0.0),light.sun_color.w);
+        shadow*=cloud_sun_transmittance(p,l,light.clouds,light.cloud_motion);
     }
     let sun_e=light.sun_color.rgb*light.sun_dir.w*shadow;
     let sky_vis=sky_visibility(p,n);let back_sky_vis=sky_visibility(p,-n);

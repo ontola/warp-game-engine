@@ -22,8 +22,7 @@ use crate::paint::Canvas;
 use std::sync::Arc;
 
 /// A decoded cover: the HUD image it is drawn as, and its size.
-#[derive(Clone)]
-pub struct Cover { pub image: HudImage, pub picture: Arc<Picture>, pub size: [u32; 2] }
+pub use crate::paint::Cover;
 
 #[derive(Default)]
 pub struct Catalog {
@@ -231,12 +230,7 @@ pub fn catalog_layout(lobby: &Lobby, size: [u32; 2]) -> Layout {
     Layout { cards, buttons }
 }
 
-/// The part of a `size` picture that fills `r` (centre crop).
-fn fill_uv(size: [u32; 2], r: [f32; 4]) -> [f32; 4] {
-    let ia = size[0] as f32 / size[1].max(1) as f32;
-    let ra = r[2] / r[3].max(1.0);
-    if ia > ra { let uw = ra / ia; [(1.0 - uw) / 2.0, 0.0, uw, 1.0] } else { let vh = ia / ra; [0.0, (1.0 - vh) / 2.0, 1.0, vh] }
-}
+use crate::paint::fill_uv;
 
 /// A game without a cover: its colour, top to bottom darker, and its
 /// title; `k` dims it (cards further back), `fade` fades it in.

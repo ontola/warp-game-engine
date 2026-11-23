@@ -573,6 +573,10 @@ impl Lobby {
         show.queue_first = upcoming.len() - cabinet.len();
         show.shelf = h.shelf_games().iter().map(|g| game_of(g)).collect();
         show.shelf_offset = h.shelf_offset;
+        if show.covers.len() != self.catalog.covers.values().flatten().count() {
+            show.covers = self.catalog.covers.iter().filter_map(|(id, c)| Some((id.clone(), c.clone()?))).collect();
+            self.screens_dirty = true;
+        }
         show.humans = h.human_count();
         show.profile_colors = self.profiles.iter().map(|p| p.color.clone()).collect();
         show.now_playing = h.has_track().then(|| {

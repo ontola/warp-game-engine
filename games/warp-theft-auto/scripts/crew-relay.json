@@ -1,0 +1,101 @@
+{
+  "size": [
+    960,
+    540
+  ],
+  "steps": [
+    {
+      "note": "Stage a compact at the actual ferry drop and a second player beside the west helicopter.",
+      "cmd": "lua local c=state.fleet.vehicles[1]; local pos=vector.create(164.5,0,59); c.native=vehicles.spawn(pos,0); c.pos=pos; world.place(c.body,pos+vector.create(0,.33,0)); world.place(state.fleet.players[1].body,pos+vector.create(2,.85,0)); world.place(state.fleet.players[2].body,state.fleet.vehicles[9].pos+vector.create(2,.85,0))",
+      "ticks": 3
+    },
+    {
+      "press": [
+        "NORTH"
+      ],
+      "ticks": 2
+    },
+    {
+      "expect": "/state/job/leg",
+      "equals": 2
+    },
+    {
+      "expect": "/state/job/lastDriver",
+      "equals": 1
+    },
+    {
+      "press": [
+        "NORTH"
+      ],
+      "player": 1,
+      "ticks": 2
+    },
+    {
+      "hold": [
+        "SOUTH"
+      ],
+      "player": 1,
+      "ticks": 55
+    },
+    {
+      "note": "The west berth faces away from the pad. Reverse into the landing circle.",
+      "mv": [
+        0,
+        -1
+      ],
+      "player": 1,
+      "ticks": 36
+    },
+    {
+      "ticks": 100
+    },
+    {
+      "hold": [
+        "RIGHT_SHOULDER"
+      ],
+      "player": 1,
+      "ticks": 125
+    },
+    {
+      "expect": "/state/job/leg",
+      "equals": 3
+    },
+    {
+      "expect": "/state/job/lastDriver",
+      "equals": 2
+    },
+    {
+      "press": [
+        "NORTH"
+      ],
+      "ticks": 1
+    },
+    {
+      "cmd": "lua world.place(state.fleet.players[1].body,vector.create(-87.8,.85,84))",
+      "ticks": 1
+    },
+    {
+      "mv": [
+        1,
+        0
+      ],
+      "ticks": 45
+    },
+    {
+      "expect": "/state/job/completed",
+      "equals": 1
+    },
+    {
+      "expect": "/state/job/cash",
+      "equals": 750
+    },
+    {
+      "expect": "/state/job/recovery",
+      "min": 1
+    },
+    {
+      "expect": "/errors",
+      "equals": []
+    }
+  ]
+}

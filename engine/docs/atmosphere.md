@@ -51,8 +51,15 @@ on; `None` (the default) adds no pass and changes nothing.
   at the cloud's depth, clamped to the current neighbourhood), and is
   composited behind its own aerial perspective. Clouds drift with
   `wind * Lighting::time`.
+- **Explosion effects.** Each view composites its cloud layer before drawing
+  smoke, fire and heat distortion. These effects read cloud transmission at
+  their own depth. The cloud march records its first, mean and last
+  contributing distance in the existing depth texture. Inside a cloud this
+  approximates how much opacity is in front of the effect. Effects closer
+  than the layer skip cloud texture reads. The fixed-camera GPU regression
+  can be run with `cargo run -p render --example cloud_fx_order`.
 - **Cloud shadows.** The shade pass reads the same weather field along the
-  sun ray (`cloud_sun_transmittance`), so terrain, rigid geometry and voxel
+  sun ray (`cloud_sun_transmittance`), so terrain, meadow blades, rigid geometry and voxel
   trees fall dark where clouds stand over them; the air in their shadow
   scatters less sun too.
 
@@ -77,7 +84,7 @@ real GPU.
 Limits: the background sky is still the bake seen from the ground (no sky
 seen from altitude, no clouds in reflections or in the SH9 skylight, so an
 overcast sky does not dim the scene); terrain does not shadow the air;
-grass and foliage cards shaded outside the shade pass get no cloud shadows;
+legacy grass and foliage cards in their separate passes get no cloud shadows;
 one layer of one cloud type.
 
 ## The CPU bake

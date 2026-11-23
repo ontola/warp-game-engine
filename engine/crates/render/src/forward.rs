@@ -63,7 +63,7 @@ impl Forward {
             wgpu::BindGroupLayoutEntry{binding:3,visibility:wgpu::ShaderStages::FRAGMENT,ty:wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),count:None},
             wgpu::BindGroupLayoutEntry{binding:4,visibility:wgpu::ShaderStages::FRAGMENT,ty:wgpu::BindingType::Texture{sample_type:wgpu::TextureSampleType::Float{filterable:true},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false},count:None},
             wgpu::BindGroupLayoutEntry{binding:5,visibility:wgpu::ShaderStages::VERTEX,ty:wgpu::BindingType::Buffer{ty:wgpu::BufferBindingType::Storage{read_only:true},has_dynamic_offset:false,min_binding_size:None},count:None}]});
-        let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor{label:Some("minimal forward"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/forward.wgsl").into())});
+        let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor{label:Some("minimal forward"),source:wgpu::ShaderSource::Wgsl(concat!(include_str!("shaders/lod_coverage.wgsl"), "\n", include_str!("shaders/forward.wgsl")).into())});
         let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{label:None,bind_group_layouts:&[Some(&layout)],immediate_size:0});
         let pipeline_for=|format,entry|gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{label:Some("minimal forward"),layout:Some(&pl),
             vertex:wgpu::VertexState{module:&module,entry_point:Some("vs"),compilation_options:Default::default(),buffers:&[
@@ -72,8 +72,9 @@ impl Forward {
             primitive:wgpu::PrimitiveState{cull_mode:None,..Default::default()},
             depth_stencil:Some(wgpu::DepthStencilState{format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:Some(true),depth_compare:Some(wgpu::CompareFunction::GreaterEqual),stencil:Default::default(),bias:Default::default()}),
             multisample:Default::default(),fragment:Some(wgpu::FragmentState{module:&module,entry_point:Some(entry),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState{format,blend:None,write_mask:wgpu::ColorWrites::ALL})]}),multiview_mask:None,cache:gpu.pipeline_cache()});
-        let pipeline=pipeline_for(wgpu::TextureFormat::Rgba8Unorm,"fs");
-        let pipeline_srgb=pipeline_for(wgpu::TextureFormat::Rgba8UnormSrgb,"fs_srgb");
+        let proxies=scene.materials.iter().any(|m|m.layer<crate::scene::LOD_PROXY_LAYER_BIAS);
+        let pipeline=pipeline_for(wgpu::TextureFormat::Rgba8Unorm,if proxies {"fs_proxy"} else {"fs"});
+        let pipeline_srgb=pipeline_for(wgpu::TextureFormat::Rgba8UnormSrgb,if proxies {"fs_proxy_srgb"} else {"fs_srgb"});
         let (lava_view,lava_sampler)=crate::minimum_lava::texture(gpu);
         let stone_view=crate::minimum_stone::texture(gpu);
         let supported=gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY|wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
@@ -174,7 +175,7 @@ impl Forward {
             if let Some(fx)=fx.0.lock().unwrap().as_mut() {
                 let white=((light.sun_lux*light.sun_dir.y.max(0.0)+light.sky_lux)/std::f32::consts::PI)
                     .max(light.fx_white_floor.max(0.0)/exposure);
-                fx.render_output(gpu,&mut enc,vi,target,&depth,view.cam,camera_views[vi],vp,vp,white,exposure,light,Vec3::splat(light.sky_lux/std::f32::consts::PI),Vec3::splat(light.sky_lux/std::f32::consts::PI),1.0,None)?;
+                fx.render_output(gpu,&mut enc,vi,target,&depth,view.cam,camera_views[vi],vp,vp,white,exposure,light,Vec3::splat(light.sky_lux/std::f32::consts::PI),Vec3::splat(light.sky_lux/std::f32::consts::PI),1.0,None,None)?;
             }
             if let Some(q)=query {enc.write_timestamp(q,vi as u32*6+3);enc.write_timestamp(q,vi as u32*6+4);}
             if let Some(sprites)=sprites.0.lock().unwrap().as_mut() {

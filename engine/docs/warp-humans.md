@@ -1,5 +1,11 @@
 # Warp Humans stadium review
 
+## Falls in Luau games
+
+Calling `humans.ragdoll` transfers the fitted person’s current pose to eleven connected rigid bodies. Their shoulders, elbows, spine, neck, hips and knees have joint limits. During the first 0.19 seconds the knees and hips flex, the forearms draw in and the chin tucks. This extra muscle tension holds for 0.28 seconds and fades over the next 0.78 seconds. Ground and vehicle contact can interrupt the motion throughout the fall. The same response works with procedural body proportions and needs no fall animation asset. For a fall caused by a moving object, pass the person’s current world velocity and angular velocity. See the [Luau human API](warp-cli.md) and [joint controls](physics.md#ragdoll-joint-limits-and-muscle-response).
+
+## Stadium playtest
+
 Play a full desktop Growing Guns match with one local player, three bots and the procedural spectators:
 
 ```sh
@@ -7,6 +13,8 @@ cargo run --release -p growing-guns-app --bin growing-guns -- play --skip-menu -
 ```
 
 In this mode each player slot and bot gets a Warp Human from the arena seed. The game fixes standing height at 1.80 m and assigns the slot's shirt colour. Faces, hair, skin, shoulder breadth, waist and hips vary. The wardrobe selects a pullover, a short-sleeved T-shirt or a jacket, then colours trousers and shoes independently. A chest can be plain, have a two-digit number or carry a wordmark. The match binds the fitted body and clothing to the player skeleton at load time, so ordinary movement, hand sockets and ragdolls use the same model across respawns.
+
+Warp Human height follows a symmetric, bell-shaped distribution within each pool’s configured range. Equal endpoints give a fixed height. The seed picks a shared frame, fullness and taper for the chest, waist and hips. This keeps related measurements moving together while allowing broad shoulders, narrower hips and fuller waists in different combinations. Fitted actors and instanced spectators use the same proportions. Standing actors fit their leg lengths, shoulders and arm joints to the sampled stature. In the idle pose the collarbones settle and the hands hang beside the hips. Facial identity, wardrobe and animation timing have separate seed channels.
 
 When Splitscreen Club prepares a match, the seated players wear the sRGB shirt colour and skin tone from their profiles. The face texture keeps its features and uses the same base skin tone as the arms and hands. Each missing colour uses its own fallback. The effective skin colour weights the seeded natural hair palette for players and spectators. Darker skin makes black and dark brown more frequent, while the full range through honey and pale blond remains possible. A separate seed draw gives 6 in 256 people a muted dye and keeps their brows in the natural palette. These are art-direction weights. Colour edits from the lobby refresh the visuals for the active match. The roster seed stays fixed across graphics changes.
 

@@ -21,6 +21,8 @@ sample mixer and its dedicated stem music player at the device's rate.
 
 ## Engine sound
 
+Luau sound patches can use the shared pulse exhaust model with `engine("inline_four", rpm, throttle, load, cut, gear, speed)` and add `tyres(speed, slip, contact, loose, soft, wet)`. Built-in engine presets include `inline_four`, `inline_five` and `boxer_four`. A caller can register additional presets or override a built-in ID. Use `sound.move_to(handle, worldPosition)` to keep a running spatial voice attached to its vehicle as it passes the listeners. [Warp Theft Auto's motor patch](../../games/warp-theft-auto/sounds/motor.luau)
+
 The engine voice follows Ange Yaghi's engine-sim: the sound is the exhaust
 pressure of a running engine, not a recording. Each cylinder blows down
 when its exhaust valve opens, at its own crank angle and firing order, with

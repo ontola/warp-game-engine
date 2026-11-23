@@ -235,6 +235,10 @@ impl SoundOut {
         if let (Some(tx), Some(h)) = (&self.tx, self.handles.get(&id)) { tx.set(h, param, value); }
     }
 
+    pub fn move_to(&self, id: u32, at: [f32; 3]) {
+        if let (Some(tx), Some(h)) = (&self.tx, self.handles.get(&id)) { tx.move_to(h, Place::At(at), 0.0); }
+    }
+
     pub fn stop(&self, id: u32) {
         if let (Some(tx), Some(h)) = (&self.tx, self.handles.get(&id)) { tx.release(h); }
     }

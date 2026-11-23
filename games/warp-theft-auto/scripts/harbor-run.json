@@ -1,0 +1,114 @@
+{
+  "size": [
+    1280,
+    720
+  ],
+  "steps": [
+    {
+      "ticks": 35,
+      "capture": "street.png"
+    },
+    {
+      "press": [
+        "NORTH"
+      ],
+      "ticks": 1
+    },
+    {
+      "expect": "/state/fleet/players/0/mode",
+      "equals": "drive"
+    },
+    {
+      "ticks": 105,
+      "mv": [
+        0,
+        1
+      ],
+      "capture": "drive.png",
+      "audio": "acceleration.wav"
+    },
+    {
+      "expect": "/state/fleet/players/0/speed",
+      "min": 3
+    },
+    {
+      "expect": "/state/fleet/vehicles/0/rpm",
+      "min": 1200
+    },
+    {
+      "until": "/state/fleet/players/0/speed",
+      "max": 0.6,
+      "max_ticks": 240,
+      "hold": ["SOUTH", "LEFT_TRIGGER"]
+    },
+    {
+      "press": [
+        "NORTH"
+      ],
+      "ticks": 1
+    },
+    {
+      "expect": "/state/fleet/players/0/mode",
+      "equals": "walk"
+    },
+    {
+      "cmd": "lua local p=state.fleet.players[1]; local h=state.fleet.vehicles[8]; world.place(p.body,h.pos+vector.create(2.8,.85,0))",
+      "ticks": 1
+    },
+    {
+      "press": [
+        "NORTH"
+      ],
+      "ticks": 1
+    },
+    {
+      "expect": "/state/fleet/players/0/mode",
+      "equals": "fly"
+    },
+    {
+      "hold": [
+        "SOUTH"
+      ],
+      "ticks": 280
+    },
+    {
+      "expect": "/state/fleet/players/0/pos/1",
+      "min": 32
+    },
+    {
+      "mv": [
+        -0.96,
+        0
+      ],
+      "ticks": 61
+    },
+    {
+      "mv": [
+        0,
+        1
+      ],
+      "ticks": 65,
+      "capture": "flight.png"
+    },
+    {
+      "cmd": "lua state.clock.hour=19.9999",
+      "ticks": 4
+    },
+    {
+      "expect": "/sky",
+      "equals": "clock:clear"
+    },
+    {
+      "expect": "/state/clock/phase",
+      "equals": "night"
+    },
+    {
+      "ticks": 40,
+      "capture": "night.png"
+    },
+    {
+      "expect": "/errors",
+      "equals": []
+    }
+  ]
+}

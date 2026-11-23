@@ -59,6 +59,10 @@ frame, a depth, and a bias (1 where history must not be used). Covered:
   vertices;
 - rasterized foliage voxels are reprojected as still world points (see
   Open);
+- transparent glass and the opaque surface visible through it. Matching
+  screen motion allows a stationary window or a moving car cabin to accumulate
+  subpixel samples. When the layers separate in screen space, their opacity
+  controls how much to reject history;
 - grass, meadow and the voxel composite through their own reprojection
   layers.
 
