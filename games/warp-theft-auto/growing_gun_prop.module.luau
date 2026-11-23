@@ -57,7 +57,7 @@ function prop.make(hand,rotation,spec)
 		piece("cube",mat,x,y,z,v(w,h,d))
 	end
 	local function barrel(mat,x,y,z,diameter,depth)
-		piece("capsule",mat,x,y,z,v(diameter,depth,diameter),upright)
+		piece("capsule",mat,x,y,z,v(diameter,depth*.5,diameter),upright)
 	end
 
 	box(receiver,0,0,0,width,high,body)

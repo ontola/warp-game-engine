@@ -95,7 +95,7 @@ function sidearm.follow(ctx,avatar,seat,ray,spec,dt,pressed)
 		elseif launcher then v(.03+.05*ready,-.19+.245*ready,.28-.06*ready)
 		else v(.09+.025*ready,-.15+.13*ready,.30-.03*ready)
 	grip-=v(0,0,ctx.kick*.28)
-	local support=if pistol then v(.072,-.012,.045) elseif launcher then v(.065,.05,.245) else growingProp.support(spec)
+	local support=if pistol then v(.072,-.012,.045) elseif launcher then v(.083,.028,.245) else growingProp.support(spec)
 	humans.set(avatar,{pose="hold",yaw=heading,grip=grip,support=support,pitch=pitch,t=ready})
 	local wrist=humans.joint(avatar,"hand_r")
 	if not wrist then sidearm.remove(ctx); return end
