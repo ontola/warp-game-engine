@@ -80,7 +80,7 @@ paint();
 '''
 
 # Luau games the --warp build serves by default, and folders it leaves out.
-WARP_GAMES = ['neon-siege', 'stack-together', 'neon-trails', 'hello-warp', 'relay-keepers', 'dead-miles', 'warp-theft-auto']
+WARP_GAMES = ['neon-siege', 'stack-together', 'neon-trails', 'relay-keepers', 'dead-miles', 'warp-theft-auto']
 SKIP = {'scripts', 'tests', 'docs', 'build'}
 TEXTURES = ['grass_ground', 'forest_leaves_02', 'forest_ground_04', 'rock_face_03', 'gravel_ground_01', 'mossy_rock']
 
