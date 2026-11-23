@@ -1,11 +1,13 @@
--- One pistol per local seat. Each shot resolves against the nearest visible
--- person across the shared street crowd, interior residents, rivals and cast.
+-- Resolve each seat's weapon against shared street crowds, interior residents,
+-- rivals and authored cast. Projectiles keep flying after a weapon switch.
 local Cast=require("story_cast")
 local crowd=require("kit/crowd")
 local fx=require("combat_fx")
 local explosions=require("explosions")
 local impacts=require("impacts")
 local sidearm=require("sidearm")
+local launcher=require("launcher")
+local catalog=require("weapon_catalog")
 local combat={}
 local v=vector.create
 local routes={
@@ -19,7 +21,8 @@ local markerEdges={1,5,2,5,3,5,4,5}
 function combat.new(fleet,pop)
 	world.warm("wire",marker)
 	fx.warm()
-	local s={players={},enemies={},cast=Cast.new(fleet,pop,crowd.new("rival")),effects=fx.new(),crates=explosions.placeCrates()}
+	launcher.warm()
+	local s={players={},enemies={},projectiles={},cast=Cast.new(fleet,pop,crowd.new("rival")),effects=fx.new(),crates=explosions.placeCrates()}
 	for _,r in routes do s.enemies[r.key]={health=2,respawnIn=0} end
 	return s
 end
@@ -71,56 +74,62 @@ local function updateRivals(s,fleet,dt)
 	end
 end
 
-local RANGE=sidearm.range
-
-local function targetOnRay(state,seat,origin,ray)
-	local s,story,cast=state.combat,state.story,state.storyCast
-	local target
-	-- Prefer the authored actor at a tie, e.g. when a story has placed two
-	-- people at the exact same spot. A closer pedestrian always wins.
-	local function consider(kind,key,p,feet,range,actor)
-		local height
-		local pos=feet
-		if p.impact and p.impact.stage=="down" and actor then
-			local hips=humans.joint(actor,"hips")
-			if hips then pos,height=hips-v(0,.23,0),.55 end
-		elseif p.pose=="sit" then height=1.25 end
-		local along,point=sidearm.intersect(origin,ray,seat.pos,pos,range,height)
-		if along and (not target or along<target.along or
-			(along==target.along and kind==target.kind and key<target.key)) then
-			target={kind=kind,key=key,along=along,point=point,feet=feet}
-		end
-	end
+local function visitPeople(state,minimum,maximum,visit)
+	local s,cast=state.combat,state.storyCast
 	if cast then
 		for key,p in cast.people do
-			if not p.shot then
-				local range=if story and key==story.contractPerson then story.contractRange else RANGE
-				consider("cast",key,p,p.pos,range,p.actor)
-			end
+			if not p.shot then visit("cast",key,p,p.pos,p.actor) end
 		end
 	end
 	for _,route in routes do
 		local p=s.cast.people[route.key]
-		if p and s.enemies[route.key].health>0 then consider("rival",route.key,p,p.pos,RANGE,p.actor) end
+		if p and s.enemies[route.key].health>0 then visit("rival",route.key,p,p.pos,p.actor) end
 	end
-	impacts.visitResidents(state.population,origin,origin+ray*(RANGE+2),function(id,c,feet,actor)
-		consider("resident",id,c,feet,RANGE,actor)
+	impacts.visitResidents(state.population,minimum,maximum,function(id,c,feet,actor)
+		visit("resident",id,c,feet,actor)
 	end)
-	-- A single scenery trace orders pedestrians, cover and marked cargo for every seat.
-	local distance = if target then math.max(0,target.along-.001) else RANGE
-	local cover = if distance>0 then sidearm.sceneryHit(origin,ray,distance) else nil
-	if cover then
-		local crate = s.crates[cover.id]
-		if crate then return {kind="crate",key=cover.id,point=cover.point},cover.point end
-		return nil,cover.point
-	end
-	return target,if target then target.point else origin+ray*RANGE
 end
 
-local function hitTarget(state,target,ray)
+local function characterBounds(p,feet,actor)
+	if p.impact and p.impact.stage=="down" and actor then
+		local hips=humans.joint(actor,"hips")
+		if hips then return hips-v(0,.23,0),.55 end
+	end
+	return feet,if p.pose=="sit" then 1.25 else 1.94
+end
+
+local function targetOnRay(state,origin,ray,from,distance,projectile,limited)
+	local target
+	local story=state.story
+	visitPeople(state,origin,origin+ray*(distance+2),function(kind,key,p,feet,actor)
+		local pos,height=characterBounds(p,feet,actor)
+		local range=if projectile then distance+2 else distance
+		if not projectile and kind=="cast" and story and key==story.contractPerson then
+			range=if limited then math.min(range,story.contractRange) else story.contractRange
+		end
+		local along,point=sidearm.intersect(origin,ray,from,pos,range,height)
+		if along and (not (projectile or limited) or along<=distance) and (not target or along<target.along or
+			(along==target.along and kind==target.kind and key<target.key)) then
+			target={kind=kind,key=key,along=along,point=point,feet=feet,head=not p.impact and point.y>=pos.y+height*.82}
+		end
+	end)
+	local limit=if target then math.max(0,target.along-.001) else distance
+	local cover
+	if limit>0 then
+		cover=if projectile or limited then world.raycast(origin,ray,limit) else sidearm.sceneryHit(origin,ray,limit)
+	end
+	if cover then
+		local crate=state.combat.crates[cover.id]
+		if crate then return {kind="crate",key=cover.id,point=cover.point},cover.point,cover end
+		return nil,cover.point,cover
+	end
+	return target,if target then target.point else origin+ray*distance
+end
+
+local function hitTarget(state,target,ray,blast,damage)
 	local s,story,cast=state.combat,state.story,state.storyCast
 	local key=target.key
-	local push=ray*2+v(0,.3,0)
+	local push=if blast then ray*4+v(0,1.5,0) else ray*2+v(0,.3,0)
 	if target.kind=="resident" then
 		return impacts.shootResident(state.population,state.fleet,key,target.feet,push),true
 	elseif target.kind=="cast" then
@@ -134,9 +143,9 @@ local function hitTarget(state,target,ray)
 		return true,true
 	end
 	local enemy=s.enemies[key]
-	local lethal=enemy.health==1
+	local lethal=blast or enemy.health<=damage
 	if lethal and not s.cast:hit(key,push) then return false,false end
-	enemy.health-=1
+	enemy.health=if lethal then 0 else enemy.health-damage
 	if lethal then
 		enemy.respawnIn=12
 		removeMarker(enemy)
@@ -144,9 +153,52 @@ local function hitTarget(state,target,ray)
 	return true,lethal
 end
 
-local function shoot(state,id,player,seat,input)
-	local pressed=sidearm.trigger(input)
+local function recordHit(state,owner,target,dir,blast,damage)
+	local hit,lethal=hitTarget(state,target,dir,blast,damage)
+	if not hit then return end
+	local player=state.combat.players[owner]
+	if player then
+		player.hits+=1
+		if lethal then player.defeats+=1 end
+		sidearm.confirmHit(player,target.point)
+	end
+	fx.hit(state.combat.effects,target.point,dir,lethal,game.tick()+owner)
+end
+
+local function detonate(state,shot,center,target)
+	local s=state.combat
+	if target and target.kind=="crate" then
+		explosions.hit(s.crates[target.key],target.key)
+		local shooter=s.players[shot.owner]
+		if shooter then sidearm.confirmHit(shooter,center) end
+	else
+		explosions.play(center,launcher.blastRadius)
+	end
+	local radius=launcher.blastRadius
+	local extent=v(radius,radius,radius)
+	local hits={}
+	visitPeople(state,center-extent,center+extent,function(kind,key,p,feet,actor)
+		local pos,height=characterBounds(p,feet,actor)
+		local contact=pos+v(0,height*.5,0)
+		local delta=contact-center
+		local distance=vector.magnitude(delta)
+		if distance>radius then return end
+		local direct=target and target.kind==kind and target.key==key
+		if not direct and distance>.04 and world.raycast(center,delta,distance-.04) then return end
+		table.insert(hits,{kind=kind,key=key,feet=feet,point=contact,dir=if distance>.01 then delta/distance else shot.dir})
+	end)
+	-- Ragdolls promote crowd rigs. Resolve collected candidates in a stable order
+	-- after the population visit so mutation cannot skip another nearby actor.
+	table.sort(hits,function(a,b) return if a.kind==b.kind then a.key<b.key else a.kind<b.kind end)
+	for _,hit in hits do recordHit(state,shot.owner,hit,hit.dir,true,0) end
+end
+
+local function shoot(state,id,player,seat,input,dt)
+	local spec=catalog.get(seat.weapon or "pistol",seat)
+	local pressed=sidearm.trigger(input,spec.automatic)
 	local enabled=seat.mode=="walk" and not seat.impact
+	player.weapon=spec.id
+	local gun=sidearm.magazine(player,spec)
 	player.aiming,player.onTarget=enabled and seat.aiming==true,false
 	if not enabled then
 		sidearm.remove(player)
@@ -155,22 +207,57 @@ local function shoot(state,id,player,seat,input)
 	local origin,ray
 	if player.aiming then origin,ray=sidearm.ray(id)
 	elseif pressed or player.shotFlash>0 then origin,ray=sidearm.hipRay(seat) end
-	sidearm.follow(player,state.population.avatars[id],seat,ray)
+	sidearm.follow(player,state.population.avatars[id],seat,ray,spec)
 	if not ray or (not player.aiming and not pressed) then return end
-	local target,point=targetOnRay(state,seat,origin,ray)
+	local isLauncher=spec.kind=="launcher"
+	local target,point=targetOnRay(state,origin,ray,seat.pos,spec.range,isLauncher,spec.kind=="hitscan")
 	player.onTarget=target~=nil
-	if not sidearm.discharge(player,player,seat,input,point,origin,ray) or not target then return end
-	if target.kind=="crate" then
-		explosions.hit(state.combat.crates[target.key],target.key)
-		sidearm.confirmHit(player,target.point)
+	if not pressed then return end
+	if isLauncher then
+		launcher.fire(state.combat.projectiles,id,player,seat,point,ray,spec.range)
 		return
 	end
-	local hit,lethal=hitTarget(state,target,ray)
-	if not hit then return end
-	player.hits+=1
-	if lethal then player.defeats+=1 end
-	sidearm.confirmHit(player,target.point)
-	fx.hit(state.combat.effects,target.point,ray,lethal,game.tick()+id)
+	if not sidearm.discharge(player,seat,spec,gun,dt) then return end
+	local spreads=spec.spread and spec.spread>0 and sidearm.pattern(ray,spec.spread,id,player.shotNumber)
+	local contacts={}
+	local tracePoint,left,right=point,nil,nil
+	local lo,hi=math.huge,-math.huge
+	local side=if spreads and spec.pellets>1 then vector.cross(ray,v(0,1,0)) else nil
+	for pellet=1,spec.pellets or 1 do
+		local hit,endPoint,dir=target,point,ray
+		if spreads then
+			dir=spreads()
+			hit,endPoint=targetOnRay(state,origin,dir,seat.pos,spec.range,false,true)
+		end
+		if pellet==1 then tracePoint=endPoint end
+		if side then
+			local offset=vector.dot(side,dir)
+			if offset<lo then lo,left=offset,endPoint end
+			if offset>hi then hi,right=offset,endPoint end
+		end
+		if hit then
+			local same
+			for _,prior in contacts do
+				if prior.kind==hit.kind and prior.key==hit.key then same=prior; break end
+			end
+			local damage=(spec.damage or 1)*(if hit.head then spec.headshot or 1 else 1)
+			if same then same.damage+=damage
+			else
+				hit.dir,hit.damage=dir,damage
+				table.insert(contacts,hit)
+			end
+		end
+	end
+	-- Draw the first and outermost actual pellet paths, up to three per seat.
+	sidearm.flash(player,tracePoint,spec.color,left,right)
+	for _,hit in contacts do
+		if hit.kind=="crate" then
+			explosions.hit(state.combat.crates[hit.key],hit.key)
+			sidearm.confirmHit(player,hit.point)
+		else
+			recordHit(state,id,hit,hit.dir,false,hit.damage)
+		end
+	end
 end
 
 function combat.tick(state,dt,input)
@@ -181,11 +268,16 @@ function combat.tick(state,dt,input)
 	updateRivals(s,fleet,dt)
 	for id,player in s.players do
 		if not fleet.players[id] or fleet.players[id].bot then
+			-- A departing player's grenade still lands. A later occupant of this
+			-- seat should not receive the credit for its impact.
+			for _,shot in s.projectiles or {} do if shot.owner==id then shot.owner=0 end end
 			sidearm.remove(player)
 			sidearm.clearFlash(player)
 			s.players[id]=nil
 		end
 	end
+	s.projectiles=s.projectiles or {}
+	launcher.advance(state,dt,targetOnRay,detonate)
 	for _,info in players.list() do
 		local id=info.id
 		local seat=fleet.players[id]
@@ -195,8 +287,9 @@ function combat.tick(state,dt,input)
 			player={hits=0,defeats=0,shotFlash=0,aiming=false,onTarget=false}
 			s.players[id]=player
 		end
+		player.launcherCooldown=math.max(0,(player.launcherCooldown or 0)-dt)
 		sidearm.tickFlash(player,player,dt)
-		shoot(state,id,player,seat,input[id] or {})
+		shoot(state,id,player,seat,input[id] or {},dt)
 		if story and story.weapon and story.owner==id then
 			story.aiming,story.onTarget,story.shotFlash=player.aiming,player.onTarget,player.shotFlash
 		end

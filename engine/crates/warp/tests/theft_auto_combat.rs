@@ -436,3 +436,206 @@ fn simultaneous_shots_detonate_visible_cargo_once_and_keep_the_city_running() {
     tick(&mut game, [Controls::default();2], 32);
     check(&mut game, "assert(world.get(state.cargo).visible and world.get(state.cargo).solid)");
 }
+
+#[test]
+fn launcher_flight_sweeps_thin_cover_and_only_hits_people_on_the_exposed_side() {
+    let mut game = city();
+    line_up(&mut game);
+    check(&mut game, r#"
+        local seat=state.fleet.players[1]
+        seat.weapon="launcher"
+        seat.pitch=0
+        local wall=vector.create(8,1.5,-38)
+        state.launcherWall=world.spawn("cube",{tag="city",pos=wall,size=vector.create(6,3,.05),solid=true})
+        local vex=state.combat.cast.people.vex
+        vex.pos,vex.route,vex.arrived=vector.create(9.7,0,-36),nil,false
+        world.place(vex.body,vex.pos+vector.create(0,.85,0))
+        humans.set(vex.actor,{pos=vex.pos,pose="idle"})
+    "#);
+    let fire=Controls {pressed:Buttons(Buttons::RIGHT_TRIGGER),..Default::default()};
+    tick(&mut game,[fire,Controls::default()],1);
+    check(&mut game, r#"
+        local s=state.combat
+        assert(s.players[1].weapon=="launcher" and s.players[2].weapon=="pistol")
+        assert(#s.projectiles==1 and s.projectiles[1].owner==1)
+        assert(#world.find("launcher-projectile")==1 and #world.find("launcher-fuse")==1)
+        assert(s.players[1].shotFlash>0 and s.players[2].shotFlash==0)
+        state.firstProjectilePos=s.projectiles[1].pos
+        assert(s.enemies.rook.health==2 and s.enemies.vex.health==2)
+    "#);
+    tick(&mut game,[fire,Controls::default()],2);
+    check(&mut game, r#"
+        assert(#state.combat.projectiles==1)
+        assert(vector.magnitude(state.combat.projectiles[1].pos-state.firstProjectilePos)>.8)
+        state.fleet.players[1].weapon="pistol"
+    "#);
+    assert!(game.core().world.explosions.is_none());
+    tick(&mut game,[Controls::default();2],16);
+    check(&mut game, r#"
+        local s=state.combat
+        assert(s.players[1].weapon=="pistol" and #s.projectiles==0)
+        assert(#world.find("launcher-projectile")==0 and #world.find("launcher-fuse")==0)
+        assert(s.enemies.rook.health==2 and not s.cast.people.rook.impact)
+        assert(s.enemies.vex.health==0 and s.cast.people.vex.impact)
+        assert(s.players[1].defeats>=1 and s.players[2].hits==0)
+    "#);
+    assert_eq!(game.core().world.explosions.as_ref().unwrap().explosion_stats().full,1);
+}
+
+#[test]
+fn each_seat_owns_its_flying_launcher_bolt_and_empty_sky_shots_expire() {
+    let mut game=city();
+    check(&mut game,r#"
+        for id,seat in state.fleet.players do
+            seat.weapon="launcher"
+            world.place(seat.body,vector.create(12*id,160,-20))
+            seat.pitch=.29
+            seat.view=if id==1 then .9 else -.9
+        end
+    "#);
+    let fire=Controls {pressed:Buttons(Buttons::SOUTH),..Default::default()};
+    tick(&mut game,[fire;2],1);
+    check(&mut game,r#"
+        local s=state.combat
+        assert(#s.projectiles==2 and s.projectiles[1].owner==1 and s.projectiles[2].owner==2)
+        assert(s.players[1].launcherCooldown>0 and s.players[2].launcherCooldown>0)
+        assert(s.projectiles[1].dir.x<0 and s.projectiles[2].dir.x>0)
+        state.initialVelocity=s.projectiles[1].velocity
+        state.grenadeStart=s.projectiles[1].pos
+    "#);
+    tick(&mut game,[Controls::default();2],40);
+    check(&mut game,r#"
+        local g=state.combat.projectiles[1]
+        assert(g.velocity.y<state.initialVelocity.y-10)
+        assert(g.pos.y>state.grenadeStart.y+8 and g.pos.y<state.grenadeStart.y+state.initialVelocity.y*40/60-2)
+    "#);
+    tick(&mut game,[Controls::default();2],70);
+    check(&mut game,r#"
+        assert(#state.combat.projectiles==2 and #world.find("launcher-projectile")==2)
+        assert(state.combat.players[1].launcherCooldown==0)
+    "#);
+    tick(&mut game,[Controls::default();2],24);
+    check(&mut game,r#"
+        assert(#state.combat.projectiles==0 and #world.find("launcher-projectile")==0 and #world.find("launcher-fuse")==0)
+        assert(state.combat.players[1].hits==0 and state.combat.players[2].hits==0)
+        local s=state.fleet.players[1]
+        world.place(s.body,state.fleet.vehicles[1].pos+vector.create(1.6,.85,0))
+    "#);
+    assert_eq!(game.core().world.explosions.as_ref().unwrap().explosion_stats().full,2);
+    tick(&mut game,[Controls::default();2],4);
+    let enter=Controls {pressed:Buttons(Buttons::NORTH),..Default::default()};
+    tick(&mut game,[enter,Controls::default()],1);
+    tick(&mut game,[fire,Controls::default()],1);
+    check(&mut game,r#"assert(state.fleet.players[1].mode=="drive" and not state.combat.players[1].prop and #state.combat.projectiles==0)"#);
+}
+
+#[test]
+fn growing_guns_fire_rates_and_magazines_are_independent_for_each_trigger() {
+    let mut game=city();
+    check(&mut game,r#"
+        for id,seat in state.fleet.players do
+            world.place(seat.body,vector.create(20*id,180,-20))
+            seat.pitch=.3
+            seat.weapon=if id==1 then "uzi" else "sniper"
+        end
+    "#);
+    let held=Controls {held:Buttons(Buttons::RIGHT_TRIGGER),..Default::default()};
+    let fire=Controls {held:Buttons(Buttons::RIGHT_TRIGGER),pressed:Buttons(Buttons::RIGHT_TRIGGER),..Default::default()};
+    tick(&mut game,[fire;2],1);
+    check(&mut game,r#"
+        local a,b=state.combat.players[1],state.combat.players[2]
+        assert(a.prop and b.prop and a.trace and b.trace and a.ammo==24 and b.ammo==4)
+        assert(a.shotNumber==1 and b.shotNumber==1)
+    "#);
+    tick(&mut game,[held;2],60);
+    check(&mut game,r#"
+        local a,b=state.combat.players[1],state.combat.players[2]
+        assert(a.shotNumber>=14 and a.shotNumber<=15 and a.ammo==25-a.shotNumber,a.shotNumber)
+        assert(b.shotNumber==2 and b.ammo==3,b.shotNumber)
+        assert(a.magazine==25 and b.magazine==5 and a.reloadRemaining==0)
+        state.fleet.players[2].weapon="rifle"
+    "#);
+    tick(&mut game,[Controls::default(),fire],1);
+    check(&mut game,r#"assert(state.combat.players[2].ammo==4 and state.combat.players[2].magazine==5)"#);
+}
+
+#[test]
+fn live_shotgun_parameters_change_range_pellet_damage_and_reload_in_place() {
+    let mut game=city();
+    line_up(&mut game);
+    check(&mut game,r#"
+        local seat=state.fleet.players[1]
+        world.place(seat.body,state.combat.cast.people.rook.pos+vector.create(0,.85,7))
+        seat.view,seat.pitch=0,0
+        state.fleet.players[2].weapon="shotgun"
+    "#);
+    let equip=|game:&mut LuaGame,range:u32| {
+        game.apply_story(&format!(r#"return {{id="sample",title="Test loadout",cast={{}},steps={{{{
+            op="equip",weapon="shotgun",params={{pellets=3,damage=.4,spread=0,range={range},
+            automatic=false,magazine=2,reload=.35,interval=.10}},text="Equip"
+        }}}}}}"#)).unwrap();
+    };
+    equip(&mut game,2);
+    tick(&mut game,[Controls::default();2],2);
+    let fire=Controls {held:Buttons(Buttons::RIGHT_TRIGGER),pressed:Buttons(Buttons::RIGHT_TRIGGER),..Default::default()};
+    let held=Controls {held:Buttons(Buttons::RIGHT_TRIGGER),..Default::default()};
+    tick(&mut game,[fire,Controls::default()],1);
+    tick(&mut game,[held,Controls::default()],20);
+    check(&mut game,r#"
+        local c=state.combat
+        assert(c.enemies.rook.health==2 and c.players[1].ammo==1 and c.players[1].shotNumber==1)
+        assert(c.players[2].ammo==5)
+        state.previousGun=c.players[1].prop
+    "#);
+    equip(&mut game,30);
+    tick(&mut game,[Controls::default();2],2);
+    check(&mut game,r#"assert(not world.exists(state.previousGun) and state.combat.players[1].ammo==1)"#);
+    tick(&mut game,[fire,Controls::default()],1);
+    check(&mut game,r#"
+        local c=state.combat
+        assert(math.abs(c.enemies.rook.health-.8)<.001,c.enemies.rook.health)
+        assert(c.players[1].hits==1 and c.players[1].ammo==0 and c.players[1].reloadRemaining>.3)
+        state.fleet.players[1].weapon="pistol"
+    "#);
+    tick(&mut game,[Controls::default();2],25);
+    check(&mut game,r#"assert(not state.combat.players[1].ammo); state.fleet.players[1].weapon="shotgun""#);
+    tick(&mut game,[Controls::default();2],1);
+    check(&mut game,r#"
+        local c=state.combat
+        assert(c.players[1].ammo==2 and c.players[1].reloadRemaining==0)
+        assert(c.players[2].ammo==5 and not c.players[2].shotNumber)
+    "#);
+}
+
+#[test]
+fn a_sniper_card_uses_its_contact_multiplier_and_a_spread_shot_draws_a_bounded_fan() {
+    let mut game=city();
+    line_up(&mut game);
+    game.apply_story(r#"return {id="scope-test",title="Scope",cast={},steps={{
+        op="equip",weapon="sniper",params={damage=.4,spread=0},text="Equip"
+    }}}"#).unwrap();
+    check(&mut game,r#"
+        local seat=state.fleet.players[1]
+        world.place(seat.body,state.combat.cast.people.rook.pos+vector.create(0,.85,7))
+        seat.view,seat.pitch=0,.08
+        state.fleet.players[2].weapon="shotgun"
+    "#);
+    tick(&mut game,[Controls::default();2],2);
+    let fire=Controls {pressed:Buttons(Buttons::RIGHT_TRIGGER),..Default::default()};
+    tick(&mut game,[fire,Controls::default()],1);
+    check(&mut game,r#"
+        local c=state.combat
+        assert(math.abs(c.enemies.rook.health-.8)<.001,c.enemies.rook.health)
+        assert(c.players[1].hits==1 and c.players[1].magazine==5)
+        state.fleet.players[2].view=2.7
+        state.fleet.players[2].pitch=.30
+    "#);
+    tick(&mut game,[Controls::default(),fire],1);
+    check(&mut game,r#"
+        local s=state.combat.players[2]
+        assert(s.trace and (s.leftTrace or s.rightTrace))
+        assert(#world.find("sidearm-trace")<=4)
+    "#);
+    tick(&mut game,[Controls::default();2],12);
+    check(&mut game,"assert(#world.find('sidearm-trace')==0)");
+}

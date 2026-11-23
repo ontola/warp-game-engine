@@ -2,6 +2,9 @@
 -- animated wrist; its children keep the authored offsets under pitch and yaw.
 local sidearm={range=75}
 local util=require("kit/util")
+local launcherProp=require("launcher_prop")
+local growingProp=require("growing_gun_prop")
+local catalog=require("weapon_catalog")
 local v=vector.create
 local SCALE=.68
 local dark={color="#34414a",roughness=.74}
@@ -12,6 +15,12 @@ local streak={color="#ffd988",emissive=1.4,roughness=1}
 local cover={tag="city"}
 
 function sidearm.warm()
+	launcherProp.warm()
+	growingProp.warm()
+	for _,id in catalog.order do
+		local color=catalog.get(id).color
+		if color then world.warm("cube",{color=color,emissive=streak.emissive,roughness=streak.roughness}) end
+	end
 	for _,look in {dark,slide,trim} do world.warm("cube",look) end
 	world.warm("sphere",glow)
 	world.warm("cube",streak)
@@ -36,15 +45,17 @@ end
 
 function sidearm.remove(ctx)
 	if ctx.prop then world.remove(ctx.prop); ctx.prop=nil end
-	ctx.tip,ctx.turn=nil,nil
+	ctx.tip,ctx.turn,ctx.propWeapon,ctx.propSpec=nil,nil,nil,nil
 end
 
 function sidearm.clearFlash(ctx)
 	if ctx.flash then world.remove(ctx.flash); ctx.flash=nil end
 	if ctx.trace then world.remove(ctx.trace); ctx.trace=nil end
+	if ctx.leftTrace then world.remove(ctx.leftTrace); ctx.leftTrace=nil end
+	if ctx.rightTrace then world.remove(ctx.rightTrace); ctx.rightTrace=nil end
 end
 
-function sidearm.follow(ctx,avatar,seat,ray)
+function sidearm.follow(ctx,avatar,seat,ray,spec)
 	local wrist=avatar and seat.mode=="walk" and not seat.impact and humans.joint(avatar,"hand_r")
 	if not wrist then sidearm.remove(ctx); return end
 	local yaw=seat.yaw
@@ -56,28 +67,44 @@ function sidearm.follow(ctx,avatar,seat,ray)
 	local right=v(math.cos(heading),0,-math.sin(heading))
 	local up=vector.cross(dir,right)
 	local hand=wrist+dir*.048-up*.015
-	if not ctx.prop then ctx.prop=make(hand,rotation)
+	-- A hot-reloaded older seat already holding a pistol has no propWeapon yet.
+	local weapon=spec.id
+	local growing=spec.kind=="hitscan"
+	if ctx.prop and ((ctx.propWeapon or "pistol")~=weapon or (growing and ctx.propSpec~=spec)) then sidearm.remove(ctx) end
+	if not ctx.prop then
+		if growing then ctx.prop=growingProp.make(hand,rotation,spec)
+		elseif weapon=="launcher" then ctx.prop=launcherProp.make(hand,rotation)
+		else ctx.prop=make(hand,rotation) end
+		ctx.propWeapon,ctx.propSpec=weapon,if growing then spec else nil
 	else world.set(ctx.prop,{pos=hand,rot=rotation}) end
-	ctx.tip,ctx.turn=hand+(dir*.292+up*.084)*SCALE,rotation
+	if growing then ctx.tip=growingProp.tip(hand,dir,up,spec)
+	elseif weapon=="launcher" then ctx.tip=launcherProp.tip(hand,dir,up)
+	else ctx.tip=hand+(dir*.292+up*.084)*SCALE end
+	ctx.turn=rotation
 end
 
-local function fire(ctx,point)
+local function streakTo(tip,point,color)
+	local delta=point-tip
+	local length=vector.magnitude(delta)
+	if length<.15 then return nil end
+	local dir=delta/length
+	local trace=table.clone(streak)
+	if color then trace.color=color end
+	trace.pos=tip+delta*.5
+	trace.rot=v(-math.asin(math.clamp(dir.y,-1,1)),math.atan2(dir.x,dir.z),0)
+	trace.tag,trace.size,trace.solid="sidearm-trace",v(.025,.025,length),false
+	return world.spawn("cube",trace)
+end
+
+function sidearm.flash(ctx,point,color,left,right)
 	if not ctx.tip then return end
 	sidearm.clearFlash(ctx)
 	local o=table.clone(glow)
 	o.tag,o.pos,o.rot,o.size,o.solid="sidearm-flash",ctx.tip,ctx.turn,v(.108,.108,.22)*SCALE,false
 	ctx.flash=world.spawn("sphere",o)
-	if not point then return end
-	local delta=point-ctx.tip
-	local length=vector.magnitude(delta)
-	if length<.15 then return end
-	local dir=delta/length
-	-- A brief world-space streak is visible to both the shooter and other seats.
-	local trace=table.clone(streak)
-	trace.pos=ctx.tip+delta*.5
-	trace.rot=v(-math.asin(math.clamp(dir.y,-1,1)),math.atan2(dir.x,dir.z),0)
-	trace.tag,trace.size,trace.solid="sidearm-trace",v(.025,.025,length),false
-	ctx.trace=world.spawn("cube",trace)
+	ctx.trace=streakTo(ctx.tip,point,color)
+	if left and vector.magnitude(left-point)>.08 then ctx.leftTrace=streakTo(ctx.tip,left,color) end
+	if right and right~=left and vector.magnitude(right-point)>.08 then ctx.rightTrace=streakTo(ctx.tip,right,color) end
 end
 
 -- Both modes use the same seat camera, capsule and city visibility query.
@@ -135,25 +162,86 @@ function sidearm.sceneryHit(origin,ray,distance)
 	return world.raycast(origin,ray,distance,cover)
 end
 
-function sidearm.trigger(input)
-	local pressed=input.pressed
-	return pressed and (pressed.fire or pressed.south)
+function sidearm.trigger(input,automatic)
+	local pressed=input.pressed or {}
+	local held=input.held or {}
+	return pressed.fire or pressed.south or (automatic and (held.fire or held.south))
 end
 
 function sidearm.confirmHit(display,point)
 	display.hitPoint,display.hitFlash=point,.22
 end
 
-function sidearm.discharge(ctx,display,seat,input,point,origin,ray)
-	if not sidearm.trigger(input) or (seat.pistolCooldown or 0)>0 then return false end
-	if not point and ray then
-		local wall=world.raycast(origin,ray,sidearm.range,cover)
-		point=if wall then wall.point else origin+ray*sidearm.range
+-- Each player's magazines survive switching guns and live edits. The
+-- fixed game clock also completes a reload that ran while the gun was holstered.
+function sidearm.magazine(player,spec)
+	if spec.kind~="hitscan" then
+		player.ammo,player.magazine,player.reloadRemaining=nil,nil,0
+		return nil
 	end
-	display.shotFlash,seat.pistolCooldown=.10,.28
-	fire(ctx,point)
-	sound.play("arcade_pistol",{at=seat.pos,db=-7})
+	local now=game.time()
+	player.magazines=player.magazines or {}
+	local gun=player.magazines[spec.id]
+	if not gun then
+		gun={ammo=spec.magazine,capacity=spec.magazine,readyAt=0}
+		player.magazines[spec.id]=gun
+	end
+	if gun.capacity~=spec.magazine then
+		local spent=gun.capacity-gun.ammo
+		gun.capacity=spec.magazine
+		gun.ammo=if gun.reloadAt then 0 else math.clamp(gun.capacity-spent,0,gun.capacity)
+		if gun.ammo==0 and not gun.reloadAt then gun.reloadAt=now+spec.reload end
+	end
+	if gun.reloadAt and now+.000001>=gun.reloadAt then
+		gun.readyAt=math.max(gun.readyAt,gun.reloadAt)
+		gun.ammo,gun.reloadAt=gun.capacity,nil
+	end
+	player.ammo,player.magazine=gun.ammo,gun.capacity
+	player.reloadRemaining=if gun.reloadAt then math.max(0,gun.reloadAt-now) else 0
+	return gun
+end
+
+function sidearm.discharge(player,seat,spec,gun,dt)
+	local now=game.time()
+	if gun then
+		local tick=game.tick()
+		local continuous=spec.automatic and gun.lastTriggerTick==tick-1
+		gun.lastTriggerTick=tick
+		if gun.ammo<=0 or now+.000001<gun.readyAt then return false end
+		-- Carry fractional-tick cadence only while this trigger stays held.
+		gun.readyAt=(if continuous then math.max(gun.readyAt,now-dt) else now)+spec.interval
+		gun.ammo-=1
+		if gun.ammo==0 then gun.reloadAt=now+spec.reload end
+		player.ammo=gun.ammo
+		player.reloadRemaining=if gun.reloadAt then spec.reload else 0
+		sound.play("growing_guns_shot",{at=seat.pos,db=-12,damage=math.max(1,spec.damage),
+			accuracy=math.clamp(1-spec.spread/.06,0,1),velocity=spec.velocity})
+	else
+		if (seat.pistolCooldown or 0)>0 then return false end
+		seat.pistolCooldown=.28
+		sound.play("arcade_pistol",{at=seat.pos,db=-7})
+	end
+	player.shotFlash=.10/(spec.velocity or 1)
+	player.shotNumber=(player.shotNumber or 0)+1
 	return true
+end
+
+-- One deterministic spread sequence per seat and discharge, independent of
+-- the world's random generator, target iteration order and other players.
+function sidearm.pattern(axis,spread,seat,serial)
+	local bits=(seat*8191+serial*104729)%2147483647
+	local function sample()
+		bits=bits*48271%2147483647
+		return bits/2147483647
+	end
+	local right=vector.cross(axis,if math.abs(axis.y)<.98 then v(0,1,0) else v(1,0,0))
+	right=vector.normalize(right)
+	local up=vector.cross(right,axis)
+	return function()
+		local angle=sample()*2*math.pi
+		local radius=math.sqrt(sample())*math.tan(spread)
+		return vector.normalize(axis+(right*math.cos(angle)+up*math.sin(angle))*radius)
+	end
 end
 
 function sidearm.tickFlash(ctx,display,dt)
