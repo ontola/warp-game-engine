@@ -110,6 +110,32 @@ def add_inserts(meshes, views, accessors):
     box(0, 5, (-.60,.18,1.50), (-.55,.53,2.02))
     box(0, 5, (.54,.18,1.50), (.59,.53,2.02))
     box(0, 5, (-.60,.18,1.50), (.59,.53,1.55))
+    # Upholstery tapers into the original headrests. The source exterior has
+    # only the portions visible above the beltline of the closed body.
+    def pad(x, bottom_y, top_y, z, bottom_size, top_size, recline):
+        def ring(y, center_z, width, depth):
+            w,d=width*.5,depth*.5
+            bevel=min(.055,w*.22,d*.26)
+            return [(x+u,y,center_z+k) for u,k in (
+                (-w+bevel,-d),(w-bevel,-d),(w,-d+bevel),(w,d-bevel),
+                (w-bevel,d),(-w+bevel,d),(-w,d-bevel),(-w,-d+bevel))]
+        bottom=ring(bottom_y,z,*bottom_size)
+        top=ring(top_y,z+recline,*top_size)
+        for i in range(8):
+            j=(i+1)%8
+            face(0,8,bottom[j],bottom[i],top[i],top[j])
+        # Cover the octagonal crown with a centre strip and two side strips.
+        for a,b,c,d in ((0,1,4,5),(1,2,3,4),(5,6,7,0)):
+            face(0,8,top[d],top[c],top[b],top[a])
+
+    box(0,8,(-.71,-.055,-.80),(.70,-.005,1.26))
+    box(0,8,(-.105,-.005,-.73),(.10,.21,.28))
+    box(0,8,(-.65,.35,-.81),(.64,.53,-.55))
+    for x in (-.40,.40):
+        pad(x,.07,.265,-.055,(.41,.51),(.48,.54),-.01)
+        pad(x,.215,.68,.205,(.47,.16),(.42,.145),.11)
+    pad(0,.075,.30,.78,(1.18,.42),(1.25,.50),-.015)
+    pad(0,.24,.625,1.035,(1.26,.15),(1.17,.13),.08)
     # A dark underside for each lid and an inward-facing door card. These
     # move with the detached skin; mirrors, handles and windows are original.
     face(1,7,(-.58,.42,-1.87),(.57,.42,-1.87),(.62,.56,-1.02),(-.63,.56,-1.02))
@@ -204,6 +230,8 @@ def bake():
         doc = json.loads(path.read_bytes())
         doc["scenes"] = [{"nodes": list(range(len(NAMES)))}]
         doc["nodes"] = [{"name": name, "mesh": i, "extras": {"warpPart": i}} for i, name in enumerate(NAMES)]
+        doc["materials"] = doc["materials"][:8] + [{"name":"Cabin_Charcoal","pbrMetallicRoughness":{
+            "baseColorFactor":[.075,.083,.088,1],"roughnessFactor":.94,"metallicFactor":0}}]
         doc["meshes"], doc["accessors"], doc["bufferViews"] = meshes, accessors, views
         doc["buffers"] = [doc["buffers"][0], {"uri":"toyama-inserts.bin","byteLength":len(inserts)}]
         yield path, (json.dumps(doc, separators=(",", ":"))+"\n").encode()
