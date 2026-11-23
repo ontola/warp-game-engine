@@ -81,6 +81,14 @@ fn hat(value: f64) -> u32 {
     held
 }
 
+/// Chrome and WebView on Android number every pad in the standard order,
+/// also the ones they don't call "standard" (an 8BitDo Ultimate: A B work,
+/// but the macOS 8BitDo layout read Y and Start from LB and R3).
+fn android() -> bool {
+    thread_local! { static ON: bool = web_sys::window().and_then(|w| w.navigator().user_agent().ok()).is_some_and(|ua| ua.contains("Android")); }
+    ON.with(|on| *on)
+}
+
 /// Every connected pad, now: standard ones as the browser maps them,
 /// others through [`layout`].
 pub fn read() -> Vec<Reading> {
@@ -91,7 +99,7 @@ pub fn read() -> Vec<Reading> {
         let value = |i: u32| button(i).map_or(0.0, |b| b.value() as f32);
         let axes = p.axes();
         let axis = |i: u32| axes.get(i).as_f64().unwrap_or(0.0) as f32;
-        if p.mapping() == web_sys::GamepadMappingType::Standard {
+        if p.mapping() == web_sys::GamepadMappingType::Standard || android() {
             let mut held = 0;
             for (i, b) in BUTTONS.iter().enumerate() { if down(i as u32) { held |= b; } }
             return Reading { index: p.index(), held, sticks: [axis(0), -axis(1), axis(2), -axis(3)], triggers: [value(6), value(7)] };
