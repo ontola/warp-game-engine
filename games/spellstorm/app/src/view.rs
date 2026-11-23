@@ -254,7 +254,9 @@ impl View {
         // Every lamp shadowed, every spell light lit (checked on an RTX 5070
         // Ti, 2026-11-09: chapel frame 5.94 -> 5.54 ms). KERN_CLUSTERED_LIGHTS=0
         // goes back to the 32 nearest lights.
-        scene.graphics.clustered_lights = true;
+        // On a phone (live::lite) the 32 nearest lights, unshadowed: every
+        // lamp's shadow cost the Tab S9+ most of its shading.
+        scene.graphics.clustered_lights = !crate::live::lite();
         // Smoke hides the spells behind it (Joep: lights showed through clouds).
         scene.graphics.fx_over_sprites = true;
         scene.sky = Some((4, 2, vec![[0.0, 0.0, 0.0, 1.0]; 8]));
@@ -1044,7 +1046,9 @@ fn lighting(w: &World, ambient: Vec3) -> Lighting {
     // The moon: rotation_degrees (-62, 28, 0), shining down its -z.
     let basis = Mat3::from_euler(glam::EulerRot::YXZ, 28f32.to_radians(), -62f32.to_radians(), 0.0);
     let sun_dir = basis * Vec3::Z;
-    let ev = (1.0 / (1.2 * 1.5f32)).log2() + 0.43;
+    // A phone (no GI, bloom or lamp shadows there) looked too dark (Joep,
+    // Tab S9+): one stop brighter.
+    let ev = (1.0 / (1.2 * 1.5f32)).log2() + 0.43 - if crate::live::lite() { 1.0 } else { 0.0 };
     // The global fog (density 0.004) and the biome's ground mist (a fog
     // volume of density `mist`, thick at the ankles, gone by the waist, in
     // patches) as one even medium: about the mist's optical depth along a
