@@ -6,3 +6,6 @@ __pycache__/
 gpu-out/
 engine/webxr/node_modules/
 games/*/samples/
+
+# Store clips are rendered from preview.json, never committed.
+**/build/preview/

@@ -29,3 +29,5 @@ Five cuts of real play, captured headless (software renderer, `warp script`) at 
 Encoded with libx264 crf 24, preset slow, yuv420p, limited range, +faststart, no audio; 150 frames, 150 distinct. Poster: A frame 20.
 preview.mp4 sha256 4211bc1e03b8dc9d5661376403c7cfb27d88e120fc99369d2369e5fea24495c8
 preview.jpg sha256 4f79a535563449d5db17bdb8311b22636cc1c36273b18750c313f6780d04e1eb
+
+2026-11-24: the clip and its poster are no longer kept in this repo (they are live in the store, uploaded through the API). To remake them, turn the capture above into a `preview.json` recipe next to gamenight.json and run `gamenight-publish.py clip --publish` (see the guide).
