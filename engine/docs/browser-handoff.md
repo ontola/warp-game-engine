@@ -110,8 +110,10 @@ forwards neither to a browser host yet.
    `transparency_sampled_textures`: the glass pass sees the scene group's
    textures plus six of its own. Fit it in 16 (share or drop one binding)
    so glass shows in normal browsers.
-6. **Lua errors.** A Lua error now ends the game (`__cxa_throw` panics).
-   Real exceptions need libc++abi built with `-fwasm-exceptions`.
+6. **Luau syntax errors.** Lua runtime errors now unwind to their pcall
+   (setjmp/longjmp as WebAssembly exceptions, see browser.md); a syntax
+   error, a C++ throw in Luau's compiler, still stops the game
+   (`__cxa_throw` panics). Fix: a libc++abi built with `-fwasm-exceptions`.
 7. **Saves.** `warp::storage` is in memory on wasm; move it to IndexedDB so
    saves and settings survive a reload.
 8. **Sound off the main thread.** WebAudio runs on the page thread and

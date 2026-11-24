@@ -146,18 +146,30 @@ def wasi_sysroot():
 
 
 def luau_env(env):
-    """Compile Luau against wasi-libc and libc++, without exception support
-    (script/src/web.rs stops the game on a thrown error), and hand the linker
-    one libstdc++.a (what mlua-sys asks for) holding libc++, libc++abi and libc."""
+    """Compile Luau against wasi-libc and libc++, without C++ exception
+    support. Lua errors use setjmp/longjmp instead (LUA_USE_LONGJMP), which
+    clang lowers to WebAssembly exception handling (-wasm-enable-sjlj), so a
+    Lua error unwinds to its pcall and the game carries on as natively; the
+    runtime for that is script/web (setjmp.h, sjlj.c, longjmp.s). Only a
+    C++ exception (a Luau compile error) still stops the game
+    (script/src/web.rs). Hands the linker one libstdc++.a (what mlua-sys
+    asks for) holding libc++, libc++abi, libc and that runtime."""
     triple, inc, lib, cxxlib, cxxinc = wasi_sysroot()
     cxx = ROOT / 'target/web-cxx'
     cxx.mkdir(parents=True, exist_ok=True)
     ar = shutil.which('llvm-ar') or next((shutil.which(f'llvm-ar-{v}') for v in range(30, 14, -1) if shutil.which(f'llvm-ar-{v}')), None)
     if not ar: sys.exit('llvm-ar is needed to combine libc++, libc++abi and libc')
-    script = 'CREATE libstdc++.a\n' + ''.join(f'ADDLIB {(lib if name == "libc.a" else cxxlib) / name}\n' for name in ('libc++.a', 'libc++abi.a', 'libc.a')) + 'SAVE\nEND\n'
+    clang = os.environ.get('CC_wasm32_unknown_unknown') or shutil.which('clang')
+    if not clang: sys.exit('clang is needed for wasm32')
+    sjlj = ROOT / 'engine/crates/script/web'
+    subprocess.run([clang, f'--target={triple}', '-O2', f'-isystem{inc}', '-c', sjlj / 'sjlj.c', '-o', cxx / 'sjlj.o'], check=True)
+    subprocess.run([clang, f'--target={triple}', '-mexception-handling', '-c', sjlj / 'longjmp.s', '-o', cxx / 'longjmp.o'], check=True)
+    # The runtime first, so a newer wasi-libc's own setjmp does not win half of it.
+    script = ('CREATE libstdc++.a\n' + f'ADDMOD {cxx / "sjlj.o"}\nADDMOD {cxx / "longjmp.o"}\n' + ''.join(f'ADDLIB {(lib if name == "libc.a" else cxxlib) / name}\n' for name in ('libc++.a', 'libc++abi.a', 'libc.a'))
+              + 'SAVE\nEND\n')
     (cxx / 'libstdc++.a').unlink(missing_ok=True)
     subprocess.run([ar, '-M'], input=script, text=True, cwd=cxx, check=True)
-    env['LUAU_CXXFLAGS'] = f'--target={triple} ' + ''.join(f'-isystem {d} ' for d in cxxinc) + f'-isystem {inc} -fexceptions -fignore-exceptions'
+    env['LUAU_CXXFLAGS'] = f'--target={triple} ' + ''.join(f'-isystem {d} ' for d in cxxinc) + f'-isystem {inc} -I {sjlj} -DLUA_USE_LONGJMP=1 -mllvm -wasm-enable-sjlj -fexceptions -fignore-exceptions'
     env['RUSTFLAGS'] += f' -L {cxx}'
 
 

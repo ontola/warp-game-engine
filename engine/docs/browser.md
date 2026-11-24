@@ -177,12 +177,17 @@ How the build differs from native:
   `lib/wasm32-wasip1/noeh`; the script finds it there). On macOS put
   Homebrew's LLVM first on `PATH` (`/opt/homebrew/opt/llvm/bin`, for clang
   and llvm-ar): Apple's clang has no wasm target.
-- No C++ exceptions: Luau is compiled with `-fignore-exceptions` and
-  `script/src/web.rs` defines `__cxa_throw`, which stops the game with the
-  error's message. A Lua error (`error()`, the step limit, a syntax error)
-  therefore ends a game in a browser instead of being caught; a game that
-  runs cleanly never throws. Real exceptions need a libc++abi built with
-  `-fwasm-exceptions` (wasi-sdk does not ship one).
+- No C++ exceptions, but Lua errors work: Luau is built with
+  `LUA_USE_LONGJMP=1` and `-mllvm -wasm-enable-sjlj`, so clang turns its
+  setjmp/longjmp into WebAssembly exception handling (Chrome 95, Firefox
+  100, Safari 15.2 and newer). A Lua error (`error()`, a nil index, the
+  step limit) unwinds to its pcall and the game shows it as natively, with
+  its hooks off until the file changes, and Back still returns to the
+  room. wasi-libc before 2024 has no setjmp, so `script/web` brings
+  `setjmp.h` and the runtime (`sjlj.c`, `longjmp.s`; both LLVM 18 and
+  LLVM 19+ ABIs), linked first in `libstdc++.a`. Only a real C++ throw is
+  left, from Luau's compiler (a syntax error): `script/src/web.rs`
+  defines `__cxa_throw`, which stops the game with the error's message.
 - `script::web::init` runs the C++ static constructors once at start; it
   must come first in `main` (otherwise the linker runs them on every call
   into the module and the page hangs). The same file defines the five WASI
