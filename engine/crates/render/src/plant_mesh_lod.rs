@@ -6,7 +6,7 @@
 //! The expanded plant is far too big to draw (a 16 m spruce is ~30M
 //! triangles in ~5000 placements of a handful of parts), and geometric
 //! simplification cannot merge separate sprays (a spruce stays ~176k
-//! triangles at any cut). So every foliage placement becomes one quad: its
+//! triangles at any cut). Each foliage placement becomes one or two quads: its
 //! part baked once into a card (an alpha silhouette in one cell of the
 //! plant's atlas), placed where the part was. Wood keeps a geometric cut of
 //! its own cluster DAG. The merged mesh gets an alpha-card cluster DAG, so
@@ -68,20 +68,72 @@ fn foliage(material: &Material) -> bool {
     material.flags & (ALPHA_TEST | THIN_FOLIAGE) != 0
 }
 
-/// A part's card: its plane (x across, y along +Y root to tip, n normal, in
-/// part space), its extent in that plane and its atlas cell.
+/// Fit each card to the part itself so a tilted leaf projects face-on. A
+/// volumetric spray also needs a side silhouette when viewed edge-on.
 #[derive(Clone, Copy)]
-struct Card { x: Vec3, n: Vec3, lo: Vec2, hi: Vec2, depth: f32, uv0: Vec2, uv1: Vec2 }
+struct Plane { x: Vec3, y: Vec3 }
 
-/// The part's silhouette in its own plane, rasterized into `cell` of `atlas`.
-fn bake_card(vertices: &[Vertex], indices: &[u32], atlas: &mut image::RgbaImage, cell: (u32, u32, u32)) -> Card {
-    // +Y runs root to tip (PartGeometry); the wider horizontal axis spans the card.
-    let (mut lo3, mut hi3) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
-    for v in vertices { lo3 = lo3.min(Vec3::from(v.pos)); hi3 = hi3.max(Vec3::from(v.pos)); }
-    let (x, n) = if hi3.x - lo3.x >= hi3.z - lo3.z { (Vec3::X, Vec3::Z) } else { (Vec3::Z, Vec3::X) };
-    let plane = |p: Vec3| Vec2::new(p.dot(x), p.y);
+impl Plane {
+    fn normal(self) -> Vec3 { self.x.cross(self.y) }
+    fn project(self, p: Vec3) -> Vec2 { Vec2::new(p.dot(self.x), p.dot(self.y)) }
+}
+
+/// The principal direction of a positive semidefinite covariance matrix.
+/// Start on its largest column so we do not miss an axis-aligned part.
+fn principal(c: Mat3) -> Vec3 {
+    let mut v = c.y_axis;
+    for col in [c.x_axis, c.z_axis] {
+        if col.length_squared() > v.length_squared() { v = col; }
+    }
+    v = v.normalize_or_zero();
+    for _ in 0..10 { v = (c * v).normalize_or_zero(); }
+    v
+}
+
+fn planes(vertices: &[Vertex], indices: &[u32], allow_side: bool) -> Vec<Plane> {
+    let triangle = |ids: &[u32]| [0, 1, 2].map(|k| Vec3::from(vertices[ids[k] as usize].pos));
+    let area = |[a, b, c]: [Vec3; 3]| (b - a).cross(c - a).length();
+    let mut sum = Vec3::ZERO;
+    let mut weight = 0.0;
+    for ids in indices.chunks_exact(3) {
+        let pts = triangle(ids);
+        let w = area(pts);
+        sum += (pts[0] + pts[1] + pts[2]) * w;
+        weight += w;
+    }
+    if weight == 0.0 { return vec![Plane { x: Vec3::X, y: Vec3::Y }]; }
+    let center = sum / (3.0 * weight);
+    let outer = |p: Vec3| Mat3::from_cols(p * p.x, p * p.y, p * p.z);
+    let mut cov = Mat3::ZERO;
+    for ids in indices.chunks_exact(3) {
+        let pts = triangle(ids);
+        let [a, b, c] = pts.map(|p| p - center);
+        // Integral of p pᵀ over a triangle, common denominator omitted.
+        cov += (outer(a) + outer(b) + outer(c) + outer(a + b + c)) * area(pts);
+    }
+    cov *= 1.0 / weight;
+    let y = principal(cov);
+    let projected = Mat3::IDENTITY - outer(y);
+    let x = projected * principal(projected * cov * projected);
+    let x = x.try_normalize().unwrap_or_else(|| y.any_orthonormal_vector());
+    let front = Plane { x, y };
+    let n = front.normal();
+    // RMS depth at least a third of the smaller in-plane radius. A tilted,
+    // slightly cupped leaf remains one card; a round spray gets two.
+    if allow_side && 9.0 * n.dot(cov * n) > x.dot(cov * x) {
+        vec![front, Plane { x: n, y }]
+    } else {
+        vec![front]
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Card { plane: Plane, lo: Vec2, hi: Vec2, depth: f32, uv0: Vec2, uv1: Vec2 }
+
+/// Bake one orthographic silhouette and its local-space depth.
+fn bake_card(vertices: &[Vertex], indices: &[u32], atlas: &mut image::RgbaImage, cell: (u32, u32, u32), plane: Plane) -> Card {
     let (mut lo, mut hi) = (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY));
-    for v in vertices { lo = lo.min(plane(Vec3::from(v.pos))); hi = hi.max(plane(Vec3::from(v.pos))); }
+    for v in vertices { lo = lo.min(plane.project(Vec3::from(v.pos))); hi = hi.max(plane.project(Vec3::from(v.pos))); }
     let size = (hi - lo).max(Vec2::splat(1e-4));
     // Fit the card into the square cell, keeping its aspect.
     let (cx, cy, side) = cell;
@@ -97,7 +149,7 @@ fn bake_card(vertices: &[Vertex], indices: &[u32], atlas: &mut image::RgbaImage,
     let needles = area < NEEDLE_THINNESS * edge2;
     let mut cover = vec![0u16; (w * h) as usize];
     for t in indices.chunks_exact(3) {
-        let p: [Vec2; 3] = std::array::from_fn(|k| (plane(Vec3::from(vertices[t[k] as usize].pos)) - lo) / size * Vec2::new(w as f32, h as f32) * SS as f32);
+        let p: [Vec2; 3] = std::array::from_fn(|k| (plane.project(Vec3::from(vertices[t[k] as usize].pos)) - lo) / size * Vec2::new(w as f32, h as f32) * SS as f32);
         let (bmin, bmax) = (p[0].min(p[1]).min(p[2]).floor().max(Vec2::ZERO), p[0].max(p[1]).max(p[2]).ceil().min(Vec2::new((w * SS) as f32, (h * SS) as f32)));
         let edge = |a: Vec2, b: Vec2, q: Vec2| (b - a).perp_dot(q - a);
         let area = edge(p[0], p[1], p[2]);
@@ -127,9 +179,9 @@ fn bake_card(vertices: &[Vertex], indices: &[u32], atlas: &mut image::RgbaImage,
             atlas.put_pixel(cx + px, cy + (h - 1 - py), image::Rgba([v, v, v, (c * 255.0) as u8]));
         }
     }
-    let depth = vertices.iter().map(|v| Vec3::from(v.pos).dot(n)).sum::<f32>() / vertices.len().max(1) as f32;
-    let at = ATLAS_SIZE as f32;
-    Card { x, n, lo, hi, depth, uv0: Vec2::new(cx as f32, cy as f32) / at, uv1: Vec2::new((cx + w) as f32, (cy + h) as f32) / at }
+    let depth = vertices.iter().map(|v| Vec3::from(v.pos).dot(plane.normal())).sum::<f32>() / vertices.len().max(1) as f32;
+    let at = atlas.width() as f32;
+    Card { plane, lo, hi, depth, uv0: Vec2::new(cx as f32, cy as f32) / at, uv1: Vec2::new((cx + w) as f32, (cy + h) as f32) / at }
 }
 
 fn part_mesh(vertices: &[Vertex], indices: &[u32]) -> ClusterMesh {
@@ -139,6 +191,14 @@ fn part_mesh(vertices: &[Vertex], indices: &[u32]) -> ClusterMesh {
 impl PlantCards {
     /// `assembly` at rest: foliage as cards, wood cut at `wood_error_m` metres.
     pub fn cook(assembly: &Assembly, wood_error_m: f32) -> Result<Self, String> {
+        Self::cook_with_atlas(assembly, wood_error_m, ATLAS_SIZE)
+    }
+
+    /// The same bake for a smaller transfer or GPU texture budget.
+    pub fn cook_with_atlas(assembly: &Assembly, wood_error_m: f32, atlas_size: u32) -> Result<Self, String> {
+        if !atlas_size.is_power_of_two() || !(64..=ATLAS_SIZE).contains(&atlas_size) {
+            return Err("plant cards: atlas side must be a power of two from 64 to 2048".into());
+        }
         if !(wood_error_m > 0.0) { return Err("plant cards: wood error must be positive".into()); }
         let branches = assembly.branch_transforms()?;
         let wood = assembly.materials.clone();
@@ -157,14 +217,27 @@ impl PlantCards {
             seen.dedup();
             seen
         };
-        let columns = (leafy.len() as f32).sqrt().ceil().max(1.0) as u32;
-        let side = ATLAS_SIZE / columns;
-        let mut atlas = image::RgbaImage::from_pixel(ATLAS_SIZE, ATLAS_SIZE, image::Rgba([255, 255, 255, 0]));
-        let mut cards = HashMap::new();
-        for (k, &(part, material)) in leafy.iter().enumerate() {
+        let mut layouts = Vec::with_capacity(leafy.len());
+        for &(part, material) in &leafy {
             let g = assembly.parts.get(part as usize).ok_or("plant cards: part out of range")?;
-            let cell = ((k as u32 % columns) * side, (k as u32 / columns) * side, side);
-            cards.insert((part, material), bake_card(&g.vertices, &g.indices, &mut atlas, cell));
+            let m = assembly.materials.get(material as usize).ok_or("plant cards: material out of range")?;
+            layouts.push(planes(&g.vertices, &g.indices, foliage(m)));
+        }
+        let count: usize = layouts.iter().map(Vec::len).sum();
+        let columns = (count as f32).sqrt().ceil().max(1.0) as u32;
+        let side = atlas_size / columns;
+        if side == 0 { return Err("plant cards: too many foliage shapes for atlas".into()); }
+        let mut atlas = image::RgbaImage::from_pixel(atlas_size, atlas_size, image::Rgba([255, 255, 255, 0]));
+        let mut cards = HashMap::new();
+        let mut slot = 0;
+        for (&key, layout) in leafy.iter().zip(layouts) {
+            let g = &assembly.parts[key.0 as usize];
+            let projections = layout.into_iter().map(|plane| {
+                let cell = ((slot % columns) * side, (slot / columns) * side, side);
+                slot += 1;
+                bake_card(&g.vertices, &g.indices, &mut atlas, cell, plane)
+            }).collect::<Vec<_>>();
+            cards.insert(key, projections);
         }
         let mut card_materials: Vec<u32> = leafy.iter().map(|&(_, m)| m).collect();
         card_materials.sort_unstable();
@@ -177,17 +250,19 @@ impl PlantCards {
             let material = assembly.materials.get(instance.material as usize).ok_or("plant cards: material out of range")?;
             let transform = *branches.get(instance.branch as usize).ok_or("plant cards: branch out of range")? * instance.rest;
             let normals = Mat3::from_mat4(transform).inverse().transpose();
-            if let Some(card) = cards.get(&(instance.part, instance.material)) {
+            if let Some(projections) = cards.get(&(instance.part, instance.material)) {
                 let (vertices, indices) = &mut merged[card_index(instance.material) as usize];
-                let base = vertices.len() as u32;
-                let normal = (normals * card.n).normalize_or_zero();
-                for (cx, cy, u, v) in [(card.lo.x, card.lo.y, card.uv0.x, card.uv1.y), (card.hi.x, card.lo.y, card.uv1.x, card.uv1.y),
-                    (card.hi.x, card.hi.y, card.uv1.x, card.uv0.y), (card.lo.x, card.hi.y, card.uv0.x, card.uv0.y)] {
-                    let local = card.x * cx + Vec3::Y * cy + card.n * card.depth;
-                    vertices.push(Vertex { pos: transform.transform_point3(local).to_array(), normal: normal.to_array(), uv: [u, v] });
+                for card in projections {
+                    let base = vertices.len() as u32;
+                    let normal = (normals * card.plane.normal()).normalize_or_zero();
+                    for (cx, cy, u, v) in [(card.lo.x, card.lo.y, card.uv0.x, card.uv1.y), (card.hi.x, card.lo.y, card.uv1.x, card.uv1.y),
+                        (card.hi.x, card.hi.y, card.uv1.x, card.uv0.y), (card.lo.x, card.hi.y, card.uv0.x, card.uv0.y)] {
+                        let local = card.plane.x * cx + card.plane.y * cy + card.plane.normal() * card.depth;
+                        vertices.push(Vertex { pos: transform.transform_point3(local).to_array(), normal: normal.to_array(), uv: [u, v] });
+                    }
+                    indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+                    quads += 1;
                 }
-                indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
-                quads += 1;
                 continue;
             }
             // Wood: the part DAG's cut at the error, welded per placement.
@@ -280,6 +355,36 @@ mod tests {
         sprays_per_branch: 84, spray_scale: 1.15, spray_axial_bias: 0.40, foliage_colour: [0.065, 0.135, 0.045], wood_colour: [0.16, 0.105, 0.062],
         protected_trunk_height: 5.5,
     };
+
+    #[test]
+    fn fitted_planes_follow_the_surface_after_rotation_and_translation() {
+        let rotation = glam::Quat::from_euler(glam::EulerRot::XYZ, 0.8, -0.4, 0.7);
+        let points = [[-0.4, 0.0, 0.0], [0.4, 0.0, 0.0], [0.3, 1.0, 0.03], [-0.3, 1.0, 0.0]];
+        let vertices: Vec<_> = points.into_iter().map(|p| Vertex {
+            pos: (rotation * Vec3::from(p) + Vec3::new(2.0, -1.0, 0.5)).to_array(),
+            normal: [0.0; 3], uv: [0.0; 2],
+        }).collect();
+        let layout = planes(&vertices, &[0, 1, 2, 0, 2, 3], true);
+        assert_eq!(layout.len(), 1, "a cupped leaf should stay cheap");
+        assert!(layout[0].normal().dot(rotation * Vec3::Z).abs() > 0.99);
+    }
+
+    #[test]
+    fn a_volumetric_spray_has_two_orthogonal_silhouettes() {
+        let rotation = glam::Quat::from_rotation_z(0.68);
+        let points = [[-0.9, 0.0, 0.0], [0.9, 0.0, 0.0], [0.0, 2.0, 0.0],
+                      [0.0, 0.0, -0.7], [0.0, 0.0, 0.7], [0.0, 2.0, 0.0]];
+        let vertices: Vec<_> = points.into_iter().map(|p| Vertex {
+            pos: (rotation * Vec3::from(p)).to_array(), normal: [0.0; 3], uv: [0.0; 2],
+        }).collect();
+        let indices = [0, 1, 2, 3, 4, 5];
+        let layout = planes(&vertices, &indices, true);
+        assert_eq!(layout.len(), 2);
+        assert!(layout[0].normal().dot(layout[1].normal()).abs() < 1e-5);
+        assert!(layout[0].y.dot(rotation * Vec3::Y).abs() > 0.99);
+        assert_eq!(planes(&vertices, &indices, false).len(), 1, "a small woody attachment stays one card");
+        assert_eq!(planes(&vertices, &[0, 0, 0], true).len(), 1);
+    }
 
     #[test]
     fn a_spruce_becomes_a_few_thousand_cards() {
