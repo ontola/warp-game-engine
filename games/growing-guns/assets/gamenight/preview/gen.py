@@ -1,4 +1,4 @@
-"""Growing Guns store preview v3 (2026-11-24): five seconds, six maps, all moving.
+"""Growing Guns store preview v4 (2026-11-24): five seconds, six maps, all moving.
 
 Joep on v1: "mist de gave actie en gun variatie" (minigun, big explosions).
 On v2: the player didn't move, only one map, wants a bit of blackout, and
@@ -32,7 +32,7 @@ def gun(cards):
     return cmds
 
 
-def cut(name, setup, mv, mag=None, look=None, hold=None, jump=(), lead=110, every_cmd=None, refresh=None, every=8):
+def cut(name, setup, mv, mag=None, look=None, hold=None, jump=(), lead=110, every_cmd=None, refresh=None, every=4):
     """One 25-frame cut. `mag` refills ammo to the gun's real magazine (so the
     HUD shows a normal count); `jump` lists frames that press A."""
     steps.append({"cmd": setup + ["health 0 100"], "ticks": lead})
@@ -42,13 +42,14 @@ def cut(name, setup, mv, mag=None, look=None, hold=None, jump=(), lead=110, ever
         buttons = list(hold or []) + (["SOUTH"] if i in jump else [])
         if buttons: s["hold"] = buttons
         cmds = list((every_cmd or {}).get(i, []))
+        cmds += ["health 0 100"]
         if i % every == 0:
-            cmds += ["health 0 100"] + ([f"ammo 0 {mag}"] if mag else []) + list(refresh or [])
+            cmds += ([f"ammo 0 {mag}"] if mag else []) + list(refresh or TOUGH)
         if cmds: s["cmd"] = cmds
         steps.append(s)
 
 
-def face_off(arena, me, at, bots, hp=100):
+def face_off(arena, me, at, bots, hp=1000):
     c = [f"arena {arena}", f"teleport 0 {me[0]} {me[1]} {me[2]}", f"aim 0 {at[0]} {at[1]} {at[2]}"]
     for i, b in enumerate(bots, start=1):
         c += [f"teleport {i} {b[0]} {b[1]} {b[2]}", f"health {i} {hp}"]
@@ -56,27 +57,27 @@ def face_off(arena, me, at, bots, hp=100):
 
 
 FIRE = ["RIGHT_TRIGGER"]
-TOUGH = [f"health {i} 1000" for i in (1, 2, 3)] + ["bots resume"]  # the minigun would end the round
+TOUGH = [f"health {i} 1000" for i in (1, 2, 3)]  # the minigun would end the round
 
-# a: minigun strafing left past three bots some 20 m off (point-blank looked odd), the stadium behind.
-cut("a", gun(["minigun", "big_mag"]) + face_off(85, (10, 2, 18), (0, 2.2, -2), [(-4, 2, -2), (2, 2, -4), (-1, 2, -7)], hp=1000),
-    mv=[-0.8, 0.2], mag=120, look=[-0.002, 0.0], hold=FIRE, refresh=TOUGH, every=4)
+# a: minigun strafing left past three bots about 10 m off (point-blank looked odd), the stadium behind.
+cut("a", gun(["minigun", "big_mag"]) + face_off(85, (14, 1.2, -1), (0, 1.8, -6), [(4, 1.2, -3), (5, 1.2, -7), (2, 1.2, -5)], hp=1000),
+    mv=[-0.8, 0.2], mag=120, hold=FIRE, refresh=TOUGH, every=4)
 # b: bazooka into a tight group while backing off to the side.
-cut("b", gun(["bazooka"]) + face_off(12, (12, 2, 14), (0, 2, 0), [(-1, 2, 1), (1.5, 2, -1), (0, 2, 2)]),
+cut("b", ["bots pause"] + gun(["bazooka"]) + face_off(12, (12, 2, 14), (0, 2, 0), [(-1, 2, 1), (1.5, 2, -1), (0, 2, 2)]),
     mv=[0.6, -0.3], hold=FIRE, lead=140)
 # c: a big blast carves the masonry while running sideways (no gun change).
-cut("c", face_off(31, (-16, 2, 16), (0, 3, 0), [(1, 2, -1), (-2, 2, -4), (3, 2, 2)]),
-    mv=[0.8, 0.3], look=[0.002, 0.0], lead=30, every_cmd={3: ["blast 0 3 0 8 200", "boom 0 2 0 14 120"]})
+cut("c", ["bots pause"] + face_off(31, (-12, 1.2, 6), (-12, 2, -12), [(-15, 1.2, -8), (-9, 1.2, -9), (-13, 1.2, -5)]),
+    mv=[0.5, 0.2], look=[0.0015, 0.0], lead=30, every_cmd={3: ["blast -12 2.5 -12 6 200", "boom -12 2 -9 8 120"]})
 # d: shotgun with an extra barrel, charging and jumping at the bots.
-cut("d", gun(["shotgun", "extra_barrel"]) + face_off(47, (-8, 2, 16), (0, 2, 0), [(-2, 2, 2), (3, 2, -2), (6, 2, 4)]),
-    mv=[0.2, 1.0], look=[0.003, 0.0], hold=FIRE, jump=range(6, 10))
+cut("d", ["bots pause"] + gun(["shotgun", "extra_barrel"]) + face_off(47, (-15, 1.2, -7), (0, 2, -5), [(-7, 1.2, -6), (-6, 1.2, -9), (-8, 1.2, -4)]),
+    mv=[0.2, 1.0], look=[0.001, 0.0], hold=FIRE, jump=range(6, 10))
 # e: minigun with explosive rounds sweeping past the crowd, booms along the row.
-cut("e", ["bots pause"] + gun(["minigun", "explosive", "big_mag"]) + face_off(63, (0, 2, -14), (0, 3, 0), [(-2, 2, -2), (2, 2, -4), (0, 2, -6)]),
-    mv=[0.7, 0.4], mag=120, look=[0.004, 0.0], hold=FIRE, every=1, every_cmd={4: ["boom -3 1.5 -3 9"], 14: ["boom 2 1.5 -5 11"]})
-# f: blackout, the next round starts dark: flashlights and muzzle flashes only.
+cut("e", ["bots pause"] + gun(["minigun", "explosive", "big_mag"]) + face_off(63, (13, 3.1, -10), (4, 2.2, 0), [(8, 3.4, 0), (4, 2, 0), (0, 2, 0)]), mv=None,
+    mag=120, look=[0.004, 0.0], hold=FIRE, every=1, every_cmd={4: ["boom 6 1 -4 6"], 14: ["boom -2 1 -4 8"]})
+# f: blackout. The modifier takes hold at a round start, so the round's own arena (seed 1486624112 here, scanned) is used.
 cut("f", ["bots resume", "modifier blackout", "round", "cage"] + gun(["minigun", "big_mag"])
-    + [f"teleport 0 6 2 10", "aim 0 0 2 0"] + [f"teleport {i} {x} 2 {z}" for i, (x, z) in enumerate([(-2, 1), (2, -1), (0, -3)], start=1)],
-    mv=[-0.5, 0.6], mag=120, look=[-0.003, 0.0], hold=FIRE, lead=150, refresh=TOUGH, every=4)
+    + ["teleport 0 2 1.2 13", "aim 0 -3 1.5 -2"] + [f"teleport {i} {x} 1.2 {z}" for i, (x, z) in enumerate([(-2, 1), (2, -1), (0, -3)], start=1)],
+    mv=[0.15, 0.6], mag=120, look=[0.002, 0.0], hold=FIRE, lead=150, refresh=TOUGH, every=4)
 
 steps.append({"state": "end.json"})
 json.dump({"size": [1920, 1080], "steps": steps}, open(OUT, "w"))
