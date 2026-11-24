@@ -10,7 +10,7 @@
 // to keep the sender's IP address.
 (() => {
   // The project's DSN. Empty: nothing is sent.
-  const DSN = '';
+  const DSN = 'https://d2f7ad1543dc8d42a8100168640f3f0e@o1378995.ingest.us.sentry.io/4512486860718080';
   const MAX = 5, seen = new Set();
   let sent = 0;
   const dsn = /^https:\/\/([0-9a-f]+)@([^/]+)\/(\d+)$/.exec(DSN);

@@ -258,8 +258,8 @@ and phones. The native Android host still loads its native and Luau games.
 `lobbies/game-room/examples/browser/error-report.js` sends the browser
 host's errors to Sentry, without the Sentry SDK: one envelope POST
 (`text/plain`, no CORS preflight) per error, each message once, at most
-five per page load. Its `DSN` constant is the project's key; empty sends
-nothing. Kinds (the `kind` tag): `crash` (an engine panic, via
+five per page load. Its `DSN` constant is the key of Sentry project
+`ontola/splitscreen-browser-host` (ontola.sentry.io); empty sends nothing. Kinds (the `kind` tag): `crash` (an engine panic, via
 `window.warpCrash`), `gpu-problem` (a GPU internal error, via
 `window.warpGpuProblem`), `gpu-error` (the first other GPU error) and
 `device-lost` (both from `app::web::report`), `start-failed`, `page-error`
