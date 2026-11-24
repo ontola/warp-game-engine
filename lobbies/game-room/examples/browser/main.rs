@@ -279,7 +279,8 @@ pub(crate) mod page {
     /// it wait at the back.
     fn next_game() {
         let first = with(|h| {
-            let players = h.players;
+            // Nobody here yet: pick as for one, so start() fetches it ahead.
+            let players = h.players.max(1);
             let fits: Vec<bool> = h.party["playlist"]["entries"].as_array()?.iter().map(|e| e["game"].as_str().is_some_and(|g| fits(&h.party, g, players))).collect();
             let at = fits.iter().position(|f| *f);
             let entries = h.party["playlist"]["entries"].as_array_mut()?;
