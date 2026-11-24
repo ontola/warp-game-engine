@@ -261,6 +261,14 @@ impl Lobby {
         }
     }
 
+    /// Play next with a game on: it closes, and the TV shows the next game
+    /// at once (loading, if it is not ready yet) while the host switches.
+    fn close_current(&mut self) {
+        let Some(current) = self.host.current_game() else { return };
+        self.host.quitting = Some((get(&current, "id", ""), self.time + 15.0));
+        self.screens_dirty = true;
+    }
+
     /// Only one player is left, on a host that can quit (a browser tab
     /// cannot): the exit quits Splitscreen Club instead of leaving.
     pub(crate) fn last_one_out(&self) -> bool { self.world.players.len() == 1 && self.outbox.is_none() }
@@ -355,6 +363,7 @@ impl Lobby {
             if !self.cooldown(format!("{}:wait", station.id)) { return; }
             self.press_prompt(&station.id, "Y");
             self.command(json!({"type": "next"}));
+            if station.kind == "queue" { self.close_current(); }
             let title = if station.title.is_empty() { self.host.cabinet_queue().first().map(|e| e.title.clone()).unwrap_or_default() } else { station.title.clone() };
             self.toast(format!("{} starts as soon as it has loaded.", if title.is_empty() { "The game".into() } else { title }), GREEN);
             return;
@@ -386,8 +395,10 @@ impl Lobby {
                     // The cabinet's game is not the TV's: put it first, then start it.
                     self.command(json!({"type": "queue_next", "game": first.game}));
                     self.command(json!({"type": "next"}));
+                    self.close_current();
                 } else {
                     self.command(json!({"type": "next"}));
+                    self.close_current();
                 }
             }
             "tv" => {
