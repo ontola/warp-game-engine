@@ -672,6 +672,14 @@ fn tv(r: &mut RoomBuild) {
     }
 }
 
+/// The shelf's neighbour covers (drawn in the HUD, catalog.rs
+/// `shelf_sides`), beside the featured box at its height: centre x offset,
+/// centre height and half size; their LB/RB bumpers sit above them.
+pub const SIDE_COVER_X: f32 = 1.05;
+pub const SIDE_COVER_Y: f32 = 3.45;
+pub const SIDE_COVER_HALF: [f32; 2] = [0.33, 0.44];
+pub const BUMPER_Y: f32 = 4.12;
+
 /// A game box like a DVD case: dark plastic shell with the cover in front.
 /// Returns the instances (shell, spine, cover).
 pub fn game_box(r: &mut RoomBuild, size: Vec2, root: Affine3A, cover: i64) -> [usize; 3] {
@@ -726,7 +734,7 @@ fn game_shelf(r: &mut RoomBuild) {
         let mut material = RoomBuild::screen_material(texture, 1.6);
         material.transparent = true;
         material.disable_fog = true;
-        let button = r.quad(Vec2::new(0.7, 0.35), Vec3::new(bx + side * 0.98, 3.56, z + 0.3), &material);
+        let button = r.quad(Vec2::new(0.7, 0.35), Vec3::new(bx + side * SIDE_COVER_X, BUMPER_Y, z + 0.3), &material);
         r.dump.instances[button].name = if side < 0.0 { "shelf_lb" } else { "shelf_rb" }.into();
         r.hidden.push(button);
     }

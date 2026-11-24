@@ -251,7 +251,8 @@ pub fn catalog_layout(lobby: &Lobby, size: [u32; 2]) -> Layout {
     for i in 0..n {
         let (col, row) = ((i % g.cols) as f32, (i / g.cols) as f32);
         let r = [x0 + col * (g.card[0] + g.gap), y0 + row * (g.card[1] + g.gap), g.card[0], g.card[1]];
-        if r[1] + r[3] > g.area[1] - g.gap && r[1] < g.area[1] + g.area[3] + g.gap { cards.push((i, r)); }
+        // Down to the screen's bottom: the next row shows through the panel.
+        if r[1] + r[3] > g.area[1] - g.gap && r[1] < h { cards.push((i, r)); }
     }
     let bh = (h * 0.05).max(34.0);
     let y = g.area[1] + g.area[3] + h * 0.1;
@@ -302,9 +303,10 @@ pub fn shelf_sides(lobby: &Lobby, c: &mut Canvas, view_proj: glam::Mat4, size: [
     let z = game_room_sim::layout::BACK as f32 + 0.7;
     for side in [-1i64, 1] {
         let i = (lobby.host.shelf_offset as i64 + side).rem_euclid(n as i64) as usize;
-        let center = glam::Vec3::new(bx + side as f32 * 0.98, 2.95, z);
-        let (Some(a), Some(b)) = (crate::hud::to_screen(view_proj, size, center + glam::Vec3::new(-0.27, 0.36, 0.0)),
-            crate::hud::to_screen(view_proj, size, center + glam::Vec3::new(0.27, -0.36, 0.0))) else { continue };
+        use crate::room::{SIDE_COVER_HALF as H, SIDE_COVER_X, SIDE_COVER_Y};
+        let center = glam::Vec3::new(bx + side as f32 * SIDE_COVER_X, SIDE_COVER_Y, z);
+        let (Some(a), Some(b)) = (crate::hud::to_screen(view_proj, size, center + glam::Vec3::new(-H[0], H[1], 0.0)),
+            crate::hud::to_screen(view_proj, size, center + glam::Vec3::new(H[0], -H[1], 0.0))) else { continue };
         let r = [a[0], a[1], b[0] - a[0], b[1] - a[1]];
         if r[2] <= 2.0 || r[3] <= 2.0 { continue; }
         c.rect([r[0] - 2.0, r[1] - 2.0, r[2] + 4.0, r[3] + 4.0], rgba(0.0, 0.0, 0.0, 0.5));
@@ -361,7 +363,7 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
     let queue = lobby.host.upcoming();
     // A little past the area, so the chosen card's frame is not cut off.
     let pad = 8.0 * scale;
-    let area = [layout.area[0] - pad, layout.area[1] - pad, layout.area[2] + 2.0 * pad, layout.area[3] + 2.0 * pad];
+    let area = [layout.area[0] - pad, layout.area[1] - pad, layout.area[2] + 2.0 * pad, h - layout.area[1] + pad];
     // All cards in one layer: they never overlap (the HUD has few layers).
     c.over();
     c.clip_to(Some(area));
@@ -411,6 +413,16 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
         }
     }
     c.clip_to(None);
+    // The panel under the grid: see-through at its top edge, so the games
+    // further down show; darker towards the buttons.
+    c.over();
+    let top = layout.area[1] + layout.area[3] + 4.0 * scale;
+    let mut y = top;
+    while y < h {
+        let t = ((y - top) / (140.0 * scale)).clamp(0.0, 1.0);
+        c.rect([0.0, y, w, 2.0], rgba(0.02, 0.02, 0.04, (0.35 + 0.5 * t * t) * fade));
+        y += 2.0;
+    }
     let station = lobby.host.station_at((game_room_sim::layout::GAME_SHELF.0 + game_room_sim::layout::GAME_SHELF.1) / 2.0, None);
     let card_bottom = layout.area[1] + layout.area[3];
     let title = if shelf[middle].title.is_empty() { "Game" } else { &shelf[middle].title };

@@ -95,7 +95,14 @@ impl Lobby {
         if p.pressed {
             if let Some(id) = self.player_at(at, size) { self.open_player_menu(&id); return; }
         }
-        if used { self.mouse.hover = self.pointed(at, size); }
+        if used {
+            let pointed = self.pointed(at, size);
+            // Between a station's furniture and its buttons (and the shelf's
+            // side covers) the hover holds: the whole zone is the station's.
+            let keep = pointed.is_none() && self.mouse.hover.as_ref().is_some_and(|h| self.in_zone(&h.0, at, size));
+            if !keep { self.mouse.hover = pointed.map(|(s, k)| self.mouse_key(s, k, at, size)); }
+            if let Some((s, k)) = &self.mouse.hover && !self.mouse_can(s, k.as_deref()) { self.mouse.hover = None; }
+        }
         let Some((station, key)) = self.mouse.hover.clone() else { return };
         // A click on the game shelf itself opens the catalog; its buttons play.
         if p.pressed && station.kind == "shelf" && key.is_none() { self.open_catalog(); return; }
@@ -105,6 +112,53 @@ impl Lobby {
             let key = if p.wheel > 0.0 { "LB" } else { "RB" };
             if station.kind == "shelf" || station.kind == "music" { self.mouse_press(station, key); }
         }
+    }
+
+    /// What the mouse can do with nobody in the room: no game starts
+    /// without a player (a host waits for one), so Play does not light up.
+    fn mouse_can(&self, station: &Station, key: Option<&str>) -> bool {
+        if !self.world.players.is_empty() { return true; }
+        match station.kind.as_str() {
+            "tv" | "queue" => key == Some("X") && station.kind == "queue",
+            "shelf" => key != Some("Y"),
+            _ => true,
+        }
+    }
+
+    /// On the shelf's furniture a click opens the catalog: say so by
+    /// lighting "All games"; on its side covers, LB and RB.
+    fn mouse_key(&self, station: Station, key: Option<String>, at: [f32; 2], size: [u32; 2]) -> (Station, Option<String>) {
+        if station.kind != "shelf" || key.is_some() { return (station, key); }
+        let key = self.shelf_side_at(at, size).map_or("R3", |side| if side < 0 { "LB" } else { "RB" });
+        (station, Some(key.into()))
+    }
+
+    /// The shelf's side cover (and its bumper) under `at`: -1 left, 1 right.
+    fn shelf_side_at(&self, at: [f32; 2], size: [u32; 2]) -> Option<i32> {
+        if self.host.shelf_games().len() < 2 { return None; }
+        let view_proj = crate::hud::view_proj(&self.stage.room.camera, size);
+        let bx = ((l::BOOKCASE.0 + l::BOOKCASE.1) / 2.0) as f32;
+        let z = l::BACK as f32 + 0.7;
+        [-1, 1].into_iter().find(|&side| {
+            use crate::room::{BUMPER_Y, SIDE_COVER_HALF as H, SIDE_COVER_X, SIDE_COVER_Y};
+            let c = Vec3::new(bx + side as f32 * SIDE_COVER_X, SIDE_COVER_Y, z);
+            let (Some(a), Some(b)) = (crate::hud::to_screen(view_proj, size, c + Vec3::new(-H[0] - 0.05, BUMPER_Y + 0.2 - SIDE_COVER_Y, 0.0)),
+                crate::hud::to_screen(view_proj, size, c + Vec3::new(H[0] + 0.05, -H[1] - 0.05, 0.0))) else { return false };
+            inside([a[0], a[1], b[0] - a[0], b[1] - a[1]], at)
+        })
+    }
+
+    /// Whether `at` is in `station`'s zone: from its furniture up to and
+    /// around its buttons (for the shelf, its side covers too).
+    fn in_zone(&self, station: &Station, at: [f32; 2], size: [u32; 2]) -> bool {
+        let name = prompt_name(station);
+        let Some(def) = self.build_prompts().iter().find(|p| p.name == name).map(|p| p.pos) else { return false };
+        let half = crate::live::PROMPT_WIDTH as f32 * PROMPT_PX * 0.5 * 0.8 + if station.kind == "shelf" { 0.5 } else { 0.2 };
+        let view_proj = crate::hud::view_proj(&self.stage.room.camera, size);
+        let floor = Vec3::new(def.x, 0.0, def.z);
+        let (Some(a), Some(b)) = (crate::hud::to_screen(view_proj, size, Vec3::new(def.x - half, def.y + 0.45, def.z)),
+            crate::hud::to_screen(view_proj, size, floor + Vec3::new(half, 0.0, 0.0))) else { return false };
+        inside([a[0], a[1], b[0] - a[0], b[1] - a[1]], at)
     }
 
     /// A button of `station`, pressed by the mouse.
