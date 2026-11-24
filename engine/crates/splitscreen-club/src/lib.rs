@@ -249,6 +249,12 @@ impl State {
                 vec![Command::Connected]
             }
             "party_state" => { self.party = msg.get("party").cloned().unwrap_or_else(|| json!({})); vec![] }
+            // Small and fast: the Back panel while someone holds Back, without
+            // waiting for (or resending) the whole party with its screenshots.
+            "back_menu" => {
+                if let Some(party) = self.party.as_object_mut() { party.insert("back_menu".into(), msg.get("menu").cloned().unwrap_or(Value::Null)); }
+                vec![]
+            }
             "controller_frame" => {
                 self.frames.clear();
                 self.frame_at = Some(now);

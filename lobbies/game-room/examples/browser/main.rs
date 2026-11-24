@@ -306,7 +306,7 @@ pub(crate) mod page {
     #[derive(Clone, Copy, PartialEq)]
     enum Chord { Next, Previous }
 
-    /// Holding Back in the room shows, after 0.3 s, what Back plus a
+    /// Holding Back in the room shows, after 0.16 s, what Back plus a
     /// button does (the room draws the party's `back_menu` over the
     /// player): RB the next game, LB the previous one, B twice leaves.
     /// Back tapped does nothing here. In a game Back goes to the room when
@@ -329,7 +329,7 @@ pub(crate) mod page {
                 if h.backs[k].2 { h.backs.remove(k); leave_party(h, &id); h.party["back_menu"] = Value::Null; h.dirty = true; return; }
                 h.backs[k].2 = true;
             }
-            if now.duration_since(h.backs[k].1).as_secs_f32() < 0.3 { continue; }
+            if now.duration_since(h.backs[k].1).as_secs_f32() < 0.16 { continue; }
             let mut chords = vec![json!({"button": "rb", "action": "next", "label": "Play the next game"})];
             if !h.played.is_empty() { chords.push(json!({"button": "lb", "action": "previous", "label": "Play the previous game"})); }
             chords.push(json!({"button": "b", "action": "leave", "label": "Leave the party"}));
