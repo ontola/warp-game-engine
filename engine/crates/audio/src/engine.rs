@@ -3,10 +3,13 @@
 //! cylinder blows down when its exhaust valve opens, at its own crank angle
 //! (firing order, even or odd firing), with a pulse whose strength follows
 //! the combustion (load, misfires, cuts) and varies a little cycle to cycle.
-//! Pulses travel their own header (unequal lengths make the boxer rumble),
-//! meet in the collector, pass the turbine, and ring in the main pipe, a
-//! digital waveguide with reflections at both ends. Intake, valvetrain,
-//! turbo, straight-cut gear whine and overrun pops are layered on top.
+//! In the reference voice each runner has a delay to the outlet; their
+//! pressures drive engine-sim's noise, derivative and recorded exhaust
+//! response. A pulse voice can instead specify a measured muffler. Its
+//! headers feed the collector, then waves scatter and reflect along the
+//! inlet, chamber and tailpipe until part of the pressure radiates. An
+//! overrun pop excites the same exhaust. Intake, valvetrain, turbo and
+//! straight-cut gear whine are mixed separately.
 //!
 //! engine-sim integrates a full thermodynamic model at tens of kHz; this
 //! keeps its signal path but drives it from the game's own engine state
@@ -16,6 +19,7 @@
 use crate::dsp::{Biquad, Delay, Kind, Noise, approach, smoothstep};
 use crate::es::{Synth, SynthParams};
 use crate::fluid::{FluidEngine, Geometry};
+use crate::muffler::{Muffler, MufflerGeometry};
 use serde::Deserialize;
 
 /// engine-sim delays each runner's pressure by its pipe at 343 m/s.
@@ -39,8 +43,13 @@ pub struct EngineSound {
     pub firing_gaps: Vec<f32>,
     /// Header length per cylinder (m), in cylinder-number order.
     pub headers: Vec<f32>,
-    /// Main pipe length (m), collector to tailpipe.
+    /// Reference or fluid pipe length (m), collector to tailpipe. A measured
+    /// muffler supplies its own inlet, chamber and outlet lengths.
     pub pipe: f32,
+    /// A measured expansion-chamber exhaust for the pulse model. Its three
+    /// sections replace the common pipe delay and impulse-response synth.
+    #[serde(default)]
+    pub muffler: Option<MufflerGeometry>,
     /// Cycle-to-cycle combustion variation at idle and at the limiter.
     pub roughness: [f32; 2],
     /// Flow noise riding on each blowdown pulse, as a share of the pulse.
@@ -87,7 +96,7 @@ fn one() -> f32 {
 /// Which exhaust model a voice runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Model {
-    /// Pulses into delay-line headers and a linear waveguide pipe: cheap.
+    /// Analytic pulses with delayed runners and the configured exhaust.
     Pulse,
     /// Gas dynamics in the cylinders, headers and pipe (`fluid`): costly.
     Fluid,
@@ -120,6 +129,11 @@ struct Cylinder {
     smooth: Option<Biquad>,
 }
 
+enum ExhaustVoice {
+    Synth(Synth),
+    Muffler(Muffler),
+}
+
 pub struct EngineVoice {
     pub spec: EngineSound,
     sr: f32,
@@ -130,7 +144,7 @@ pub struct EngineVoice {
     load: f32,
     target: Controls,
     cyl: Vec<Cylinder>,
-    synth: Synth,
+    exhaust_voice: ExhaustVoice,
     noise: Noise,
     intake_bp: Biquad,
     tick_bp: Biquad,
@@ -163,16 +177,29 @@ impl EngineVoice {
             angle += gaps[k];
         }
         let cutoff = if model == Model::Fluid && spec.fluid.runner_cutoff > 0.0 { spec.fluid.runner_cutoff } else { spec.runner_cutoff };
-        let total = |i: usize| spec.headers.get(i).copied().unwrap_or(0.5) + spec.pipe;
+        let muffler = spec.muffler.filter(|_| model == Model::Pulse).and_then(|g| Muffler::new(g, sr));
+        let header = |i: usize| spec.headers.get(i).copied().unwrap_or(0.5);
+        let common_length = match (&muffler, spec.muffler) {
+            (Some(_), Some(g)) => g.inlet_length + g.chamber_length + g.outlet_length,
+            _ => spec.pipe,
+        };
+        let total = |i: usize| header(i) + common_length;
         let mean = (0..n).map(total).sum::<f32>() / n as f32;
         let cyl = (0..n)
             .map(|i| {
-                let delay = total(i) / C_SOUND * sr;
+                // The geometric exhaust propagates the common length itself.
+                // Use the complete run for the relative 1/dÂ² weights, so
+                // a zero-length runner can feed the collector directly.
+                let delay_length = if muffler.is_some() { header(i).max(0.0) } else { total(i) };
+                let delay = delay_length / C_SOUND * sr;
                 Cylinder { phase: phase_of[i], last: 0.0, amp: 0.0, header: Delay::new(delay as usize + 4), delay, weight: (mean / total(i)).powi(2) * spec.attenuation.get(i).copied().unwrap_or(1.0), smooth: (cutoff > 0.0).then(|| Biquad::new(Kind::LowPass, cutoff, 0.707, sr)) }
             })
             .collect();
         let fluid = (model == Model::Fluid).then(|| FluidEngine::new(spec.fluid.clone(), &phase_of, &spec.headers, spec.pipe, sr, seed));
-        let synth = Synth::new(spec.synth.clone(), sr, seed);
+        let exhaust_voice = match muffler {
+            Some(m) => ExhaustVoice::Muffler(m),
+            None => ExhaustVoice::Synth(Synth::new(spec.synth.clone(), sr, seed)),
+        };
         EngineVoice {
             sr,
             dt: 1.0 / sr,
@@ -182,7 +209,7 @@ impl EngineVoice {
             load: 0.0,
             target: Controls::default(),
             cyl,
-            synth,
+            exhaust_voice,
             noise: Noise::new(seed),
             intake_bp: Biquad::new(Kind::BandPass, 700.0, 1.1, sr),
             tick_bp: Biquad::new(Kind::BandPass, 3300.0, 9.0, sr),
@@ -291,8 +318,9 @@ impl EngineVoice {
                     *d = *r * self.spec.fluid_level;
                 }
             }
-            // Each runner's pressure reaches the tailpipe after its length
-            // (engine-sim: at 343 m/s, weighted 1 / length^2).
+            // Gather the delayed runner pressures. The reference voice
+            // includes the shared pipe in each delay; the measured muffler
+            // receives pressure here, at the collector.
             let mut collector = 0.0;
             for (c, p) in self.cyl.iter_mut().zip(&pulses) {
                 let p = match c.smooth.as_mut() {
@@ -307,7 +335,12 @@ impl EngineVoice {
                 collector += self.noise.white() * self.crack * 1.5;
                 self.crack *= (-dt / 0.012).exp();
             }
-            let mut y = self.synth.run(collector) * self.spec.exhaust;
+            let exhaust = match &mut self.exhaust_voice {
+                ExhaustVoice::Synth(synth) => synth.run(collector),
+                // Convert the model's relative lip pressure to audible level.
+                ExhaustVoice::Muffler(muffler) => 260.0 * muffler.run(collector),
+            };
+            let mut y = exhaust * self.spec.exhaust;
 
             // Intake roar, stronger with the throttle open.
             if running {

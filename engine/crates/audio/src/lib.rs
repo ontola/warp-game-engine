@@ -13,6 +13,7 @@ pub mod engine;
 pub mod es;
 pub mod fluid;
 pub mod mix;
+pub mod muffler;
 pub mod sfx;
 pub mod sounds;
 pub mod stream;
@@ -21,6 +22,7 @@ pub mod tyres;
 
 pub use engine::{Controls, EngineSound, EngineVoice, Model};
 pub use mix::{Mixer, Placement};
+pub use muffler::MufflerGeometry;
 pub use sounds::Sounds;
 
 pub const SAMPLE_RATE: f32 = 48_000.0;

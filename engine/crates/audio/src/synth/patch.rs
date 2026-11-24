@@ -56,6 +56,13 @@ impl Patch {
         for (k, n) in self.nodes.iter().enumerate() {
             let names = n.unit.inputs();
             if n.inputs.len() > names.len() { return Err(format!("{}: node {k} ({}) takes {} inputs ({}), got {}", self.name, n.unit.name(), names.len(), names.join(", "), n.inputs.len())); }
+            if let Unit::Engine { car, fluid, muffler: Some(geometry), spec } = &n.unit {
+                if *fluid { return Err(format!("{}: node {k}: muffler geometry requires the pulse engine", self.name)); }
+                if spec.0.is_none() && super::units::engine_spec(car).is_none() {
+                    return Err(format!("{}: node {k}: unknown engine preset '{car}'", self.name));
+                }
+                geometry.validate().map_err(|e| format!("{}: node {k} (engine): {e}", self.name))?;
+            }
             let expr = if let Unit::Expr { src, vars } = &n.unit {
                 if vars.len() > 6 { return Err(format!("{}: node {k} (expr) has {} inputs, at most 6", self.name, vars.len())); }
                 let e = super::expr::Expr::compile(src, vars).map_err(|e| format!("{}: node {k} (expr): {e}", self.name))?;

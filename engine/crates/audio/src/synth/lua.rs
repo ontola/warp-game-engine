@@ -190,8 +190,25 @@ fn api(lua: &Lua, g: &Table) -> mlua::Result<()> {
     })?)?;
     add_fixed(lua, g, "pluck", Unit::Pluck)?;
     // engine("ej3", rpm, throttle, load, cut, gear, speed); engine_fluid(...) for the costly model.
-    add_set::<String>(lua, g, "engine", |c| Ok(Unit::Engine { car: c.unwrap_or_default(), fluid: false, spec: Default::default() }))?;
-    add_set::<String>(lua, g, "engine_fluid", |c| Ok(Unit::Engine { car: c.unwrap_or_default(), fluid: true, spec: Default::default() }))?;
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ExhaustSettings { model: String, muffler: crate::MufflerGeometry }
+
+    g.raw_set("engine", lua.create_function(|lua, args: Variadic<Value>| {
+        use mlua::{FromLua, LuaSerdeExt};
+        let (car, muffler) = match args.first() {
+            Some(value @ Value::Table(_)) => {
+                let settings: ExhaustSettings = lua.from_value(value.clone())?;
+                (settings.model, Some(settings.muffler))
+            }
+            Some(value) if !value.is_nil() => (String::from_lua(value.clone(), lua)?, None),
+            _ => (String::new(), None),
+        };
+        let unit = Unit::Engine { car, fluid: false, muffler, spec: Default::default() };
+        let ins = inputs(&unit, args.get(1..).unwrap_or(&[]))?;
+        Ok(push(lua, unit, ins))
+    })?)?;
+    add_set::<String>(lua, g, "engine_fluid", |c| Ok(Unit::Engine { car: c.unwrap_or_default(), fluid: true, muffler: None, spec: Default::default() }))?;
     add_fixed(lua, g, "tyres", Unit::Tyres)?;
     // The patch itself.
     g.raw_set("param", lua.create_function(|lua, (name, default): (String, Option<f32>)| {

@@ -84,7 +84,12 @@ pub enum Unit {
     /// A car engine (the engine-sim model): `car` names its table in the
     /// sounds registered with [`register_engines`] unless `spec` is set.
     /// Inputs: rpm, throttle, load (-1..1), cut (> 0.5), gear, speed (m/s).
-    Engine { car: String, #[serde(default)] fluid: bool, #[serde(skip)] spec: EngineSpec },
+    Engine {
+        car: String,
+        #[serde(default)] fluid: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")] muffler: Option<crate::MufflerGeometry>,
+        #[serde(skip)] spec: EngineSpec,
+    },
     /// Tyres on the stage: roll, slide, gravel, grass, splash. Inputs:
     /// speed, slip (m/s), contact, loose, soft, wet (0..1).
     Tyres,
@@ -118,7 +123,7 @@ pub fn register_engines(sounds: &crate::Sounds) {
     }
 }
 
-fn engine_spec(car: &str) -> Option<std::sync::Arc<crate::EngineSound>> { ENGINES.read().unwrap().iter().find(|(k, _)| k == car).map(|e| e.1.clone()) }
+pub(super) fn engine_spec(car: &str) -> Option<std::sync::Arc<crate::EngineSound>> { ENGINES.read().unwrap().iter().find(|(k, _)| k == car).map(|e| e.1.clone()) }
 
 /// What the docs and the Luau front end call each unit and its inputs.
 pub const UNITS: &[(&str, &[&str], &str)] = &[
@@ -146,7 +151,7 @@ pub const UNITS: &[(&str, &[&str], &str)] = &[
     ("pluck", &["x", "freq", "decay", "brightness"], "Karplus-Strong string."),
     ("hold", &["x", "trig"], "Sample and hold on a rising trigger."),
     ("rand", &["lo", "hi"], "A random value per voice (per-shot variation)."),
-    ("engine", &["rpm", "throttle", "load", "cut", "gear", "speed"], "A car engine (engine-sim model) by car id."),
+    ("engine", &["rpm", "throttle", "load", "cut", "gear", "speed"], "A car engine by preset ID or by preset and muffler geometry."),
     ("tyres", &["speed", "slip", "contact", "loose", "soft", "wet"], "Tyres: rolling, sliding, gravel, grass and splash."),
     ("expr", &["a", "b", "c", "d", "e", "f"], "Per-sample formula of t, sr and its named inputs."),
 ];
@@ -257,10 +262,16 @@ impl State {
                 State::Expr { slots: e.slots(), e, t: 0.0 }
             }
             Unit::Rand => { let mut r = Noise::new(seed); r.unit(); State::Rand { u: r.unit() } }
-            Unit::Engine { car, fluid, spec } => {
+            Unit::Engine { car, fluid, muffler, spec } => {
                 let spec = spec.0.clone().or_else(|| engine_spec(car));
                 let model = if *fluid { crate::Model::Fluid } else { crate::Model::Pulse };
-                State::Engine(spec.map(|s| Box::new(crate::engine::EngineVoice::with_model((*s).clone(), sr, seed, model))))
+                State::Engine(spec.map(|base| {
+                    let mut engine = (*base).clone();
+                    if let Some(geometry) = muffler {
+                        engine.muffler = Some(*geometry);
+                    }
+                    Box::new(crate::engine::EngineVoice::with_model(engine, sr, seed, model))
+                }))
             }
             Unit::Tyres => State::Tyres(Box::new(crate::tyres::TyreVoice::new(sr, seed))),
         }

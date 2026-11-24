@@ -23,17 +23,40 @@ sample mixer and its dedicated stem music player at the device's rate.
 
 Luau sound patches can use the shared pulse exhaust model with `engine("inline_four", rpm, throttle, load, cut, gear, speed)` and add `tyres(speed, slip, contact, loose, soft, wet)`. Built-in engine presets include `inline_four`, `inline_five` and `boxer_four`. A caller can register additional presets or override a built-in ID. Use `sound.move_to(handle, worldPosition)` to keep a running spatial voice attached to its vehicle as it passes the listeners. [Warp Theft Auto's motor patch](../../games/warp-theft-auto/sounds/motor.luau)
 
-The engine voice follows Ange Yaghi's engine-sim: the sound is the exhaust
-pressure of a running engine, not a recording. Each cylinder blows down
-when its exhaust valve opens, at its own crank angle and firing order, with
-a pulse whose strength follows load, misfires and cuts. Pulses travel their
-own header, meet in the collector, pass the turbine and ring in the main
-pipe, a digital waveguide with reflections at both ends. Intake,
-valvetrain, turbo, gear whine and overrun pops are layered on top. It is
-driven from the game's engine state (rpm, throttle, load, gear, speed).
+Each cylinder generates a blowdown pulse at its exhaust valve timing. Firing
+order, RPM, load and ignition cuts shape the source. The shared engine can
+mix separately synthesized intake, valvetrain, turbo and gear sounds.
+
+To model a muffler, pass the base engine ID and its exhaust dimensions to
+the pulse engine. Lengths and internal diameters are in metres. `packing`
+ranges from 0 (bare chamber) to 1 (fully lined).
+
+```luau
+local sedan = {
+    model = "inline_four",
+    muffler = {
+        inlet_length = 1.85, inlet_diameter = 0.050,
+        chamber_length = 0.46, chamber_diameter = 0.165,
+        outlet_length = 0.66, outlet_diameter = 0.045,
+        packing = 0.78,
+    },
+}
+local exhaust = engine(sedan, rpm, throttle, load, cut, gear, speed)
+```
+
+Cylinder pulses meet at the collector and excite the inlet. Two travelling
+pressure waves run through each of the three sections. The bore changes
+split incoming waves into reflected and transmitted pressure. Chamber length
+sets the travel time between those reflections. Lining dissipates energy,
+and the outlet radius determines the open-end response. The resulting
+tailpipe sound uses the same geometry on native and WebAudio. Each voice
+takes its geometry when it starts. The model assumes linear plane waves at
+343 m/s and approximates the absorption of the chamber lining. The vehicle
+solver supplies engine speed and torque independently of exhaust backpressure.
+[Digital waveguide theory](https://www.dsprelated.com/freebooks/pasp/Digital_Waveguide_Theory.html)
 
 - `EngineVoice` has two exhaust models: `Model::Pulse` (delay-line
-  headers and a linear waveguide; cheap) and `Model::Fluid` (`fluid`:
+  headers with optional waveguide muffler) and `Model::Fluid` (`fluid`:
   0D cylinders over a slider-crank, compressible valve flow, and the 1D
   Euler equations in each header and the pipe; costly).
 - `es` is a port of engine-sim's synthesizer and filters (MIT), including
