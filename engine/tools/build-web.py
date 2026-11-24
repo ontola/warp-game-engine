@@ -225,13 +225,16 @@ def copy_games(names):
         # of the store media stays out.
         cover = src / 'assets' / 'gamenight' / 'cover.png'
         if cover.exists(): shutil.copy(cover, out / name / 'cover.png')
+        # A gameplay screenshot for the room's TV (the store's gameplay.png).
+        shot = src / 'assets' / 'gamenight' / 'gameplay.png'
+        if shot.exists(): shutil.copy(shot, out / name / 'screenshot.png')
         kb = sum((src / f).stat().st_size for f in files) / 1024
         print(f'build/web/games/{name}: {len(files)} files, {kb:.0f} KB')
         meta = json.loads((src / 'gamenight.json').read_text()) if (src / 'gamenight.json').exists() else {}
         players = meta.get('players', {})
         lo, hi = players.get('min', 1), players.get('max', 4)
         library.append({'id': meta.get('id', name), 'folder': name, 'title': meta.get('title', name), 'tagline': meta.get('tagline', ''),
-                         'players': f'{lo}-{hi}' if lo != hi else str(lo), 'min_players': lo, 'max_players': hi, 'has_cover': cover.exists(),
+                         'players': f'{lo}-{hi}' if lo != hi else str(lo), 'min_players': lo, 'max_players': hi, 'has_cover': cover.exists(), 'has_screenshot': shot.exists(),
                          # Bots the game brings itself (game.toml): they fill seats people leave empty.
                          'bots': tomllib.loads((src / 'game.toml').read_text()).get('bots', 0) if (src / 'game.toml').exists() else 0})
     for name, game in ({} if args.luau_only else RUST_GAMES).items():
@@ -248,12 +251,14 @@ def copy_games(names):
         meta = json.loads((ROOT / game['meta']).read_text()) if 'meta' in game else game
         cover = ROOT / (game['cover'] if 'cover' in game else game['meta'].rsplit('/', 1)[0] + '/cover.png')
         if cover.exists(): shutil.copy(cover, out / name / 'cover.png')
+        shot = cover.with_name('gameplay.png')
+        if shot.exists(): shutil.copy(shot, out / name / 'screenshot.png')
         kb = sum((src / f).stat().st_size for f in files) / 1024
         print(f'build/web/games/{name}: {len(files)} files, {kb:.0f} KB (built in)')
         players = meta.get('players', {})
         lo, hi = players.get('min', 1), players.get('max', 4)
         library.append({'id': meta.get('id', name), 'folder': name, 'title': meta.get('title', name), 'tagline': meta.get('tagline', ''),
-                         'players': f'{lo}-{hi}' if lo != hi else str(lo), 'min_players': lo, 'max_players': hi, 'has_cover': cover.exists(), 'bots': 0, 'builtin': True})
+                         'players': f'{lo}-{hi}' if lo != hi else str(lo), 'min_players': lo, 'max_players': hi, 'has_cover': cover.exists(), 'has_screenshot': shot.exists(), 'bots': 0, 'builtin': True})
     for meta, relative, cover in browser_games:
         game_id = meta['id']
         if any(g['id'] == game_id or g['folder'] == game_id for g in library):

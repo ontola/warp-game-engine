@@ -98,6 +98,7 @@ fn run() -> Result<(), String> {
             let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../games");
             for (id, ..) in games {
                 if let Ok(png) = std::fs::read(root.join(id).join("assets/gamenight/cover.png")) { lobby.set_cover(id, &png); }
+                if let Ok(png) = std::fs::read(root.join(id).join("assets/gamenight/gameplay.png")) { lobby.set_screenshot(id, &png); }
             }
             lobby.host.shelf_offset = 1;
             if flag("--catalog") { lobby.open_catalog(); }

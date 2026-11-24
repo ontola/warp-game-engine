@@ -34,6 +34,9 @@ pub struct Catalog {
     pub opened_at: f32,
     /// The covers decoded so far (None: none or undecodable).
     pub covers: std::collections::HashMap<String, Option<Cover>>,
+    /// Gameplay screenshots for the TV, by game id: the store's, or the
+    /// host's capture of a game left paused ([`Lobby::set_screenshot`]).
+    pub shots: std::collections::HashMap<String, Option<Cover>>,
     /// Each player's stick last frame, so a push browses once.
     pub sticks: std::collections::HashMap<String, [f32; 2]>,
     next_image: u64,
@@ -105,6 +108,14 @@ impl Lobby {
         self.catalog.covers.insert(game.to_string(), cover);
     }
 
+    /// A gameplay screenshot (PNG/JPEG) for the TV: the store's, or the
+    /// current state of a game the host just paused.
+    pub fn set_screenshot(&mut self, game: &str, png: &[u8]) {
+        let shot = self.decode_cover(png);
+        self.catalog.shots.insert(game.to_string(), shot);
+        self.screens_dirty = true;
+    }
+
     fn decode_cover(&mut self, bytes: &[u8]) -> Option<Cover> {
         let art = image::load_from_memory(bytes).ok()?.to_rgba8();
         let size = [art.width(), art.height()];
@@ -137,10 +148,23 @@ impl Lobby {
             .filter(|(id, _)| !self.catalog.covers.contains_key(id))
             .take(2).collect();
         for (id, uri) in wanted {
-            let bytes = uri.split_once(";base64,").and_then(|(_, b)| base64::engine::general_purpose::STANDARD.decode(b.trim()).ok());
-            let cover = bytes.and_then(|b| self.decode_cover(&b));
+            let cover = self.decode_uri(&uri);
             self.catalog.covers.insert(id, cover);
         }
+        // The TV's screenshots, from the library's data URIs.
+        let wanted: Vec<(String, String)> = self.host.shelf_games().iter()
+            .map(|g| (get(g, "id", ""), [get(g, "gameplay", ""), get(g, "screenshot", "")].into_iter().find(|v| v.starts_with("data:")).unwrap_or_default()))
+            .filter(|(id, uri)| !uri.is_empty() && !self.catalog.shots.contains_key(id))
+            .take(1).collect();
+        for (id, uri) in wanted {
+            let shot = self.decode_uri(&uri);
+            self.catalog.shots.insert(id, shot);
+        }
+    }
+
+    fn decode_uri(&mut self, uri: &str) -> Option<Cover> {
+        let bytes = uri.split_once(";base64,").and_then(|(_, b)| base64::engine::general_purpose::STANDARD.decode(b.trim()).ok())?;
+        self.decode_cover(&bytes)
     }
 
     /// A player's buttons while the catalog is open.
@@ -419,8 +443,8 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
     let top = layout.area[1] + layout.area[3] + 4.0 * scale;
     let mut y = top;
     while y < h {
-        let t = ((y - top) / (140.0 * scale)).clamp(0.0, 1.0);
-        c.rect([0.0, y, w, 2.0], rgba(0.02, 0.02, 0.04, (0.35 + 0.5 * t * t) * fade));
+        let t = ((y - top) / (60.0 * scale)).clamp(0.0, 1.0);
+        c.rect([0.0, y, w, 2.0], rgba(0.02, 0.02, 0.04, (0.72 + 0.24 * t) * fade));
         y += 2.0;
     }
     let station = lobby.host.station_at((game_room_sim::layout::GAME_SHELF.0 + game_room_sim::layout::GAME_SHELF.1) / 2.0, None);
@@ -466,6 +490,4 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
             c.text(faces.regular, [qx + fs * 2.6, qy + qh - fs * 0.6], &format!("+{} more", queue.len() - shown), TextAlign::Left, -1.0, (fs * 0.8).floor(), DIM.with_alpha(fade));
         }
     }
-    let hint = "Stick or D-pad: choose  ·  A play  ·  X queue  ·  R3 or B: back to the room";
-    c.text(faces.regular, [0.0, h - 36.0 * scale], hint, TextAlign::Center, w, (19.0 * scale).floor(), DIM.with_alpha(fade));
 }

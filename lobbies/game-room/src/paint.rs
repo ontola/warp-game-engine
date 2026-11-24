@@ -83,6 +83,8 @@ pub struct Show {
     pub bumper_presses: [f32; 2],
     /// Covers by game id (the ones decoded so far).
     pub covers: std::collections::HashMap<String, Cover>,
+    /// Gameplay screenshots by game id, for the TV.
+    pub shots: std::collections::HashMap<String, Cover>,
 }
 
 /// Godot's draw calls on one screen's rectangle in an atlas draw list.
@@ -333,7 +335,12 @@ pub fn tv(c: &mut Canvas, show: &Show) {
     let [w, h] = c.size;
     c.rect([0.0, 0.0, w, h], Color::hex("07060d"));
     let Some((game, banner)) = &show.tv else { return idle_tv(c, show) };
-    art(c, show, game, [0.0, 0.0, w, h], 64.0);
+    // A screenshot of the game (its current state once played), never
+    // the cover: a tall poster cropped wide looks wrong on a TV.
+    match show.shots.get(&game.id) {
+        Some(shot) => { c.provide(shot.image, &shot.picture); c.image([0.0, 0.0, w, h], shot.image, fill_uv(shot.size, [0.0, 0.0, w, h]), Color::WHITE); }
+        None => title_card(c, game, [0.0, 0.0, w, h], 64.0),
+    }
     c.over();
     c.rect([0.0, h - 120.0, w, 120.0], crate::godot::rgba(0.02, 0.02, 0.05, 0.78));
     left(c, if game.title.is_empty() { "Game" } else { &game.title }, [36.0, h - 58.0], 48.0, TEXT);

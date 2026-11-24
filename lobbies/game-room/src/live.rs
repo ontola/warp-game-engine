@@ -577,6 +577,11 @@ impl Lobby {
             show.covers = self.catalog.covers.iter().filter_map(|(id, c)| Some((id.clone(), c.clone()?))).collect();
             self.screens_dirty = true;
         }
+        let shots = self.catalog.shots.values().flatten().map(|c| c.image.0).sum::<u64>();
+        if show.shots.values().map(|c| c.image.0).sum::<u64>() != shots {
+            show.shots = self.catalog.shots.iter().filter_map(|(id, c)| Some((id.clone(), c.clone()?))).collect();
+            self.screens_dirty = true;
+        }
         show.humans = h.human_count();
         show.profile_colors = self.profiles.iter().map(|p| p.color.clone()).collect();
         show.now_playing = h.has_track().then(|| {

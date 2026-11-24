@@ -103,6 +103,8 @@ pub(crate) mod page {
         played: Vec<String>,
         /// Covers fetched for the room's catalog: (game id, PNG).
         covers: Vec<(String, Vec<u8>)>,
+        /// Gameplay screenshots fetched for the room's TV: (game id, PNG).
+        shots: Vec<(String, Vec<u8>)>,
     }
 
     thread_local! { static HOST: RefCell<Host> = RefCell::new(Host::default()); }
@@ -544,6 +546,7 @@ pub(crate) mod page {
             if let Some(code) = with(|h| h.key.take()) { self.lobby.key_pressed(code); }
             if with(|h| std::mem::take(&mut h.pad_heard)) { self.lobby.pad_heard(); }
             for (game, png) in with(|h| std::mem::take(&mut h.covers)) { self.lobby.set_cover(&game, &png); }
+            for (game, png) in with(|h| std::mem::take(&mut h.shots)) { self.lobby.set_screenshot(&game, &png); }
             match with(|h| h.chord.take()) {
                 Some(Chord::Next) => next_game(),
                 Some(Chord::Previous) => previous_game(),
@@ -810,10 +813,20 @@ pub(crate) mod page {
                 let url = g["web_cover"].as_str().map(String::from).unwrap_or_else(|| format!("games/{folder}/cover.png"));
                 Some((g["id"].as_str()?.to_string(), url))
             }).collect());
+        // The TV's gameplay screenshots (build-web.py copies the store's).
+        let shots: Vec<(String, String)> = with(|h| h.party["library"].as_array().into_iter().flatten()
+            .filter(|g| g["has_screenshot"] == true)
+            .filter_map(|g| Some((g["id"].as_str()?.to_string(), format!("games/{}/screenshot.png", g["folder"].as_str()?)))).collect());
         app::web::spawn(async move {
             for (game, url) in covers {
                 match app::web::fetch(&url).await {
                     Ok(png) => with(|h| h.covers.push((game, png))),
+                    Err(e) => app::web::log(&format!("{url}: {e}")),
+                }
+            }
+            for (game, url) in shots {
+                match app::web::fetch(&url).await {
+                    Ok(png) => with(|h| h.shots.push((game, png))),
                     Err(e) => app::web::log(&format!("{url}: {e}")),
                 }
             }
