@@ -261,17 +261,33 @@ impl Lobby {
         }
     }
 
+    /// Only one player is left, on a host that can quit (a browser tab
+    /// cannot): the exit quits Splitscreen Club instead of leaving.
+    pub(crate) fn last_one_out(&self) -> bool { self.world.players.len() == 1 && self.outbox.is_none() }
+
     /// LB/RB at the TV while a game runs or waits paused: start the
     /// previous game or the next one, for a player or (None) the mouse.
     pub(crate) fn skip_game(&mut self, _id: Option<&str>, direction: i32) {
-        let Some(current) = self.host.current_game() else { return };
-        if direction > 0 && self.host.upcoming().is_empty() { return; }
+        let upcoming = self.host.upcoming();
+        let current = self.host.current_game();
+        if current.is_none() && !self.host.tv_station().loading { return; }
+        if direction > 0 && upcoming.len() < if current.is_some() { 1 } else { 2 } { return; }
         if !self.cooldown(format!("tv:skip{direction}")) { return; }
         self.press_prompt("tv", if direction < 0 { "LB" } else { "RB" });
         if direction < 0 {
             self.command(json!({"type": "previous"}));
             self.toast("Back to the previous game.", GREEN);
+        } else if current.is_none() {
+            // Nothing on yet (the TV's game may still be loading): skip it
+            // to the back of the queue and start the one after it.
+            let first = &upcoming[0];
+            let expected = self.host.party["playlist"].clone();
+            self.command(json!({"type": "remove_playlist_entry", "expected": expected, "index": first.index}));
+            self.command(json!({"type": "next"}));
+            self.toast(format!("Skipped {}. {} is next.", first.title, upcoming[1].title), GREEN);
+            self.screens_dirty = true;
         } else {
+            let current = current.unwrap();
             self.command(json!({"type": "next"}));
             self.toast(format!("Next game. {} closes.", get(&current, "title", "This game")), GREEN);
             self.host.quitting = Some((get(&current, "id", ""), self.time + 15.0));
@@ -394,6 +410,17 @@ impl Lobby {
             "music" => self.command(json!({"type": "media_control", "action": station.action})),
             "exit" => {
                 let Some(id) = id else { return };
+                // The last one out quits Splitscreen Club (Y twice).
+                if self.last_one_out() {
+                    if self.mouse_quit_armed() {
+                        self.mouse.quit_until = 0.0;
+                        if self.client.as_ref().is_some_and(|c| c.connected) { self.command(json!({"type": "quit_party"})); } else { self.quit = true; }
+                    } else {
+                        self.mouse.quit_until = self.time + 3.0;
+                    }
+                    self.screens_dirty = true;
+                    return;
+                }
                 self.command(json!({"type": "leave_party", "player_id": id}));
                 let name = self.name(id);
                 self.toast(format!("{name} left. Press a button to join again."), DIM);
@@ -743,11 +770,13 @@ impl Lobby {
         if self.host.current_game().is_some() { self.started_once = true; }
         let tv = self.host.tv_station();
         // A game on: LB and RB start the previous and the next game.
-        let on = self.host.current_game().is_some();
+        // Also while the TV's game loads or waits to start.
+        let on = self.host.current_game().is_some() || tv.loading;
         // (RB is what X Quit was: the next game, this one closes.)
         let mut tv_items: Vec<(&str, &str, bool)> = vec![("Y", &tv.short, true)];
         if on { tv_items.insert(0, ("LB", "Previous", true)); }
-        if on && tv.quit { tv_items.push(("RB", "Next", true)); }
+        let more = self.host.upcoming().len() > if self.host.current_game().is_some() { 0 } else { 1 };
+        if on && more { tv_items.push(("RB", "Next", true)); }
         let tv_nudge = joined && !self.started_once && tv.enabled && !occupied.contains_key("tv");
         if tv_nudge { self.nudges.insert("tv".into()); }
         let was = self.prompt_active.get("tv").copied().unwrap_or(false);
@@ -765,7 +794,8 @@ impl Lobby {
             vec![("LB", "Previous", true), ("Y", if playing { "Pause" } else { "Play" }, true), ("RB", "Next", true)]
         } else { vec![("Y", "Play", true)] };
         self.set_prompt("music", &music, true, occupied.contains_key("music1"));
-        let exit = if mouse_only.as_deref() == Some("exit") { if self.mouse_quit_armed() { "Click again to quit" } else { "Quit Splitscreen Club" } } else { "Leave" };
+        let exit = if mouse_only.as_deref() == Some("exit") { if self.mouse_quit_armed() { "Click again to quit" } else { "Quit Splitscreen Club" } }
+            else if self.last_one_out() { if self.mouse_quit_armed() { "Press again to quit" } else { "Quit Splitscreen Club" } } else { "Leave" };
         self.set_prompt("exit", &[("Y", exit, true)], true, occupied.contains_key("exit"));
         for (name, p) in self.prompts.iter_mut() {
             let mouse = mouse_only.as_deref() == Some(name.as_str());

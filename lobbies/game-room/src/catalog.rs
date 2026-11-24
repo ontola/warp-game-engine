@@ -40,6 +40,8 @@ pub struct Catalog {
     /// Gameplay screenshots for the TV, by game id: the store's, or the
     /// host's capture of a game left paused ([`Lobby::set_screenshot`]).
     pub shots: std::collections::HashMap<String, Option<Cover>>,
+    /// Which data URI each screenshot came from (a cheap hash).
+    shot_src: std::collections::HashMap<String, u64>,
     /// Each player's stick last frame, so a push browses once.
     pub sticks: std::collections::HashMap<String, [f32; 2]>,
     next_image: u64,
@@ -159,12 +161,15 @@ impl Lobby {
             let cover = self.decode_uri(&uri);
             self.catalog.covers.insert(id, cover);
         }
-        // The TV's screenshots, from the library's data URIs.
-        let wanted: Vec<(String, String)> = self.host.shelf_games().iter()
-            .map(|g| (get(g, "id", ""), [get(g, "gameplay", ""), get(g, "screenshot", "")].into_iter().find(|v| v.starts_with("data:")).unwrap_or_default()))
-            .filter(|(id, uri)| !uri.is_empty() && !self.catalog.shots.contains_key(id))
+        // The TV's screenshots, from the library's data URIs: a host's
+        // capture of the game as it was left (`live_screenshot`, replaced
+        // whenever it changes) before the store's.
+        let wanted: Vec<(String, String)> = self.host.library().iter()
+            .map(|g| (get(g, "id", ""), [get(g, "live_screenshot", ""), get(g, "gameplay", ""), get(g, "screenshot", "")].into_iter().find(|v| v.starts_with("data:")).unwrap_or_default()))
+            .filter(|(id, uri)| !uri.is_empty() && self.catalog.shot_src.get(id) != Some(&quick_hash(uri)))
             .take(1).collect();
         for (id, uri) in wanted {
+            self.catalog.shot_src.insert(id.clone(), quick_hash(&uri));
             let shot = self.decode_uri(&uri);
             self.catalog.shots.insert(id, shot);
         }
@@ -257,6 +262,17 @@ fn store_view(catalog: bool) {
     let Some(file) = view_file() else { return };
     if let Some(dir) = file.parent() { let _ = std::fs::create_dir_all(dir); }
     let _ = std::fs::write(file, if catalog { "catalog" } else { "room" });
+}
+
+/// Length and a sample of a long string: enough to see a data URI change.
+fn quick_hash(s: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    s.len().hash(&mut h);
+    let b = s.as_bytes();
+    for i in (0..b.len()).step_by((b.len() / 4096).max(1)) { b[i].hash(&mut h); }
+    b[b.len().saturating_sub(256)..].hash(&mut h);
+    h.finish()
 }
 
 fn intersect(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
@@ -394,6 +410,7 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
     let mouse = lobby.mouse.at;
     let mut opens: Vec<(usize, [f32; 4], [f32; 4])> = vec![];
     let queue = lobby.host.upcoming();
+    let current = lobby.host.current_game().map(|g| (get(&g, "id", ""), g["phase"] == "paused"));
     // A little past the area, so the chosen card's frame is not cut off.
     let pad = 8.0 * scale;
     let area = [layout.area[0] - pad, layout.area[1] - pad, layout.area[2] + 2.0 * pad, h - layout.area[1] + pad];
@@ -424,7 +441,22 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
         let game = &shelf[i].id;
         c.clip_to(Some(open));
         let k = 0.8;
-        if let Some(percent) = lobby.host.loading_shown(game) {
+        let loading = lobby.host.loading_shown(game);
+        if loading.is_some() && !current.as_ref().is_some_and(|(id, _)| id == game) {
+            // Loading: a ring of dots going round, top left.
+            let radius = (26.0 * scale * k).floor();
+            let center = [open[0] + radius * 1.35, r[1] + radius * 1.35];
+            c.circle(center, radius + 3.0 * scale, Color::hex("0b0b12").with_alpha(fade));
+            c.circle(center, radius, crate::lobby::AMBER.with_alpha(fade));
+            let turn = (lobby.time * 1.5).fract();
+            for i in 0..8 {
+                let a = std::f32::consts::TAU * i as f32 / 8.0;
+                let lit = ((i as f32 / 8.0 - turn).rem_euclid(1.0) * 8.0) as usize;
+                let alpha = 1.0 - lit as f32 / 9.0;
+                c.circle([center[0] + a.cos() * radius * 0.55, center[1] + a.sin() * radius * 0.55], radius * 0.14, Color::hex("0b0b12").with_alpha(alpha * fade));
+            }
+        }
+        if let Some(percent) = loading {
             let bh = (34.0 * scale * k).floor();
             let band = [r[0], r[1] + r[3] - bh * 1.9, r[2], bh * 1.9];
             c.rect(band, rgba(0.03, 0.03, 0.06, 0.85 * fade));
@@ -435,7 +467,23 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
             c.rect(bar, rgba(1.0, 1.0, 1.0, 0.15 * fade));
             c.rect([bar[0], bar[1], bar[2] * (percent / 100.0).clamp(0.0, 1.0), bar[3]], crate::lobby::AMBER.with_alpha(fade));
         }
-        if let Some(place) = queue.iter().position(|e| &e.game == game) {
+        // The game on now: a pause sign (it waits paused) or a play sign,
+        // where the queue's numbers go.
+        if current.as_ref().is_some_and(|(id, _)| id == game) {
+            let paused = current.as_ref().is_some_and(|c| c.1);
+            let radius = (26.0 * scale * k).floor();
+            let center = [open[0] + open[2] - radius * 1.35, r[1] + radius * 1.35];
+            let ink = Color::hex("0b0b12").with_alpha(fade);
+            c.circle(center, radius + 3.0 * scale, ink);
+            c.circle(center, radius, crate::lobby::AMBER.with_alpha(fade));
+            let u = radius * 0.42;
+            if paused {
+                c.rect([center[0] - u * 0.85, center[1] - u, u * 0.6, u * 2.0], ink);
+                c.rect([center[0] + u * 0.25, center[1] - u, u * 0.6, u * 2.0], ink);
+            } else {
+                c.polygon(&[[center[0] - u * 0.7, center[1] - u], [center[0] + u * 1.0, center[1]], [center[0] - u * 0.7, center[1] + u]], ink);
+            }
+        } else if let Some(place) = queue.iter().position(|e| &e.game == game) {
             let radius = (26.0 * scale * k).floor();
             // Top right of the part of the card that shows.
             let center = [open[0] + open[2] - radius * 1.35, r[1] + radius * 1.35];

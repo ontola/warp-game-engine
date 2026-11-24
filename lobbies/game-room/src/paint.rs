@@ -394,14 +394,27 @@ pub fn queue_preview(c: &mut Canvas, show: &Show) {
         left(c, &b, [24.0, 256.0], 32.0, DIM);
         return;
     };
-    art(c, show, game, [0.0, 66.0, w, 272.0], 48.0);
-    loading_bar(c, [0.0, 326.0, w, 12.0], show.queue_loading);
+    // The cover at its own shape (3:4) on the left, big; the title, the
+    // status and the loading bar beside it.
+    let h = c.size[1];
+    let art_r = [24.0, 66.0, (h - 84.0) * 0.75, h - 84.0];
+    art(c, show, game, art_r, 32.0);
+    let x = art_r[0] + art_r[2] + 24.0;
+    let tw = w - x - 24.0;
     let title = short(&game.title, 32);
-    let y = if show.queue_status.is_some() { 375.0 } else { 390.0 };
-    left(c, &title, [24.0, y], fit(&title, 46.0, w - 48.0, 30.0), TEXT);
+    let words: Vec<&str> = title.split(' ').collect();
+    // Up to two lines, as big as fit.
+    let lines: Vec<String> = if words.len() > 1 && fit(&title, 46.0, tw, 30.0) < 40.0 {
+        let half = words.len().div_ceil(2);
+        vec![words[..half].join(" "), words[half..].join(" ")]
+    } else { vec![title.clone()] };
+    let size = lines.iter().map(|l| fit(l, 46.0, tw, 26.0)).fold(46.0, f32::min);
+    for (i, line) in lines.iter().enumerate() { left(c, line, [x, 140.0 + i as f32 * size * 1.15], size, TEXT); }
+    let below = 140.0 + lines.len() as f32 * size * 1.15;
     if let Some((status, broken)) = &show.queue_status {
-        left(c, status, [24.0, 408.0], fit(status, 24.0, w - 48.0, 17.0), if *broken { PINK } else { AMBER });
+        left(c, status, [x, below + 12.0], fit(status, 24.0, tw, 17.0), if *broken { PINK } else { AMBER });
     }
+    loading_bar(c, [x, below + 34.0, tw, 12.0], show.queue_loading);
 }
 
 /// main.gd `_draw_queue_titles`: the numbered list under the cabinet.
