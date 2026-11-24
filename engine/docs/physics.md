@@ -23,6 +23,16 @@ the tag captures all current solids. Reset starts a fresh fleet. The level
 snapshot and vehicles live until reset or `world.clear()`. Each game can spawn
 up to its configured world entity capacity in the fleet.
 
+For streamed or editable terrain, pass its initial entity IDs as the optional
+second argument to `vehicles.reset(tag, excludedIds)`. Install them via
+`vehicles.set_static_region(name, entityIds, boxes)`, where each extra box has
+a world-space `pos`, full `size`, and optional `yaw` in radians. The call takes
+a snapshot of the solid entities, including heightfields and their grip strips.
+Repeating the call replaces that region and keeps the other regions, chassis,
+velocity and drivetrain. Two empty lists remove the region. To place an existing
+car on the adjusted ground, call `vehicles.relocate(id, feet, yaw?)`. Omitting
+yaw preserves the car's rotation.
+
 ```lua
 local car = vehicles.spawn(vector.create(10, 0, 5), 0) -- ground point and yaw
 vehicles.drive(car, { throttle = 1, steer = .2 })      -- positive steers right

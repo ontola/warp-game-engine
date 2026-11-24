@@ -7,13 +7,13 @@ use rapier3d::{glamx::{Pose3, Quat, Vec3 as V3}, prelude::*};
 use std::{collections::BTreeMap, sync::{Arc, OnceLock}};
 
 #[derive(Default)]
-struct FleetGround { grids: Vec<crate::terrain::PlacedGrid> }
+struct FleetGround { grids: Vec<(ColliderHandle, crate::terrain::PlacedGrid)> }
 impl Ground for FleetGround {
     fn road_surface(&self, p: V3, hint: i64) -> (Surface, i64) {
         // Only terrain colliders carry the ROAD tag. Pick the support nearest the
         // contact point when two patches overlap in horizontal coordinates.
-        if let [grid] = self.grids.as_slice() { return (grid.surface_at(p).unwrap_or(Surface::Asphalt), hint); }
-        self.grids.iter().enumerate().filter_map(|(i, g)| {
+        if let [(_, grid)] = self.grids.as_slice() { return (grid.surface_at(p).unwrap_or(Surface::Asphalt), hint); }
+        self.grids.iter().enumerate().filter_map(|(i, (_, g))| {
             Some(((g.floor(p.x,p.z)?-p.y).abs(),g.surface_at(p)?,i as i64))
         }).min_by(|a,b| a.0.total_cmp(&b.0)).map_or((Surface::Asphalt,hint), |(_,s,i)| (s,i))
     }
@@ -93,6 +93,7 @@ pub struct Fleet {
     panel_surfaces: BTreeMap<String,(Vec<Vec3>,Vec<([u32;3],u8)>)>,
     surfaces: Surfaces,
     ground: FleetGround,
+    static_regions: BTreeMap<String, Vec<ColliderHandle>>,
     next: u32,
     acc: f64,
     /// Strongest hard contact per vehicle across this game tick's fixed steps.
@@ -104,22 +105,50 @@ impl Fleet {
         let mut world = PhysicsWorld::default();
         world.gravity = V3::new(0., -9.8, 0.);
         world.integration_parameters.dt = (1. / HZ) as f32;
-        for b in boxes {
-            let half = b.half;
-            let c = ColliderBuilder::cuboid(half.x, half.y, half.z)
-                .position(Pose3::from_parts(V3::from_array(b.center.to_array()), Quat::from_rotation_y(b.yaw)))
-                .user_data(Surface::Asphalt as u128)
-                .collision_groups(InteractionGroups::new(super::GROUP_WORLD, Group::ALL, InteractionTestMode::And)).build();
-            world.colliders.insert(c);
-        }
-        Self { world, cars: BTreeMap::new(), contact_profiles: BTreeMap::new(), crush_grids: BTreeMap::new(), dent_templates:BTreeMap::new(), panel_surfaces:BTreeMap::new(), surfaces: Surfaces::default(), ground: FleetGround::default(), next: 1, acc: 0., impacts: BTreeMap::new() }
+        for b in boxes { world.colliders.insert(Self::box_collider(b)); }
+        Self { world, cars: BTreeMap::new(), contact_profiles: BTreeMap::new(), crush_grids: BTreeMap::new(), dent_templates:BTreeMap::new(), panel_surfaces:BTreeMap::new(), surfaces: Surfaces::default(), ground: FleetGround::default(), static_regions: BTreeMap::new(), next: 1, acc: 0., impacts: BTreeMap::new() }
+    }
+
+    fn box_collider(b: YawBox) -> Collider {
+        ColliderBuilder::cuboid(b.half.x, b.half.y, b.half.z)
+            .position(Pose3::from_parts(crate::to(b.center), Quat::from_rotation_y(b.yaw)))
+            .user_data(Surface::Asphalt as u128)
+            .collision_groups(InteractionGroups::new(super::GROUP_WORLD, Group::ALL, InteractionTestMode::And)).build()
+    }
+
+    fn insert_heightfield(&mut self, grid: crate::terrain::PlacedGrid) -> ColliderHandle {
+        let collider = grid.collider().user_data(super::ROAD)
+            .collision_groups(InteractionGroups::new(super::GROUP_WORLD, Group::ALL, InteractionTestMode::And));
+        let handle = self.world.colliders.insert(collider);
+        self.ground.grids.push((handle, grid));
+        handle
     }
 
     pub fn add_heightfield(&mut self, grid: crate::terrain::PlacedGrid) {
-        let collider = grid.collider().user_data(super::ROAD)
-            .collision_groups(InteractionGroups::new(super::GROUP_WORLD, Group::ALL, InteractionTestMode::And));
-        self.world.colliders.insert(collider);
-        self.ground.grids.push(grid);
+        self.insert_heightfield(grid);
+    }
+
+    /// Replace one streamed region while keeping car bodies, their velocity, and other regions.
+    /// All input comes from a validated snapshot, before removing any existing colliders.
+    pub fn set_static_region(&mut self, name: &str, boxes: Vec<YawBox>, grids: Vec<crate::terrain::PlacedGrid>) -> Result<(), String> {
+        let count = boxes.len() + grids.len();
+        let previous = self.static_regions.get(name).map_or(0, Vec::len);
+        let total = self.static_regions.values().map(Vec::len).sum::<usize>() - previous + count;
+        if name.is_empty() || name.len() > 64 || total > 16_384 ||
+            (count > 0 && previous == 0 && self.static_regions.len() >= 64) {
+            return Err("invalid vehicle static region name or collider budget".into());
+        }
+        if let Some(old) = self.static_regions.remove(name) {
+            for handle in old { self.world.remove_collider(handle); }
+            self.ground.grids.retain(|(h, _)| self.world.colliders.contains(*h));
+        }
+        if count > 0 {
+            let mut handles = Vec::with_capacity(count);
+            handles.extend(boxes.into_iter().map(|b| self.world.colliders.insert(Self::box_collider(b))));
+            handles.extend(grids.into_iter().map(|g| self.insert_heightfield(g)));
+            self.static_regions.insert(name.to_owned(), handles);
+        }
+        Ok(())
     }
 
     /// Park on the supplied ground point. Parked cars remain solid to traffic.
@@ -144,6 +173,18 @@ impl Fleet {
     pub fn remove(&mut self, id: u32) -> bool {
         let Some(entry) = self.cars.remove(&id) else { return false; };
         self.world.remove_body_with_colliders(entry.car.body, true);
+        true
+    }
+
+    /// Move an existing car at the simulation boundary, keeping the drivetrain and velocity.
+    pub fn relocate(&mut self, id: u32, feet: Vec3, yaw: Option<f32>) -> bool {
+        let Some(entry) = self.cars.get_mut(&id) else { return false };
+        let body = &mut self.world.bodies[entry.car.body];
+        let pos = crate::to(feet) + V3::Y * entry.car.spec.wheel_radius as f32;
+        let rot = yaw.map_or(body.position().rotation, Quat::from_rotation_y);
+        let pose = Pose3::from_parts(pos, rot);
+        body.set_position(pose, true);
+        entry.previous = pose;
         true
     }
 
@@ -422,6 +463,35 @@ mod tests {
         assert!(shapes.iter().all(|h| fleet.world.colliders.get(*h).is_none()));
         assert!(fleet.pose(first).is_none() && fleet.pose(second).is_some());
         assert!(fleet.spawn(CarSpec::compact(), Vec3::ZERO, 0.) > second);
+    }
+
+    #[test]
+    fn replacing_a_region_keeps_other_roads_and_car_motion() {
+        let ground = |surface| {
+            let grid = crate::terrain::HeightGrid::new(2, 8., &[0.; 4], surface, &[]).unwrap();
+            let center = grid.center_offset();
+            crate::terrain::PlacedGrid::new(Arc::new(grid), Rotation::IDENTITY, center)
+        };
+        let fixed = YawBox::new(Vec3::new(0., -0.5, 0.), Vec3::new(80., 1., 400.), 0.);
+        let mut fleet = Fleet::new([fixed].into_iter());
+        let id = fleet.spawn(CarSpec::compact(), Vec3::X, 0.);
+        fleet.drive(id, Some(Pedals {throttle: 1., ..Default::default()}));
+        for _ in 0..100 { fleet.step(1./60.); }
+        let before = fleet.pose(id).unwrap();
+        assert!(before.speed > 1.);
+        fleet.set_static_region("hill", vec![], vec![ground(Surface::Grass)]).unwrap();
+        let count = fleet.world.colliders.len();
+        let query = V3::new(1., 0., 1.);
+        assert_eq!(fleet.ground.road_surface(query, 0).0, Surface::Grass);
+        fleet.set_static_region("hill", vec![], vec![ground(Surface::Gravel)]).unwrap();
+        assert_eq!(fleet.ground.road_surface(query, 0).0, Surface::Gravel);
+        assert_eq!(fleet.world.colliders.len(), count);
+        assert_eq!(fleet.pose(id).unwrap().pos, before.pos);
+        assert!(fleet.relocate(id, Vec3::new(1., 2., -15.), None));
+        assert_eq!(fleet.pose(id).unwrap().speed, before.speed);
+        fleet.set_static_region("hill", vec![], vec![]).unwrap();
+        assert_eq!(fleet.ground.road_surface(query, 0).0, Surface::Asphalt);
+        assert_eq!(fleet.world.colliders.len(), count - 1);
     }
 
     #[test]

@@ -626,3 +626,41 @@ fn cape_gravel_tires_climb_the_same_ridge_as_walking_and_story_markers() {
     "#).unwrap();
     assert!(g.errors().is_empty(), "{:?}",g.errors());
 }
+
+
+#[test]
+fn live_gravel_width_changes_the_surface_under_a_cars_wheels() {
+    let dir=Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../games/warp-theft-auto");
+    let mut game=LuaGame::load(&dir,&Overrides {seed:Some(1948),..Default::default()},None).unwrap();
+    let idle=[Controls::default()];
+    game.tick(&idle);
+    let spawn=r#"
+        local ground=world.raycast(vector.create(-603,35,-64.3),vector.create(0,-1,0),40,{tag="city"})
+        assert(ground)
+        state.probeCar=vehicles.spawn(ground.point,math.atan2(24.39,.66))
+        vehicles.drive(state.probeCar,{throttle=.2})
+    "#;
+    game.luau(spawn).unwrap();
+    for _ in 0..25 { game.tick(&idle); }
+    let before=game.luau(r#"
+        local p=vehicles.get(state.probeCar)
+        assert(p.contact>.4 and p.soft>.6 and p.loose<.2,"should start on grass")
+        vehicles.remove(state.probeCar)
+        return {soft=p.soft,loose=p.loose,contact=p.contact}
+    "#).unwrap();
+    game.luau(r#"
+        local edit=get_layout()
+        edit.rally.width=12
+        assert(apply_layout(edit))
+        assert(world.get(world.find("west-cape")[1]).shape=="mesh")
+    "#).unwrap();
+    game.luau(spawn).unwrap();
+    for _ in 0..25 { game.tick(&idle); }
+    let after=game.luau(r#"
+        local p=vehicles.get(state.probeCar)
+        assert(p.contact>.4 and p.loose>.6 and p.soft<.2,"should now be on gravel")
+        return {soft=p.soft,loose=p.loose,contact=p.contact}
+    "#).unwrap();
+    eprintln!("Same wheel position before {before} after {after}");
+    assert!(game.errors().is_empty(),"{:?}",game.errors());
+}

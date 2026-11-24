@@ -8,6 +8,7 @@
 //! mesh, which needs a new renderer on the next frame (`rebuild`): free
 //! during `init`, a short stall later.
 mod dents;
+pub(crate) mod geometry;
 use glam::{Affine3A, EulerRot, Quat, Vec3};
 use kern::collide::{Mover, YawBox};
 use render::primitives;
@@ -31,6 +32,8 @@ pub enum Shape {
     Outline { sides: u32, width: u32 },
     /// A glTF file inside the game folder (`assets/crate.glb`).
     Model(String),
+    /// Indexed triangles authored by a script and owned by a single entity.
+    Generated(u32),
     /// Glowing edges between points (the entity's `wire`): one thin box per
     /// edge, moved by the engine whenever the entity or its points move.
     Wire,
@@ -57,7 +60,7 @@ impl Wire {
 
 impl Shape {
     pub fn name(&self) -> String {
-        match self { Shape::Cube => "cube".into(), Shape::Pane => "pane".into(), Shape::Sphere => "sphere".into(), Shape::Capsule => "capsule".into(), Shape::Outline { sides, width } => format!("outline{sides}:{}", *width as f32 / 1000.0), Shape::Model(p) => p.clone(), Shape::Wire => "wire".into() }
+        match self { Shape::Cube => "cube".into(), Shape::Pane => "pane".into(), Shape::Sphere => "sphere".into(), Shape::Capsule => "capsule".into(), Shape::Outline { sides, width } => format!("outline{sides}:{}", *width as f32 / 1000.0), Shape::Model(p) => p.clone(), Shape::Generated(_) => "mesh".into(), Shape::Wire => "wire".into() }
     }
 }
 
@@ -278,6 +281,7 @@ pub struct World {
     meshes: HashMap<(usize, u32), usize>,
     models: HashMap<String, ModelInfo>,
     dents: dents::Pool,
+    geometry: geometry::Pool,
     /// Explicitly preloaded looks survive scene replacement even with no live instances.
     warmed: BTreeMap<(Shape, [i32; 9]), Look>,
     /// Meshes or materials were added since the renderer was made.
@@ -340,7 +344,7 @@ impl World {
         let m = scene.add_material(material(&Look::default()));
         let cube = scene.add_mesh(&primitives::cube(m).mesh());
         let slots = Slots::reserve(&mut scene, max_entities);
-        let mut w = World { fleet: None, entities: BTreeMap::new(), next: 1, scene, slots, materials: HashMap::new(), meshes: HashMap::new(), models: HashMap::new(), dents: Default::default(), warmed: BTreeMap::new(), rebuild: true, added: Vec::new(), dir: dir.to_path_buf(), fx: Fx::default(), explosions: None, baked_explosion_smoke: false, explosions_prepared: None };
+        let mut w = World { fleet: None, entities: BTreeMap::new(), next: 1, scene, slots, materials: HashMap::new(), meshes: HashMap::new(), models: HashMap::new(), geometry: Default::default(), dents: Default::default(), warmed: BTreeMap::new(), rebuild: true, added: Vec::new(), dir: dir.to_path_buf(), fx: Fx::default(), explosions: None, baked_explosion_smoke: false, explosions_prepared: None };
         w.materials.insert(Look::default().key(), m);
         w.meshes.insert((0, m), cube);
         w
@@ -373,6 +377,7 @@ impl World {
         w.scene.style = self.scene.style.clone();
         w.scene.graphics.low_surface_detail = self.scene.graphics.low_surface_detail;
         for (&id, e) in &self.entities {
+            if let Shape::Generated(key) = e.shape { self.copy_geometry(key,&mut w); }
             let (mesh, _) = w.mesh(&e.shape, &e.look)?;
             let mut e = e.clone();
             e.mesh = mesh;
@@ -395,6 +400,7 @@ impl World {
         self.materials = w.materials;
         self.meshes = w.meshes;
         self.models = w.models;
+        self.geometry = w.geometry;
         self.rebuild = true;
         Ok(())
     }
@@ -433,6 +439,7 @@ impl World {
             Shape::Capsule => 2,
             Shape::Pane => 3,
             Shape::Outline { sides, width } => 3 + (*sides as usize) * 1000 + *width as usize,
+            Shape::Generated(key) => return self.geometry.mesh(*key),
             Shape::Model(path) => {
                 if !self.models.contains_key(path) {
                     let base = path.split_once('#').map_or(path.as_str(), |(base, _)| base);
@@ -543,6 +550,9 @@ impl World {
         let old = self.entities.get(&id).ok_or_else(|| format!("no entity {id} (removed, or never spawned)"))?;
         let mut e = old.clone();
         f(&mut e)?;
+        if matches!(old.shape, Shape::Generated(_)) && (e.shape != old.shape || e.look != old.look) {
+            return Err("a generated mesh keeps its geometry and part materials".into());
+        }
         if (e.shape == Shape::Wire) != (old.shape == Shape::Wire) {
             return Err("shape: a wire stays a wire, and other shapes cannot become one (spawn a new entity)".into());
         }
@@ -603,6 +613,7 @@ impl World {
         let mut pending = Vec::new();
         let mut next = Some(root);
         while let Some(e) = next {
+            if let Shape::Generated(key) = e.shape { self.geometry.release(&mut self.scene,key); self.rebuild=true; }
             pending.extend(e.children);
             if let Some(slot) = e.slot { self.slots.remove(&mut self.scene, slot); }
             for slot in e.edge_slots { self.slots.remove(&mut self.scene, slot); }

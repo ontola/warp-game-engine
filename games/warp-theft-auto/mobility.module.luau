@@ -22,9 +22,9 @@ function mobility.add_car(m, pos, yaw, paint)
 end
 
 function mobility.new(layout)
-	vehicles.reset("city")
+	vehicles.reset("city",layout.cape.solids)
 	models.prepareContacts()
-	cape.fleetReady(layout.cape)
+	cape.installSolids(layout.cape)
 	local m = {players={}, vehicles={}, layout=layout}
 	for _, spawn in city.vehicle_spawns(layout.seed) do
 		if spawn.kind == "car" then mobility.add_car(m,spawn.pos,spawn.yaw)

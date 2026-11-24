@@ -67,7 +67,8 @@ function city.on_land(x,z,r)
 end
 
 function city.flight_bounds(center)
-    return v(math.clamp(center.x,-1240,210),center.y,math.clamp(center.z,-375,375))
+    local west,north=cape.flightBounds()
+    return v(math.clamp(center.x,west,210),center.y,math.clamp(center.z,-north,north))
 end
 
 function city.blocked(s,x,z,radius,bottomY)
@@ -115,7 +116,7 @@ end
 function city.district(x,z)
     if x < -BOUND then
         if cape.wooded(x,z) then return "Mariner Wood" end
-        return if x < -1000 then "Cape Lookout" else "West Cape"
+        return if x < cape.layout().places.lookoutStop[1]+93 then "Cape Lookout" else "West Cape"
     end
     if x >= STEP*2 then return "East Docks" end
     if x < -STEP then return "Lido Gardens" end
@@ -268,7 +269,7 @@ local function park(s,x,z,plaza,lawns)
     else
         local center = v(x,.036,z)
         table.insert(lawns.patches,{pos=center,width=PARK_WIDTH,depth=PARK_WIDTH})
-        -- surface.wgsl paints the paths where abs(localX Ã‚Â± localZ) <= 1.15.
+        -- surface.wgsl paints the paths where abs(localX ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â± localZ) <= 1.15.
         -- Its diagonal coordinate is sqrt(2) times the perpendicular distance.
         for _,turn in {-1,1} do
             table.insert(lawns.cutouts,{pos=center,width=DIAGONAL_PATH*math.sqrt(2),
@@ -392,15 +393,6 @@ local function harbor()
         box(192,12.9,z,.18,5.7,.18,METAL)
         box(192,10,z,4.4,.4,2.0,"#c7aa66")
     end
-    -- Moored cargo ferry and the low shape of an island on the horizon.
-    box(210,-.55,46,11,2.3,50,"#3f5962")
-    box(210,.68,46,10.8,.34,49,"#c0aa86")
-    for i=0,3 do
-        box(207.65,2.1,31+i*6,3.6,2.6,5.4,CONTAINERS[1+i],CONTAINER)
-        box(212.1,2.1,31+i*6,3.6,2.6,5.4,CONTAINERS[4-i],CONTAINER)
-    end
-    box(210,3.15,61,9.5,4.7,9,LIMESTONE,HOTEL)
-    box(210,6.12,62,10.4,1.4,7.9,"#728f97",OFFICE)
     -- A shared generated headland with beaches, rock shelves and a hilly spine.
     -- Split the far shore into overlapping capes around three separate bays.
     for _,p in {
@@ -414,7 +406,43 @@ local function harbor()
     end
 end
 
-function city.build(seed)
+local function mooredFerry()
+    local root=world.spawn("cube",{visible=false,solid=false,tag="ferry"})
+    local function part(x,y,z,w,h,d,color,surface)
+        world.spawn("cube",{pos=v(x,y,z),size=v(w,h,d),color=color,surface=surface,
+            tag="scenery",solid=false},root)
+    end
+    part(0,-.55,0,11,2.3,50,"#3f5962")
+    part(0,.68,0,10.8,.34,49,"#c0aa86")
+    for i=0,3 do
+        part(-2.35,2.1,-15+i*6,3.6,2.6,5.4,CONTAINERS[1+i],CONTAINER)
+        part(2.1,2.1,-15+i*6,3.6,2.6,5.4,CONTAINERS[4-i],CONTAINER)
+    end
+    part(0,3.15,15,9.5,4.7,9,LIMESTONE,HOTEL)
+    part(0,6.12,16,10.4,1.4,7.9,"#728f97",OFFICE)
+    return root
+end
+
+local function positionCapePlaces(s)
+    local places=cape.layout().places
+    local terminal=places.ferryTerminal
+    local x,z,nx,nz=cape.shoreFrame(terminal[1],terminal[2])
+    world.place(s.ferry,v(x+32*nx+13*nz,0,z+32*nz-13*nx),math.atan2(-nz,nx))
+    for _,stop in s.landmarks do
+        local p=stop.place and places[stop.place]
+        if p then stop.pos=v(p[1],cape.height(p[1],p[2]),p[2]) end
+    end
+end
+
+function city.replaceLayout(s,data,baked)
+    local nextCape,err=cape.build(s.seed,data,baked,s.cape)
+    if not nextCape then return nil,err end
+    s.cape=nextCape
+    positionCapePlaces(s)
+    return true
+end
+
+function city.build(seed,data,baked)
     seed = math.floor(seed or 1)
     local lawns = {patches={}, cutouts={}, seed=seed, growth=.30, distance=16}
     local s = { seed=seed, blocks={}, buildings={}, parks={}, walkLoops={}, plantSites={}, lamps={}, landmarks={} }
@@ -478,36 +506,24 @@ function city.build(seed)
         end
     end
     harbor()
-    s.cape = cape.build(seed)
-    -- A roadside grain yard marks the transition from the city to the cape.
-    world.spawn("assets/grain-yard.glb",{pos=v(-255,0,26),solid=false,tag="grain-yard"})
-    for _,bin in {{-4.9,10.75},{4.9,9.55}} do
-        obstacle(s,-255+bin[1],bin[2]/2,26,7.25,bin[2],7.25,METAL,nil,{visible=false})
-    end
-    obstacle(s,-255,7.6,30.85,2.12,15.2,2.16,METAL,nil,{visible=false})
-    -- The open-sided timber shelter marks the turn at the western lookout.
-    for _,dx in {-2.5,2.5} do
-        for _,dz in {-2,2} do
-            obstacle(s,-1111+dx,1.65,dz,.23,3.3,.23,"#73573d")
-        end
-    end
-    obstacle(s,-1111,3.4,0,6.5,.28,5.5,"#a24433")
-    for _,z in {-1.55,1.55} do
-        obstacle(s,-1111,.28,z,3.8,.55,.55,"#84613f")
-    end
+    s.ferry=mooredFerry()
+    local built,err=cape.build(seed,data,baked)
+    assert(built,err)
+    s.cape=built
     s.landmarks = {
         {name="Exchange Clock",pos=v(22,0,28),kind="walk"},
         {name="Lido Gardens",pos=v(-84,0,84),kind="walk"},
         {name="Market Green",pos=v(84,0,-84),kind="walk"},
         {name="Tide Market",pos=v(-53,0,87),kind="drive"},
-        {name="Ferry Terminal",pos=v(164.5,0,59),kind="drive"},
+        {name="Ferry Terminal",place="ferryTerminal",kind="drive"},
         {name="Meridian Tower",pos=v(-28,0,-3),kind="drive"},
         {name="Harbor Heliport",pos=v(140,0,28),kind="fly"},
         {name="West Field",pos=v(-140,0,-84),kind="fly"},
-        {name="Mariner Wood",pos=v(-674,cape.height(-674,-116),-116),kind="walk"},
-        {name="Cape Lookout",pos=v(-1093,0,0),kind="drive"},
-        {name="Lookout Meadow",pos=v(-1080,0,11),kind="fly"},
+        {name="Mariner Wood",place="marinerWood",kind="walk"},
+        {name="Cape Lookout",place="lookoutStop",kind="drive"},
+        {name="Lookout Meadow",place="lookoutMeadow",kind="fly"},
     }
+    positionCapePlaces(s)
     return s
 end
 

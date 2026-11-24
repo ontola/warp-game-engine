@@ -11,7 +11,7 @@ LAND_COLORS = {
 }
 
 
-def ground_material(x, z, height, slope):
+def ground_material(x, z, height, slope, layout):
     # Long meadow strips give the driver a landmark on either side of the trail.
     weather = sin(.015 * x + .022 * z) + .53 * cos(.034 * z - .010 * x)
     if slope > .315 + .045 * weather or (height > 21 + 2.5 * weather and slope > .13):
@@ -19,11 +19,11 @@ def ground_material(x, z, height, slope):
     if height > 16 + 2 * weather or slope > .21:
         return "Coastal heath"
     # Open farmland on the approach, damp forest understory on the sheltered slopes.
-    if ((x + 690) / 150) ** 2 + ((z + 99) / 100) ** 2 < .98 + .10 * weather or (
-        ((x + 900) / 95) ** 2 + ((z - 108) / 83) ** 2 < .95 + .12 * weather
-    ):
-        return "Woodland floor"
-    if (x > -550 and weather > -.20) or weather > 1.05:
+    for grove,(halo_x,halo_z,edge,noise) in zip(layout["groves"],[(30,17,.98,.10),(15,18,.95,.12)]):
+        cx,cz,rx,rz=grove
+        if ((x-cx)/(rx+halo_x))**2 + ((z-cz)/(rz+halo_z))**2 < edge+noise*weather:
+            return "Woodland floor"
+    if (x > layout["places"]["grainYard"][0]-295 and weather > -.20) or weather > 1.05:
         return "Hay meadow"
     if weather < -.54:
         return "Grassy hollows"

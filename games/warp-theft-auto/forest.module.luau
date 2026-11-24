@@ -18,11 +18,11 @@ local radius = {pine=.32, fir=.29, birch=.22}
 local height = {pine=10.95, fir=12.2, birch=9.77}
 forest.count = #roots
 
-function forest.place(x, y, z, yaw, scale)
-    return world.spawn("assets/plants/forest-stand.glb",{
+function forest.options(x, y, z, yaw, scale)
+    return {
         pos=vector.create(x,y,z), rot=vector.create(0,yaw,0), size=vector.create(scale,scale,scale),
         solid=false, tag="woodland",
-    })
+    }
 end
 
 function forest.trunks(x, z, yaw, scale, visit)

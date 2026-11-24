@@ -13,14 +13,15 @@ end
 
 -- Rasterize the cape's actual coastline and road curves once into narrow columns.
 -- The HUD draws rectangles; each seat only visits the columns inside its map.
-local cape = require("west-cape-data")
+local geography = require("west-cape")
 local columnWidth = 12
-local capeWest = cape.coast[1][1]
+local capeWest, mappedLayout
 local mapColumns = {}
-local groves = require("west-cape").groves
 local parks = {{-84,84},{84,-84}}
 
-local function prepareMap()
+local function prepareMap(cape)
+    capeWest=cape.coast[1][1]
+    mapColumns={}
     local coastIndex = 1
     local east = cape.coast[#cape.coast][1]
     for left=capeWest,east-1,columnWidth do
@@ -30,7 +31,7 @@ local function prepareMap()
         local a,b = cape.coast[coastIndex],cape.coast[coastIndex+1]
         local t = (mid-a[1])/(b[1]-a[1])
         local col = {{a[2]+(b[2]-a[2])*t, a[3]+(b[3]-a[3])*t, "#47574a"}}
-        for _,g in groves do
+        for _,g in cape.groves do
             local r = (mid-g[1])/g[3]
             if math.abs(r)<1 then
                 local span = g[4]*math.sqrt(1-r*r)
@@ -49,7 +50,7 @@ local function prepareMap()
                         z1 = p[2]+(q[2]-p[2])*math.clamp((right-p[1])/dx,0,1)
                     end
                     local gravel = route==3
-                    local width = if gravel then 2.6 else 3.7
+                    local width = .5*(if gravel then cape.widths.gravel else cape.widths.asphalt)
                     local color = if gravel then "#d1a16e" else "#bdba9a"
                     table.insert(roadSpans,{math.min(z0,z1)-width,math.max(z0,z1)+width,color})
                 end
@@ -67,10 +68,12 @@ local function prepareMap()
         end
         table.insert(mapColumns,col)
     end
+    mappedLayout=cape
 end
-prepareMap()
 
 local function minimap(fleet, id, goal, x, y, size)
+    local layout=geography.layout()
+    if mappedLayout~=layout then prepareMap(layout) end
     local me = fleet.players[id]
     -- Keep the city overview around downtown. On the west approach the centre
     -- follows each player continuously and opens up to show more of the route.
@@ -164,7 +167,7 @@ local function drawStories(menu, titles, x, y, w, h, s)
 		if menu.choice == i then hud.box(left+6*s,py-2*s,panelW-12*s,lh,"#355454") end
 		text(title,left+16*s,py,18*s,ink)
 	end
-	text(menu.message or "â†‘ â†“ / D-pad   Choose     Space / A   Play",
+	text(menu.message or "Ã¢â€ â€˜ Ã¢â€ â€œ / D-pad   Choose     Space / A   Play",
 		left+14*s,top+panelH-47*s,14*s,if menu.message then gold else muted)
 	text("R / X   Close",left+14*s,top+panelH-25*s,14*s,muted)
 end
@@ -172,7 +175,7 @@ end
 local function objective(story, left, top, width, s)
 	local headline = if story.status=="active" then story.title .. "   " .. story.step .. "/" .. story.total else story.title
 	if story.raceTime then headline ..= string.format("   %d:%04.1f", math.floor(story.raceTime / 60), story.raceTime % 60) end
-	local info = if story.status=="complete" then "Mission complete" elseif story.status=="failed" then "Mission failed Â· " .. (story.objective or "") else story.objective or ""
+	local info = if story.status=="complete" then "Mission complete" elseif story.status=="failed" then "Mission failed Ã‚Â· " .. (story.objective or "") else story.objective or ""
 	local lines, line = {}, ""
 	for word in string.gmatch(info, "%S+") do
 		local nextLine = if line=="" then word else line .. " " .. word

@@ -262,6 +262,7 @@ keyboard mapping is in `app::input`.
   scattering window glass, or use any scattering opacity from 0 to 1.
   `color` sets the tint and `roughness` controls reflection sharpness.
   `world.warm("pane", look)` prepares the material before streaming windows.
+- **Generated meshes.** Call `local id, err = world.mesh(parts, opts)` from simulation code to draw a procedural mesh as one clustered entity. Each material part supplies `positions` and `normals` (equal-length lists of local vectors), and `indices` (flat, 1-based triangle triples). Optional `uvs` use `vector.create(u,v,0)` per vertex. Set `color`, `surface`, `roughness` and `metal` on each part. The entity options are `pos`, `rot`, `size`, `visible`, `tag` and `solid`. A mesh defaults to visual only. Setting `solid=true` gives it box collision; `world.heightfield` supplies ground contacts for a triangulated terrain. One mesh accepts up to 32 parts, 65,536 vertices and 196,608 indices. The aggregate live vertex and index limits are four times those per-mesh limits. Invalid geometry returns `nil, err` and preserves the scene. Move the entity with `world.place` or `world.set`. To replace its geometry, create the new mesh, check its returned ID, then remove the old entity. Removal releases its storage for reuse.
 - **Wires**: `world.spawn("wire", { points = {...}, edges = {...}, width = 0.05 })`
   is a 3D wire frame: glowing edges between points, one entity with one
   transform. `points` are vectors in the entity's own space (scaled by

@@ -103,7 +103,20 @@ export type Query = {
 
 export type Hit = { id: number, distance: number, point: Vec, normal: Vec }
 
+-- Triangle indices are 1-based. Supply a unit normal per vertex and UVs
+-- as vector.create(u,v,0). The part's material applies to all its triangles.
+export type MeshPart = {
+    positions: {Vec}, normals: {Vec}, uvs: {Vec}?, indices: {number},
+    color: Color?, surface: number?, metal: number?, roughness: number?,
+}
+
 declare world: {
+    -- One editable-world mesh entity with immutable local geometry. Removing
+    -- the entity releases its mesh. Solid uses its bounding box; use a
+    -- heightfield for a physical terrain. Each mesh can have up to 32 parts,
+    -- 65536 vertices and 196608 indices.
+    -- Returns (id,nil) or (nil,error) without modifying the world on an invalid request.
+    mesh: (parts: {MeshPart}, opts: {pos:Vec?, rot:Vec?, size:(Vec | number)?, tag:string?, solid:boolean?, visible:boolean?}?) -> (number?, string?),
 	-- A new entity; returns its id. Shapes: "cube", "sphere", "capsule",
 	-- "outline<sides>[:<width>]" (a flat hollow polygon, "outline6"), or a
 	-- glTF model in the game folder ("assets/crate.glb"). A new shape and look
@@ -252,7 +265,9 @@ declare lights: {
 -- The shared four-wheel vehicle simulation. Reset snapshots solid boxes once.
 declare vehicles: {
 	contact_profile: (name: string, bottom: number, sections: {{z:number, width:number, top:number, roofWidth:number?}}) -> (),
-	reset: (static_tag: string?) -> (),
+	reset: (static_tag: string?, exclude_ids: {number}?) -> (),
+	set_static_region: (name: string, entity_ids: {number}, boxes: {{pos: vector, size: vector, yaw: number?}}) -> (),
+	relocate: (id: number, feet: vector, yaw: number?) -> boolean,
 	spawn: (ground_pos: Vec, yaw: number?) -> number,
 	remove: (id: number) -> boolean,
 	drive: (id: number, controls: { throttle: number?, brake: number?, steer: number?, handbrake: number? }?) -> (),

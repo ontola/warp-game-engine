@@ -400,6 +400,65 @@ fn apply_wire(opts: &[(String, Value)], wire: &mut Option<Wire>) -> mlua::Result
     Ok(())
 }
 
+/// Read and validate the entire geometry before touching scene storage.
+fn mesh_parts(parts: Table) -> mlua::Result<Vec<crate::world::geometry::MeshPart>> {
+    use crate::world::geometry::{MeshPart, MAX_VERTICES, MAX_INDICES};
+    use render::cluster::Vertex;
+    if !(1..=32).contains(&parts.raw_len()) { return Err(rt("world.mesh expects 1..32 parts")); }
+    let mut result=Vec::new();
+    let (mut nv,mut ni)=(0,0);
+    for n in 1..=parts.raw_len() {
+        let part:Table=parts.raw_get(n)?;
+        let mut look=Look::default();
+        for (k,v) in options(&part, &["positions","normals","uvs","indices","color","roughness","metal","surface"], "mesh part")? {
+            look_key(&mut look,&k,&v)?;
+        }
+        if !look.color.iter().all(|v|v.is_finite()) || !look.roughness.is_finite() || !look.metal.is_finite() {
+            return Err(rt("mesh material must be finite"));
+        }
+        let positions:Table=part.raw_get("positions")?;
+        let normals:Table=part.raw_get("normals")?;
+        let uvs:Option<Table>=part.raw_get("uvs")?;
+        let indices:Table=part.raw_get("indices")?;
+        let (count,faces)=(positions.raw_len(),indices.raw_len());
+        if count<3 || faces<3 || faces%3!=0 || normals.raw_len()!=count || uvs.as_ref().is_some_and(|t|t.raw_len()!=count) {
+            return Err(rt("mesh needs matching positions and normals (and optional UVs), and index triples"));
+        }
+        nv+=count; ni+=faces;
+        if nv>MAX_VERTICES || ni>MAX_INDICES { return Err(rt("world.mesh geometry budget exceeded")); }
+        let mut vertices=Vec::with_capacity(count);
+        for i in 1..=count {
+            let pos=vec3(&positions.raw_get(i)?,"mesh position")?;
+            let norm=vec3(&normals.raw_get(i)?,"mesh normal")?.try_normalize().ok_or_else(||rt("invalid mesh normal"))?;
+            let uv=match &uvs {
+                None => [0.,0.],
+                Some(t) => {
+                    let v=vec3(&t.raw_get(i)?,"mesh UV vector")?;
+                    [v.x,v.y]
+                }
+            };
+            if !pos.is_finite() || pos.abs().max_element()>1_000_000. || !uv.iter().all(|v|v.is_finite() && v.abs()<=1_000_000.) {
+                return Err(rt("invalid mesh position or UV"));
+            }
+            vertices.push(Vertex{pos:pos.to_array(),normal:norm.to_array(),uv});
+        }
+        let mut triangles=Vec::with_capacity(faces);
+        for i in 1..=faces {
+            let v:f64=indices.raw_get(i)?;
+            if !(1.0..=count as f64).contains(&v) || v.fract()!=0. { return Err(rt("mesh indices must reference 1-based vertices")); }
+            triangles.push(v as u32-1);
+        }
+        for face in triangles.chunks_exact(3) {
+            let point=|i:u32| Vec3::from(vertices[i as usize].pos);
+            if (point(face[1])-point(face[0])).cross(point(face[2])-point(face[0])).length_squared()==0. {
+                return Err(rt("degenerate mesh triangle"));
+            }
+        }
+        result.push(MeshPart{vertices,indices:triangles,look});
+    }
+    Ok(result)
+}
+
 /// A look's keys (color, emissive, roughness, metal, surface); false for any other key.
 fn look_key(look: &mut Look, k: &str, v: &Value) -> mlua::Result<bool> {
     match k {
@@ -690,6 +749,26 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
     ])?;
 
     table("world", vec![
+        ("mesh", f!(core, move |_, (parts,opts): (Value,Value)| {
+            let mut c=lock(&core);
+            let spawn = || -> mlua::Result<u32> {
+                sim(&c,"world.mesh")?;
+                let Value::Table(parts)=parts else {return Err(rt("world.mesh expects a list of parts"));};
+                let mut s=Spawn { solid:false,..Default::default() };
+                if let Value::Table(t)=opts {
+                    let opts=options(&t,&["pos","rot","size","solid","visible","tag"],"world.mesh")?;
+                    apply(&opts,&mut s.shape,&mut s.look,&mut s.pos,&mut s.rot,&mut s.size,&mut s.solid,&mut s.visible,&mut s.shadow_only,&mut s.tag)?;
+                    if !s.pos.is_finite() || !s.rot.is_finite() || !s.size.is_finite() { return Err(rt("mesh transform must be finite")); }
+                } else if !opts.is_nil() {
+                    return Err(rt("world.mesh expects an options table"));
+                }
+                c.world.add_geometry(mesh_parts(parts)?,s).map_err(rt)
+            };
+            Ok(match spawn() {
+                Ok(id) => (Some(id),None),
+                Err(err) => (None,Some(err.to_string())),
+            })
+        })),
         ("spawn", f!(core, move |_, (name, opts, parent): (String, Option<Table>, Option<u32>)| {
             let mut s = Spawn { parent, shape: shape(&name)?, ..Default::default() };
             if let Some(t) = opts {

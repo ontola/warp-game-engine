@@ -23,7 +23,30 @@ local function position(p)
 	local x,y,z
 	if typeof(p)=="vector" then x,y,z=p.x,p.y,p.z
 	elseif plain(p) then
-		if rawget(p,"x")~=nil then
+		if type(rawget(p,"place"))=="string" then
+			local name,g=p.place,rawget(p,"index")
+			for k in next,p do if k~="place" and k~="offset" and (k~="index" or name~="rallyGate") then return nil end end
+			local data=cape.layout()
+			local at
+			if name=="rallyGate" then
+				if not number(g,1,#data.rally.gates) or g%1~=0 then return nil end
+				at=data.rally.gates[g]
+			elseif name=="rallyStart" then at=data.rally.start
+			else at=rawget(data.places,name) end
+			if not at then return nil end
+			x,y,z=at[1],0,at[2]
+			local offset=rawget(p,"offset")
+			if offset~=nil then
+				if not list(offset,2,false) or #offset~=2 or
+					not number(offset[1],-512,512) or not number(offset[2],-512,512) then return nil end
+				local nx,nz=1,0
+				if name=="ferryTerminal" then
+					local _,_,east,south=cape.shoreFrame(x,z)
+					nx,nz=east,south
+				end
+				x,z=x+nx*offset[1]-nz*offset[2],z+nz*offset[1]+nx*offset[2]
+			end
+		elseif rawget(p,"x")~=nil then
 			for k in next,p do if k~="x" and k~="y" and k~="z" then return nil end end
 			x,y,z=rawget(p,"x"),rawget(p,"y"),rawget(p,"z")
 		elseif list(p,3,false) and #p==3 then x,y,z=p[1],p[2],p[3] end
@@ -44,6 +67,11 @@ local function value(t,kind)
 	elseif kind=="weapon" then return if weapons.exists(t) then t else nil
 	elseif kind=="weaponParams" then return weapons.parameters(t)
 	elseif kind=="look" then return if number(t,0,71) and t%1==0 then t else nil
+	elseif kind=="route" then return if t=="rally" then t else nil
+	elseif kind=="notes" then
+		if not list(t,63,true) then return nil end
+		for _,note in t do if not text(note,140) then return nil end end
+		return t
 	elseif kind=="paint" then return if t=="ochre" or t=="teal" or t=="pearl" or t=="vermilion" then t else nil
 	elseif kind=="seat" then return if t=="driver" or t=="passenger" then t else nil
 	elseif kind=="speed" then return if number(t,.2,22) then t else nil
@@ -102,6 +130,44 @@ local actions={
 }
 for _, spec in actions do spec.op="key"; spec.text="text" end
 
+-- Expand a race route before it reaches the ordinary swept checkpoint logic.
+local routeFields={op="key",route="route",car="key?",radius="radius?",text="text",finish="text?",notes="notes?"}
+local function anchored(p)
+	return plain(p) and type(rawget(p,"place"))=="string"
+end
+
+local function expand(raw)
+	local steps,origins={},{}
+	local usesMap=false
+	for i,step in raw.steps do
+		if plain(step) and rawget(step,"op")=="race_route" then
+			local group,err=read(step,routeFields,"steps["..i.."]")
+			if not group then return nil,err end
+			usesMap=true
+			local rally=cape.layout().rally
+			local gates=rally.gates
+			if #steps+#gates>64 then return nil,"A story can contain at most 64 expanded steps" end
+			for n=1,#gates do
+				local note=if n==#gates and group.finish then group.finish else (group.notes and group.notes[n]) or group.text
+				table.insert(steps,{op="checkpoint",pos={place="rallyGate",index=n},car=group.car,radius=group.radius,text=note})
+				table.insert(origins,{i,rally.gateBends[n]})
+			end
+		else
+			if #steps==64 then return nil,"A story can contain at most 64 expanded steps" end
+			table.insert(steps,step)
+			table.insert(origins,{i,1})
+			if plain(step) then
+				if anchored(rawget(step,"pos")) then usesMap=true end
+				local points=rawget(step,"points")
+				if list(points,32,false) then
+					for _,p in points do if anchored(p) then usesMap=true; break end end
+				end
+			end
+		end
+	end
+	return steps,origins,usesMap
+end
+
 function schema.validate(raw)
 	if not plain(raw) then return nil,"Story must be a table" end
 	for key in next,raw do
@@ -111,6 +177,8 @@ function schema.validate(raw)
 	if not id or not title then return nil,"Story needs an id and a title" end
 	if not list(raw.cast,12,true) then return nil,"cast must be a dense list of up to 12 actors" end
 	if not list(raw.steps,64,false) then return nil,"steps must contain 1 to 64 ordered actions" end
+	local steps,origins,usesMap=expand(raw)
+	if not steps then return nil,origins end
 	local out={id=id,title=title,cast={},steps={}}
 	local kinds, riding,occupied = {},{},{}
 	local people,cars=0,0
@@ -120,14 +188,18 @@ function schema.validate(raw)
 		if type(kind)~="string" or not actors[kind] then return nil,path.." needs kind person or car" end
 		local a,err=read(actor,actors[kind],path)
 		if not a then return nil,err end
+		if anchored(actor.pos) then
+			usesMap=true
+			if not a.yaw and actor.pos.place=="rallyStart" then a.yaw=cape.layout().rally.yaw end
+		end
 		if kinds[a.key] then return nil,path.." duplicates "..a.key end
 		kinds[a.key]=a.kind
 		if a.kind=="person" then people+=1 else cars+=1 end
 		if people>8 or cars>4 then return nil,"A story supports up to 8 people and 4 cars" end
 		table.insert(out.cast,a)
 	end
-	for i=1,#raw.steps do
-		local step,path=raw.steps[i],"steps["..i.."]"
+	for i=1,#steps do
+		local step,path=steps[i],"steps["..origins[i][1].."]"
 		local op=if plain(step) then rawget(step,"op") else nil
 		if type(op)~="string" or not actions[op] then return nil,path.." has an unknown action" end
 		local a,err=read(step,actions[op],path)
@@ -151,6 +223,7 @@ function schema.validate(raw)
 		elseif op=="walk" and riding[a.person] then return nil,path.." cannot walk while riding" end
 		table.insert(out.steps,a)
 	end
+	if usesMap then out.mapSource,out.origins=raw,origins end
 	return out
 end
 return schema

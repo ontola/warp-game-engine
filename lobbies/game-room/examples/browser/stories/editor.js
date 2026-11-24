@@ -5,6 +5,7 @@ const code = editor.querySelector('textarea');
 const feedback = editor.querySelector('output');
 const run = editor.querySelector('[data-run]');
 const restore = editor.querySelector('[data-reset]');
+const layoutSelected = () => templates.selectedOptions[0]?.dataset.kind === 'layout';
 let game, sample, module, runtime, activeFile, generation = 0, busy = false;
 let draft = new Map();
 const key = file => 'warp-story:' + game + ':' + file;
@@ -18,6 +19,7 @@ async function loadTemplate() {
   activeFile = null;
   run.disabled = restore.disabled = true;
   feedback.textContent = '';
+  run.textContent = layoutSelected() ? 'Apply layout' : 'Run story';
   if (!file) return;
   try {
     const path = './games/' + encodeURIComponent(game) + '/' + encodeURIComponent(file);
@@ -49,9 +51,15 @@ async function session() {
     if (generation !== token) return;
     for (const item of entries) {
       if (files.includes(item.file) && /^[a-z0-9_]+\.module\.luau$/.test(item.file)) {
-        templates.add(new Option(item.title,item.file));
+        const option = new Option(item.title, item.file);
+        if (item.kind === 'layout') option.dataset.kind = 'layout';
+        templates.add(option);
       }
     }
+    const hasLayout = Boolean(templates.querySelector('option[data-kind="layout"]'));
+    const name = hasLayout ? 'Luau stories & map' : 'Luau stories';
+    trigger.textContent = name + ' · F2';
+    editor.querySelector('h2').textContent = name;
     trigger.hidden = !templates.length;
   } catch {}
 }
@@ -77,7 +85,8 @@ async function play() {
   if (busy || run.disabled || !activeFile) return;
   const token = generation, owner = game;
   busy = run.disabled = templates.disabled = restore.disabled = true;
-  feedback.textContent = 'Starting story…'; save();
+  const isLayout = layoutSelected();
+  feedback.textContent = isLayout ? 'Applying layout…' : 'Starting story…'; save();
   try {
     const definition = await evaluate(code.value);
     if (token !== generation) return;
@@ -88,7 +97,7 @@ async function play() {
       if (raw) {
         const reply = JSON.parse(raw);
         if (reply.error) throw Error(reply.error);
-        feedback.textContent = 'Playing ' + reply.title;
+        feedback.textContent = isLayout ? 'Applied ' + reply.title : 'Playing ' + reply.title;
         close();
         return;
       }

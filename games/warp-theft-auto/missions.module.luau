@@ -3,6 +3,7 @@
 local missions={validate=require("story_schema").validate}
 local util=require("kit/util")
 local explosions=require("explosions")
+local models=require("vehicles")
 local weapons=require("weapon_catalog")
 missions.warm=require("sidearm").warm
 
@@ -46,6 +47,46 @@ function missions.start(definition,fleet,cast,ownerId,avatars)
 	m.run={definition=definition}
 	enterStep(m,cast)
 	return m
+end
+
+-- Rebind an active story's named positions in place, keeping crew, clock and gate progress.
+function missions.layoutChanged(m,cast)
+	if not m or m.status~="active" or not m.run then return end
+	local prior=m.run.definition
+	if not prior.mapSource then return end
+	local nextDef,err=missions.validate(prior.mapSource)
+	if not nextDef then
+		finish(m,"failed","The edited map no longer supports this story: "..err)
+		return
+	end
+	local original=prior.origins[m.step]
+	local step=#nextDef.steps
+	for i,at in nextDef.origins do
+		if at[1]>original[1] or (at[1]==original[1] and at[2]>=original[2]) then
+			step=i
+			break
+		end
+	end
+	for i,actor in nextDef.cast do
+		local car=cast.cars[actor.key]
+		-- Leave a crew's moving car where it is. Follow the start anchor while it waits for pickup.
+		if car and not car.owner and not car.wrecked and math.abs(car.speed)<1 and
+			vector.magnitude(util.flat(car.pos-prior.cast[i].pos))<1.5 and
+			(actor.pos~=prior.cast[i].pos or actor.yaw~=prior.cast[i].yaw) then
+			vehicles.relocate(car.native,actor.pos,actor.yaw)
+			models.sync(car)
+		end
+	end
+	local prevAction=prior.steps[m.step]
+	local action=nextDef.steps[step]
+	local targetChanged=prevAction.pos~=action.pos
+	if action.points then
+		for i,p in action.points do
+			if not prevAction.points or prevAction.points[i]~=p then targetChanged=true; break end
+		end
+	end
+	m.run.definition,m.step,m.total=nextDef,step,#nextDef.steps
+	if targetChanged or action.op=="enter" then enterStep(m,cast) end
 end
 
 function missions.stop(m,cast)

@@ -18,5 +18,10 @@
   {
     "title": "Custom loadout",
     "file": "story_loadout.module.luau"
+  },
+  {
+    "title": "West Cape layout",
+    "file": "west_cape_layout.module.luau",
+    "kind": "layout"
   }
 ]

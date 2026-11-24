@@ -1,5 +1,6 @@
 local city = require("world")
 local cape = require("west-cape")
+local map = require("map_edit")
 local mobility = require("mobility")
 local interiors = require("interiors")
 local traffic = require("traffic")
@@ -23,7 +24,8 @@ end
 local function init()
 	fx.warm_explosions()
 	state.seed = random.int(1, 1000000)
-	state.city = city.build(state.seed)
+	local layout, baked = map.initial(state)
+	state.city = city.build(state.seed, layout, baked)
 	state.fleet = mobility.new(state.city)
 	state.interiors = interiors.new(state.city.buildings)
 	traffic.add(state.fleet)
@@ -86,11 +88,15 @@ end
 return {
 	init = init, tick = tick, draw = draw, player_joined = join,
 	reload = function()
+		map.reload(state)
 		traffic.reload(state.fleet)
 		drivers.bind(state.fleet,state.population)
 		combat.reload(state)
 	end,
+	get_layout = function() return map.definition(state) end,
+	apply_layout = function(definition) return map.apply(state, definition) end,
 	apply_story = function(definition)
+		if definition.kind == "west-cape-layout" then return map.apply(state, definition) end
 		local title, err = stories.start(state, definition)
 		if title then waypoint.update(state) end
 		return title, err

@@ -20,10 +20,17 @@ pub(crate) fn read_dents(rows: Table) -> mlua::Result<Vec<kern::crush::Dent>> {
 pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
     let t = lua.create_table()?;
     let c = core.clone();
-    t.set("reset", lua.create_function(move |_, tag: Option<String>| {
+    t.set("reset", lua.create_function(move |_, (tag, exclude): (Option<String>, Option<Table>)| {
         let mut c = lock(&c);
         sim(&c, "vehicles.reset")?;
-        let solids = c.world.entities.values().filter(|e| e.solid && tag.as_ref().is_none_or(|name| name == &e.tag));
+        let mut excluded = std::collections::BTreeSet::new();
+        if let Some(ids) = exclude {
+            if ids.raw_len() > c.world.capacity() { return Err(error("too many excluded statics")); }
+            for id in ids.sequence_values::<u32>() { excluded.insert(id?); }
+        }
+        let solids = c.world.entities.iter().filter_map(|(id, e)| {
+            (e.solid && !excluded.contains(id) && tag.as_ref().is_none_or(|name| name == &e.tag)).then_some(e)
+        });
         let mut fields = Vec::new();
         let mut fleet = Fleet::new(solids.filter_map(|e| {
             if let Some(field) = e.terrain() { fields.push(field); None } else { Some(e.bounds()) }
@@ -31,6 +38,35 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
         for field in fields { fleet.add_heightfield(field); }
         c.world.fleet = Some(fleet);
         Ok(())
+    })?)?;
+    let c = core.clone();
+    t.set("set_static_region", lua.create_function(move |_, (name, ids, extra): (String, Table, Table)| {
+        let mut c = lock(&c);
+        sim(&c, "vehicles.set_static_region")?;
+        if ids.raw_len() > c.world.capacity() || extra.raw_len() > 8192 {
+            return Err(error("too many vehicle region colliders"));
+        }
+        let mut boxes = Vec::with_capacity(extra.raw_len() + ids.raw_len());
+        let mut grids = Vec::new();
+        let mut used = std::collections::BTreeSet::new();
+        for id in ids.sequence_values::<u32>() {
+            let id = id?;
+            if !used.insert(id) { return Err(error("duplicate region entity")); }
+            let e = c.world.entities.get(&id).filter(|e| e.solid).ok_or_else(|| error("region needs live solid entities"))?;
+            if let Some(grid) = e.terrain() { grids.push(grid); } else { boxes.push(e.bounds()); }
+        }
+        for row in extra.sequence_values::<Table>() {
+            let row = row?;
+            let pos = vec3(&row.raw_get("pos")?, "region box position")?;
+            let size = vec3(&row.raw_get("size")?, "region box size")?;
+            let yaw = row.raw_get::<Option<f32>>("yaw")?.unwrap_or_default();
+            if !pos.is_finite() || !size.is_finite() || size.min_element() <= 0. || !yaw.is_finite() {
+                return Err(error("region box needs a finite pose and positive size"));
+            }
+            boxes.push(kern::collide::YawBox {center: pos, half: size * 0.5, yaw});
+        }
+        c.world.fleet.as_mut().ok_or_else(|| error("call vehicles.reset before set_static_region"))?
+            .set_static_region(&name, boxes, grids).map_err(|e| error(&e))
     })?)?;
     let c = core.clone();
     t.set("contact_profile", lua.create_function(move |_, (name, bottom, list): (String, f32, Table)| {
@@ -58,6 +94,14 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
         let fleet = c.world.fleet.as_mut().ok_or_else(|| error("call vehicles.reset before spawn"))?;
         if fleet.count() >= capacity { return Err(error("vehicles.spawn exceeds max_entities")); }
         Ok(fleet.spawn(CarSpec::compact(), p, yaw))
+    })?)?;
+    let c = core.clone();
+    t.set("relocate", lua.create_function(move |_, (id, pos, yaw): (u32, Value, Option<f32>)| {
+        let feet = vec3(&pos, "vehicle position")?;
+        if !feet.is_finite() || yaw.is_some_and(|v| !v.is_finite()) { return Err(error("vehicle pose must be finite")); }
+        let mut c = lock(&c);
+        sim(&c, "vehicles.relocate")?;
+        Ok(c.world.fleet.as_mut().is_some_and(|f| f.relocate(id, feet, yaw)))
     })?)?;
     let c = core.clone();
     t.set("remove", lua.create_function(move |_, id: u32| {

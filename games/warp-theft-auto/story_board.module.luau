@@ -58,6 +58,10 @@ function board.input(state, input)
 	end
 end
 
+function board.layoutChanged(state)
+	missions.layoutChanged(state.story,state.storyCast)
+end
+
 function board.tick(state, dt, input)
 	if not state.story then return end
 	missions.tick(state.story, state.fleet, state.storyCast, dt, input)

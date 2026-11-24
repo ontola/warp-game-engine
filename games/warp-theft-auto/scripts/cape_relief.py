@@ -1,62 +1,5 @@
-"""Shared elevation triangles for the Mariner Wood crest and the switchback trail."""
+"""Split scenery triangles against a terrain grid resolved by the game in Luau."""
 import math
-
-
-X, Z, SPACING, COLUMNS, ROWS = -1024, -160, 32, 20, 11
-
-
-def generate():
-    """Quantise metres once, then use the same samples in the GLB and in Warp."""
-    samples = []
-    for j in range(ROWS):
-        for i in range(COLUMNS):
-            x, z = X+i*SPACING, Z+j*SPACING
-            edge = min(i, j, COLUMNS-1-i, ROWS-1-j)
-            fade = min(1, edge/2)
-            fade = fade*fade*(3-2*fade)
-            hills = 0
-            for cx, cz, wx, wz, h in [(-706,-64,109,62,37),(-865,66,82,77,42),
-                                       (-561,42,67,55,15),(-950,-62,65,50,12)]:
-                hills += h * math.exp(-((x-cx)/wx)**2 - ((z-cz)/wz)**2)
-            samples.append(round(hills*fade*4)/4)
-    # Limit the rise between samples in every compass direction. The resulting
-    # grade is suitable for a road car on gravel, even at the short hairpins.
-    graded = []
-    for i in range(len(samples)):
-        dst = min(h+8*math.hypot(i%COLUMNS-j%COLUMNS,i//COLUMNS-j//COLUMNS)
-                  for j,h in enumerate(samples))
-        graded.append(round(dst*4)/4)
-    return graded
-
-
-HEIGHTS = generate()
-
-
-def cell(x,z):
-    u, v = (x-X)/SPACING, (z-Z)/SPACING
-    i, j = math.floor(u), math.floor(v)
-    if not (0<=i<COLUMNS-1 and 0<=j<ROWS-1):
-        return None
-    return j*COLUMNS+i, u-i, v-j
-
-
-def height(x,z):
-    local = cell(x,z)
-    if local is None:
-        return 0.
-    k, fx, fz = local
-    a,b,c,d = HEIGHTS[k],HEIGHTS[k+1],HEIGHTS[k+COLUMNS],HEIGHTS[k+COLUMNS+1]
-    if fx+fz<=1:
-        return a+(b-a)*fx+(c-a)*fz
-    return d+(c-d)*(1-fx)+(b-d)*(1-fz)
-
-
-def smooth_normal(x,z):
-    # Soft rolling ground lighting across the exact, coarser collision triangles.
-    nx = (height(x-6,z)-height(x+6,z))/12
-    nz = (height(x,z-6)-height(x,z+6))/12
-    length = math.sqrt(nx*nx+1+nz*nz)
-    return (nx/length,1/length,nz/length)
 
 
 def split(poly, nx, nz, d):
@@ -78,29 +21,61 @@ def split(poly, nx, nz, d):
     return [p for p in (low,high) if len(p)>=3]
 
 
-def lift(poly):
-    """Split roads, paint and terrain at the same cell edges and diagonals.
+class Terrain:
+    def __init__(self, data):
+        self.x, self.z, self.spacing = data["x"], data["z"], data["spacing"]
+        self.columns, self.rows, self.heights = data["columns"], data["rows"], data["heights"]
 
-    Each resulting triangle lies on the collision surface with its original
-    paint height. The flat coastline outside this inland patch stays untouched.
-    """
-    xmin,xmax=min(p[0] for p in poly),max(p[0] for p in poly)
-    zmin,zmax=min(p[2] for p in poly),max(p[2] for p in poly)
-    if xmax<=X or xmin>=X+(COLUMNS-1)*SPACING or zmax<=Z or zmin>=Z+(ROWS-1)*SPACING:
-        yield poly, None
-        return
-    parts = [poly]
-    for axis,minp,maxp,base,count in [(0,xmin,xmax,X,COLUMNS),(2,zmin,zmax,Z,ROWS)]:
-        for i in range(max(0,math.ceil((minp-base)/SPACING)),min(count-1,math.floor((maxp-base)/SPACING))+1):
-            parts = [q for p in parts for q in split(p,int(axis==0),int(axis==2),base+i*SPACING)]
-    for part in parts:
-        x=sum(p[0] for p in part)/len(part)
-        z=sum(p[2] for p in part)/len(part)
-        local=cell(x,z)
+    def cell(self,x,z):
+        u, v = (x-self.x)/self.spacing, (z-self.z)/self.spacing
+        i, j = math.floor(u), math.floor(v)
+        if not (0<=i<self.columns-1 and 0<=j<self.rows-1):
+            return None
+        return j*self.columns+i, u-i, v-j
+
+
+    def height(self,x,z):
+        local = self.cell(x,z)
         if local is None:
-            yield part, None
-            continue
-        k=local[0]
-        diagonal=X+Z+(k%COLUMNS+k//COLUMNS+1)*SPACING
-        for patch in split(part,1,1,diagonal):
-            yield [(px,y+height(px,pz),pz) for px,y,pz in patch],[smooth_normal(px,pz) for px,_,pz in patch]
+            return 0.
+        k, fx, fz = local
+        a,b,c,d = self.heights[k],self.heights[k+1],self.heights[k+self.columns],self.heights[k+self.columns+1]
+        if fx+fz<=1:
+            return a+(b-a)*fx+(c-a)*fz
+        return d+(c-d)*(1-fx)+(b-d)*(1-fz)
+
+
+    def smooth_normal(self,x,z):
+        # Soft rolling ground lighting across the exact, coarser collision triangles.
+        nx = (self.height(x-6,z)-self.height(x+6,z))/12
+        nz = (self.height(x,z-6)-self.height(x,z+6))/12
+        length = math.sqrt(nx*nx+1+nz*nz)
+        return (nx/length,1/length,nz/length)
+
+
+    def lift(self,poly):
+        """Split roads, paint and terrain at the same cell edges and diagonals.
+
+        Each resulting triangle lies on the collision surface with its original
+        paint height. The flat coastline outside this inland patch stays untouched.
+        """
+        xmin,xmax=min(p[0] for p in poly),max(p[0] for p in poly)
+        zmin,zmax=min(p[2] for p in poly),max(p[2] for p in poly)
+        if xmax<=self.x or xmin>=self.x+(self.columns-1)*self.spacing or zmax<=self.z or zmin>=self.z+(self.rows-1)*self.spacing:
+            yield poly, None
+            return
+        parts = [poly]
+        for axis,minp,maxp,base,count in [(0,xmin,xmax,self.x,self.columns),(2,zmin,zmax,self.z,self.rows)]:
+            for i in range(max(0,math.ceil((minp-base)/self.spacing)),min(count-1,math.floor((maxp-base)/self.spacing))+1):
+                parts = [q for p in parts for q in split(p,int(axis==0),int(axis==2),base+i*self.spacing)]
+        for part in parts:
+            x=sum(p[0] for p in part)/len(part)
+            z=sum(p[2] for p in part)/len(part)
+            local=self.cell(x,z)
+            if local is None:
+                yield part, None
+                continue
+            k=local[0]
+            diagonal=self.x+self.z+(k%self.columns+k//self.columns+1)*self.spacing
+            for patch in split(part,1,1,diagonal):
+                yield [(px,y+self.height(px,pz),pz) for px,y,pz in patch],[self.smooth_normal(px,pz) for px,_,pz in patch]

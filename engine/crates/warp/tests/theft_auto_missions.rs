@@ -258,3 +258,68 @@ fn road_deaths_fail_required_cast_only_and_never_award_a_contract_shot() {
         }
     }
 }
+
+
+#[test]
+fn edited_rally_keeps_the_active_turn_and_clock_when_checkpoint_flags_change() {
+    let mut g=load();
+    let rally=include_str!("../../../../games/warp-theft-auto/story_rally.module.luau");
+    g.apply_story(rally).unwrap();
+    eval(&mut g,r#"
+        local car=state.storyCast.cars.kestrel
+        state.rallyCar=car.native
+        local old=car.pos
+        local edit=get_layout()
+        edit.rally.carAlong+=4
+        assert(apply_layout(edit))
+        assert(car.native==state.rallyCar and vector.magnitude(car.pos-old)>3.5)
+        assert(vector.magnitude(state.story.target-car.pos)<.1)
+        world.place(state.fleet.players[1].body,car.pos+vector.create(1.6,.85,0))
+    "#);
+    advance(&mut g,Controls::default(),2);
+    advance(&mut g,press(Buttons::NORTH),1);
+    advance(&mut g,Controls::default(),5);
+    eval(&mut g,r#"
+        local story=state.story
+        assert(story.step==2 and story.raceTime>0)
+        local first,timer=story.target,story.raceTime
+        local edit=get_layout()
+        edit.rally.bends[2][3]=1
+        assert(apply_layout(edit))
+        assert(story.total==13 and story.step==3 and story.target==first)
+        assert(story.raceTime==timer and state.storyCast.cars.kestrel.native==state.rallyCar)
+        edit.rally.bends[3][3]=nil
+        assert(apply_layout(edit))
+        assert(story.total==12 and story.step==3 and vector.magnitude(story.target-first)>20)
+        assert(story.raceTime==timer and state.fleet.players[1].vehicle==state.storyCast.cars.kestrel.index)
+        local oldCape=state.city.cape
+        local count=world.count()
+        edit.groves={}
+        for i=1,16 do table.insert(edit.groves,{-695,-60,250,250}) end
+        local accepted,err=apply_layout(edit)
+        assert(not accepted and err and state.city.cape==oldCape and world.count()==count)
+    "#);
+}
+
+#[test]
+fn a_moved_ferry_carries_the_ship_dispatch_and_passenger_route_together() {
+    let mut g=load();
+    g.apply_story(PASSENGER).unwrap();
+    eval(&mut g,r#"
+        local hull=state.city.ferry
+        local home=world.get(hull).pos
+        assert(vector.magnitude(home-vector.create(210,0,46))<.01)
+        local edit=get_layout()
+        edit.places.ferryTerminal={164.5,-52}
+        assert(apply_layout(edit))
+        assert(hull==state.city.ferry)
+        local ship=world.get(hull).pos
+        assert(vector.magnitude(ship-vector.create(210,0,-65))<.01)
+        local ferry=state.job.stops.drive[2]
+        assert(ferry.name=="Ferry Terminal" and ferry.pos.z==-52)
+        local steps=state.story.run.definition.steps
+        assert(steps[3].pos==vector.create(109,0,-51))
+        assert(steps[4].points[1]==vector.create(120,0,-49))
+        assert(steps[4].points[2]==vector.create(120,0,-38))
+    "#);
+}

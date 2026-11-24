@@ -28,7 +28,7 @@ A new round generates a new city seed. Pass `--seed 1948` to replay a layout. Th
 | Walk and look | WASD, mouse | Left and right sticks |
 | Sprint | Shift | RB |
 | Stories | R, arrows and Space | X, D-pad and A |
-| Edit a Luau story in the browser | F2 | |
+| Edit a Luau story or West Cape in the browser | F2 | |
 | Weapon wheel on foot | Hold Q, point with the mouse or use the left/right arrows, release Q to equip | Hold LB, point with the right stick or use the D-pad, release LB |
 | Aim and fire the equipped weapon on foot | Hold right mouse to aim, left-click or tap Space to fire | LT and RT |
 | Take a vehicle or get out | F | Y / North |
@@ -56,6 +56,22 @@ Rook and Vex patrol across the starting intersection under red chevrons. They ta
 Gold diamonds follow the current person or car in the world. At a destination, a gold ring shows where to stop or land. Race checkpoints add four tall posts around the crossing area. Every seat sees the same objective, including when a custom Luau story moves its target.
 
 The first **Harbor Transfer** takes a car to the Ferry Terminal, a helicopter to West Field, and a player on foot to Lido Gardens. Any crew member can handle the next leg. Stop at a driving destination and set the skids down at a landing point. A handoff pays the crew $750. Later contracts mark a specific car for recovery wherever the last driver left it. Free roam stays available throughout.
+
+## Edit West Cape in Luau
+
+Press **F2**, select **West Cape layout**, then choose **Apply layout**. The template is the [authored map](west_cape_layout.module.luau). Positions are metres in the X/Z plane, with north towards negative Z. For a first edit, change the rally bend `{-738,-52,4}` to `{-746,-52,4}`. The last number attaches a checkpoint to the bend. Apply the edit and drive through the new turn. **Restore template**, then **Apply layout**, reinstates the published map. **Save .luau** exports a draft.
+
+The definition includes coast slices, the connection to Exchange Avenue, asphalt and gravel bends and widths, hills, forest stands and named places. Moving `places.ferryTerminal` moves the moored ferry and redirects the passenger and dispatch missions. The game rebuilds the affected terrain, road surfaces, collision, tyre grip, minimap and rally positions in the running session. All local seats share the edit. Coast slices meet Port Meridian at its western edge. The grain-field pattern and woodland ground tint are painted in the terrain shader. The city's 36-block street grid is authored separately in [the city generator](world.module.luau).
+
+On desktop, edit the same file while the game is running, or use the live Luau console:
+
+```luau
+local map = get_layout()
+map.rally.bends[6][1] -= 8
+return apply_layout(map)
+```
+
+Shipping builds can use a prebuilt mesh. Run `python games/warp-theft-auto/scripts/bake_west_cape.py` after settling on a design, then `--check` to verify it. The exporter runs the Luau definition and compiler and records the geometry signature alongside the mesh. Edits with a different geometry signature use the live mesh builder.
 
 ## Write and play a story
 
