@@ -121,6 +121,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
 
 ## Trees and the GPU forest
 
+- [Foliage card coverage across tree species](2026-11-24-foliage-card-coverage.md)
 - [Vegetation work by distance, r31](vegetation-distance-budget.md)
 - [Vegetation source LOD and volume work, r32](vegetation-optimization-r32.md)
 - [Forest fullness and current-frame culling, r38](forest-occlusion-r38.md)

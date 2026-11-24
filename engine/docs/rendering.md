@@ -305,6 +305,9 @@ next draw on the same grid.
   procedural meadow and clustered source trees with alpha-tested crowns,
   plus a distant forest. Distant trees freeze to their rest pose between
   60 and 90 m.
+  The recipe forest’s baked mesh fits each leaf to its own plane. A thick
+  needle cluster also gets a side projection to preserve the crown from
+  different camera angles. A flat leaf uses one quad. [Tree measurements](log/2026-11-24-foliage-card-coverage.md)
 - **Buildings:** static opaque structures (`GeometryCategory::Structures`)
   occlude like terrain; `terrain_fly --town` puts them on zoned plots.
 
