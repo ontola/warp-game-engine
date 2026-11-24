@@ -94,7 +94,8 @@ local KNOBS = {
 -- dead are Warp Humans (the rest stay box figures), and the materials take
 -- the flat path (SURFACE_LOW_DETAIL in surface.wgsl). WARP_PHONE=1 on a
 -- desktop tries it.
-local PHONE = game.phone()
+-- (An engine from before game.phone, the app's host can lag /play/: no tier.)
+local PHONE = if (game :: any).phone then game.phone() else false
 local MAX_SPOTS = if PHONE then 3 else 8
 local MAX_DEAD_HUMANS = if PHONE then 8 else math.huge
 
