@@ -117,6 +117,21 @@ html[data-empty][data-key-hint] #club-notice strong{animation:nod .9s ease}
 #fullscreen:hover{opacity:1}
 html[data-windowed] #fullscreen{display:flex}
 html[data-windowed][data-calm] #fullscreen{opacity:.35}
+/* The engine stopped (a panic): say so instead of a frozen page. */
+#warp-crash{position:fixed;inset:0;z-index:5;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;text-align:center;background:rgba(10,12,24,.94);color:var(--text)}
+#warp-crash[hidden],#warp-gpu-problem[hidden]{display:none}
+#warp-crash strong{font-size:clamp(22px,3vw,32px);font-weight:800}
+#warp-crash p{margin:0;color:var(--muted);max-width:36rem}
+#warp-crash code{max-width:min(48rem,90vw);max-height:30vh;overflow:auto;font:12px monospace;color:#cfd3ff;background:rgba(255,255,255,.06);padding:10px 12px;border-radius:10px;white-space:pre-wrap;text-align:left}
+#warp-crash div{display:flex;gap:12px}
+#warp-crash button,#warp-crash a{font:800 16px Outfit,system-ui;padding:10px 18px;border-radius:12px;border:0;cursor:pointer;text-decoration:none}
+#warp-crash button{background:var(--violet);color:#0d1020}
+#warp-crash a{background:rgba(255,255,255,.1);color:var(--text)}
+/* The browser could not build part of the picture. */
+#warp-gpu-problem{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:4;max-width:calc(100vw - 32px);box-sizing:border-box;padding:12px 18px;border-radius:14px;background:rgba(13,16,32,.9);border:1px solid rgba(255,180,84,.4);color:var(--text);font-size:14px}
+/* A controller seen while loading. */
+#pad-hint.found{border-color:rgba(255,180,84,.5)}
+#pad-hint.ready{border-color:rgba(80,220,140,.6);background:rgba(80,220,140,.12)}
 #warp-log{display:none;position:fixed;left:8px;bottom:8px;white-space:pre-wrap;max-width:90vw;max-height:40vh;overflow:hidden;pointer-events:none;font:12px monospace;color:#ddd;text-shadow:0 0 3px #000;z-index:3}
 #warp-games{display:none!important}
 body.debug #warp-log{display:block}
@@ -140,7 +155,7 @@ body.debug #warp-games{display:flex!important}
     <nav id="web-game-links" aria-label="Play a game directly" hidden></nav>
   </div>
   <ul class="hints">
-    <li><b>Controller</b> press A to join</li>
+    <li id="pad-hint"><b>Controller</b> <span>press A to join</span></li>
     <li class="phone"><b>Phone</b> scan the code on the wall</li>
   </ul>
   <div id="warp-join" hidden><div id="warp-qr"></div><div><strong>Join with your phone</strong><span>Scan the code, or open <b id="warp-host"></b> and enter <b id="warp-code"></b></span></div></div>
@@ -166,6 +181,8 @@ body.debug #warp-games{display:flex!important}
   </form>
 </dialog>
 <button id="fullscreen" type="button" aria-label="Play fullscreen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>Fullscreen<kbd>F11</kbd></button>
+<div id="warp-crash" role="alert" hidden><strong>Splitscreen Club stopped</strong><p id="warp-crash-what">Your browser's graphics gave an error.</p><code id="warp-crash-detail"></code><div><button type="button" id="warp-crash-reload">Reload</button><a href="https://splitscreen.club/host">Download the app</a></div></div>
+<div id="warp-gpu-problem" role="status" hidden></div>
 <div id="warp-log"></div>
 <script src="qrcode.js"></script>
 <script src="web-catalog.js"></script>
@@ -189,7 +206,13 @@ window.splitscreenRoom = cloudParam === 'off' ? Promise.resolve(null) : (async (
       device = Array.from(crypto.getRandomValues(new Uint8Array(32)), b => b.toString(16).padStart(2, '0')).join('');
       try { localStorage.setItem('splitscreen-club-device', device); } catch (e) {}
     }
-    const r = await fetch(origin + '/v1/lobbies/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ device }) });
+    // Busy (429): try again for about half a minute, while the engine loads.
+    let r;
+    for (let i = 0; i < 6; i++) {
+      r = await fetch(origin + '/v1/lobbies/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ device }) });
+      if (r.status !== 429) break;
+      await new Promise(done => setTimeout(done, 5000));
+    }
     if (!r.ok) return null;
     const room = await r.json();
     if (!room.token || !room.room_code) return null;
@@ -299,6 +322,44 @@ async function showDirectGames(reason) {
     addEventListener('pointerdown', first, true);
     addEventListener('mousemove', () => { if (root.hasAttribute('data-calm')) update(); }, { passive: true });
   }
+}
+// The engine stopped: show it, with the browser's message (app::web
+// install_panic_hook calls this), instead of a page that just hangs.
+const crash = document.getElementById('warp-crash');
+window.warpCrash = message => {
+  if (!crash.hidden) return;
+  document.getElementById('warp-crash-detail').textContent = String(message).slice(0, 2000);
+  const gpu = /wgpu|webgpu|GPU/.test(message);
+  document.getElementById('warp-crash-what').textContent = (gpu ? "Your browser's graphics gave an error." : 'The engine hit an error.')
+    + (gpu && /Firefox\//.test(navigator.userAgent) ? ' Chrome or Edge run Splitscreen Club best for now.' : '');
+  crash.hidden = false;
+};
+document.getElementById('warp-crash-reload').addEventListener('click', () => location.reload());
+// Part of the picture failed to build (a GPU internal error): say so once.
+window.warpGpuProblem = message => {
+  const el = document.getElementById('warp-gpu-problem');
+  if (!el.hidden) return;
+  el.textContent = "Your browser couldn't draw part of the room" + (/Firefox\//.test(navigator.userAgent) ? ': Chrome or Edge work best for now.' : '.') + ' (' + String(message).slice(0, 160) + ')';
+  el.hidden = false;
+};
+// Controllers while the engine loads: say when one is found, and when it
+// presses A that player is in (the room seats it at once, main.rs
+// early_pads via window.splitscreenEarlyPads).
+window.splitscreenEarlyPads = [];
+{
+  const pill = document.getElementById('pad-hint'), text = pill.querySelector('span');
+  const watch = () => {
+    if (box.classList.contains('later') || box.hidden) return;
+    const pads = [...(navigator.getGamepads?.() || [])].filter(p => p && p.connected);
+    for (const p of pads) if (p.buttons[0]?.pressed && !window.splitscreenEarlyPads.includes(p.index)) window.splitscreenEarlyPads.push(p.index);
+    const ready = window.splitscreenEarlyPads.length;
+    pill.classList.toggle('found', pads.length > 0 && !ready);
+    pill.classList.toggle('ready', ready > 0);
+    text.textContent = ready ? (ready === 1 ? '1 player ready' : ready + ' players ready') + ', joins when the room opens'
+      : pads.length ? 'found: press A to join' : 'press A to join';
+    requestAnimationFrame(watch);
+  };
+  requestAnimationFrame(watch);
 }
 const android = /Android/i.test(navigator.userAgent);
 if (!navigator.gpu) showDirectGames(android

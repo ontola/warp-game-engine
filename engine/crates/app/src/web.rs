@@ -264,6 +264,12 @@ pub fn install_panic_hook() {
         let line = format!("panic: {info}");
         web_sys::console::error_1(&line.clone().into());
         log(&line);
+        // The page shows it (and can report it): `window.warpCrash(message)`.
+        if let Some(window) = web_sys::window()
+            && let Ok(f) = js_sys::Reflect::get(&window, &"warpCrash".into())
+            && let Some(f) = f.dyn_ref::<js_sys::Function>() {
+            let _ = f.call1(&wasm_bindgen::JsValue::NULL, &line.into());
+        }
     }));
 }
 
@@ -719,7 +725,15 @@ async fn setup(window: Arc<Window>) -> Result<Live, String> {
     let follow_ups = std::sync::atomic::AtomicU32::new(0);
     gpu.device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
         use std::sync::atomic::Ordering::Relaxed;
-        let text = error.to_string();
+        let internal = matches!(error, wgpu::Error::Internal { .. });
+        let text = if internal { format!("internal: {error}") } else { error.to_string() };
+        // The browser could not build something (a shader, a pipeline):
+        // the page says so (`window.warpGpuProblem`), the room may stay dark.
+        if internal && let Some(window) = web_sys::window()
+            && let Ok(f) = js_sys::Reflect::get(&window, &"warpGpuProblem".into())
+            && let Some(f) = f.dyn_ref::<js_sys::Function>() {
+            let _ = f.call1(&wasm_bindgen::JsValue::NULL, &text.clone().into());
+        }
         if text.contains("] is lost") && lost_said.swap(true, Relaxed) { return; }
         if text.contains("previous error") || (text.contains(" is invalid") && first.load(Relaxed)) {
             let n = follow_ups.fetch_add(1, Relaxed) + 1;

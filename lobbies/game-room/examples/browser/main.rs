@@ -175,6 +175,24 @@ pub(crate) mod page {
     /// controller in the party: the room puts that player to sleep and after
     /// its usual 30 s sends `leave_party` (see [`leave_party`]). The same pad
     /// coming back wakes its player. Returns the devices of each seat.
+    /// Pad `index` pressed A on the loading page (index.html
+    /// `window.splitscreenEarlyPads`): true once, then it is taken off.
+    fn early_pad(index: u32) -> bool {
+        #[cfg(target_arch = "wasm32")]
+        {
+            use wasm_bindgen::JsCast;
+            let Some(window) = web_sys::window() else { return false };
+            let Some(list) = js_sys::Reflect::get(&window, &"splitscreenEarlyPads".into()).ok().and_then(|l| l.dyn_into::<js_sys::Array>().ok()) else { return false };
+            let at = list.index_of(&wasm_bindgen::JsValue::from(index), 0);
+            if at < 0 { return false; }
+            let rest = list.slice(0, at as u32).concat(&list.slice(at as u32 + 1, list.length()));
+            let _ = js_sys::Reflect::set(&window, &"splitscreenEarlyPads".into(), &rest);
+            return true;
+        }
+        #[allow(unreachable_code)]
+        { let _ = index; false }
+    }
+
     fn devices(h: &mut Host, devices: &[(Device, Controls)]) -> Option<Vec<Vec<Device>>> {
         for (dev, c) in devices {
             // Any key on the keyboard: the keyboard on the room's table hops.
@@ -199,7 +217,8 @@ pub(crate) mod page {
             let active = match dev {
                 Device::Keyboard => released || (solo_seat && !enter && (key_action || c.look != [0.0; 2])),
                 // As at home: A joins; anything else only jiggles the pads on the table.
-                Device::Pad(_) => c.pressed.has(Buttons::SOUTH),
+                // A pad that pressed A on the loading page joins as soon as it shows up.
+                Device::Pad(i) => c.pressed.has(Buttons::SOUTH) || (!h.seen.contains(dev) && early_pad(*i)),
             };
             // A pad first heard during a game (the browser shows a pad only
             // once a button is pressed): how to join, unless it pressed A.

@@ -51,3 +51,4 @@ strip = "debuginfo"
 [patch.crates-io]
 meshopt = { path = "engine/vendor/meshopt" }
 mlua = { path = "engine/vendor/mlua" }
+wgpu = { path = "engine/vendor/wgpu" }
