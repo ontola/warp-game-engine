@@ -11,8 +11,13 @@ local doors=require("doors")
 local ink,cream="#18363e","#fff0c9"
 local amber,mint="#ffbc66","#75e3ce"
 local scale,left,top
+local cover,coverLeft,coverTop
 local function box(x,y,w,h,c)
     hud.box(left+x*scale,top+y*scale,w*scale,h*scale,c)
+end
+-- The backdrop covers the whole screen (no letterbox bars); play stays fully visible.
+local function backdrop(x,y,w,h,c)
+    hud.box(coverLeft+x*cover,coverTop+y*cover,w*cover,h*cover,c)
 end
 local function xy(x,y) return 40+56*x,520-56*y end
 local function draw(rooms,s)
@@ -20,9 +25,11 @@ local function draw(rooms,s)
     local w,h=hud.size()
     scale=math.min(w/1200,h/640)
     left,top=(w-1200*scale)/2,(h-640*scale)/2
+    cover=math.max(w/1200,h/640)
+    coverLeft,coverTop=(w-1200*cover)/2,(h-640*cover)/2
     hud.box(0,0,w,h,ink)
     if s.mapRoom then atlasmap.draw(box,rooms,s) return end
-    coast.draw(box,l,s)
+    coast.draw(backdrop,l,s)
     tidepool.draw(box,xy,l,s)
     if s.crew[1].id~=0 and s.crew[2].id~=0 and (s.phase=="play" or s.review) then
         prompts.corner(box,s)
