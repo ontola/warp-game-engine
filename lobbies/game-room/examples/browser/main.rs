@@ -587,6 +587,14 @@ pub(crate) mod page {
         });
         if paused.is_some() { return resume(); }
         // A game needs a player: nobody here yet, so the room asks for one.
+        // Started with nobody playing (the mouse on Play): whoever started it
+        // plays. One seat waits for them, claimed by the first key or mouse
+        // look in the game, or A on a pad, as a game link's seat is. A phone
+        // or tablet has no keyboard: there the game waits for A.
+        if !app::web::mobile() && with(|h| h.players == 0 && h.on_screen.is_none() && h.loading.is_none()) {
+            app::web::log(&format!("{game}: started with nobody playing; the first key, mouse or A plays"));
+            with(|h| { add_player(h, false); });
+        }
         if with(|h| h.players == 0) {
             app::web::log(&format!("{game}: starts when someone joins; fetching it now"));
             prefetch(game);
@@ -775,7 +783,10 @@ pub(crate) mod page {
         #[cfg(not(target_arch = "wasm32"))]
         let bytes = app::web::fetch("games/library.json").await?;
         let library: Vec<Value> = serde_json::from_slice(&bytes).map_err(|e| format!("games/library.json: {e}"))?;
-        let players = warp::web::param("players").and_then(|p| p.parse().ok()).unwrap_or(0usize).min(MAX_SEATS);
+        // A game link (`?game=`) seats one player unless `?players=` says
+        // otherwise: the first key, mouse look or A on a pad claims it.
+        let players = warp::web::param("players").and_then(|p| p.parse().ok())
+            .unwrap_or(if warp::web::param("game").is_some() { 1 } else { 0usize }).min(MAX_SEATS);
         // The room's QR code on the loading screen while the room is built.
         super::cloud::register_early();
         app::web::progress(Some(0.2), "Building the Game Room");
