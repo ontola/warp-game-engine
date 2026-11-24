@@ -118,7 +118,7 @@ pub fn draw(lobby: &Lobby, size: [u32; 2], _alpha: f32) -> HudDrawList {
         }
     }
     // The catalog view covers the room; Start menus and the mouse's go over it.
-    if lobby.catalog_open() { crate::catalog::draw(lobby, &mut c, size); }
+    if lobby.catalog_fade() > 0.0 { crate::catalog::draw(lobby, &mut c, size); }
     let mut corner = 0;
     for p in &lobby.world.players {
         if !lobby.menus.contains_key(&p.id) { continue; }

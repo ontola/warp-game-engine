@@ -33,8 +33,9 @@ pub struct Catalog {
     /// The choice the scroll last followed: the wheel scrolls freely until
     /// the choice changes again.
     followed: Option<usize>,
-    /// When it opened, for the fade in.
+    /// When it opened, for the fade in, and when it closed, for the fade out.
     pub opened_at: f32,
+    pub closed_at: Option<f32>,
     /// The covers decoded so far (None: none or undecodable).
     pub covers: std::collections::HashMap<String, Option<Cover>>,
     /// Gameplay screenshots for the TV, by game id: the store's, or the
@@ -74,7 +75,21 @@ fn grid(size: [u32; 2], n: usize) -> Grid {
     Grid { cols, card, gap, area, rows }
 }
 
+/// Seconds the catalog fades in and out.
+const FADE: f32 = 0.2;
+
 impl Lobby {
+    /// How much of the catalog shows, 0..1: fading in after it opens, out
+    /// after it closes.
+    pub fn catalog_fade(&self) -> f32 {
+        let n = !self.host.shelf_games().is_empty();
+        match self.catalog.closed_at {
+            Some(t) if !self.catalog.open && n => (1.0 - (self.time - t) / FADE).clamp(0.0, 1.0),
+            _ if self.catalog_open() => ((self.time - self.catalog.opened_at) / FADE).clamp(0.0, 1.0),
+            _ => 0.0,
+        }
+    }
+
     /// The catalog view is showing (chosen, and there are games for it).
     pub fn catalog_open(&self) -> bool { self.catalog.open && !self.host.shelf_games().is_empty() }
 
@@ -87,8 +102,12 @@ impl Lobby {
     pub fn close_catalog(&mut self) { self.show_catalog(false); }
 
     fn show_catalog(&mut self, open: bool) {
+        if !open && self.catalog_open() { self.catalog.closed_at = Some(self.time); }
         if open && !self.catalog.open {
-            self.catalog.opened_at = self.time;
+            // Reopened mid fade out: fade in from where it was.
+            let shown = self.catalog_fade();
+            self.catalog.opened_at = self.time - shown * FADE;
+            self.catalog.closed_at = None;
             let cols = grid(self.hud_size, self.host.shelf_games().len()).cols;
             self.catalog.scroll = (self.host.shelf_offset / cols) as f32;
             self.catalog.shown = self.catalog.scroll;
@@ -376,7 +395,7 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
     let scale = h / 1080.0;
     let shelf = &lobby.show.shelf;
     if shelf.is_empty() { return; }
-    let fade = ((lobby.time - lobby.catalog.opened_at) / 0.2).clamp(0.0, 1.0);
+    let fade = lobby.catalog_fade();
     let middle = lobby.host.shelf_offset % shelf.len();
     let cover = |i: usize| shelf.get(i).and_then(|g| lobby.catalog.covers.get(&g.id)).and_then(|c| c.as_ref());
     let faces = crate::fonts::faces();
