@@ -155,6 +155,10 @@ impl Host {
         if game.get("max_players").is_some_and(|v| !v.is_null()) && able > int(&game["max_players"]) { return "Too many players".into(); }
         let low = if game.get("min_players").is_none_or(Value::is_null) { 1 } else { int(&game["min_players"]).max(1) };
         let play_with = get(game, "play_with", "controller");
+        // Bots the game brings fill seats (Stack Together: one person and
+        // its bot), as the host counts them when it starts the game.
+        let bots = if game.get("bots").is_some_and(|v| !v.is_null()) { int(&game["bots"]).max(0) } else { 0 };
+        let able = able + bots;
         if able < low {
             if humans < low { return format!("Needs {low} players"); }
             if matches!(play_with.as_str(), "phone" | "controller_and_phone") { return format!("Needs {low} phones"); }

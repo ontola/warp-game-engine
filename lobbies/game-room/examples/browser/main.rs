@@ -877,7 +877,15 @@ pub(crate) mod page {
         // The demo party, with this page's games, no phones and nothing loading.
         let mut party = lobby.host.party.clone();
         let library: Vec<Value> = library.into_iter().enumerate().map(|(i, mut g)| { if g["color"].is_null() { g["color"] = json!(COLORS[i % COLORS.len()]); } g }).collect();
-        party["playlist"] = json!({"entries": library.iter().map(|g| json!({"game": g["id"], "title": g["title"]})).collect::<Vec<_>>(), "current": null});
+        // The queue starts in a fresh random order each time (Joep: not the
+        // same first game every evening).
+        let mut entries: Vec<Value> = library.iter().map(|g| json!({"game": g["id"], "title": g["title"]})).collect();
+        let mut seed = getrandom::u64().unwrap_or(0x9e37_79b9_7f4a_7c15);
+        for i in (1..entries.len()).rev() {
+            seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17;
+            entries.swap(i, (seed % (i as u64 + 1)) as usize);
+        }
+        party["playlist"] = json!({"entries": entries, "current": null});
         party["library"] = Value::Array(library);
         party["phones"] = json!([]);
         party["warm_session"] = Value::Null;
