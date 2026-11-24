@@ -1,10 +1,12 @@
 //! What Luau's C++ needs in a browser (wasm32) that a native build gets
 //! from the platform. The browser build compiles Luau against wasi-libc
-//! and libc++ (engine/tools/build-web.py) without C++ exception support,
-//! so a thrown error cannot be caught: `__cxa_throw` stops the game with
-//! the error's message instead. Lua errors (`error()`, a failed step
-//! limit, a compile error) therefore end the game in a browser; a game
-//! that runs cleanly never throws.
+//! and libc++ (engine/tools/build-web.py) without C++ exception support.
+//! Lua errors (`error()`, a nil index, the step limit) do not need it:
+//! Luau is built with LUA_USE_LONGJMP and clang lowers setjmp/longjmp to
+//! WebAssembly exception handling (the runtime is in ../web), so they
+//! unwind to their pcall and the game reports them as natively. What is
+//! left is a real C++ throw, which only Luau's compiler does (a syntax
+//! error in a script): `__cxa_throw` stops the game with its message.
 use std::alloc::{Layout, alloc};
 use std::ffi::{CStr, c_char, c_void};
 
@@ -14,8 +16,8 @@ pub unsafe extern "C" fn __cxa_allocate_exception(size: usize) -> *mut c_void {
     unsafe { alloc(Layout::from_size_align(size.max(1), 16).expect("exception size")) as *mut c_void }
 }
 
-/// `__cxa_throw(object, type_info, destructor)`: no unwinding in this build,
-/// so report what was thrown and stop.
+/// `__cxa_throw(object, type_info, destructor)`: no C++ unwinding in this
+/// build, so report what was thrown and stop.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __cxa_throw(object: *mut c_void, tinfo: *const c_void, _dest: *const c_void) -> ! {
     // An Itanium `std::type_info` is a vtable pointer, then its mangled name.

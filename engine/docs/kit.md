@@ -248,3 +248,7 @@ For smooth dents, call `damage.dent(state, profile, localPoint, severity)` at th
 To detach panels, assign unique node names and integer `warpPart` extras (0 for the frame, 1–31 for removable IDs, up to six detachable groups per model). A missing part sets bit `1 << id`. A detached model is available as `assets/model.gltf#part-name`. `world.part_center(path)` returns its original position in the body. Set the boolean primitive extra `warpDetachedOnly` to true for lining that should appear only on the detached part. Unannotated models support smooth dents. The older `warpCrushGrid` and `damage.cellPose` APIs support authored section scaling.
 
 Warp Theft Auto gives the eight nearest damaged cars within 48 metres of any player the detailed mesh. Additional cars retain their damage state and show missing panels at a coarse level. `vehicles.dent_query(id, profileName, fields, body, missingMask)` refits the gameplay query for rays and splash after a hit. Removed panels open the same gaps in the query mesh. The road solver and pedestrians use the stable driving chassis. `vehicles.impacts()` reports each car's strongest hard contact during the latest simulation step, including the world position and normal speed change (m/s).
+
+During a Splitscreen Club session the [vibe studio](../tools/vibe-studio/README.md)
+does the same for one prompt from the couch: it writes the game, playtests
+it with bots, fixes what fails and hands over the files.
