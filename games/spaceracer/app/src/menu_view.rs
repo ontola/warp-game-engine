@@ -4,6 +4,13 @@ use render::{
     picture::Picture,
 };
 use std::sync::{Arc, OnceLock};
+
+/// Keep the full pause menu, including its last setting and caption, on screen.
+pub fn scale([w, h]: [u32; 2]) -> f32 {
+    let h = h.max(1) as f32;
+    (h / 900.).max(1.).min(h / 700.).min(w.max(1) as f32 / 480.)
+}
+
 /// The menu row under `at` (menu units, as `draw` lays out) and which side of
 /// it: -1 the left third, +1 the right third, 0 the middle.
 pub fn hit(size: [f32; 2], race_started: bool, lobby: bool, at: [f32; 2]) -> Option<(usize, i32)> {

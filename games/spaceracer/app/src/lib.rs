@@ -418,7 +418,7 @@ impl Racer {
     /// selects a row, a click accepts it or steps its value left or right.
     fn menu_pointer(&mut self, at: [f32; 2], size: [u32; 2], click: bool) -> bool {
         if self.menu.is_none() { return false; }
-        let ui_scale = (size[1] as f32 / 900.).max(1.);
+        let ui_scale = menu_view::scale(size);
         let Some((row, side)) = menu_view::hit(size.map(|x| x as f32 / ui_scale), self.race_started, self.lobby(), at.map(|v| v / ui_scale)) else { return false };
         self.menu = Some(row);
         if click { self.menu_click = Some(side); }
@@ -820,7 +820,11 @@ impl Game for Racer {
         let mut cams = vec![];
         let mut ups = vec![];
         let mut hud = HudDrawList::new(frame.size);
-        let ui_scale = (frame.size[1] as f32 / 900.).max(1.);
+        let ui_scale = if self.menu.is_some() {
+            menu_view::scale(frame.size)
+        } else {
+            (frame.size[1] as f32 / 900.).max(1.)
+        };
         let next_ready = self.next_ready();
         for i in 0..self.players {
             let p = &self.race.pilots[i];
@@ -1164,6 +1168,16 @@ pub fn run() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn short_pause_menu_keeps_the_seed_row_visible_and_clickable() {
+        let size = [840, 360];
+        let scale = menu_view::scale(size);
+        let logical = size.map(|px| px as f32 / scale);
+        let seed_y = 180. + 6. * 66. + 27.;
+        assert!((seed_y + 27.) * scale < size[1] as f32);
+        assert_eq!(menu_view::hit(logical, true, true, [350., seed_y]), Some((5, 0)));
+    }
+
     #[test]
     fn new_race_uses_selection_and_applies_same_tick_seed_change() {
         let root=PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");

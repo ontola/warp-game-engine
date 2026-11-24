@@ -297,7 +297,7 @@ impl app::Game for Spellstorm {
         self.interp.ease(&mut self.world, frame.alpha);
         // Paused, nothing moves: no animation, particle or effect clock runs.
         let dt = if self.world.paused { 0.0 } else { frame.dt };
-        let posed = self.view.pose(frame.gpu, r, &self.world, dt);
+        let posed = self.view.pose(frame.gpu, r, &self.world, dt, frame.size);
         let mut hud = HudDrawList::new(frame.size);
         // SPELLSTORM_NO_HUD=1: the picture alone (store videos), no HUD,
         // names, hints, banners or level cards.
