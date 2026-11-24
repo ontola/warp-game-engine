@@ -66,6 +66,9 @@ pub(crate) mod page {
         pub(crate) on_screen: Option<String>,
         /// A game being fetched and loaded.
         pub(crate) loading: Option<String>,
+        /// A game picked while nobody had joined: its files are fetched
+        /// ahead, and it starts once there are players enough.
+        waiting: Option<String>,
         pub(crate) players: usize,
         /// The players `?players=` asked for: they stay when their pad goes.
         base: usize,
@@ -514,6 +517,11 @@ pub(crate) mod page {
             }
             if let Some(links) = with(|h| std::mem::take(&mut h.links_dirty).then(|| h.links.clone())) { self.lobby.set_links(links); }
             empty_room(with(|h| h.players == 0 && h.on_screen.is_none()));
+            // A game picked before anyone joined starts once it can.
+            if let Some(game) = with(|h| (h.players > 0 && h.on_screen.is_none() && h.loading.is_none()).then(|| h.waiting.clone()).flatten().filter(|g| fits(&h.party, g, h.players))) {
+                with(|h| h.waiting = None);
+                start(game);
+            }
             if let Some(code) = with(|h| h.key.take()) { self.lobby.key_pressed(code); }
             if with(|h| std::mem::take(&mut h.pad_heard)) { self.lobby.pad_heard(); }
             for (game, png) in with(|h| std::mem::take(&mut h.covers)) { self.lobby.set_cover(&game, &png); }
@@ -557,7 +565,8 @@ pub(crate) mod page {
         if paused.is_some() { return resume(); }
         // A game needs a player: nobody here yet, so the room asks for one.
         if with(|h| h.players == 0) {
-            app::web::log(&format!("{game}: nobody to play it yet"));
+            app::web::log(&format!("{game}: starts when someone joins; fetching it now"));
+            prefetch(game);
             return empty_room(true);
         }
         // Not a game for fewer people than it needs (Relay Keepers with one).
@@ -571,6 +580,7 @@ pub(crate) mod page {
             let (id, folder) = (meta["id"].as_str()?.to_string(), meta["folder"].as_str()?.to_string());
             if h.loading.is_some() { return None; }
             h.loading = Some(id.clone());
+            h.waiting = None;
             h.party["warm_session"] = json!({"game": id, "phase": "preparing", "progress": 50, "progress_label": "Loading"});
             h.dirty = true;
             h.cloud.refresh = true;
@@ -613,6 +623,46 @@ pub(crate) mod page {
                 back_hint();
             });
         });
+    }
+
+    /// Picked with nobody here: fetch the game's files ahead (the TV shows
+    /// the bar), and start it once someone joins ([`Room::tick`]).
+    fn prefetch(game: String) {
+        let found = with(|h| {
+            let meta = game_meta(&h.party, &game)?;
+            let id = meta["id"].as_str()?.to_string();
+            let folder = meta["folder"].as_str()?.to_string();
+            let html = meta["web_entry"].is_string();
+            if h.waiting.as_deref() == Some(id.as_str()) { return None; }
+            h.waiting = Some(id.clone());
+            Some((id, folder, html))
+        });
+        let Some((id, folder, html)) = found else { return };
+        app::web::clear_prefetched();
+        let status = move |progress: u32, label: &str| with(|h| if h.waiting.as_deref() == Some(id.as_str()) && h.loading.is_none() {
+            h.party["warm_session"] = json!({"game": id, "phase": if progress >= 100 { "ready" } else { "preparing" }, "progress": progress, "progress_label": label});
+            h.dirty = true;
+        });
+        if html { return status(100, "Press A to join"); }
+        status(0, "Loading");
+        app::web::spawn(async move {
+            let list = match app::web::fetch(&format!("games/{folder}/files.json")).await.and_then(|b| serde_json::from_slice::<Vec<String>>(&b).map_err(|e| e.to_string())) {
+                Ok(l) => l,
+                Err(e) => { app::web::log(&format!("{folder}: {e}")); return status(100, "Press A to join"); }
+            };
+            for (i, rel) in list.iter().enumerate() {
+                // Picked something else meanwhile: stop.
+                if with(|h| h.waiting.as_deref() != Some(folder_id(&h.party, &folder).as_str())) { return; }
+                if let Err(e) = app::web::prefetch(&format!("games/{folder}/{rel}")).await { app::web::log(&e); }
+                status((i + 1) as u32 * 99 / list.len().max(1) as u32, "Loading · press A to join");
+            }
+            status(100, "Press A to join");
+        });
+    }
+
+    /// The store id of the game in `folder`.
+    fn folder_id(party: &Value, folder: &str) -> String {
+        party["library"].as_array().into_iter().flatten().find(|g| g["folder"] == folder).and_then(|g| g["id"].as_str()).unwrap_or(folder).to_string()
     }
 
     /// TV Resume: the paused game comes back where it was.

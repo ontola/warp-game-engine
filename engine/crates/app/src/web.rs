@@ -172,8 +172,27 @@ pub async fn sleep(ms: u32) {
 }
 
 /// Fetch `url` (relative to the page) as bytes.
+thread_local! {
+    /// Files [`prefetch`] fetched ahead, until [`fetch`] asks for them.
+    static PREFETCHED: RefCell<std::collections::HashMap<String, Vec<u8>>> = RefCell::new(Default::default());
+}
+
+/// Fetch `url` now and keep it in memory: the next [`fetch`] of the same
+/// URL takes it from there (once). Returns its size.
+pub async fn prefetch(url: &str) -> Result<usize, String> {
+    if let Some(n) = PREFETCHED.with(|p| p.borrow().get(url).map(Vec::len)) { return Ok(n); }
+    let data = fetch(url).await?;
+    let n = data.len();
+    PREFETCHED.with(|p| p.borrow_mut().insert(url.to_string(), data));
+    Ok(n)
+}
+
+/// Forget what [`prefetch`] kept that nobody fetched.
+pub fn clear_prefetched() { PREFETCHED.with(|p| p.borrow_mut().clear()); }
+
 pub async fn fetch(url: &str) -> Result<Vec<u8>, String> {
     use wasm_bindgen_futures::JsFuture;
+    if let Some(data) = PREFETCHED.with(|p| p.borrow_mut().remove(url)) { return Ok(data); }
     let window = web_sys::window().ok_or("no window")?;
     // A file next to the page is this build's (`<html data-version>`, set
     // by build-web.py): never an older one from the browser's cache.
