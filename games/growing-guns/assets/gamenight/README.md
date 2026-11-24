@@ -2,9 +2,7 @@
 
 The store's gameplay clip is generated, not kept: `preview/gen.py` is the
 source. It writes `preview/script.json`, a `warp script` capture of one staged
-match (v2, 2026-11-24: minigun, bazooka blasts, a big masonry-carving blast,
-shotgun with an extra barrel, explosive minigun past the crowd; 250 frames,
-30 FPS, 1920x1080). Render it on a real GPU (the Mancave), encode the frames to
+match (v3, 2026-11-24: six 25-frame cuts on six arenas, player always moving: minigun strafe, bazooka blasts, a masonry-carving blast, shotgun with an extra barrel while jumping, explosive minigun past the crowd, a blackout round; 150 frames = 5 s, 30 FPS, 1920x1080). Render it on a real GPU (the Mancave), encode the frames to
 a silent H.264 `preview.mp4` plus a `preview.jpg` poster, and upload both
 through the publish API, which stores them in S3. The video files do not go
 into this repo; regenerate them after graphics changes by running the same

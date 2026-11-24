@@ -1,24 +1,27 @@
-"""Growing Guns store preview v2 (2026-11-24): more action and gun variety.
+"""Growing Guns store preview v3 (2026-11-24): five seconds, six maps, all moving.
 
-Joep on v1: "mist de gave actie en gun variatie. Ik wil wel een minigun zien
-en een paar grote explosies". Same pipeline as v1:
-one continuous scripted match, staged cuts, each frame = 2 ticks (30 fps).
+Joep on v1: "mist de gave actie en gun variatie" (minigun, big explosions).
+On v2: the player didn't move, only one map, wants a bit of blackout, and
+store clips are 5 s. So: six cuts of 25 frames (one frame per 2 ticks = 30 fps,
+150 frames = 5.0 s), each on its own arena, player 0 always strafing or
+running (and jumping in some), bots fighting for real.
 
-Cuts (about 8 s at 30 fps):
-  a  MINIGUN shredding three bots in front of the stands (60 frames)
-  b  BAZOOKA rockets into a group: real massive blasts (45 frames)
-  c  a big 14 m blast that carves the masonry (45 frames)
-  d  SHOTGUN + EXTRA BARREL while running at the bots (40 frames)
-  e  minigun + EXPLOSIVE rounds sweeping across the crowd, chained booms (60 frames)
+  a  minigun strafing past three bots
+  b  bazooka rockets into a group: real massive blasts
+  c  a big blast carves the masonry while running sideways
+  d  shotgun + extra barrel, running and jumping at the bots
+  e  explosive minigun sweeping past the crowd, booms along the row
+  f  blackout: dark arena, flashlights, muzzle flashes
 
-Usage: python gen.py [ARENA] [OUT.json]   (default OUT: script.json next to this file)
+Render: `growing-guns script preview/script.json --players 1 --seed 7` on a
+real GPU (Mancave), encode crf 26. Usage: python gen.py [OUT.json]
 """
 import json, os, sys
 
-ARENA = sys.argv[1] if len(sys.argv) > 1 else "85"
-OUT = sys.argv[2] if len(sys.argv) > 2 else os.path.join(os.path.dirname(os.path.abspath(__file__)), "script.json")
-steps = [{"cmd": [f"arena {ARENA}", "health 0 100"], "ticks": 120}]
-held = []  # cards player 0 currently holds, so each cut starts from a clean gun
+OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(os.path.abspath(__file__)), "script.json")
+FRAMES = 25
+steps = [{"cmd": ["arena 85", "health 0 100"], "ticks": 60}]
+held = []  # cards player 0 holds, so each cut starts from a clean gun
 
 
 def gun(cards):
@@ -29,49 +32,52 @@ def gun(cards):
     return cmds
 
 
-def cut(name, setup, frames=30, mv=None, look=None, hold=None, lead=20, every_cmd=None, refresh=None, every=8):
-    """`refresh` commands run every `every` frames (with player 0's health/ammo)."""
-    steps.append({"cmd": setup + ["health 0 100", "ammo 0 999"], "ticks": lead})
-    for i in range(frames):
-        s = {"ticks": 2, "capture": f"{name}_{i:03d}.png"}
-        if mv: s["mv"] = mv
+def cut(name, setup, mv, mag=None, look=None, hold=None, jump=(), lead=110, every_cmd=None, refresh=None, every=8):
+    """One 25-frame cut. `mag` refills ammo to the gun's real magazine (so the
+    HUD shows a normal count); `jump` lists frames that press A."""
+    steps.append({"cmd": setup + ["health 0 100"], "ticks": lead})
+    for i in range(FRAMES):
+        s = {"ticks": 2, "capture": f"{name}_{i:03d}.png", "mv": mv}
         if look: s["look"] = look
-        if hold: s["hold"] = hold
+        buttons = list(hold or []) + (["SOUTH"] if i in jump else [])
+        if buttons: s["hold"] = buttons
         cmds = list((every_cmd or {}).get(i, []))
-        if i % every == 0: cmds += ["health 0 100", "ammo 0 999"] + list(refresh or [])
+        if i % every == 0:
+            cmds += ["health 0 100"] + ([f"ammo 0 {mag}"] if mag else []) + list(refresh or [])
         if cmds: s["cmd"] = cmds
         steps.append(s)
 
 
-def face_off(me, at, bots, hp=100):
-    c = [f"teleport 0 {me[0]} {me[1]} {me[2]}", f"aim 0 {at[0]} {at[1]} {at[2]}"]
+def face_off(arena, me, at, bots, hp=100):
+    c = [f"arena {arena}", f"teleport 0 {me[0]} {me[1]} {me[2]}", f"aim 0 {at[0]} {at[1]} {at[2]}"]
     for i, b in enumerate(bots, start=1):
         c += [f"teleport {i} {b[0]} {b[1]} {b[2]}", f"health {i} {hp}"]
     return c
 
 
-TOUGH = [f"health {i} 1000" for i in (1, 2, 3)]  # the minigun would end the round
-
-
 FIRE = ["RIGHT_TRIGGER"]
+TOUGH = [f"health {i} 1000" for i in (1, 2, 3)] + ["bots resume"]  # the minigun would end the round
 
-# a: minigun, ten spinning barrels, tracers into the bots; the stadium behind.
-cut("a", gun(["minigun", "big_mag"]) + face_off((7, 2, 12), (0, 2.2, 1), [(-3, 2, 3), (2, 2, 0), (-1, 2, -3)], hp=1000),
-    frames=60, lead=110, look=[-0.002, 0.0], hold=FIRE, refresh=TOUGH, every=4)
-# b: bazooka rockets into a tight group, two real massive blasts plus one queued boom.
-cut("b", gun(["bazooka"]) + face_off((12, 2, 14), (0, 2, 0), [(-1, 2, 1), (1.5, 2, -1), (0, 2, 2)]),
-    frames=45, lead=110, hold=FIRE, every_cmd={18: ["boom -2 1.5 -2 12 80"]})
-# c: a big blast that carves the masonry (30 m whited out the view and threw the player into the crowd).
-cut("c", face_off((-16, 2, 16), (0, 3, 0), [(1, 2, -1), (-2, 2, -4), (3, 2, 2)]),
-    frames=45, lead=20, every_cmd={6: ["blast 0 3 0 8 200", "boom 0 2 0 14 120"], 26: ["boom 4 2 -3 10"]})
-# d: shotgun with an extra barrel, running at the bots and firing.
-cut("d", gun(["shotgun", "extra_barrel"]) + face_off((-8, 2, 16), (0, 2, 0), [(-2, 2, 2), (3, 2, -2), (6, 2, 4)]),
-    frames=40, lead=110, mv=[0.2, 1.0], look=[0.003, 0.0], hold=FIRE)
-# e: minigun with explosive rounds sweeping past the crowd, booms chaining along the row.
-cut("e", ["bots pause"] + gun(["minigun", "explosive", "big_mag"]) + face_off((0, 2, -14), (0, 3, 0), [(-2, 2, -2), (2, 2, -4), (0, 2, -6)]),
-    frames=60, lead=110, look=[0.003, 0.0], hold=FIRE, every=1,
-    every_cmd={10: ["boom -3 1.5 -3 9"], 24: ["boom 2 1.5 -5 11"], 40: ["boom 0 1.5 -1 14 90"]})
+# a: minigun strafing left past three bots some 20 m off (point-blank looked odd), the stadium behind.
+cut("a", gun(["minigun", "big_mag"]) + face_off(85, (10, 2, 18), (0, 2.2, -2), [(-4, 2, -2), (2, 2, -4), (-1, 2, -7)], hp=1000),
+    mv=[-0.8, 0.2], mag=120, look=[-0.002, 0.0], hold=FIRE, refresh=TOUGH, every=4)
+# b: bazooka into a tight group while backing off to the side.
+cut("b", gun(["bazooka"]) + face_off(12, (12, 2, 14), (0, 2, 0), [(-1, 2, 1), (1.5, 2, -1), (0, 2, 2)]),
+    mv=[0.6, -0.3], hold=FIRE, lead=140)
+# c: a big blast carves the masonry while running sideways (no gun change).
+cut("c", face_off(31, (-16, 2, 16), (0, 3, 0), [(1, 2, -1), (-2, 2, -4), (3, 2, 2)]),
+    mv=[0.8, 0.3], look=[0.002, 0.0], lead=30, every_cmd={3: ["blast 0 3 0 8 200", "boom 0 2 0 14 120"]})
+# d: shotgun with an extra barrel, charging and jumping at the bots.
+cut("d", gun(["shotgun", "extra_barrel"]) + face_off(47, (-8, 2, 16), (0, 2, 0), [(-2, 2, 2), (3, 2, -2), (6, 2, 4)]),
+    mv=[0.2, 1.0], look=[0.003, 0.0], hold=FIRE, jump=range(6, 10))
+# e: minigun with explosive rounds sweeping past the crowd, booms along the row.
+cut("e", ["bots pause"] + gun(["minigun", "explosive", "big_mag"]) + face_off(63, (0, 2, -14), (0, 3, 0), [(-2, 2, -2), (2, 2, -4), (0, 2, -6)]),
+    mv=[0.7, 0.4], mag=120, look=[0.004, 0.0], hold=FIRE, every=1, every_cmd={4: ["boom -3 1.5 -3 9"], 14: ["boom 2 1.5 -5 11"]})
+# f: blackout, the next round starts dark: flashlights and muzzle flashes only.
+cut("f", ["bots resume", "modifier blackout", "round", "cage"] + gun(["minigun", "big_mag"])
+    + [f"teleport 0 6 2 10", "aim 0 0 2 0"] + [f"teleport {i} {x} 2 {z}" for i, (x, z) in enumerate([(-2, 1), (2, -1), (0, -3)], start=1)],
+    mv=[-0.5, 0.6], mag=120, look=[-0.003, 0.0], hold=FIRE, lead=150, refresh=TOUGH, every=4)
 
 steps.append({"state": "end.json"})
 json.dump({"size": [1920, 1080], "steps": steps}, open(OUT, "w"))
-print(len(steps), "steps, arena", ARENA, "->", OUT)
+print(len(steps), "steps,", sum(1 for s in steps if "capture" in s), "frames ->", OUT)
