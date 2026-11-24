@@ -2,6 +2,10 @@
 
 On 24 November 2026 the baked maritime pines in Warp Theft Auto lost groups of needles when seen edge-on. We compared the same game cameras with photographs of an open-grown maritime pine in southwest France and a forest stand in Portugal. The exposed lower trunk and openings between branches belong in the reference. The needle clusters at the branch tips should still read as volumes. [French pine, fmunoz](https://www.inaturalist.org/photos/634624424) · [Portuguese stand, Duarte Frade](https://www.inaturalist.org/photos/536650123) · [European Atlas of Forest Tree Species](https://forest.jrc.ec.europa.eu/media/atlas/Pinus_pinaster.pdf)
 
+![Left: photographs of maritime pines. Center and right: the same two rally cameras with the old and new shared card bakes.](../images/warp-foliage-cards-maritime-pine.webp)
+
+The photographs are scaled from the originals by [fmunoz](https://www.inaturalist.org/photos/634624424) and [Duarte Frade](https://www.inaturalist.org/photos/536650123), both [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The game frames show the original maritime pine recipe in both columns.
+
 ## The shared bake
 
 The default card cooker at `e0a7c26d` estimates the principal axes of each unique part from its area-weighted triangle surface. A flat or slightly cupped leaf uses one silhouette in its fitted plane. A volumetric foliage cluster gets a second, perpendicular silhouette when its RMS depth exceeds one third of its smaller in-plane RMS extent. Both silhouettes come from the same source geometry. Small woody parts use one projection. The source-code fingerprint in the card cache updates old bakes. [Plant card cooker](../../crates/render/src/plant_mesh_lod.rs)
