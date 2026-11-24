@@ -114,10 +114,10 @@ impl Lobby {
         }
     }
 
-    /// What the mouse can do with nobody in the room: no game starts
-    /// without a player (a host waits for one), so Play does not light up.
+    /// What the mouse can do with nobody in the room: the browser host
+    /// starts no game without a player, so Play does not light up there.
     fn mouse_can(&self, station: &Station, key: Option<&str>) -> bool {
-        if !self.world.players.is_empty() { return true; }
+        if !self.world.players.is_empty() || self.outbox.is_none() { return true; }
         match station.kind.as_str() {
             "tv" | "queue" => key == Some("X") && station.kind == "queue",
             "shelf" => key != Some("Y"),
