@@ -50,10 +50,17 @@ room as the pointer (its mouse menu).
 
 ## Files
 
-What the browser fetches next to its page comes from the APK's
-`assets/web/` (`app::android::fetch`): `games/library.json`, each game's
-`files.json` and files, covers and `room-light.bin`.
-`build-web.py --warp --assets-only DIR` writes that bundle. `localStorage`
+What the browser fetches next to its page (`app::android::fetch`):
+`games/library.json`, each game's `files.json` and files, covers and
+`room-light.bin`. The standalone APK carries it in `assets/web/`
+(`build-web.py --warp --assets-only DIR` writes it). The Splitscreen Club
+app ships only the library (45 MB of games would double the app), so
+there the host downloads the files from https://splitscreen.club/play/
+(`bundle=URL` in the query for another server) into `files/bundle/<version>/`,
+keyed by that bundle's `version.json`: once per file and release, older
+copies removed, the last copy used offline. Games are fetched ahead while
+the room shows them (`prefetch`). The process ends when the activity does
+(`std::process::exit`), so each start reads its own intent. `localStorage`
 is `files/store/` in the app's data. The page's query string is the
 launching intent's `query` extra (`cloud=off`, `players=2`, `quality=full`,
 `game=neon-siege`, `render=720`); the cloud room is
@@ -69,12 +76,16 @@ adb shell am start -n club.splitscreen.host/android.app.NativeActivity --es quer
 adb logcat -s SplitscreenHost
 ```
 
-The APK is `club.splitscreen.host` ("Splitscreen Club Host"), signed with a
-local debug key unless `--keystore` is given. The Splitscreen Club app's
-"Host on this phone" starts it when it is installed (gamepad-party
-`mobile/android/.../HostLauncher.kt`), and otherwise falls back to the
-browser host in Chrome. `--lib-only` stops after the library and the
-bundle, for packing them into the app itself later.
+The host lives in the Splitscreen Club app (gamepad-party `mobile/android`):
+a `android.app.NativeActivity` in its own process `:host`, started by
+"Host on this phone" (`HostLauncher.kt`), with `libsplitscreen_host.so` and
+`libc++_shared.so` in the app's `jniLibs/arm64-v8a`. The app's CI builds them
+with `build-android-host.py --lib-only --skip-assets` from this repository's
+main. Phones without arm64 or Vulkan 1.1 get the browser host in Chrome.
+
+The standalone APK `club.splitscreen.host` ("Splitscreen Club Host", local
+debug key unless `--keystore`) is only for engine work over adb now:
+it carries the bundle, so it needs no deploy of /play/.
 
 ## Renderer on phones
 

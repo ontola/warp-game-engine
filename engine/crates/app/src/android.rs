@@ -13,7 +13,8 @@
 //! seconds there without blocking any input.
 //!
 //! Files the browser fetches next to the page come from the APK's
-//! `assets/web/` ([`fetch`]); web APIs go over HTTPS on a helper thread
+//! `assets/web/`, or, in the Splitscreen Club app, which ships only the
+//! library, from splitscreen.club/play/ into a copy on the phone ([`fetch`]); web APIs go over HTTPS on a helper thread
 //! ([`request`]); `localStorage` is a folder in the app's data
 //! ([`stored`]); the page's query string is the intent's `query` extra
 //! ([`query_param`]).
@@ -125,15 +126,103 @@ pub async fn fetch(url: &str) -> Result<Vec<u8>, String> {
         let (status, body) = request("GET", url, &[], None).await?;
         return if (200..300).contains(&status) { Ok(body) } else { Err(format!("{url}: HTTP {status}")) };
     }
-    asset(url)
+    if bundled() { asset(url) } else { remote(url).await }
 }
 
-/// A browser fetches a game ahead; here the files are in the APK already,
-/// so there is nothing to keep. Returns 0.
-pub async fn prefetch(_url: &str) -> Result<usize, String> { Ok(0) }
+/// Fetch a game's file ahead, as a browser does. With the bundle in the
+/// APK there is nothing to do (0); otherwise it lands in the phone's copy
+/// of the bundle ([`remote`]), so opening the game reads it from there.
+pub async fn prefetch(url: &str) -> Result<usize, String> {
+    if url.contains("://") || bundled() { return Ok(0) }
+    remote(url).await.map(|b| b.len())
+}
 
-/// See [`prefetch`]: nothing kept.
+/// See [`prefetch`]: the kept files are the phone's copy of the bundle,
+/// which stays.
 pub fn clear_prefetched() {}
+
+/// Whether the APK carries the bundle (`assets/web/`, the standalone host
+/// build-android-host.py packs). The Splitscreen Club app ships only the
+/// library and fetches the bundle instead ([`remote`]).
+fn bundled() -> bool {
+    static BUNDLED: OnceLock<bool> = OnceLock::new();
+    *BUNDLED.get_or_init(|| APP.get().is_some_and(|app| app.asset_manager().open(c"web/games/library.json").is_some()))
+}
+
+/// Where the bundle comes from when the APK has none: the browser host's
+/// own files (`bundle=URL` in the query for a test server).
+const BUNDLE: &str = "https://splitscreen.club/play/";
+
+/// A file of the bundle from [`BUNDLE`], kept in the app's data per
+/// bundle version (its `version.json`), so a game downloads once and a
+/// new release of the browser host replaces the copy. Offline the last
+/// version's copy is used.
+async fn remote(path: &str) -> Result<Vec<u8>, String> {
+    let rel = path.trim_start_matches("./").split(['?', '#']).next().unwrap_or_default().to_string();
+    if rel.is_empty() || rel.split('/').any(|part| part == ".." || part.is_empty()) { return Err(format!("{path}: not a bundle path")) }
+    let version = bundle_version().await;
+    let dir = APP.get().and_then(|a| a.internal_data_path()).ok_or("no data folder")?.join("bundle").join(&version);
+    let file = dir.join(&rel);
+    if let Ok(bytes) = std::fs::read(&file) { return Ok(bytes) }
+    let url = format!("{}{}?v={version}", bundle_base(), encode_path(&rel));
+    let (status, body) = request("GET", &url, &[], None).await.map_err(|e| format!("{rel}: {e}"))?;
+    if !(200..300).contains(&status) { return Err(format!("{rel}: HTTP {status} from {}", bundle_base())) }
+    if let Some(parent) = file.parent() { let _ = std::fs::create_dir_all(parent); }
+    // Written whole, then renamed: a download cut off never looks complete.
+    let part = file.with_extension("part");
+    if std::fs::write(&part, &body).is_ok() { let _ = std::fs::rename(&part, &file); }
+    Ok(body)
+}
+
+fn bundle_base() -> String {
+    let base = query_param("bundle").map(|b| percent_decode(&b)).unwrap_or_else(|| BUNDLE.to_string());
+    if base.ends_with('/') { base } else { base + "/" }
+}
+
+/// The bundle's version, asked once a run; the copies of older versions
+/// are removed then. Offline: the version last seen.
+async fn bundle_version() -> String {
+    static VERSION: Mutex<Option<String>> = Mutex::new(None);
+    if let Some(v) = VERSION.lock().unwrap_or_else(|e| e.into_inner()).clone() { return v }
+    let url = format!("{}version.json", bundle_base());
+    let fresh = match request("GET", &url, &[("cache-control", "no-cache")], None).await {
+        Ok((200, body)) => serde_json::from_slice::<serde_json::Value>(&body).ok().and_then(|v| v["version"].as_str().map(String::from)),
+        _ => None,
+    };
+    let clean = |v: &str| v.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') && !v.is_empty();
+    let version = match fresh.filter(|v| clean(v)) {
+        Some(v) => { store("bundle-version", &v); v }
+        None => stored("bundle-version").filter(|v| clean(v)).unwrap_or_else(|| "offline".into()),
+    };
+    log(&format!("bundle {version} from {}", bundle_base()));
+    if let Some(root) = APP.get().and_then(|a| a.internal_data_path()).map(|p| p.join("bundle")) {
+        for old in std::fs::read_dir(&root).into_iter().flatten().flatten() {
+            if old.file_name().to_string_lossy() != version { let _ = std::fs::remove_dir_all(old.path()); }
+        }
+    }
+    *VERSION.lock().unwrap_or_else(|e| e.into_inner()) = Some(version.clone());
+    version
+}
+
+/// A bundle path as a URL path: everything but letters, digits, `-._~/`
+/// percent-encoded (game files have spaces).
+fn encode_path(rel: &str) -> String {
+    rel.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-._~/".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect()
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or(""), 16) { out.push(v); i += 3; continue }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
 
 /// The browser hands a leaving game's last frame to `done` for the room's
 /// TV. Not yet on Android: the TV keeps its own picture.
@@ -369,6 +458,11 @@ pub fn main(app: AndroidApp, start: impl FnOnce() + Send + 'static) {
     }
     stop.store(true, std::sync::atomic::Ordering::Release);
     if let Ok(r) = render { let _ = r.join(); }
+    // The host runs in a process of its own (the app's `:host`, or the
+    // standalone APK), whose statics ([`APP`], [`QUERY`]) belong to this
+    // activity: end it, so the next "Host on this phone" starts fresh
+    // with its own query.
+    std::process::exit(0);
 }
 
 /// Drain Android's input queue: pads into [`crate::android_pads`],
