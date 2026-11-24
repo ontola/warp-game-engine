@@ -30,6 +30,9 @@ pub struct Catalog {
     pub open: bool,
     pub shown: f32,
     scroll: f32,
+    /// The choice the scroll last followed: the wheel scrolls freely until
+    /// the choice changes again.
+    followed: Option<usize>,
     /// When it opened, for the fade in.
     pub opened_at: f32,
     /// The covers decoded so far (None: none or undecodable).
@@ -136,7 +139,12 @@ impl Lobby {
         let g = grid(self.hud_size, n);
         let row = (self.host.shelf_offset / g.cols) as f32;
         let last = (n.div_ceil(g.cols).saturating_sub(g.rows)) as f32;
-        let target = self.catalog.scroll.clamp(row - g.rows as f32 + 1.0, row).clamp(0.0, last);
+        let mut target = self.catalog.scroll;
+        if self.catalog.followed != Some(self.host.shelf_offset) {
+            self.catalog.followed = Some(self.host.shelf_offset);
+            target = target.clamp(row - g.rows as f32 + 1.0, row);
+        }
+        let target = target.clamp(0.0, last);
         self.catalog.scroll = target;
         let d = target - self.catalog.shown;
         self.catalog.shown = if d.abs() < 0.002 { target } else { self.catalog.shown + d * (1.0 - (-delta * 14.0).exp()) };
@@ -204,7 +212,8 @@ impl Lobby {
             let n = self.host.shelf_games().len();
             let g = grid(size, n);
             let last = n.div_ceil(g.cols).saturating_sub(g.rows) as f32;
-            self.catalog.scroll = (self.catalog.scroll + if p.wheel > 0.0 { -1.0 } else { 1.0 }).clamp(0.0, last);
+            // Half a row per wheel line: a notch moves, a trackpad glides.
+            self.catalog.scroll = (self.catalog.scroll - p.wheel * 0.5).clamp(0.0, last);
         }
         let (Some(at), true) = (p.position, p.pressed) else { return };
         let layout = catalog_layout(self, size);
