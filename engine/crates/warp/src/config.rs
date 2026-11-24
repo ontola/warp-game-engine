@@ -110,9 +110,34 @@ pub fn is_game(p: &Path) -> bool {
 
 impl GameToml {
     pub fn parse(text: &str) -> Result<Self, String> {
-        let cfg: GameToml = toml::from_str(text).map_err(|e| format!("game.toml: {e}"))?;
+        let cfg: GameToml = match toml::from_str(text) {
+            Ok(cfg) => cfg,
+            Err(e) if cfg!(any(target_os = "android", target_arch = "wasm32")) => Self::parse_newer(text).ok_or_else(|| format!("game.toml: {e}"))?,
+            Err(e) => return Err(format!("game.toml: {e}")),
+        };
         cfg.check()?;
         Ok(cfg)
+    }
+
+    /// A host (phone, browser) may meet a game written for a newer engine:
+    /// the phone app's engine and the games on splitscreen.club/play/ ship
+    /// separately. Its settings this engine doesn't know are dropped with a
+    /// warning instead of refusing the game; desktop `warp` stays strict, so
+    /// authors still hear about typos.
+    fn parse_newer(text: &str) -> Option<Self> {
+        let mut table: toml::Table = toml::from_str(text).ok()?;
+        for _ in 0..16 {
+            match toml::from_str::<GameToml>(&toml::to_string(&table).ok()?) {
+                Ok(cfg) => return Some(cfg),
+                Err(e) => {
+                    let msg = e.to_string();
+                    let field = msg.split("unknown field `").nth(1)?.split('`').next()?.to_string();
+                    if table.remove(&field).is_none() { return None; }
+                    eprintln!("game.toml: `{field}` is newer than this engine; ignored");
+                }
+            }
+        }
+        None
     }
 
     /// A one-file game's settings: the `--!` lines of its leading comment
@@ -179,6 +204,13 @@ impl GameToml {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn newer_settings_dropped_on_hosts() {
+        let c = GameToml::parse_newer("title = \"WTA\"\ngamepad_seats = true\nfuture_thing = 3\nplayers = 4\n").unwrap();
+        assert_eq!((c.title.as_str(), c.players), ("WTA", 4));
+        assert!(GameToml::parse_newer("players = \"four\"").is_none());
+    }
 
     #[test]
     fn one_file_header() {

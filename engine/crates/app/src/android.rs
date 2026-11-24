@@ -56,6 +56,8 @@ thread_local! {
     static LOADING: RefCell<(Option<f32>, String)> = RefCell::new((Some(0.1), "Starting".into()));
     /// A line over the picture ([`banner`]) and until when.
     static BANNER: RefCell<Option<(String, Option<Instant>)>> = const { RefCell::new(None) };
+    /// The banner that stays ([`banner`] without seconds), under the passing ones.
+    static NOTICE: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 // --- The browser shell's API -------------------------------------------
@@ -85,16 +87,21 @@ pub fn progress(fraction: Option<f32>, step: &str) {
     if !shown && fraction.is_some() { draw_loading(); }
 }
 
-/// A short line over the picture, at the top: for `seconds` (None: until
-/// replaced or [`clear_banner`]). The browser page shows these as HTML.
+/// A short line over the picture, at the top: for `seconds`, or, without,
+/// until [`clear_banner`] (a notice that stays; passing lines show over it
+/// and it comes back after). "Title\nsmaller line" shows two lines with a
+/// controller icon, as the browser page's notice. The page shows these as HTML.
 pub fn banner(text: &str, seconds: Option<f32>) {
-    let until = seconds.map(|s| Instant::now() + Duration::from_secs_f32(s));
-    BANNER.with(|b| *b.borrow_mut() = Some((text.to_string(), until)));
+    match seconds {
+        Some(s) => BANNER.with(|b| *b.borrow_mut() = Some((text.to_string(), Some(Instant::now() + Duration::from_secs_f32(s))))),
+        None => NOTICE.with(|n| *n.borrow_mut() = Some(text.to_string())),
+    }
 }
 
 /// Take the line [`banner`] shows away, when it is `text` (None: any).
 pub fn clear_banner(text: Option<&str>) {
     BANNER.with(|b| { let mut b = b.borrow_mut(); if text.is_none() || b.as_ref().is_some_and(|(t, _)| Some(t.as_str()) == text) { *b = None; } });
+    NOTICE.with(|b| { let mut b = b.borrow_mut(); if text.is_none() || b.as_deref() == text { *b = None; } });
 }
 
 /// Nothing to yield to: frames are the render thread's own.
@@ -576,6 +583,8 @@ struct Gfx {
     renderer: Option<Renderer>,
     /// The loading screen's and banner's HUD.
     hud: HudRenderer,
+    /// The loading screen's icon is on the HUD.
+    hud_icon: bool,
     visible: bool,
 }
 
@@ -638,7 +647,7 @@ fn on_window(window: NativeWindow) -> Result<(), String> {
     gpu.device.set_device_lost_callback(|reason, message| log(&format!("GPU device lost ({reason:?}): {message}")));
     let out = Output::new(&gpu, config.format)?;
     let hud = HudRenderer::new(&gpu, config.format)?;
-    GFX.with(|g| *g.borrow_mut() = Some(Gfx { instance, gpu, out, surface: Some((surface, config, window)), renderer: None, hud, visible: true }));
+    GFX.with(|g| *g.borrow_mut() = Some(Gfx { instance, gpu, out, surface: Some((surface, config, window)), renderer: None, hud, hud_icon: false, visible: true }));
     Ok(())
 }
 
@@ -683,10 +692,11 @@ fn render_loop(rx: mpsc::Receiver<Event>, stop: Arc<std::sync::atomic::AtomicBoo
                         if [config.width, config.height] != size { config.width = size[0]; config.height = size[1]; surface.configure(&gfx.gpu.device, config); }
                     }
                 }),
-                Event::Touch(id, phase, pos) => {
-                    let size = GFX.with(|g| g.borrow().as_ref().and_then(|g| g.surface.as_ref().map(|s| [s.1.width, s.1.height]))).unwrap_or([1, 1]);
-                    SHELL.with(|s| if let Some(s) = s.borrow_mut().as_mut() { s.devices.touch(id, phase, pos, size); s.devices.cursor(Some(pos)); });
-                }
+                // The phone is the TV: players hold controllers (or their own
+                // phones), so a finger on the screen plays nobody. It used to
+                // drive a virtual stick that joined as a keyboard player
+                // ("Press Enter to join", Joep 2026-11-24).
+                Event::Touch(..) => {}
                 Event::Back => {
                     // A game: back to the room. The room: twice to stop hosting.
                     if exit(Exit::Back) { continue; }
@@ -747,7 +757,10 @@ fn text(d: &mut HudDrawList, id: u64, s: &str, x: f32, y: f32, size: f32, color:
     d.text.push(TextRun { id, text: s.into(), position: [x, y], bounds: clip, font_size: size, color, font, align: TextAlign::Center, width });
 }
 
-/// The loading screen: the name, a bar and the step, on the brand's dark blue.
+/// The loading screen as the browser page and the desktop room show it:
+/// the icon, the Bungee wordmark "Splitscreen.Club" in amber and violet,
+/// a rounded amber-to-violet bar and the step, on the brand's dark blue
+/// with its two soft glows.
 fn draw_loading() {
     let _ = GFX.try_with(|g| {
         let Ok(mut g) = g.try_borrow_mut() else { return };
@@ -759,12 +772,48 @@ fn draw_loading() {
         let mut d = HudDrawList::new([config.width, config.height]);
         let clip = [0.0, 0.0, size[0], size[1]];
         let s = size[1] / 720.0;
-        text(&mut d, 1, "SPLITSCREEN CLUB", 0.0, size[1] * 0.36, 64.0 * s, [255, 255, 255, 255], size[0], FontFace::Title, clip);
-        let (w, h) = (size[0] * 0.4, 8.0 * s);
-        let (x, y) = ((size[0] - w) * 0.5, size[1] * 0.56);
-        d.rect([x, y, w, h], [1.0, 1.0, 1.0, 0.15], clip);
-        d.rect([x, y, w * fraction.unwrap_or(1.0).clamp(0.0, 1.0), h], [0.22, 0.84, 1.0, 1.0], clip);
-        text(&mut d, 2, &step, 0.0, y + 24.0 * s, 26.0 * s, [210, 215, 230, 255], size[0], FontFace::Body, clip);
+        let (wordmark, _, body) = brand_fonts();
+        // The glows: amber upper left, violet lower right.
+        for (c, col, r) in [([0.30, 0.35], [1.0, 0.706, 0.329], 0.42), ([0.72, 0.65], [0.655, 0.545, 0.98], 0.40)] {
+            for i in 0..12 {
+                let f = 1.0 - i as f32 / 12.0;
+                d.circle([size[0] * c[0], size[1] * c[1]], size[1] * r * f, [col[0], col[1], col[2], 0.018], clip);
+            }
+        }
+        let icon = 96.0 * s;
+        if !gfx.hud_icon {
+            if let Ok(pic) = render::picture::decode(include_bytes!("../../../../lobbies/game-room/assets/splitscreen-club-icon.png"), 1.0) {
+                gfx.hud.set_image(&gfx.gpu, render::hud::HudImage(0x1C0), &pic, render::hud::ImageFilter::Linear);
+            }
+            gfx.hud_icon = true;
+        }
+        let top = size[1] * 0.26;
+        d.image([(size[0] - icon) * 0.5, top, icon, icon], render::hud::HudImage(0x1C0), [0.0, 0.0, 1.0, 1.0], [1.0; 4], clip);
+        let wf = 60.0 * s;
+        let (a, b) = ("Splitscreen", ".Club");
+        let (aw, bw) = (render::hud::measure(a, wordmark, wf)[0], render::hud::measure(b, wordmark, wf)[0]);
+        let wx = (size[0] - aw - bw) * 0.5;
+        let wy = top + icon + 22.0 * s;
+        d.text.push(TextRun { id: 1, text: a.into(), position: [wx, wy], bounds: clip, font_size: wf, color: [255, 180, 84, 255], font: wordmark, align: TextAlign::Left, width: aw + 4.0 });
+        d.text.push(TextRun { id: 3, text: b.into(), position: [wx + aw, wy], bounds: clip, font_size: wf, color: [167, 139, 250, 255], font: wordmark, align: TextAlign::Left, width: bw + 4.0 });
+        let (w, h) = ((size[0] * 0.36).min(560.0 * s), 10.0 * s);
+        let (x, y) = ((size[0] - w) * 0.5, wy + wf * 1.5);
+        round_rect(&mut d, [x, y, w, h], h * 0.5, [1.0, 1.0, 1.0, 0.08], clip);
+        let done = w * fraction.unwrap_or(1.0).clamp(0.0, 1.0);
+        // Amber into violet, in slices.
+        if done >= h {
+            let n = 24;
+            for i in 0..n {
+                let (f0, f1) = (i as f32 / n as f32, (i + 1) as f32 / n as f32);
+                let t = (f0 + f1) * 0.5;
+                let col = [AMBER[0] + (VIOLET[0] - AMBER[0]) * t, AMBER[1] + (VIOLET[1] - AMBER[1]) * t, AMBER[2] + (VIOLET[2] - AMBER[2]) * t, 1.0];
+                let (sx, ex) = (x + (done - h) * f0 + h * 0.5, x + (done - h) * f1 + h * 0.5);
+                d.rect([sx, y, ex - sx + 0.5, h], col, clip);
+            }
+            d.circle([x + h * 0.5, y + h * 0.5], h * 0.5, AMBER, clip);
+            d.circle([x + done - h * 0.5, y + h * 0.5], h * 0.5, VIOLET, clip);
+        }
+        text(&mut d, 2, &step, 0.0, y + 26.0 * s, 18.0 * s, [168, 173, 196, 255], size[0], body, clip);
         let texture = match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             _ => { surface.configure(&gfx.gpu.device, config); return; }
@@ -892,11 +941,6 @@ impl Shell {
             if !q.rung().bloom { draw.light.bloom_boost = 0.0; }
         }
         if self.mobile { draw.light = mobile_light(draw.light); }
-        if let Some((from, knob, r)) = self.devices.touch_stick(size) {
-            let clip = [0.0, 0.0, size[0] as f32, size[1] as f32];
-            draw.hud.circle(from, r, [1.0, 1.0, 1.0, 0.18], clip);
-            draw.hud.circle(knob, r * 0.42, [1.0, 1.0, 1.0, 0.5], clip);
-        }
         draw_banner(&mut draw.hud, size);
         let Some(renderer) = live.renderer.as_ref() else { return Ok(()) };
         let draw_ms = ms(t_draw);
@@ -943,22 +987,79 @@ impl Shell {
     }
 }
 
-/// The [`banner`] line, top centre, on a dark pill.
+/// The brand's faces (lobbies/game-room/assets/fonts, as the browser
+/// page and the desktop room use): Bungee for the wordmark, Outfit for text.
+fn brand_fonts() -> (FontFace, FontFace, FontFace) {
+    static FACES: OnceLock<(FontFace, FontFace, FontFace)> = OnceLock::new();
+    *FACES.get_or_init(|| (
+        render::hud::register_font(include_bytes!("../../../../lobbies/game-room/assets/fonts/bungee-regular.ttf")),
+        render::hud::register_font(include_bytes!("../../../../lobbies/game-room/assets/fonts/outfit-800.ttf")),
+        render::hud::register_font(include_bytes!("../../../../lobbies/game-room/assets/fonts/outfit-600.ttf")),
+    ))
+}
+
+const AMBER: [f32; 4] = [1.0, 0.706, 0.329, 1.0];
+const VIOLET: [f32; 4] = [0.655, 0.545, 0.98, 1.0];
+const PANEL: [f32; 4] = [0.051, 0.063, 0.125, 0.88];
+
+/// A rectangle with round corners of radius `r`.
+fn round_rect(d: &mut HudDrawList, [x, y, w, h]: [f32; 4], r: f32, color: [f32; 4], clip: [f32; 4]) {
+    let r = r.min(w * 0.5).min(h * 0.5);
+    d.rect([x + r, y, w - 2.0 * r, h], color, clip);
+    d.rect([x, y + r, r, h - 2.0 * r], color, clip);
+    d.rect([x + w - r, y + r, r, h - 2.0 * r], color, clip);
+    for c in [[x + r, y + r], [x + w - r, y + r], [x + r, y + h - r], [x + w - r, y + h - r]] { d.circle(c, r, color, clip); }
+}
+
+/// The browser page's controller icon (index.html #club-notice), `size`
+/// square at `at`.
+fn pad_icon(d: &mut HudDrawList, at: [f32; 2], size: f32, clip: [f32; 4]) {
+    let u = size / 48.0;
+    let p = |x: f32, y: f32| [at[0] + x * u, at[1] + y * u];
+    let dark = [0.051, 0.063, 0.125, 1.0];
+    round_rect(d, [at[0] + 4.0 * u, at[1] + 12.0 * u, 40.0 * u, 22.0 * u], 10.0 * u, AMBER, clip);
+    d.circle(p(12.0, 30.0), 9.0 * u, AMBER, clip);
+    d.circle(p(36.0, 30.0), 9.0 * u, AMBER, clip);
+    round_rect(d, [at[0] + 9.0 * u, at[1] + 21.0 * u, 10.0 * u, 3.5 * u], 1.75 * u, dark, clip);
+    round_rect(d, [at[0] + 12.25 * u, at[1] + 17.75 * u, 3.5 * u, 10.0 * u], 1.75 * u, dark, clip);
+    d.circle(p(33.0, 19.5), 2.6 * u, dark, clip);
+    d.circle(p(38.0, 24.5), 2.6 * u, dark, clip);
+}
+
+/// The [`banner`] line, top centre, on the browser page's dark rounded
+/// panel; a notice with a second line gets the controller icon.
 fn draw_banner(hud: &mut HudDrawList, size: [u32; 2]) {
-    let Some(line) = BANNER.with(|b| {
+    let line = BANNER.with(|b| {
         let mut b = b.borrow_mut();
         if b.as_ref().is_some_and(|(_, until)| until.is_some_and(|u| Instant::now() > u)) { *b = None; }
         b.as_ref().map(|(t, _)| t.clone())
-    }) else { return };
+    }).or_else(|| NOTICE.with(|n| n.borrow().clone()));
+    let Some(line) = line else { return };
+    let (_, bold, body) = brand_fonts();
     let (w, h) = (size[0] as f32, size[1] as f32);
     let s = h / 720.0;
-    let font = 28.0 * s;
-    let tw = render::hud::measure(&line, FontFace::Body, font)[0];
-    let (pw, ph) = (tw + 48.0 * s, font * 1.8);
     let clip = [0.0, 0.0, w, h];
+    let (title, sub) = match line.split_once('\n') { Some((t, u)) => (t.to_string(), Some(u.to_string())), None => (line.clone(), None) };
+    let (tf, sf) = (22.0 * s, 16.0 * s);
+    let tw = render::hud::measure(&title, bold, tf)[0];
+    let sw = sub.as_ref().map_or(0.0, |u| render::hud::measure(u, body, sf)[0]);
+    let icon = if sub.is_some() { 44.0 * s } else { 0.0 };
+    let gap = if sub.is_some() { 18.0 * s } else { 0.0 };
+    let (px, py) = (24.0 * s, if sub.is_some() { 16.0 * s } else { 13.0 * s });
+    let text_h = if sub.is_some() { tf * 1.3 + sf * 1.4 } else { tf * 1.3 };
+    let pw = (icon + gap + tw.max(sw) + 2.0 * px).min(w - 32.0 * s);
+    let ph = text_h.max(icon) + 2.0 * py;
+    let (x, y) = ((w - pw) * 0.5, 28.0 * s);
     hud.begin_overlay();
-    hud.rect([(w - pw) * 0.5, 24.0 * s, pw, ph], [0.02, 0.03, 0.06, 0.85], clip);
-    text(hud, 0xBA77E2, &line, 0.0, 24.0 * s + (ph - font) * 0.45, font, [255, 255, 255, 255], w, FontFace::Body, clip);
+    round_rect(hud, [x - 1.0, y - 1.0, pw + 2.0, ph + 2.0], 20.0 * s + 1.0, [1.0, 1.0, 1.0, 0.1], clip);
+    round_rect(hud, [x, y, pw, ph], 20.0 * s, PANEL, clip);
+    let tx = x + px + icon + gap;
+    let tcw = pw - 2.0 * px - icon - gap;
+    if sub.is_some() { pad_icon(hud, [x + px, y + (ph - icon) * 0.5], icon, clip); }
+    let ty = y + (ph - text_h) * 0.5;
+    let align = if sub.is_some() { TextAlign::Left } else { TextAlign::Center };
+    hud.text.push(TextRun { id: 0xBA77E2, text: title, position: [tx, ty], bounds: clip, font_size: tf, color: [238, 240, 252, 255], font: bold, align, width: tcw });
+    if let Some(u) = sub { hud.text.push(TextRun { id: 0xBA77E3, text: u, position: [tx, ty + tf * 1.3], bounds: clip, font_size: sf, color: [168, 173, 196, 255], font: body, align, width: tcw }); }
 }
 
 /// Every 300 frames, the frame times in logcat (returns true then).

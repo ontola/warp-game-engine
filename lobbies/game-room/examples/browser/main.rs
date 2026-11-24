@@ -415,7 +415,9 @@ pub(crate) mod page {
         if SHOWN.with(|s| s.replace(Some(empty))) == Some(empty) { return; }
         #[cfg(target_os = "android")]
         {
-            const EMPTY: &str = "Press A on a controller to join, or scan the room's code with your phone";
+            // The browser page's notice (index.html #club-notice), without
+            // the keyboard: a phone host has none.
+            const EMPTY: &str = "Connect a controller and press A\nor scan the QR code on the wall with your phone";
             if empty { app::web::banner(EMPTY, None) } else { app::web::clear_banner(Some(EMPTY)) }
         }
         #[cfg(target_arch = "wasm32")]
