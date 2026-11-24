@@ -2,7 +2,7 @@
 -- shooter over 24 waves with a boss every fourth wave and the
 -- Singularity at the end. Move with the left stick, aim and fire with the
 -- right stick (or hold the fire button, RT or the left mouse button, to
--- aim at the nearest enemy), A or RB dashes, B pulses. A downed pilot is
+-- aim at the nearest enemy), LB (or A) dashes, RB (or B) pulses. A downed pilot is
 -- revived by a teammate standing close, or after six seconds.
 --
 -- Ported from the LÖVE party pack (love-party/games/siege*.lua): the same
@@ -56,8 +56,8 @@ local POWER_ORDER = { "spread", "pierce", "rapid" }
 local SEGMENTS = 12
 
 local SPECS = {
-	-- The first boss (wave 4): a giant virion, tough enough to need a plan.
-	boss = { hp = 650, r = 46, speed = 50, value = 1000, boss = true, extra = 140 },
+	-- The first boss (wave 4): a giant virion. Half its old 650 hp (Joep, 11/24: far too tough).
+	boss = { hp = 325, r = 46, speed = 50, value = 1000, boss = true, extra = 70 },
 	chaser = { hp = 1, r = 11, speed = 115, value = 10 },
 	weaver = { hp = 1, r = 10, speed = 145, value = 15 },
 	splitter = { hp = 4, r = 21, speed = 65, value = 45 },
@@ -760,8 +760,9 @@ local function controls(i)
 		y = -i.move_y,
 		aimX = i.aim_x,
 		aimY = -i.aim_y,
-		action = i.held.south or i.held.right_shoulder,
-		secondary = i.held.east,
+		-- LB dashes, RB pulses (Joep, 11/24); A and B stay as a second way.
+		action = i.held.left_shoulder or i.held.south,
+		secondary = i.held.right_shoulder or i.held.east,
 		autoAim = i.held.fire,
 	}
 end
@@ -2662,6 +2663,30 @@ local function players_changed()
 	end
 end
 
+-- The start menu shows what the buttons do, under its items.
+local CONTROLS = {
+	{ "Left stick", "Move" },
+	{ "Right stick", "Aim and fire" },
+	{ "RT", "Fire at the nearest enemy" },
+	{ "LB", "Dash" },
+	{ "RB", "Pulse: clears enemies and bullets nearby" },
+}
+
+local function menu(top)
+	local w, h = hud.size()
+	local k = h / 720
+	local rowH = 30 * k
+	local y = top + 36 * k
+	local mid = w / 2
+	hud.text("CONTROLS", 0, y, { size = 18 * k, align = "center", width = w, color = { 0.55, 0.8, 1, 0.85 } })
+	y += 36 * k
+	for _, row in CONTROLS do
+		hud.text(row[1], mid - 320 * k, y, { size = 20 * k, align = "right", width = 300 * k, color = { 0.4, 0.95, 1, 1 } })
+		hud.text(row[2], mid + 20 * k, y, { size = 20 * k, width = 360 * k, color = { 0.9, 0.93, 1, 0.95 } })
+		y += rowH
+	end
+end
+
 -- Helpers for the live console (run_luau, `lua`): debug.wave(12) jumps to
 -- wave 12, debug.spawn("sun", 700, 300) drops an enemy, debug.lose() ends.
 local debug = {
@@ -2683,4 +2708,4 @@ local debug = {
 	end,
 }
 
-return { init = init, tick = tick, draw = draw, reload = reload, debug = debug, player_joined = player_joined, player_left = player_left, players_changed = players_changed }
+return { init = init, tick = tick, draw = draw, menu = menu, reload = reload, debug = debug, player_joined = player_joined, player_left = player_left, players_changed = players_changed }

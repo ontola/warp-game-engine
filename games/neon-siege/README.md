@@ -17,8 +17,9 @@ engine draws the bursts and rings (`fx.burst`, `fx.ring`).
 | Left stick / WASD | fly |
 | Right stick | aim and fire |
 | RT / left mouse (held) | fire at the nearest enemy |
-| A, RB / Space | dash (dodges hits) |
-| B | pulse: clears small enemies and bullets nearby, every 10 s |
+| LB (or A) / Q, Space | dash (dodges hits) |
+| RB (or B) / E, Shift | pulse: clears small enemies and bullets nearby, every 10 s |
+| Start | menu, with these controls |
 | Stand next to a downed pilot | revive them (or wait six seconds) |
 
 ```sh
