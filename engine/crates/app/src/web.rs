@@ -258,6 +258,16 @@ pub fn memory_mb() -> u32 {
         .and_then(|m| m.buffer().dyn_into::<js_sys::ArrayBuffer>().ok()).map_or(0, |b| b.byte_length() >> 20)
 }
 
+/// Hand an error to the page's error reporting (`window.splitscreenReport`,
+/// the browser host's Sentry reporter), when the page has one.
+pub fn report(kind: &str, text: &str) {
+    if let Some(window) = web_sys::window()
+        && let Ok(f) = js_sys::Reflect::get(&window, &"splitscreenReport".into())
+        && let Some(f) = f.dyn_ref::<js_sys::Function>() {
+        let _ = f.call2(&wasm_bindgen::JsValue::NULL, &kind.into(), &text.into());
+    }
+}
+
 /// Panics go to the console and the page, not into the void.
 pub fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
@@ -741,11 +751,16 @@ async fn setup(window: Arc<Window>) -> Result<Live, String> {
             if n == 1 || n.is_power_of_two() { log(&format!("{n} GPU errors follow from the first")); }
             return;
         }
-        if first.swap(true, Relaxed) { log(&format!("GPU error: {text}")) } else { log_pinned(&format!("First GPU error: {text}")) }
+        if first.swap(true, Relaxed) { log(&format!("GPU error: {text}")) } else {
+            log_pinned(&format!("First GPU error: {text}"));
+            // Internal errors reach the reporter through warpGpuProblem.
+            if !internal { report("gpu-error", &text); }
+        }
     }));
     gpu.device.set_device_lost_callback(|reason, message| {
         let error = format!("GPU device lost ({reason:?}): {message}");
         log_pinned(&error);
+        if !matches!(reason, wgpu::DeviceLostReason::Destroyed) { report("device-lost", &error); }
         stopped(&error);
     });
     let out = Output::new(&gpu, config.format.add_srgb_suffix())?;

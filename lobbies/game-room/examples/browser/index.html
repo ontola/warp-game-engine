@@ -143,6 +143,7 @@ body.debug #warp-games{display:flex!important}
 #warp-progress.direct-games:not(.later) #warp-install{max-width:36rem;text-align:center}
 </style>
 </head><body><canvas id="warp" tabindex="0"></canvas>
+<script src="error-report.js"></script>
 <div id="warp-progress">
   <div class="brand">
     <img src="splitscreen-club-icon.png" alt="">
@@ -333,6 +334,7 @@ window.warpCrash = message => {
   document.getElementById('warp-crash-what').textContent = (gpu ? "Your browser's graphics gave an error." : 'The engine hit an error.')
     + (gpu && /Firefox\//.test(navigator.userAgent) ? ' Chrome or Edge run Splitscreen Club best for now.' : '');
   crash.hidden = false;
+  window.splitscreenReport?.('crash', String(message));
 };
 document.getElementById('warp-crash-reload').addEventListener('click', () => location.reload());
 // Part of the picture failed to build (a GPU internal error): say so once.
@@ -341,6 +343,7 @@ window.warpGpuProblem = message => {
   if (!el.hidden) return;
   el.textContent = "Your browser couldn't draw part of the room" + (/Firefox\//.test(navigator.userAgent) ? ': Chrome or Edge work best for now.' : '.') + ' (' + String(message).slice(0, 160) + ')';
   el.hidden = false;
+  window.splitscreenReport?.('gpu-problem', String(message), null, 'warning');
 };
 // Controllers while the engine loads: say when one is found, and when it
 // presses A that player is in (the room seats it at once, main.rs
@@ -367,5 +370,5 @@ if (!navigator.gpu) showDirectGames(android
   : 'Splitscreen Club needs WebGPU: open this page in Chrome or Edge on a computer.');
 // WebGPU there, but no adapter for this device's GPU (blocklisted or too old).
 else navigator.gpu.requestAdapter().catch(() => null).then(a => a ? wasm() : Promise.reject('no adapter')).then(async bytes => { show(0.3, 'Starting'); const module = await WebAssembly.compile(bytes); await init({module_or_path: module}); connectStories(window.warp, module); })
-  .catch(e => { if (e === 'no adapter') { showDirectGames("This device's GPU isn't supported by this browser's WebGPU." + (android ? ' Try Chrome, or host from the Splitscreen Club app.' : ' Try Chrome or Edge, with hardware acceleration on.')); return; } showDirectGames('Could not start: ' + e); log.textContent += 'start failed: ' + e + '\n'; console.error(e); });
+  .catch(e => { if (e === 'no adapter') { showDirectGames("This device's GPU isn't supported by this browser's WebGPU." + (android ? ' Try Chrome, or host from the Splitscreen Club app.' : ' Try Chrome or Edge, with hardware acceleration on.')); return; } showDirectGames('Could not start: ' + e); window.splitscreenReport?.('start-failed', e instanceof Error ? e.message : String(e), e?.stack); log.textContent += 'start failed: ' + e + '\n'; console.error(e); });
 </script></body></html>

@@ -332,6 +332,7 @@ if not args.no_build:
     page = page.replace('<meta charset="utf-8">', '<meta charset="utf-8">\n<meta http-equiv="Cache-Control" content="no-cache">' + VERSION_CHECK, 1)
     if room:
         page = page.replace('src="web-catalog.js"', f'src="web-catalog.js?v={version}"')
+        page = page.replace('src="error-report.js"', f'src="error-report.js?v={version}"')
         if not args.production_shelf and (args.web_game or args.luau_only or args.games != ','.join(WARP_GAMES)):
             page = page.replace('<html lang="en"', '<html lang="en" data-custom-shelf', 1)
     (OUT / 'version.json').write_text(json.dumps({'version': version}))
@@ -344,6 +345,7 @@ if not args.no_build:
         # qrcode-generator 1.4.4 (MIT, Kazuhiko Arase): the loading screen's QR code.
         shutil.copy(ROOT / 'lobbies/game-room/examples/browser/qrcode.js', OUT)
         shutil.copy(ROOT / 'lobbies/game-room/examples/browser/web-catalog.js', OUT)
+        shutil.copy(ROOT / 'lobbies/game-room/examples/browser/error-report.js', OUT)
         shutil.copytree(ROOT / 'lobbies/game-room/examples/browser/stories', OUT / 'stories', dirs_exist_ok=True)
     (OUT / 'assets').mkdir(exist_ok=True)
     if args.example == 'terrain_fly':
