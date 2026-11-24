@@ -987,6 +987,12 @@ fn foreground(r: &mut RoomBuild) {
     // The two controllers from the Splitscreen Club logo, put down mid-evening.
     logo_pad(r, AMBER, Vec3::new(0.3, 0.6, table_z - 0.1), 0.24);
     logo_pad(r, VIOLET, Vec3::new(0.75, 0.62, table_z + 0.2), -0.23);
+    // Room for two more: the live lobby puts one down for each controller
+    // that is connected but hasn't joined (see pads.rs).
+    let first = r.dump.instances.len();
+    logo_pad(r, CYAN, Vec3::new(-0.2, 0.6, table_z - 0.42), -0.12);
+    logo_pad(r, PINK, Vec3::new(0.74, 0.6, table_z - 0.43), 0.1);
+    r.hidden.extend(first..r.dump.instances.len());
     // A controller nobody has joined with yet makes these jump, with A Join
     // above them; with nobody in the room the A Join stays up.
     r.prompt("join", &[("A", "Join")], Vec3::new(0.52, 1.45, table_z + 0.1));
@@ -1113,11 +1119,14 @@ pub struct Mood {
     /// "A Join" hint still shows.
     pub pad_hop: f32,
     pub pad_activity: f32,
+    /// Each table pad's height above its spot (falling in); None: not on
+    /// the table (see pads.rs).
+    pub pad_drop: [Option<f32>; crate::pads::MAX],
 }
 
 impl Default for Mood {
     fn default() -> Self {
-        Mood { music_playing: false, color: VIOLET, pad_hop: 99.0, pad_activity: 0.0 }
+        Mood { music_playing: false, color: VIOLET, pad_hop: 99.0, pad_activity: 0.0, pad_drop: [Some(0.0), Some(0.0), None, None] }
     }
 }
 
@@ -1206,7 +1215,9 @@ impl RoomBuild {
         let k = (PI * t).sin();
         for (i, (name, pos, yaw, body)) in self.pads.clone().into_iter().enumerate() {
             let side = if i % 2 == 0 { 1.0 } else { -1.0 };
-            let pad = pad_xf(pos, yaw, k, side);
+            // A pad not on the table waits under the floor.
+            let drop = mood.pad_drop.get(i).copied().flatten().map_or(-50.0, |h| h);
+            let pad = pad_xf(pos + Vec3::Y * drop, yaw, k, side);
             let back = self.pad_pose[i].inverse();
             for n in self.find(&name) {
                 let at = Affine3A::from_mat4(glam::Mat4::from_cols_array(&self.dump.instances[n].transform));

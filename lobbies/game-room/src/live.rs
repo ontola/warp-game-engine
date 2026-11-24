@@ -148,6 +148,8 @@ pub struct Lobby {
     pub(crate) lost_since: HashMap<String, f32>,
     pub(crate) toasts: Vec<Toast>,
     pub(crate) unjoined: HashMap<String, (u32, bool)>,
+    /// The controllers on the coffee table (connected, not joined).
+    pub(crate) table: crate::pads::TablePads,
     pub(crate) holds: HashMap<String, (String, f32)>,
     pub(crate) station_cooldown: HashMap<String, f64>,
     pub(crate) pickup_cooldown: f64,
@@ -281,7 +283,7 @@ impl Lobby {
             next_order: 0, sheets_dirty: true, screen: None, show: Show::default(), prompts: HashMap::new(), prompt_active: HashMap::new(), nudges: Default::default(), started_once: false, prompt_glow: HashMap::new(),
             mood: Mood::default(), animated, time: 0.0, since_paint: 0.0, screens_dirty: true, local: vec![], bots: HashMap::new(), rng: Pcg::new(42), uploaded: false,
             props: props.expect("props"), board: board.expect("board"), events: vec![], controllers: HashMap::new(), held: HashMap::new(), input_blocked: HashSet::new(), menus: HashMap::new(),
-            bench: vec![], phones: vec![], lost_since: HashMap::new(), toasts: vec![], unjoined: HashMap::new(), holds: HashMap::new(), station_cooldown: HashMap::new(),
+            bench: vec![], phones: vec![], lost_since: HashMap::new(), toasts: vec![], unjoined: HashMap::new(), table: Default::default(), holds: HashMap::new(), station_cooldown: HashMap::new(),
             pickup_cooldown: 0.0, item_presses: HashMap::new(), pressed_flash: HashMap::new(), claims: HashMap::new(), pop_box: None, featured_visible: false,
             bumpers_visible: false, display_active: None, display_at: web_time::Instant::now(), quit: false, web_tx, web_rx, links_due: 0.0, last_queue: vec![], featured, bumpers, key_dips: vec![0.0; keyboard.len()], keyboard, key_hop: 99.0, keyboard_shown: false, deeper, catalog: Default::default(), hud_size: [1920, 1080], mouse: Default::default(), outbox: None,
         };
@@ -686,6 +688,8 @@ impl Lobby {
         self.update_holds();
         self.mood.pad_activity = (self.mood.pad_activity - delta).max(0.0);
         self.mood.pad_hop += delta;
+        if self.table.update(delta) { self.mood.pad_hop = 0.0; }
+        if let Some(heights) = self.table.heights() { self.mood.pad_drop = heights; }
         self.update_prompts();
         self.update_catalog(delta);
         self.host.update_loading(delta);

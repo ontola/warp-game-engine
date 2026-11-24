@@ -135,6 +135,12 @@ fn run() -> Result<(), String> {
                 let at = lobby.screen_point(Vec3::new(x, y, game_room_sim::layout::OBJECTS_Z as f32), [w, h]);
                 app::Game::pointer(&mut lobby, app::Pointer { position: at, moved: true, ..Default::default() }, [w, h]);
             }
+            // `--table A,B`: A controllers on the coffee table, then B
+            // connected `--drop` ticks (12) before the shot: mid-fall.
+            if let Some((a, b)) = arg("--table").and_then(|v| v.split_once(',').and_then(|(a, b)| Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?)))) {
+                if t == 0 { lobby.set_idle_controllers(a); }
+                if t + numf("--drop", 12.0) as u32 == ticks { lobby.set_idle_controllers(b); }
+            }
             if flag("--mouse-menu") && t == 0 { app::Game::escape(&mut lobby); }
             // `--shelf`: the first player stands at the game shelf.
             if flag("--shelf") && t < 3 {

@@ -107,6 +107,8 @@ pub(crate) mod page {
         covers: Vec<(String, Vec<u8>)>,
         /// Gameplay screenshots fetched for the room's TV: (game id, PNG).
         shots: Vec<(String, Vec<u8>)>,
+        /// Pads connected that play for nobody: on the room's table.
+        idle_pads: usize,
     }
 
     thread_local! { static HOST: RefCell<Host> = RefCell::new(Host::default()); }
@@ -271,6 +273,7 @@ pub(crate) mod page {
                 h.dirty = true;
             }
         }
+        h.idle_pads = devices.iter().filter(|(d, _)| matches!(d, Device::Pad(_)) && !h.bound.contains(&Some(*d))).count();
         back_chords(h, devices);
         warp::web::set_seats(seats(h));
         for line in warp::web::take_room_log() { let game = h.on_screen.clone(); note(h, "game", &line, game.as_deref()); }
@@ -552,6 +555,7 @@ pub(crate) mod page {
             }
             if let Some(code) = with(|h| h.key.take()) { self.lobby.key_pressed(code); }
             if with(|h| std::mem::take(&mut h.pad_heard)) { self.lobby.pad_heard(); }
+            self.lobby.set_idle_controllers(with(|h| h.idle_pads));
             for (game, png) in with(|h| std::mem::take(&mut h.covers)) { self.lobby.set_cover(&game, &png); }
             for (game, png) in with(|h| std::mem::take(&mut h.shots)) { self.lobby.set_screenshot(&game, &png); }
             fetch_ahead();

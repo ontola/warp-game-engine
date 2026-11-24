@@ -8,7 +8,7 @@ use crate::host::{get, s, Station};
 use crate::live::{Lobby, Profile};
 use game_room_sim::world::{self, BTN_A, BTN_B, BTN_DOWN, BTN_LEFT, BTN_LB, BTN_RB, BTN_RIGHT, BTN_RT, BTN_START, BTN_UP, BTN_X, BTN_Y};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub const AMBER: Color = crate::room::AMBER;
 pub const VIOLET: Color = crate::room::VIOLET;
@@ -73,6 +73,13 @@ impl Lobby {
     }
 
     pub fn accepts_input(&self) -> bool { self.host.demo || self.client.as_ref().is_some_and(|c| c.connected && c.active) }
+
+    /// The host counts its connected, unjoined controllers itself (the
+    /// browser host): that many on the coffee table.
+    pub fn set_idle_controllers(&mut self, n: usize) {
+        self.table.external = true;
+        self.table.set(n);
+    }
 
     // ------------------------------------------------------------ party
 
@@ -182,6 +189,12 @@ impl Lobby {
             // Items are used with the right trigger, so it becomes a button here.
             if axes.len() >= 6 && axes[5] / 32767.0 > 0.5 { buttons |= BTN_RT; }
             self.input(&id, buttons, stick);
+        }
+        // A frame lists every connected controller: one on the table for
+        // each that hasn't joined.
+        if !self.table.external {
+            let idle: HashSet<&str> = frames.iter().filter_map(|f| f["controller"].as_str()).filter(|t| !t.is_empty() && !self.controllers.contains_key(*t)).collect();
+            self.table.set(idle.len());
         }
     }
 
