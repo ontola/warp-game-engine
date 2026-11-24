@@ -1442,7 +1442,7 @@ impl app::Game for Gg {
             if p < world.players.len() { Ok(p) } else { Err(format!("no player {p}")) }
         };
         match w.first().copied().unwrap_or("") {
-            "help" => Ok("menu start|pause|settings|club|advanced|none | debug [on|off] | debug tab cards|items|sky|modes | debug player P | debug focus search|N | focus join|name | split on|off | leave K | copy | names NAME,NAME.. | net-error TEXT|none | give P CARD | remove P CARD | pickup KIND X Z [Y] | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | arena island [SEED] | lava [SECONDS] | cards | lua CODE | mods | knobs | knob NAME VALUE | fx [NAME VALUE] | special P NAME | modifier ID|none | sky [godot|TIME[:WEATHER]|rounds|cycle] | light [KEY=VALUE..|reset] | round | lan host|join | graphics auto|full|low|minimum | cage | rematch | extend".into()),
+            "help" => Ok("menu start|pause|settings|club|advanced|none | debug [on|off] | debug tab cards|items|sky|modes | debug player P | debug focus search|N | focus join|name | split on|off | leave K | copy | names NAME,NAME.. | net-error TEXT|none | give P CARD | remove P CARD | pickup KIND X Z [Y] | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | autopilot P [on|off] | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | arena island [SEED] | lava [SECONDS] | cards | lua CODE | mods | knobs | knob NAME VALUE | fx [NAME VALUE] | special P NAME | modifier ID|none | sky [godot|TIME[:WEATHER]|rounds|cycle] | light [KEY=VALUE..|reset] | round | lan host|join | graphics auto|full|low|minimum | cage | rematch | extend".into()),
             // The keyboard focus on a text field of the open menu.
             "focus" => {
                 use hud::menus::Field;
@@ -1629,6 +1629,14 @@ impl app::Game for Gg {
             }
             "health" => { let p = player(1, &self.world)?; self.world.players[p].health = num(2)? as i32; Ok(format!("player {p} health {}", self.world.players[p].health)) }
             "ammo" => { let p = player(1, &self.world)?; self.world.players[p].ammo = num(2)? as u32; Ok(format!("player {p} ammo {}", self.world.players[p].ammo)) }
+            "autopilot" => {
+                // A bot plays this seat (store clips, demos): `autopilot P on|off`.
+                let p = player(1, &self.world)?;
+                let on = w.get(2).is_none_or(|v| *v != "off");
+                if self.session.is_client() { return Err("only the host can hand seats to bots".into()); }
+                self.world.set_bot(p, on);
+                Ok(format!("player {p} autopilot {}", if on { "on" } else { "off" }))
+            }
             "bots" => { self.world.bots_paused = w.get(1) == Some(&"pause"); Ok(format!("bots paused: {}", self.world.bots_paused)) }
             "boom" => {
                 let (pos, r) = (Vec3::new(num(1)?, num(2)?, num(3)?), num(4)?);

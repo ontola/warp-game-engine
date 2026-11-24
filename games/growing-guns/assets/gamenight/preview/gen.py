@@ -1,84 +1,92 @@
-"""Growing Guns store preview v4 (2026-11-24): five seconds, six maps, all moving.
+"""Growing Guns store preview v5 (2026-11-24): real gameplay, then an edit.
 
-Joep on v1: "mist de gave actie en gun variatie" (minigun, big explosions).
-On v2: the player didn't move, only one map, wants a bit of blackout, and
-store clips are 5 s. So: six cuts of 25 frames (one frame per 2 ticks = 30 fps,
-150 frames = 5.0 s), each on its own arena, player 0 always strafing or
-running (and jumping in some), bots fighting for real.
+Joep on v4: "Hij schiet overal gewoon op de muur. Dat is een beetje
+belachelijk. Doe ook dat ze op elkaar schieten, dat ze een beetje springen.
+Dat er een keer een raket uit de lucht komt. Gewoon wat gevarieerde, maar wel
+echte gameplay." So nothing is staged any more: a bot plays player 0
+(`autopilot 0`), all four bots fight, jump and pick cards for real, and each
+segment just hands out a loadout and lets the round run.
 
-  a  minigun strafing past three bots
-  b  bazooka rockets into a group: real massive blasts
-  c  a big blast carves the masonry while running sideways
-  d  shotgun + extra barrel, running and jumping at the bots
-  e  explosive minigun sweeping past the crowd, booms along the row
-  f  blackout: dark arena, flashlights, muzzle flashes
+Two steps:
+  1. capture: `python gen.py` writes script.json (five 4 s segments, 600
+     frames, one every 2 ticks = 30 fps). Render it on a real GPU (Mancave):
+     `growing-guns script preview/script.json --out DIR --players 1 --seed 7`,
+     then encode all frames in order to raw.mp4 (`ffmpeg -framerate 30 -i
+     DIR/%*.png` sorted by name, crf 18).
+  2. edit: `python gen.py edit raw.mp4 preview.mp4 preview.jpg` cuts the
+     EDIT windows below (5.0 s total) and the poster frame. EDIT is chosen by
+     watching raw.mp4: pick moments where players shoot each other.
 
-Render: `growing-guns script preview/script.json --players 1 --seed 7` on a
-real GPU (Mancave), encode crf 26. Usage: python gen.py [OUT.json]
+Segments:
+  a  arena 85: player 0 minigun, the bots bazooka / shotgun x2 / explosive
+  b  arena 47: player 0 bazooka, the bots minigun / rapid fire / homing
+  c  arena 12: player 0 explosive rapid fire, the bots shotgun / minigun / sniper
+  d  an AIR STRIKES round: rockets fall from the sky; player 0 shotgun x2
+  e  a BLACKOUT round: flashlights and muzzle flashes; player 0 minigun
 """
-import json, os, sys
+import json, os, subprocess, sys
 
-OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(os.path.abspath(__file__)), "script.json")
-FRAMES = 25
-steps = [{"cmd": ["arena 85", "health 0 100"], "ticks": 60}]
-held = []  # cards player 0 holds, so each cut starts from a clean gun
+HERE = os.path.dirname(os.path.abspath(__file__))
+SEG_FRAMES = 120  # 4 s per segment
+FPS = 30
+
+# (segment, first frame, frame count) in raw.mp4 order; 150 frames = 5.0 s.
+# Placeholder until the first raw render has been watched.
+EDIT = [("a", 20, 25), ("b", 40, 25), ("c", 30, 25), ("d", 50, 25), ("e", 40, 25), ("a", 80, 25)]
+POSTER = ("d", 60)
+
+steps = [{"cmd": ["arena 85", "autopilot 0 on", "bots resume", "modifier none"], "ticks": 60}]
+held = {i: [] for i in range(4)}
 
 
-def gun(cards):
-    """Swap player 0's gun cards; the gun grows into them during the lead-in."""
-    global held
-    cmds = [f"remove 0 {c}" for c in held] + [f"give 0 {c}" for c in cards]
-    held = list(cards)
+def loadout(cards):
+    """cards[i] = player i's cards; replaces what they had from earlier segments."""
+    cmds = []
+    for i, want in enumerate(cards):
+        cmds += [f"remove {i} {c}" for c in held[i]] + [f"give {i} {c}" for c in want]
+        held[i] = list(want)
     return cmds
 
 
-def cut(name, setup, mv, mag=None, look=None, hold=None, jump=(), lead=110, every_cmd=None, refresh=None, every=4):
-    """One 25-frame cut. `mag` refills ammo to the gun's real magazine (so the
-    HUD shows a normal count); `jump` lists frames that press A."""
-    steps.append({"cmd": setup + ["health 0 100"], "ticks": lead})
-    for i in range(FRAMES):
-        s = {"ticks": 2, "capture": f"{name}_{i:03d}.png", "mv": mv}
-        if look: s["look"] = look
-        buttons = list(hold or []) + (["SOUTH"] if i in jump else [])
-        if buttons: s["hold"] = buttons
-        cmds = list((every_cmd or {}).get(i, []))
-        cmds += ["health 0 100"]
-        if i % every == 0:
-            cmds += ([f"ammo 0 {mag}"] if mag else []) + list(refresh or TOUGH)
-        if cmds: s["cmd"] = cmds
+def segment(name, setup, lead=240):
+    """Let the round run `lead` ticks (bots meet up, guns grow), then capture.
+    Only player 0's health is topped up, so the camera stays in the fight;
+    the bots win and lose for real."""
+    steps.append({"cmd": setup, "ticks": lead})
+    for i in range(SEG_FRAMES):
+        s = {"ticks": 2, "capture": f"{name}_{i:03d}.png"}
+        if i % 16 == 0: s["cmd"] = ["health 0 100"]
         steps.append(s)
 
 
-def face_off(arena, me, at, bots, hp=1000):
-    c = [f"arena {arena}", f"teleport 0 {me[0]} {me[1]} {me[2]}", f"aim 0 {at[0]} {at[1]} {at[2]}"]
-    for i, b in enumerate(bots, start=1):
-        c += [f"teleport {i} {b[0]} {b[1]} {b[2]}", f"health {i} {hp}"]
-    return c
+def round_with(modifier):
+    """Modifiers take hold at a round start; `round` builds that round's own arena."""
+    return [f"modifier {modifier}", "round", "cage"]
 
 
-FIRE = ["RIGHT_TRIGGER"]
-TOUGH = [f"health {i} 1000" for i in (1, 2, 3)]  # the minigun would end the round
-
-# a: minigun strafing left past three bots about 10 m off (point-blank looked odd), the stadium behind.
-cut("a", gun(["minigun", "big_mag"]) + face_off(85, (14, 1.2, -1), (0, 1.8, -6), [(4, 1.2, -3), (5, 1.2, -7), (2, 1.2, -5)], hp=1000),
-    mv=[-0.8, 0.2], mag=120, hold=FIRE, refresh=TOUGH, every=4)
-# b: bazooka into a tight group while backing off to the side.
-cut("b", ["bots pause"] + gun(["bazooka"]) + face_off(12, (12, 2, 14), (0, 2, 0), [(-1, 2, 1), (1.5, 2, -1), (0, 2, 2)]),
-    mv=[0.6, -0.3], hold=FIRE, lead=140)
-# c: a big blast carves the masonry while running sideways (no gun change).
-cut("c", ["bots pause"] + face_off(31, (-12, 1.2, 6), (-12, 2, -12), [(-15, 1.2, -8), (-9, 1.2, -9), (-13, 1.2, -5)]),
-    mv=[0.5, 0.2], look=[0.0015, 0.0], lead=30, every_cmd={3: ["blast -12 2.5 -12 6 200", "boom -12 2 -9 8 120"]})
-# d: shotgun with an extra barrel, charging and jumping at the bots.
-cut("d", ["bots pause"] + gun(["shotgun", "extra_barrel"]) + face_off(47, (-15, 1.2, -7), (0, 2, -5), [(-7, 1.2, -6), (-6, 1.2, -9), (-8, 1.2, -4)]),
-    mv=[0.2, 1.0], look=[0.001, 0.0], hold=FIRE, jump=range(6, 10))
-# e: minigun with explosive rounds sweeping past the crowd, booms along the row.
-cut("e", ["bots pause"] + gun(["minigun", "explosive", "big_mag"]) + face_off(63, (13, 3.1, -10), (4, 2.2, 0), [(8, 3.4, 0), (4, 2, 0), (0, 2, 0)]), mv=None,
-    mag=120, look=[0.004, 0.0], hold=FIRE, every=1, every_cmd={4: ["boom 6 1 -4 6"], 14: ["boom -2 1 -4 8"]})
-# f: blackout. The modifier takes hold at a round start, so the round's own arena (seed 1486624112 here, scanned) is used.
-cut("f", ["bots resume", "modifier blackout", "round", "cage"] + gun(["minigun", "big_mag"])
-    + ["teleport 0 2 1.2 13", "aim 0 -3 1.5 -2"] + [f"teleport {i} {x} 1.2 {z}" for i, (x, z) in enumerate([(-2, 1), (2, -1), (0, -3)], start=1)],
-    mv=[0.15, 0.6], mag=120, look=[0.002, 0.0], hold=FIRE, lead=150, refresh=TOUGH, every=4)
-
+segment("a", ["arena 85"] + loadout([["minigun", "big_mag"], ["bazooka"], ["shotgun", "extra_barrel"], ["explosive", "rapid_fire"]]))
+segment("b", ["arena 47"] + loadout([["bazooka"], ["minigun"], ["rapid_fire", "big_mag"], ["homing", "dmg_up"]]))
+segment("c", ["arena 12"] + loadout([["explosive", "rapid_fire"], ["shotgun"], ["minigun", "big_mag"], ["sniper"]]))
+segment("d", round_with("air_strikes") + loadout([["shotgun", "extra_barrel"], ["bazooka"], ["minigun"], ["explosive"]]), lead=300)
+segment("e", round_with("blackout") + loadout([["minigun", "big_mag"], ["shotgun"], ["rapid_fire"], ["bazooka"]]), lead=240)
+steps.append({"cmd": ["modifier none", "autopilot 0 off"], "ticks": 1})
 steps.append({"state": "end.json"})
-json.dump({"size": [1920, 1080], "steps": steps}, open(OUT, "w"))
-print(len(steps), "steps,", sum(1 for s in steps if "capture" in s), "frames ->", OUT)
+
+
+def edit(raw, out, poster):
+    order = [s for s in "abcde"]
+    start = lambda seg, f: (order.index(seg) * SEG_FRAMES + f) / FPS
+    parts = "".join(f"[0:v]trim=start={start(s, f):.4f}:duration={n / FPS:.4f},setpts=PTS-STARTPTS[v{k}];" for k, (s, f, n) in enumerate(EDIT))
+    graph = parts + "".join(f"[v{k}]" for k in range(len(EDIT))) + f"concat=n={len(EDIT)}:v=1:a=0[out]"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", raw, "-filter_complex", graph, "-map", "[out]", "-an",
+                    "-c:v", "libx264", "-crf", "26", "-pix_fmt", "yuv420p", "-movflags", "+faststart", out], check=True)
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{start(*POSTER):.4f}", "-i", raw, "-frames:v", "1", "-q:v", "3", poster], check=True)
+    print("edited", sum(n for _, _, n in EDIT), "frames ->", out, "+", poster)
+
+
+if len(sys.argv) > 1 and sys.argv[1] == "edit":
+    edit(*sys.argv[2:5])
+else:
+    out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "script.json")
+    json.dump({"size": [1920, 1080], "steps": steps}, open(out, "w"))
+    print(len(steps), "steps,", sum(1 for s in steps if "capture" in s), "frames ->", out)
