@@ -3,8 +3,10 @@
 //! becomes one clustered mesh in model space; materials map to Warp
 //! materials (base colour, roughness, metalness, double sided, alpha mask
 //! and blend)
-//! with base-colour and normal textures. Skinning and animation are not
-//! read. FBX: convert to glTF first (Blender or FBX2glTF).
+//! with base-colour and normal textures. Point and spot lights
+//! (`KHR_lights_punctual`) and perspective cameras come along in
+//! [`Document::lights`] and [`Document::cameras`]. Skinning and animation
+//! are not read. FBX: convert to glTF first (Blender or FBX2glTF).
 //!
 //! ```ignore
 //! let model = assets::gltf::load(&mut scene, Path::new("stump.gltf"))?;
@@ -84,6 +86,10 @@ pub struct Node {
 /// scene, its geometry is not (build meshes from `nodes` as needed).
 pub struct Document {
     pub nodes: Vec<Node>,
+    /// The file's point and spot lights, in world space.
+    pub lights: Vec<Light>,
+    /// The file's perspective cameras, in world space.
+    pub cameras: Vec<View>,
     /// Materials whose mesh LODs retain authored shading normals and UVs.
     preserve_shading: HashSet<u32>,
     /// Warp material per glTF material, in glTF order.
@@ -270,7 +276,102 @@ pub fn read_bytes(scene: &mut Scene, bytes: &[u8], path: &Path) -> Result<Docume
         }
         for child in node.children() { stack.push((child, world)); }
     }
-    Ok(Document { nodes, materials, preserve_shading })
+    let (lights, cameras) = lights_and_cameras(&g);
+    Ok(Document { nodes, lights, cameras, materials, preserve_shading })
+}
+
+/// A point or spot light of the file (`KHR_lights_punctual`), in world space.
+#[derive(Clone, Debug)]
+pub struct Light {
+    /// Its node's name.
+    pub name: String,
+    pub position: Vec3,
+    /// Where a spot points (a point light shines all round).
+    pub direction: Vec3,
+    /// Linear colour, 0..1.
+    pub color: [f32; 3],
+    /// Candela, as glTF gives it.
+    pub intensity: f32,
+    /// A spot's inner and outer cone half-angles, radians.
+    pub cone: Option<(f32, f32)>,
+    /// Where the light is cut off, metres, when the file says.
+    pub range: Option<f32>,
+}
+
+impl Light {
+    /// The light moved by `place` (a model placed in the world).
+    pub fn placed(&self, place: &glam::Affine3A) -> Light {
+        Light { position: place.transform_point3(self.position), direction: place.transform_vector3(self.direction).normalize_or(Vec3::NEG_Z), ..self.clone() }
+    }
+
+    /// The renderer's local light: physical inverse-square candela, reaching
+    /// as far as it is brighter than 0.1 lux (30 m at most) unless the file
+    /// gives a range.
+    pub fn local(&self) -> render::headlights::LocalLight {
+        let colour = Vec3::from(self.color) * self.intensity;
+        let range = self.range.unwrap_or_else(|| (colour.max_element() / 0.1).sqrt()).clamp(3.0, 30.0);
+        let (inner_cos, outer_cos) = match self.cone {
+            Some((inner, outer)) => {
+                let outer = outer.clamp(0.02, 1.55);
+                let (oc, ic) = (outer.cos(), inner.clamp(0.0, outer).cos());
+                (ic.max(oc + 0.01).min(1.0), oc)
+            }
+            None => (-0.999, -1.0),
+        };
+        render::headlights::LocalLight { position: self.position, direction: self.direction, intensity_cd: colour, range_m: range, inner_cos, outer_cos, source_radius_m: 0.05, falloff: 2.0 }
+    }
+}
+
+/// A perspective camera of the file, in world space.
+#[derive(Clone, Debug)]
+pub struct View {
+    /// Its node's name, else the camera's.
+    pub name: String,
+    pub camera: render::Camera,
+    /// The node's (else the camera's) `extras`, as JSON text.
+    pub extras: Option<String>,
+}
+
+impl View {
+    /// The view moved by `place` (a model placed in the world).
+    pub fn placed(&self, place: &glam::Affine3A) -> View {
+        let c = &self.camera;
+        View { camera: render::Camera { pos: place.transform_point3(c.pos), target: place.transform_point3(c.target), ..*c }, ..self.clone() }
+    }
+}
+
+/// The lights and perspective cameras of the default scene, in file order.
+fn lights_and_cameras(g: &::gltf::Gltf) -> (Vec<Light>, Vec<View>) {
+    let defs: Vec<serde_json::Value> = g.extension_value("KHR_lights_punctual").and_then(|e| e["lights"].as_array().cloned()).unwrap_or_default();
+    let (mut lights, mut cameras) = (Vec::new(), Vec::new());
+    let mut stack: Vec<(::gltf::Node, Mat4)> = g.default_scene().or_else(|| g.scenes().next())
+        .map(|s| s.nodes().map(|n| (n, Mat4::IDENTITY)).collect()).unwrap_or_default();
+    stack.reverse();
+    while let Some((node, parent)) = stack.pop() {
+        let world = parent * Mat4::from_cols_array_2d(&node.transform().matrix());
+        let pos = world.transform_point3(Vec3::ZERO);
+        let forward = world.transform_vector3(Vec3::NEG_Z).normalize_or(Vec3::NEG_Z);
+        let name = node.name().unwrap_or("").to_string();
+        if let Some(def) = node.extension_value("KHR_lights_punctual").and_then(|e| e["light"].as_u64()).and_then(|i| defs.get(i as usize)) {
+            let kind = def["type"].as_str().unwrap_or("");
+            let num = |v: &serde_json::Value, d: f32| v.as_f64().map_or(d, |x| x as f32);
+            let color = def["color"].as_array().filter(|c| c.len() == 3).map_or([1.0; 3], |c| std::array::from_fn(|k| num(&c[k], 1.0)));
+            let cone = (kind == "spot").then(|| (num(&def["spot"]["innerConeAngle"], 0.0), num(&def["spot"]["outerConeAngle"], std::f32::consts::FRAC_PI_4)));
+            if kind == "point" || kind == "spot" {
+                lights.push(Light { name: name.clone(), position: pos, direction: forward, color, intensity: num(&def["intensity"], 1.0), cone, range: def["range"].as_f64().map(|r| r as f32) });
+            }
+        }
+        if let Some(cam) = node.camera() {
+            if let ::gltf::camera::Projection::Perspective(p) = cam.projection() {
+                let extras = node.extras().as_ref().or(cam.extras().as_ref()).map(|r| r.get().to_string());
+                let name = if name.is_empty() { cam.name().unwrap_or("camera").to_string() } else { name.clone() };
+                cameras.push(View { name, camera: render::Camera { pos, target: pos + forward, fov_y: p.yfov(), near: p.znear().max(0.05) }, extras });
+            }
+        }
+        let children: Vec<_> = node.children().collect();
+        for child in children.into_iter().rev() { stack.push((child, world)); }
+    }
+    (lights, cameras)
 }
 
 #[cfg(test)]
@@ -281,6 +382,44 @@ mod tests {
     fn base64_decodes() {
         assert_eq!(base64_decode("aGVsbG8=").unwrap(), b"hello");
         assert_eq!(base64_decode("AAEC").unwrap(), [0, 1, 2]);
+    }
+
+    #[test]
+    fn reads_lights_and_cameras_in_world_space_and_file_order() {
+        let mut scene = Scene::default();
+        let bytes = br#"{"asset":{"version":"2.0"},
+            "extensionsUsed":["KHR_lights_punctual"],
+            "extensions":{"KHR_lights_punctual":{"lights":[
+                {"type":"point","color":[1,0.8,0.6],"intensity":40},
+                {"type":"spot","intensity":200,"range":6,"spot":{"innerConeAngle":0.2,"outerConeAngle":0.5}},
+                {"type":"directional","intensity":3}]}},
+            "cameras":[{"type":"perspective","perspective":{"yfov":0.9,"znear":0.01}}],
+            "scenes":[{"nodes":[0,3]}],
+            "nodes":[
+                {"name":"Room","translation":[10,0,0],"children":[1,2]},
+                {"name":"Lamp","translation":[0,2,0],"extensions":{"KHR_lights_punctual":{"light":0}}},
+                {"name":"Spot","translation":[1,3,0],"rotation":[-0.7071068,0,0,0.7071068],"extensions":{"KHR_lights_punctual":{"light":1}}},
+                {"name":"Sun","extensions":{"KHR_lights_punctual":{"light":2}},"children":[4]},
+                {"name":"Living room view","camera":0,"translation":[0,1.6,5],"extras":{"viewTime":1700000000000}}]}"#;
+        let doc = read_bytes(&mut scene, bytes, Path::new("lights.gltf")).unwrap();
+        let names: Vec<&str> = doc.lights.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["Lamp", "Spot"], "directional lights are the scene's sun, not a lamp");
+        assert!(doc.lights[0].position.abs_diff_eq(Vec3::new(10.0, 2.0, 0.0), 1e-5));
+        assert_eq!(doc.lights[0].color, [1.0, 0.8, 0.6]);
+        assert!(doc.lights[0].cone.is_none());
+        // Turned -90 degrees about X: the spot looks straight down.
+        assert!(doc.lights[1].direction.abs_diff_eq(Vec3::NEG_Y, 1e-4));
+        let spot = doc.lights[1].local();
+        assert_eq!(spot.range_m, 6.0);
+        assert!(spot.inner_cos > spot.outer_cos);
+        let view = &doc.cameras[0];
+        assert_eq!(view.name, "Living room view");
+        assert!(view.camera.pos.abs_diff_eq(Vec3::new(0.0, 1.6, 5.0), 1e-5));
+        assert!(view.camera.target.abs_diff_eq(Vec3::new(0.0, 1.6, 4.0), 1e-5));
+        assert_eq!(view.camera.near, 0.05);
+        assert!(view.extras.as_deref().unwrap().contains("viewTime"));
+        let moved = view.placed(&glam::Affine3A::from_translation(Vec3::X));
+        assert!(moved.camera.pos.abs_diff_eq(Vec3::new(1.0, 1.6, 5.0), 1e-5));
     }
 
     #[test]

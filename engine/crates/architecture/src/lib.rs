@@ -9,7 +9,11 @@
 //! surfaces ([`surfaces`]: brick outside, plaster inside, oak or tiles per
 //! room), proposed elements as a tinted ghost, the probe grid for the room
 //! bake (`render::room_bake`), camera shots per room and around the outside,
-//! a ground, and the sun for a place and time ([`sun`]).
+//! a ground, and the sun for a place and time ([`sun`]). A primitive whose
+//! glTF material has a base-colour texture keeps that material and its UVs:
+//! the file says what it looks like. The file's lamps and cameras
+//! (`KHR_lights_punctual`, perspective cameras) come along, placed like the
+//! house.
 //!
 //! ```ignore
 //! let house = architecture::House::load(&mut scene, Path::new("house.glb"))?;
@@ -61,6 +65,10 @@ pub struct House {
     pub triangles: usize,
     /// The opaque confirmed geometry, for ray tests.
     pub solid: Occluders,
+    /// The file's point and spot lights, placed like the house.
+    pub lights: Vec<assets::gltf::Light>,
+    /// The file's cameras (saved views), placed like the house.
+    pub cameras: Vec<assets::gltf::View>,
 }
 
 /// Eye height of a standing viewer (metres above the floor).
@@ -175,7 +183,10 @@ impl House {
                 let kind = p.material_name.as_deref().unwrap_or("");
                 let &(sum, out, area, curved) = &info[&patch[i]];
                 let pn = sum.normalize_or(n);
+                // A textured material is authored: keep it and its UVs.
+                let authored = scene.materials.get(p.material as usize).is_some_and(|m| m.layer >= 0);
                 let surface = match kind {
+                    _ if authored => None,
                     "glass" => None,
                     "frame" => Some(Surface::Frame),
                     "furniture" => Some(Surface::Furniture),
@@ -213,7 +224,7 @@ impl House {
                 for (j, mut vert) in v.into_iter().enumerate() {
                     // One plane per flat patch, so the pattern runs on
                     // across its triangles.
-                    vert.uv = (planar(pos[j], if curved { n } else { pn }) / tile).to_array();
+                    if !authored { vert.uv = (planar(pos[j], if curved { n } else { pn }) / tile).to_array(); }
                     if surface.is_some() { vert.normal = if curved { smooth[i][j] } else { n }.to_array(); }
                     // Shared vertices: the LOD simplifier only collapses
                     // edges between connected triangles; a soup of loose
@@ -240,7 +251,18 @@ impl House {
             elements.push(element);
         }
         if triangles == 0 { return Err(format!("{}: nothing to draw", path.display())); }
-        Ok(House { elements, min, max, triangles, solid: outside })
+        let lights = doc.lights.iter().map(|l| l.placed(&place)).collect();
+        let cameras = doc.cameras.iter().map(|v| v.placed(&place)).collect();
+        Ok(House { elements, min, max, triangles, solid: outside, lights, cameras })
+    }
+
+    /// The file's lights as shadowed clustered lights with their first
+    /// bounce (a lamp lights the room, not only what it sees): set
+    /// `scene.graphics.clustered_lights` before `Renderer::new`, then pass
+    /// these to `Renderer::set_clustered_lights`.
+    pub fn clustered_lights(&self) -> Vec<render::clustered_lights::ClusteredLight> {
+        use render::clustered_lights::ClusteredLight;
+        self.lights.iter().enumerate().map(|(i, l)| ClusteredLight::shadowed(l.local(), i as u64 + 1).with_bounce()).collect()
     }
 
     pub fn spaces(&self) -> impl Iterator<Item = &Element> { self.elements.iter().filter(|e| e.ifc_class == "IfcSpace") }

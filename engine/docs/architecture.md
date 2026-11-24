@@ -74,6 +74,16 @@ studs, insulation and air are skipped as unseen). A layered element's
 outer finish goes on faces looking out, its inner finish inside; a face
 whose front lies in a room volume (spaces carry `height`) is inside. Only
 where nothing is named does the old guess (brick out, plaster in) apply.
+A material with a base-colour texture is authored and wins over all of
+this: it keeps the file's material and UVs (furniture models, or brick and
+stone patterns an exporter baked).
+
+The file's point and spot lights (`KHR_lights_punctual`, read by
+`assets::gltf` for any model) are `House::lights`, and
+`House::clustered_lights` gives them shadowed with their first bounce.
+Its perspective cameras are `House::cameras`; `render_house` renders each
+as an extra shot, and `--night` puts the sun below the horizon so the
+lamps carry the picture.
 
 `house_view --cam px,py,pz,tx,ty,tz --shot out.png` renders a fixed spot
 for regression stills.
@@ -103,8 +113,8 @@ native cores at 2048 rays), so always ship the bake.
 The plan (hosts, import paths, milestones) is in the project's
 "Warp Architecture: plan" document.
 
-Open: per-element material choice from the app (only defaults now), IFC
-colours are replaced by the defaults (every IFC wall turns brick), pitched
-roofs get the flat-roof gravel, lamps, furniture assets, one probe grid per
+Open: untextured IFC colours are still replaced by the defaults (every
+IFC wall turns brick), pitched roofs get the flat-roof gravel, one probe
+grid per
 scene (coarse cells for a street). AtomicBuildings homes get a roof only
 when the app has an IfcRoof element (ontola/atomic-buildings).
