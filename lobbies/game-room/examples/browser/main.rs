@@ -548,6 +548,7 @@ pub(crate) mod page {
             if with(|h| std::mem::take(&mut h.pad_heard)) { self.lobby.pad_heard(); }
             for (game, png) in with(|h| std::mem::take(&mut h.covers)) { self.lobby.set_cover(&game, &png); }
             for (game, png) in with(|h| std::mem::take(&mut h.shots)) { self.lobby.set_screenshot(&game, &png); }
+            fetch_ahead();
             match with(|h| h.chord.take()) {
                 Some(Chord::Next) => next_game(),
                 Some(Chord::Previous) => previous_game(),
@@ -694,6 +695,60 @@ pub(crate) mod page {
             }
             status(100, "Press A to join");
         });
+    }
+
+    /// The native host on a phone downloads a game's files the first time
+    /// it needs them (app::android keeps them on the phone): this fetches
+    /// the next game the playlist would start for these players while the
+    /// room or the current game runs, so starting it reads from the phone.
+    /// Only files, no GPU work; one game at a time, checked every 2 s.
+    /// The browser keeps nothing between loads, so this is Android only.
+    fn fetch_ahead() {
+        #[cfg(target_os = "android")]
+        {
+            thread_local! {
+                static CHECKED: std::cell::Cell<Option<web_time::Instant>> = const { std::cell::Cell::new(None) };
+                static FETCHED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+                static BUSY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+            }
+            if BUSY.get() || CHECKED.get().is_some_and(|t| t.elapsed().as_secs_f32() < 2.0) { return; }
+            CHECKED.set(Some(web_time::Instant::now()));
+            let next = with(|h| {
+                let players = h.players.max(1);
+                h.party["playlist"]["entries"].as_array()?.iter().filter_map(|e| e["game"].as_str())
+                    .filter(|g| h.on_screen.as_deref() != Some(*g) && fits(&h.party, g, players))
+                    .find_map(|g| {
+                        let meta = game_meta(&h.party, g)?;
+                        if meta["web_entry"].is_string() { return None; }
+                        let folder = meta["folder"].as_str()?.to_string();
+                        (!FETCHED.with(|f| f.borrow().contains(&folder))).then_some(folder)
+                    })
+            });
+            // Only the first game up; once it is here, the next one waits
+            // until it becomes first.
+            let Some(folder) = next else { return };
+            let first = with(|h| {
+                let players = h.players.max(1);
+                h.party["playlist"]["entries"].as_array().and_then(|l| l.iter().filter_map(|e| e["game"].as_str())
+                    .find(|g| h.on_screen.as_deref() != Some(*g) && fits(&h.party, g, players))
+                    .and_then(|g| game_meta(&h.party, g)?["folder"].as_str().map(String::from)))
+            });
+            if first.as_deref() != Some(folder.as_str()) { return; }
+            BUSY.set(true);
+            app::web::spawn(async move {
+                let started = web_time::Instant::now();
+                let mut bytes = 0;
+                match app::web::fetch(&format!("games/{folder}/files.json")).await.and_then(|b| serde_json::from_slice::<Vec<String>>(&b).map_err(|e| e.to_string())) {
+                    Ok(list) => for rel in &list {
+                        match app::web::prefetch(&format!("games/{folder}/{rel}")).await { Ok(n) => bytes += n, Err(e) => app::web::log(&e) }
+                    },
+                    Err(e) => app::web::log(&format!("{folder}: {e}")),
+                }
+                app::web::log(&format!("{folder}: fetched ahead, {:.1} MB in {:.1} s", bytes as f64 / 1e6, started.elapsed().as_secs_f32()));
+                FETCHED.with(|f| f.borrow_mut().push(folder));
+                BUSY.set(false);
+            });
+        }
     }
 
     /// The store id of the game in `folder`.
