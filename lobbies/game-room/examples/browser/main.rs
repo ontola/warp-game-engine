@@ -615,6 +615,9 @@ pub(crate) mod page {
             if h.loading.is_some() { return None; }
             h.loading = Some(id.clone());
             h.waiting = None;
+            // Play next: the paused game stops now, not once the new one is
+            // ready (its voices end too, before the new one starts its own).
+            if h.paused.take().is_some() { warp::web::hush(None); }
             h.party["warm_session"] = json!({"game": id, "phase": "preparing", "progress": 50, "progress_label": "Loading"});
             h.dirty = true;
             h.cloud.refresh = true;
@@ -624,9 +627,6 @@ pub(crate) mod page {
         app::web::progress(Some(0.05), &format!("Loading {}", with(|h| title(&h.party, &game))));
         app::web::spawn(async move {
             let t0 = web_time::Instant::now();
-            // A paused game makes way: end its silenced voices before the
-            // new one starts its own in the shared mixer.
-            with(|h| if h.paused.is_some() { warp::web::hush(None) });
             #[cfg(target_arch = "wasm32")]
             let html = entry.map(|entry| super::html_game::HtmlGame::load(entry, with(|h| title(&h.party, &game)), players));
             #[cfg(not(target_arch = "wasm32"))]
@@ -704,9 +704,10 @@ pub(crate) mod page {
     /// the next game the playlist would start for these players while the
     /// room or the current game runs, so starting it reads from the phone.
     /// Only files, no GPU work; one game at a time, checked every 2 s.
-    /// The browser keeps nothing between loads, so this is Android only.
+    /// The browser holds the files in memory (app::web::prefetch) for the
+    /// one game up next, so starting it only builds it.
     fn fetch_ahead() {
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_arch = "wasm32"))]
         {
             thread_local! {
                 static CHECKED: std::cell::Cell<Option<web_time::Instant>> = const { std::cell::Cell::new(None) };
@@ -714,6 +715,8 @@ pub(crate) mod page {
                 static BUSY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
             }
             if BUSY.get() || CHECKED.get().is_some_and(|t| t.elapsed().as_secs_f32() < 2.0) { return; }
+            // A game picked before anyone joined is fetching its own files.
+            if with(|h| h.waiting.is_some() || h.loading.is_some()) { return; }
             CHECKED.set(Some(web_time::Instant::now()));
             let next = with(|h| {
                 let players = h.players.max(1);
@@ -737,6 +740,9 @@ pub(crate) mod page {
             });
             if first.as_deref() != Some(folder.as_str()) { return; }
             BUSY.set(true);
+            // In memory in a browser: only the one game up next.
+            #[cfg(target_arch = "wasm32")]
+            { app::web::clear_prefetched(); FETCHED.with(|f| f.borrow_mut().clear()); }
             app::web::spawn(async move {
                 let started = web_time::Instant::now();
                 let mut bytes = 0;
