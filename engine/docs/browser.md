@@ -269,7 +269,7 @@ and limits lines of `#warp-log` with its last lines, canvas and window
 size, the game on screen (`data-playing`) and `production` or `local`.
 It leaves out the device id, room code, address query and cookies (ids,
 codes and queries are scrubbed from the text too), and asks Sentry not to
-keep the IP address.
+keep the IP address (`sdk.settings.infer_ip: never`; checked: `user.ip` stays empty).
 
 ## What the browser needs
 

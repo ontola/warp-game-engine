@@ -56,7 +56,8 @@
         renderer: !limits ? 'unknown' : /portable/.test(limits) ? 'portable' : /no trees/.test(limits) ? 'no-trees' : 'full',
         cloud: new URLSearchParams(location.search).get('cloud') === 'off' ? 'off' : 'on',
       },
-      user: { ip_address: null },
+      // Relay keeps no sender IP address for this SDK.
+      sdk: { name: 'splitscreen.browser', version: '1', settings: { infer_ip: 'never' } },
       request: { url: location.origin + location.pathname, headers: { 'User-Agent': navigator.userAgent } },
       contexts: {
         screen: {
