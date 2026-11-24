@@ -606,6 +606,7 @@ pub(crate) mod page {
             Some((id, folder, h.players, entry))
         });
         let Some((game, folder, players, entry)) = found else { app::web::log(&format!("{game}: not on this page, or a game is loading")); return };
+        app::web::progress(Some(0.05), &format!("Loading {}", with(|h| title(&h.party, &game))));
         app::web::spawn(async move {
             let t0 = web_time::Instant::now();
             // A paused game makes way: end its silenced voices before the
@@ -625,7 +626,7 @@ pub(crate) mod page {
                 h.dirty = true;
                 let (cfg, game_box) = match loaded {
                     Ok(l) => l,
-                    Err(e) => { app::web::log(&format!("{folder}: {e}")); return; }
+                    Err(e) => { app::web::log(&format!("{folder}: {e}")); app::web::progress(None, "Could not load"); return; }
                 };
                 app::web::log(&format!("{folder}: ready {:.0} ms after Play", t0.elapsed().as_secs_f32() * 1000.0));
                 h.paused = None;
@@ -658,9 +659,13 @@ pub(crate) mod page {
         });
         let Some((id, folder, html)) = found else { return };
         app::web::clear_prefetched();
+        let name = with(|h| title(&h.party, &id));
         let status = move |progress: u32, label: &str| with(|h| if h.waiting.as_deref() == Some(id.as_str()) && h.loading.is_none() {
             h.party["warm_session"] = json!({"game": id, "phase": if progress >= 100 { "ready" } else { "preparing" }, "progress": progress, "progress_label": label});
             h.dirty = true;
+            // The page's card too: the bar while it loads, then out of the
+            // way (the room says to press A).
+            if progress >= 100 { app::web::progress(None, label) } else { app::web::progress(Some(progress as f32 / 100.0), &format!("{name}: {label}")) }
         });
         if html { return status(100, "Press A to join"); }
         status(0, "Loading");
@@ -738,8 +743,9 @@ pub(crate) mod page {
         #[cfg(target_arch = "wasm32")]
         script::web::init();
         app::web::install_panic_hook();
-        // After the room is up, loading a game shows on its TV only.
-        app::web::quiet_progress();
+        // Loading a game shows the page's small card at the bottom (and the
+        // TV): a pick from the catalog covers the TV, so the TV alone was
+        // no feedback (2026-11-24).
         app::web::spawn(async {
             if let Err(e) = run().await { app::web::progress(Some(0.3), &format!("Could not start: {e}")); app::web::log(&e); }
         });
