@@ -129,10 +129,10 @@ const HINT_GONE: f32 = 1.2;
 
 /// The moves taught by a hint under a wizard until they have been used, in
 /// the order they are taught, a step at a time (Joep): one element loaded,
-/// cleared again, shot, cast, then the same for the other starting element;
+/// shot, cast (clearing elements is not taught: Joep, 24 Nov), then the same for the other starting element;
 /// dodging and the sword. New skills first once learned: two elements
 /// together as soon as a second slot opens.
-const HINTS: [u32; 14] = [used::DRINK, NEW_ELEMENT, used::CAST2, used::NOVA, used::PLANT, used::ENCHANT, used::LOAD, used::SHAKE, used::BOLT_EL, used::CAST, used::CAST_PAIR, used::ROLL, used::SWING, used::DEFLECT];
+const HINTS: [u32; 13] = [used::DRINK, NEW_ELEMENT, used::CAST2, used::NOVA, used::PLANT, used::ENCHANT, used::LOAD, used::BOLT_EL, used::CAST, used::CAST_PAIR, used::ROLL, used::SWING, used::DEFLECT];
 /// Not a move: an element learned and never loaded yet. After a new skill's
 /// card, its hint stays until it has been used (Joep).
 const NEW_ELEMENT: u32 = 1 << 30;
@@ -164,7 +164,7 @@ fn hint_text(bit: u32, wz: &spellstorm::wizard::Wizard, mods: &spellstorm::relic
             Some(n) => format!("New: {} loads {}", button_of(n), n.name()),
             None => String::new(),
         },
-        used::NOVA => "New: hold {rb_hold} and let go to cast a Nova round you".into(),
+        used::NOVA => format!("{} loads {}, then hold {{rb_hold}} and let go: a Nova of {} round you", button_of(e), e.name(), e.name()),
         used::PLANT => "New: load elements, then click {ls} to plant them".into(),
         used::ENCHANT => "New: load elements, then click {rs} to enchant your staff".into(),
         used::LOAD => format!("{} loads {}", button_of(e), e.name()),
@@ -184,7 +184,6 @@ fn hint_text(bit: u32, wz: &spellstorm::wizard::Wizard, mods: &spellstorm::relic
             let b = open.get(1).copied().unwrap_or(order[1]);
             format!("New: {} {} and {} {}, then {{rt}} casts {}", button_of(a), a.name(), button_of(b), b.name(), name(&[a, b]))
         }
-        used::SHAKE => "Hold {rs} to clear elements".into(),
         used::DRINK => "Drink blood to heal".into(),
         _ => String::new(),
     }
@@ -352,8 +351,6 @@ impl Hud {
                 used::CAST_PAIR => u & used::CAST != 0,
                 // Taught as soon as a second slot opens (Joep), after its card.
                 used::CAST2 => !cards && wz.queue.size >= 2 && u & used::CAST != 0,
-                // One of the first steps (Joep), once something is loaded.
-                used::SHAKE => !wz.queue.is_empty() && u & used::LOAD != 0,
                 used::DRINK => hurt,
                 _ => true,
             };

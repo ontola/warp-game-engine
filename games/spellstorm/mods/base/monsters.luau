@@ -20,6 +20,7 @@
 --   spawn         ahead, far, under, flank or water
 --   dash          { speed m/s, seconds }; trail = element it leaves behind
 --   nova          a boss's blast element
+--   tempo         a boss's pace: above 1 its patterns come further apart (nil: 1)
 -- A module that returns its own `monsters` list replaces this one.
 
 local DEFAULT = {
@@ -76,7 +77,7 @@ local kinds = {
 	{ key = "toad", name = "Bog Toad", hp = 55, speed = 2.4, dmg = 7, reach = 12, keep = 8, el = "mud", attack = "lob", wind = 0.7, resist = { water = 1, earth = 0.3, fire = -0.4 }, always_wet = true, spawn = "water" },
 	{ key = "shieldbearer", name = "Shieldbearer", hp = 120, speed = 2.4, dmg = 14, reach = 1.6, size = 1.15, mass = 2.5, resist = { lightning = -0.3 }, shield = true },
 	{ key = "hellhound", name = "Hellhound", hp = 38, speed = 5.6, dmg = 10, reach = 5.5, el = "fire", size = 0.85, attack = "dash", wind = 0.55, resist = { fire = 1, water = -0.5, frost = -0.3 }, spawn = "flank", dash = { 13, 0.3 }, trail = "fire", pack = 3 },
-	{ key = "gravekeeper", name = "The Gravekeeper", model = "skeleton", hp = 1100, speed = 2.6, dmg = 26, reach = 2.6, size = 2.3, attack = "slam", ring = 16, mass = 8, undead = true, resist = { void = 0.8, frost = 0.3 }, boss = true, summon = { "skeleton", "skeleton", "watcher" } },
+	{ key = "gravekeeper", name = "The Gravekeeper", model = "skeleton", hp = 1100, speed = 2.6, dmg = 26, reach = 2.6, size = 2.3, attack = "slam", ring = 16, mass = 8, undead = true, resist = { void = 0.8, frost = 0.3 }, boss = true, summon = { "skeleton", "skeleton", "skeleton", "watcher" }, tempo = 1.6 },
 	{ key = "abbot", name = "The Bloated Abbot", model = "bile", hp = 1300, speed = 2, dmg = 26, reach = 2.6, el = "water", size = 2.4, attack = "slam", ring = 16, mass = 8, resist = { water = 1 }, boss = true, summon = { "cultist", "ghoul", "ghoul" }, nova = "mud" },
 	{ key = "drowned_king", name = "The Drowned King", model = "drowned", hp = 1400, speed = 2.6, dmg = 26, reach = 2.6, el = "water", size = 2.3, attack = "slam", ring = 16, mass = 8, resist = { water = 1, fire = 0.5 }, always_wet = true, boss = true, summon = { "drowned", "drowned", "bile" }, nova = "water" },
 	{ key = "warden", name = "The Frost Warden", model = "frost_brute", hp = 1600, speed = 2.4, dmg = 30, reach = 2.8, el = "frost", size = 2.4, attack = "slam", ring = 16, mass = 9, resist = { frost = 1, fire = -0.3 }, boss = true, summon = { "wraith", "wraith", "skeleton" }, nova = "ice" },

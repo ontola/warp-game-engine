@@ -612,11 +612,6 @@ fn glyph(p: &mut P, kind: &str, c: Vec2) {
         "lb" | "rb" | "rb_hold" => {
             p.rect([c.x - 28.0, c.y - 10.0, 56.0, 20.0], if kind != "rb_hold" { PAD_LIT } else { PAD_EDGE });
             p.text(if kind == "lb" { "LB" } else { "RB" }, c.x, c.y, f, 17.0, INK, TextAlign::Center);
-            if kind == "rb_hold" {
-                let t = c + Vec2::new(40.0, 0.0);
-                p.arc(t, 8.0, 0.0, TAU, 2.0, PAD_EDGE);
-                p.arc(t, 8.0, -PI * 0.5, PI, 3.0, PAD_LIT);
-            }
         }
         "lt" | "rt" => {
             let v = |x: f32, y: f32| c + Vec2::new(x, y);

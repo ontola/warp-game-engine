@@ -47,6 +47,12 @@ impl World {
         json!({
             "tick": self.tick,
             "biome": self.run.biome_index,
+            // Enough to rebuild the same level from an F4 report.
+            "seed": self.seed,
+            "level_seed": self.run.seed,
+            "wards": self.run.wards.iter().map(|w| json!({
+                "c": [w.c.x, w.c.y], "n": [w.n.x, w.n.y], "at": w.at, "lo": w.lo, "hi": w.hi, "holds": w.holds,
+            })).collect::<Vec<_>>(),
             "state": format!("{:?}", self.run.state),
             "kills": self.run.kills,
             "lead": self.lead_progress(),

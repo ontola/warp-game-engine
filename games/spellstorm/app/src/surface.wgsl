@@ -546,6 +546,11 @@ fn ss_floor_at(p: vec2<f32>, o: u32, time: f32) -> FloorAt {
     let half_w = path_w * 0.5 + (ss_fbm2(p * 1.7) - 0.5) * 0.5;
     var on_path = select(0.0, 1.0 - smoothstep(half_w - 0.25, half_w + 0.1, best), seg_n > 0u);
     let bridge = water && shore > -0.2;
+    // A plaza is paved over the path: the dirt runs up to its flagstones and
+    // stops (Joep, 24 Nov: a dark band across the plaza read as smeared mist).
+    if !bridge {
+        on_path *= smoothstep(-1.2, 0.2, pz);
+    }
 
     if water && shore > 0.0 && !(bridge && best < path_w * 0.5 + 0.1) {
         let w1 = ss_fbm2(p * 0.5 + vec2<f32>(time * 0.05, time * 0.03));

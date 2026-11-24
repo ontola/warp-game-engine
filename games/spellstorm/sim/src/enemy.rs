@@ -111,6 +111,9 @@ pub struct Kind {
     pub boss: bool,
     pub summon: &'static [&'static str],
     pub nova: El,
+    /// A boss's pace: above 1 its patterns come further apart and their
+    /// volleys more spaced, room to learn to deflect (the Gravekeeper).
+    pub tempo: f64,
 }
 
 /// Every monster kind, in the order of mods/base/monsters.luau (or the
@@ -141,7 +144,7 @@ pub fn none_kind() -> Kind {
         el: El::Earth, size: 1.0, attack: Attack::Melee, shots: &[Shot::Fan3], wind: None, ring: 0,
         mass: 1.0, undead: false, resist: &[], heals_from: None, burst: None, always_wet: false,
         practice: false, raise: None, solo: false, spawn: Spawn::Ahead, dash: (0.0, 0.0), trail: None,
-        pack: 1, shield: false, boss: false, summon: &[], nova: El::Void,
+        pack: 1, shield: false, boss: false, summon: &[], nova: El::Void, tempo: 1.0,
     }
 }
 
@@ -257,6 +260,8 @@ pub struct Enemy {
     spiral_step: f64,
     /// Raised by a necromancer, and falls apart with it.
     pub master: Option<Id>,
+    /// Called in by a boss: spills blood more often, to live through it.
+    pub boss_add: bool,
     raise_t: f64,
     pub dash_t: f64,
     pub dash_dir: Vec3,
@@ -312,6 +317,7 @@ impl Default for Enemy {
             spiral_ang: 0.0,
             spiral_step: 0.0,
             master: None,
+            boss_add: false,
             raise_t: 5.0,
             dash_t: 0.0,
             dash_dir: Vec3::ZERO,
@@ -910,8 +916,8 @@ impl World {
             e.spiral_t -= dt;
             e.spiral_step -= dt;
             if e.spiral_step <= 0.0 && can {
-                e.spiral_step = 0.1;
-                e.spiral_ang += 0.33;
+                e.spiral_step = 0.1 * c.tempo;
+                e.spiral_ang += 0.33 * c.tempo as f32;
                 self.ring_shot(id, 3, 6.0, el, dmg, e.spiral_ang, 0.26);
             }
         }
@@ -922,7 +928,7 @@ impl World {
             if a.hp < a.max_hp * 0.5 { 0.65 } else { 1.0 }
         };
         if e.special <= 0.0 && can {
-            e.special = self.rng.range(4.5, 6.0) as f64 * rage;
+            e.special = self.rng.range(4.5, 6.0) as f64 * rage * c.tempo;
             let pattern = BOSS_PATTERNS[e.pattern_i % BOSS_PATTERNS.len()];
             e.pattern_i += 1;
             // Shown first like every attack, in the body: a glint, and it
@@ -952,26 +958,43 @@ impl World {
             e.summon_t = self.rng.range(10.0, 14.0) as f64 * rage * alone;
             let pos = self.pos(id);
             for k in c.summon {
+                // A shooter comes only while none of its kind is about: six
+                // eyes on top of the boss's own volleys was a bullet hell
+                // (Joep, 24 Nov). The rest of the call stays.
+                let kd = &kinds()[kind(k)];
+                let ranged = matches!(kd.attack, Attack::Ranged | Attack::Lob);
+                if ranged && self.enemies.iter().any(|&o| self.alive(o) && self.enemy(o).cfg().key == kd.key) {
+                    continue;
+                }
                 let off = Vec3::new(self.rng.range(-3.0, 3.0), 0.0, self.rng.range(-3.0, 3.0));
+                let n = self.enemies.len();
                 self.spawn_enemy(kind(k), pos + off, false, -1);
+                if self.enemies.len() > n {
+                    let add = *self.enemies.last().unwrap();
+                    self.enemy_mut(add).boss_add = true;
+                }
             }
         }
     }
 
     /// A boss's pattern once its wind-up is over.
     fn boss_pattern(&mut self, id: Id, e: &mut Enemy, pattern: BossPattern, el: El, dmg: f64) {
+        // A slower boss fires fewer volleys, further apart: still plenty of
+        // bullets, but time to swing at each wave (Joep, 24 Nov).
+        let tempo = e.cfg().tempo;
+        let volleys = if tempo > 1.0 { 2 } else { 3 };
         match pattern {
             BossPattern::Spiral => {
-                e.spiral_t = 3.2;
+                e.spiral_t = 3.2 / tempo.max(1.0).sqrt();
                 e.spiral_step = 0.0;
             }
             BossPattern::Rings => {
-                for i in 0..3 {
+                for i in 0..volleys {
                     let off = if i % 2 == 1 { 0.5 } else { 0.0 } * TAU / 20.0;
                     self.later_shot(
                         id,
                         e,
-                        0.55 * i as f64,
+                        0.55 * tempo * i as f64,
                         Pending::Ring {
                             count: 20,
                             speed: 5.2,
@@ -984,11 +1007,11 @@ impl World {
                 }
             }
             BossPattern::Fan9 => {
-                for i in 0..3 {
+                for i in 0..volleys {
                     self.later_shot(
                         id,
                         e,
-                        0.45 * i as f64,
+                        0.45 * tempo * i as f64,
                         Pending::Fan {
                             count: 9,
                             spread: 90.0,
@@ -1360,9 +1383,9 @@ impl World {
         if self.run.boss == Some(id) {
             self.run.boss_fell = true;
         }
-        let (c, elite, model) = {
+        let (c, elite, model, boss_add) = {
             let e = self.enemy(id);
-            (e.cfg(), e.affix(), e.model())
+            (e.cfg(), e.affix(), e.model(), e.boss_add)
         };
         if c.raise.is_some() {
             for o in self.enemies.clone() {
@@ -1386,7 +1409,9 @@ impl World {
         } else if elite.is_some() {
             let n = if self.rng.f() < 0.5 { 2 } else { 1 };
             self.drop_globes(pos, n);
-        } else if self.rng.f() < 0.34 {
+        } else if self.rng.f() < if boss_add { 0.6 } else { 0.34 } {
+            // A boss's help spills blood more often: the way to heal and
+            // revive through the fight (Joep, 24 Nov).
             self.drop_globes(pos, 1);
         }
         self.drop_souls(pos, max_hp);

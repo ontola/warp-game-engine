@@ -794,20 +794,24 @@ impl World {
                 // (Where the path loops back near the wall, its earlier
                 // stretch is no part of it: the path tells which side.)
                 let prog = self.level.progress_of(q);
-                if within && d > -0.5 && d < 4.0 && (prog - wd.at).abs() < 12.0 {
+                if within && d > -0.5 && d < 2.0 && (prog - wd.at).abs() < 12.0 {
                     p.x -= wd.n.x * (d + 0.5);
                     p.z -= wd.n.y * (d + 0.5);
                     continue;
                 }
-                // Past it along the path without going through it: back
-                // along the path to this side (the arena's door faces back:
-                // its far side is the way you came).
+                // Round its end, past it along the path: back to this side,
+                // straight back through the wall's plane. Only near the wall:
+                // where the path winds, a later stretch can be nearest from
+                // open ground far from it, and moving a wizard by the path
+                // between there and the wall threw them through it (Joep:
+                // "teleporting through the mist wall"). And only a hold, never a
+                // jump: a wizard found further past (a shove, a join) stays.
                 let s = if wd.back { -1.0 } else { 1.0 };
                 let ahead = (prog - wd.at) * s;
-                if ahead > -0.5 && ahead < 25.0 {
-                    let back = self.level.point_at(wd.at - 0.5 * s) - self.level.point_at(prog);
-                    p.x += back.x;
-                    p.z += back.y;
+                let t = (q - wd.c).dot(wd.across());
+                if ahead > -0.5 && ahead < 25.0 && d > -0.5 && d < 2.0 && t > wd.lo - 6.0 && t < wd.hi + 6.0 {
+                    p.x -= wd.n.x * (d + 0.5);
+                    p.z -= wd.n.y * (d + 0.5);
                 }
             }
         }

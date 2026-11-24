@@ -597,11 +597,15 @@ impl World {
         let n = (l.point_at(at + 1.0) - l.point_at(at - 1.0)).normalize_or(Vec2::NEG_Y);
         let across = Vec2::new(-n.y, n.x);
         let reach = l.half.x.max(l.half.y) * 2.0;
+        // Out to the walls, or, in open ground, as far as this stretch of
+        // the path is the nearest: a wall that ran on over the whole level
+        // crossed the path again where it winds back (Joep saw two).
+        let ours = |p: Vec2| l.bound(p) < 0.0 && (l.progress_of(p) - at).abs() < 10.0;
         let (mut lo, mut hi) = (0.0f32, 0.0f32);
-        while lo > -reach && l.bound(c + across * (lo - 0.5)) < 0.0 {
+        while lo > -reach && ours(c + across * (lo - 0.5)) {
             lo -= 0.5;
         }
-        while hi < reach && l.bound(c + across * (hi + 0.5)) < 0.0 {
+        while hi < reach && ours(c + across * (hi + 0.5)) {
             hi += 0.5;
         }
         Ward {

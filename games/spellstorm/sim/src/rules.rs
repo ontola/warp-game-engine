@@ -959,6 +959,7 @@ fn read_monsters(t: &Table) -> mlua::Result<Vec<Monster>> {
             boss: flag("boss")?,
             summon: Box::leak(summon.into_boxed_slice()),
             nova: el("nova")?,
+            tempo: opt_num("tempo")?.unwrap_or(1.0).clamp(0.5, 3.0),
             key: leak(key),
         });
     }
