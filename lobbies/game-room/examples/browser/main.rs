@@ -728,6 +728,19 @@ pub(crate) mod page {
             #[cfg(target_arch = "wasm32")]
             let keep = super::html_game::pause() && keep;
             if keep {
+                // Its last frame goes on the TV while it waits (a Warp game;
+                // an HTML game draws outside the engine's canvas).
+                if !game_meta(&h.party, &game).is_some_and(|m| m["web_entry"].is_string()) {
+                    let id = game.clone();
+                    app::web::capture_frame(Box::new(move |size, rgba| {
+                        let Some(img) = image::RgbaImage::from_raw(size[0], size[1], rgba) else { return };
+                        let small = image::imageops::thumbnail(&img, 640, (640 * size[1] / size[0].max(1)).max(1));
+                        let mut png = Vec::new();
+                        if small.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).is_ok() {
+                            with(|h| h.shots.push((id, png)));
+                        }
+                    }));
+                }
                 let name = game.clone();
                 app::web::resume(room, Some(Box::new(move |p| with(|h| h.paused = Some((name, p))))));
                 // Its loops and music wait silently with it (Joep: the sound went on).

@@ -358,6 +358,46 @@ fn mobile_light(mut light: render::Lighting) -> render::Lighting {
     light
 }
 
+thread_local! {
+    static CAPTURE: RefCell<Option<Box<dyn FnOnce([u32; 2], Vec<u8>)>>> = const { RefCell::new(None) };
+}
+
+/// Hand the frame this tick draws to `done` (size, RGBA8, top row first),
+/// a little later. Asked from a tick (a game leaving for the room), it is
+/// that game's last frame: the switch only happens on the next one.
+pub fn capture_frame(done: Box<dyn FnOnce([u32; 2], Vec<u8>)>) {
+    CAPTURE.with(|c| *c.borrow_mut() = Some(done));
+}
+
+/// Copy `texture` (the canvas) to a buffer and read it when the GPU is done.
+fn capture(gpu: &Gpu, texture: &wgpu::Texture, done: Box<dyn FnOnce([u32; 2], Vec<u8>)>) {
+    if !texture.usage().contains(wgpu::TextureUsages::COPY_SRC) { return; }
+    let (w, h) = (texture.width(), texture.height());
+    let row = (w * 4).div_ceil(256) * 256;
+    let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("canvas capture"), size: u64::from(row) * u64::from(h), usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+    let mut enc = gpu.device.create_command_encoder(&Default::default());
+    enc.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo { texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        wgpu::TexelCopyBufferInfo { buffer: &buffer, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(h) } },
+        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+    );
+    gpu.queue.submit([enc.finish()]);
+    let bgra = matches!(texture.format(), wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+    let mapped = buffer.clone();
+    buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+        if result.is_err() { return; }
+        let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+        {
+            let Ok(data) = mapped.slice(..).get_mapped_range() else { return };
+            for y in 0..h as usize { rgba.extend_from_slice(&data[y * row as usize..y * row as usize + w as usize * 4]); }
+        }
+        mapped.unmap();
+        if bgra { for p in rgba.chunks_exact_mut(4) { p.swap(0, 2); } }
+        for p in rgba.chunks_exact_mut(4) { p[3] = 255; }
+        done([w, h], rgba);
+    });
+}
+
 /// Replace the running game with `game` at the next frame, keeping the
 /// canvas, the GPU device, the input devices and everything the engine has
 /// compiled: a switch costs only the new game's scene upload.
@@ -656,6 +696,7 @@ impl Shell {
             None => Some(quality.render_height(base(self.cfg.max_render_height))).filter(|h| *h < size[1]),
         };
         live.out.draw(&live.gpu, renderer, &draw, size, split, &view, height)?;
+        if let Some(done) = CAPTURE.with(|c| c.borrow_mut().take()) { capture(&live.gpu, &texture.texture, done); }
         live.gpu.queue.present(texture);
         self.frames += 1;
         if self.switched.is_none() && (self.render_height.is_none() || self.mobile) {
@@ -724,7 +765,9 @@ async fn setup(window: Arc<Window>) -> Result<Live, String> {
     let instance = render::gpu::instance();
     let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
     let size = window.inner_size();
-    let (gpu, config, _adapter) = Gpu::for_surface_async(&instance, &surface, size.width.max(1), size.height.max(1)).await?;
+    let (gpu, mut config, _adapter) = Gpu::for_surface_async(&instance, &surface, size.width.max(1), size.height.max(1)).await?;
+    // The canvas can be copied from ([`capture_frame`]).
+    config.usage |= wgpu::TextureUsages::COPY_SRC;
     surface.configure(&gpu.device, &config);
     // After a device loss every call fails with "is lost", and after one
     // failed creation every use of the object fails "due to a previous
