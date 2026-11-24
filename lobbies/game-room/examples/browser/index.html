@@ -9,6 +9,7 @@
 @font-face{font-family:Outfit;src:url(fonts/outfit-600.ttf) format("truetype");font-weight:600;font-display:swap}
 @font-face{font-family:Outfit;src:url(fonts/outfit-800.ttf) format("truetype");font-weight:800;font-display:swap}
 :root{--bg:#0d1020;--text:#eef0fc;--muted:#a8adc4;--amber:#ffb454;--violet:#a78bfa;color-scheme:dark}
+html::backdrop{background:var(--bg)}
 html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:600 16px/1.5 Outfit,system-ui,-apple-system,"Segoe UI",sans-serif;overflow:hidden}
 canvas#warp{width:100vw;height:100vh;display:block;touch-action:none;user-select:none;-webkit-user-select:none;outline:none}
 
@@ -269,7 +270,15 @@ async function showDirectGames(reason) {
   const root = document.documentElement, button = document.getElementById('fullscreen');
   const can = document.fullscreenEnabled && !matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches;
   let asked = false, calm;
-  const go = () => root.requestFullscreen({ navigationUI: 'hide' }).then(() => navigator.keyboard?.lock?.(['Escape']).catch(() => {})).catch(() => {});
+  // While the window grows, the engine holds its blocking scene upload
+  // (window.warpHold) so the page can repaint its new edges; released two
+  // frames after the switch, or after 1.5 s at most.
+  let release;
+  const hold = () => { window.warpHold = true; clearTimeout(release); release = setTimeout(() => { window.warpHold = false; }, 1500); };
+  const unhold = () => requestAnimationFrame(() => requestAnimationFrame(() => { window.warpHold = false; clearTimeout(release); }));
+  document.addEventListener('fullscreenchange', unhold);
+  document.addEventListener('fullscreenerror', unhold);
+  const go = () => { hold(); return root.requestFullscreen({ navigationUI: 'hide' }).then(() => navigator.keyboard?.lock?.(['Escape']).catch(() => {})).catch(() => { window.warpHold = false; }); };
   const update = () => {
     root.toggleAttribute('data-windowed', can && !document.fullscreenElement);
     root.removeAttribute('data-calm'); clearTimeout(calm); calm = setTimeout(() => root.setAttribute('data-calm', ''), 8000);

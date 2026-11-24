@@ -113,6 +113,12 @@ fn show_log() {
 /// Show loading progress in the page's `#warp-progress` box (a bar
 /// `#warp-bar` and a line `#warp-step`), when it has one: `fraction` 0..1,
 /// `None` hides the box. Also logged to the console.
+/// Whether the page asks to hold blocking work (`window.warpHold`), as
+/// while it goes fullscreen.
+fn page_holds() -> bool {
+    web_sys::window().and_then(|w| js_sys::Reflect::get(&w, &"warpHold".into()).ok()).is_some_and(|v| v.is_truthy())
+}
+
 pub fn progress(fraction: Option<f32>, step: &str) {
     web_sys::console::log_1(&format!("loading: {step}").into());
     if fraction.is_some() && QUIET.with(|q| q.get().1) { return; }
@@ -586,6 +592,10 @@ impl Shell {
             progress(Some(0.9), "Preparing graphics");
             return Ok(());
         }
+        // The page is going fullscreen: a scene upload now would block the
+        // page while the window grows, leaving its new edges unpainted
+        // (white) for seconds. Wait until the page says it has repainted.
+        if live.renderer.is_none() && page_holds() { return Ok(()); }
         let t_draw = Instant::now();
         let mut frame = Frame { gpu: &live.gpu, size, dt, alpha, split, scene_fps: if dt > 0.0 { 1.0 / dt } else { 0.0 }, scene_worst_ms: dt * 1000.0, focused: true, hdr: None, stream_generated_textures: true, renderer: &mut live.renderer };
         let mut draw: Draw = self.game.draw(&mut frame)?;
