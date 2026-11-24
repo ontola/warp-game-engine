@@ -846,6 +846,11 @@ pub(crate) mod page {
         #[cfg(not(target_arch = "wasm32"))]
         let bytes = app::web::fetch("games/library.json").await?;
         let library: Vec<Value> = serde_json::from_slice(&bytes).map_err(|e| format!("games/library.json: {e}"))?;
+        // The native phone host runs Warp games only: a web export (Godot's,
+        // `web_entry`) needs a browser page, so it stays off the shelf there
+        // instead of silently dropping out of the queue when picked.
+        #[cfg(target_os = "android")]
+        let library: Vec<Value> = library.into_iter().filter(|g| !g["web_entry"].is_string()).collect();
         // A game link (`?game=`) seats one player unless `?players=` says
         // otherwise: the first key, mouse look or A on a pad claims it.
         let players = warp::web::param("players").and_then(|p| p.parse().ok())
