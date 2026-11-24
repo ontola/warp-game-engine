@@ -317,7 +317,7 @@ impl Host {
             Some(e) => format!("Play {}", e.title),
             None => "Queue is empty".into(),
         };
-        Station { id: "queue".into(), kind: "queue".into(), action: "next".into(), short: if loading { "Loading…".into() } else { "Play next".into() }, loading,
+        Station { id: "queue".into(), kind: "queue".into(), action: "next".into(), short: if loading { "Loading…".into() } else { "Play".into() }, loading,
             label, enabled: !entries.is_empty() && (self.connected || self.demo), ..Default::default() }
     }
 

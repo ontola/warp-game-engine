@@ -750,7 +750,9 @@ fn up_next(r: &mut RoomBuild) {
     let frame = m(Color::hex("211d32"), 0.5);
     r.box_(Vec3::new(2.88, 1.38, 0.65), Vec3::new(-4.95, 0.72, z), &frame);
     r.box_(Vec3::new(2.88, 1.94, 0.16), NEXT_POSITION - Vec3::new(0.0, 0.0, 0.1), &frame);
-    r.prompt("queue", &[("Y", "Play next"), ("X", "Skip next")], Vec3::new(-4.95, 3.5, z + 0.3));
+    // In front of the screen's frame (its face is at BACK + 0.9) and clear
+    // of its top while it bobs.
+    r.prompt("queue", &[("Y", "Play"), ("X", "Skip")], Vec3::new(-4.95, 3.6, NEXT_POSITION.z + 0.12));
     let texture = r.screen("queue0", [640, 420], false);
     let preview = r.quad(NEXT_SIZE, NEXT_POSITION, &RoomBuild::screen_material(texture, 1.05));
     r.dump.instances[preview].name = "queue_preview".into();

@@ -794,7 +794,7 @@ impl Lobby {
         self.set_prompt("tv", &tv_items, tv.enabled, occupied.contains_key("tv") || tv_nudge);
         self.tuck_prompt("tv", tv_nudge, was);
         let q = self.host.queue_station();
-        self.set_prompt("queue", &[("Y", &q.short, !q.loading), ("X", "Skip next", true)], q.enabled, occupied.contains_key("queue"));
+        self.set_prompt("queue", &[("Y", &q.short, !q.loading), ("X", "Skip", true)], q.enabled, occupied.contains_key("queue"));
         let shelf_live = !self.host.shelf_games().is_empty();
         self.featured_visible = shelf_live && occupied.contains_key("shelf");
         let shelf_enabled = occupied.get("shelf").map_or(shelf_live, |s| s.enabled);
