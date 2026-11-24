@@ -13,8 +13,7 @@ render = { path = "../render" }
 glam = "0.31"
 winit = "0.30"
 wgpu = "30"
-audio = { path = "../audio" }
-cpal = "0.18"
+audio = { path = "../audio", features = ["device"] }
 serde.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 serde_json.workspace = true
@@ -25,8 +24,6 @@ arboard = { version = "3.6", default-features = false, features = ["image-data"]
 # Windows controllers are exposed through XInput; WGI can miss them.
 # The browser shell (src/web.rs).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-# Sound through WebAudio.
-cpal = { version = "0.18", features = ["wasm-bindgen"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"

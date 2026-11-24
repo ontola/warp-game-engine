@@ -21,6 +21,13 @@ sample mixer and its dedicated stem music player at the device's rate.
 
 ## Engine sound
 
+On Windows, `cargo run --profile quest -p warp-engine-generator` opens a
+standalone listening bench. Start the engine, set RPM and load, and switch
+between configurations A and B to compare engine layouts and mufflers.
+**Copy Luau** copies the selected setup as a game sound patch. To build the
+single-file Windows MSVC demo with its C runtime included, use
+`cargo rustc --locked --profile quest -p warp-engine-generator --bin warp-engine-generator -- -C target-feature=+crt-static`.
+
 Luau sound patches can use the shared pulse exhaust model with `engine("inline_four", rpm, throttle, load, cut, gear, speed)` and add `tyres(speed, slip, contact, loose, soft, wet)`. Built-in engine presets include `inline_four`, `inline_five` and `boxer_four`. A caller can register additional presets or override a built-in ID. Use `sound.move_to(handle, worldPosition)` to keep a running spatial voice attached to its vehicle as it passes the listeners. [Warp Theft Auto's motor patch](../../games/warp-theft-auto/sounds/motor.luau)
 
 Each cylinder generates a blowdown pulse at its exhaust valve timing. Firing

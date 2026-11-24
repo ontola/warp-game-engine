@@ -8,6 +8,8 @@
 pub mod analysis;
 #[cfg(feature = "luau")]
 pub mod cli;
+#[cfg(feature = "device")]
+pub mod device;
 pub mod dsp;
 pub mod engine;
 pub mod es;

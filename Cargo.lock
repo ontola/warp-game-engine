@@ -175,7 +175,6 @@ dependencies = [
  "arboard",
  "audio",
  "body",
- "cpal",
  "gilrs",
  "glam 0.31.1",
  "image",
@@ -343,6 +342,7 @@ name = "audio"
 version = "0.1.0"
 dependencies = [
  "claxon",
+ "cpal",
  "lewton",
  "mlua",
  "serde",
@@ -6743,6 +6743,15 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "web-time",
+]
+
+[[package]]
+name = "warp-engine-generator"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "audio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
