@@ -252,6 +252,13 @@ pages can also run directly. When WebGPU cannot start the 3D room, its loading
 screen offers direct links. This packaging targets the browser on desktops
 and phones. The native Android host still loads its native and Luau games.
 
+The game iframe fills the host viewport. The **Back to room** button overlays
+its upper-right corner. Resizing the window or rotating the device resizes
+the existing iframe and preserves the game session. Use the iframe's own
+viewport dimensions to lay out the game. For Godot, the **Adaptive** canvas
+resize policy fits the canvas to the iframe. The game's stretch settings and
+camera determine how much of the scene is visible inside it.
+
 
 ## Error reports (Sentry)
 
