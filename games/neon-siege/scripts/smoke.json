@@ -7,7 +7,7 @@
     { "expect": "/state/s/wavePhase", "equals": "attack" },
     { "ticks": 240, "aim": [0, 1], "mv": [0, -0.3], "note": "aim up with the right stick: it fires" },
     { "capture": "siege.png", "state": "siege.json" },
-    { "ticks": 900, "hold": ["RIGHT_TRIGGER"], "mv": [0.3, 0], "note": "hold fire: auto-aim" },
+    { "ticks": 900, "hold": ["RIGHT_TRIGGER"], "mv": [0.3, 0], "note": "hold RT: no auto-aim for people, the pilot just flies" },
     { "expect": "/errors", "equals": [] },
     { "capture": "siege-later.png" },
     { "audio": "siege.wav" }

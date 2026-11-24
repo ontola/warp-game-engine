@@ -1,8 +1,7 @@
 -- Neon Siege: one swarm, one team, keep moving. A co-op twin-stick
 -- shooter over 24 waves with a boss every fourth wave and the
 -- Singularity at the end. Move with the left stick, aim and fire with the
--- right stick (or hold the fire button, RT or the left mouse button, to
--- aim at the nearest enemy), LB (or A) dashes, RB (or B) pulses. A downed pilot is
+-- right stick (no auto-aim for people), LB (or A) dashes, RB (or B) pulses. A downed pilot is
 -- revived by a teammate standing close, or after six seconds.
 --
 -- Ported from the LÖVE party pack (love-party/games/siege*.lua): the same
@@ -763,7 +762,7 @@ local function controls(i)
 		-- LB dashes, RB pulses (Joep, 11/24); A and B stay as a second way.
 		action = i.held.left_shoulder or i.held.south,
 		secondary = i.held.right_shoulder or i.held.east,
-		autoAim = i.held.fire,
+		-- No auto-aim for people: RT aiming for you was cheating (Joep, 11/24). Bots keep it.
 	}
 end
 
@@ -2667,7 +2666,6 @@ end
 local CONTROLS = {
 	{ "Left stick", "Move" },
 	{ "Right stick", "Aim and fire" },
-	{ "RT", "Fire at the nearest enemy" },
 	{ "LB", "Dash" },
 	{ "RB", "Pulse: clears enemies and bullets nearby" },
 }

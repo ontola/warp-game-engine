@@ -16,7 +16,6 @@ engine draws the bursts and rings (`fx.burst`, `fx.ring`).
 | --- | --- |
 | Left stick / WASD | fly |
 | Right stick | aim and fire |
-| RT / left mouse (held) | fire at the nearest enemy |
 | LB (or A) / Q, Space | dash (dodges hits) |
 | RB (or B) / E, Shift | pulse: clears small enemies and bullets nearby, every 10 s |
 | Start | menu, with these controls |
