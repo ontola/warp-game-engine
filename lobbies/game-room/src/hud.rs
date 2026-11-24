@@ -284,7 +284,7 @@ pub fn back_rows(lobby: &Lobby) -> Option<(Option<String>, Vec<(String, String, 
     let rows = chords.iter().map(|chord| {
         let button = chord["button"].as_str().unwrap_or("").to_uppercase();
         let action = chord["action"].as_str().unwrap_or("");
-        let fallback = match action { "next" => "Play the next game", "previous" => "Play the previous game", "leave" => "Leave the party", other => other };
+        let fallback = match action { "next" => "Play the next game", "previous" => "Play the previous game", "leave" => "Leave the party", "report_bug" => "Report a bug", other => other };
         let label = chord["label"].as_str().filter(|l| !l.is_empty()).unwrap_or(fallback).to_string();
         let waiting = confirm && action == "leave";
         (button, if waiting { "Press B again to leave".into() } else { label }, waiting)
@@ -325,10 +325,10 @@ fn back_panel(lobby: &Lobby, c: &mut Canvas, view_proj: Mat4, size: [u32; 2], sc
         let r = [x + pad, top, key_w, line - fs * 0.5];
         if let Some(cap) = keyboard.then(|| crate::paint::key_cap(button)).flatten() {
             crate::paint::keycap(c, r, cap, 0.0, true);
-        } else if button == "B" {
+        } else if button == "B" || button == "Y" {
             let center = [r[0] + r[2] / 2.0, r[1] + r[3] / 2.0];
-            c.circle(center, r[3] / 2.0, Color::hex("e2574c"));
-            c.text(bold(), [r[0], center[1] + fs * 0.36], "B", TextAlign::Center, r[2], fs, Color::hex("0b0b12"));
+            c.circle(center, r[3] / 2.0, Color::hex(if button == "B" { "e2574c" } else { "f2c14e" }));
+            c.text(bold(), [r[0], center[1] + fs * 0.36], button, TextAlign::Center, r[2], fs, Color::hex("0b0b12"));
         } else {
             crate::paint::bumper(c, r, button, 0, 0.0);
         }

@@ -349,7 +349,10 @@ pub fn resume(parked: Parked, keep: Option<Box<dyn FnOnce(Parked)>>) {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// See the browser shell's `Exit`: Back comes on release, Next/Previous are Back + RB/LB.
-pub enum Exit { Quit, Back, Next, Previous }
+pub enum Exit { Quit, Back, Next, Previous, ReportBug }
+
+/// No keyboard F4 on a phone host (see the browser's `take_report_key`).
+pub fn take_report_key() -> bool { false }
 
 thread_local! {
     static IN_GAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -908,6 +911,7 @@ impl Shell {
                     Some(crate::back_chord::BackAction::Room) => Some(Exit::Back),
                     Some(crate::back_chord::BackAction::Next) => Some(Exit::Next),
                     Some(crate::back_chord::BackAction::Previous) => Some(Exit::Previous),
+                    Some(crate::back_chord::BackAction::ReportBug) => Some(Exit::ReportBug),
                     None => None,
                 };
                 if let Some(why) = why && exit(why) { self.exited = true; }

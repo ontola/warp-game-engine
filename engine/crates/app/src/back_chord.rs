@@ -2,19 +2,21 @@
 //! on Back's *release*, so Back + RB (next game) and Back + LB (previous
 //! game) go straight on without the room showing first. Released without a
 //! chord, Back goes to the room. RB held when Back goes down skips too.
+//! Back + Y reports a bug (the host screenshots the game and asks the
+//! phones at the table what went wrong).
 //! The desktop host (gamepad-party's daemon) does the same with its pads.
 
 use crate::{Buttons, Controls, Device};
 
 /// What Back asks the host for this step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BackAction { Room, Next, Previous }
+pub enum BackAction { Room, Next, Previous, ReportBug }
 
 /// Back's state across steps. Feed every step's devices to [`step`](Self::step).
 #[derive(Debug, Default)]
 pub struct BackChords { held: bool, chorded: bool }
 
-const CHORDS: u32 = Buttons::RIGHT_SHOULDER | Buttons::LEFT_SHOULDER;
+const CHORDS: u32 = Buttons::RIGHT_SHOULDER | Buttons::LEFT_SHOULDER | Buttons::NORTH;
 
 impl BackChords {
     /// Read this step's devices and hide Back, and the chord buttons under a
@@ -33,6 +35,7 @@ impl BackChords {
         } else if self.held && down {
             if pressed(Buttons::RIGHT_SHOULDER) { self.chorded = true; action = Some(BackAction::Next); }
             else if pressed(Buttons::LEFT_SHOULDER) { self.chorded = true; action = Some(BackAction::Previous); }
+            else if pressed(Buttons::NORTH) { self.chorded = true; action = Some(BackAction::ReportBug); }
         }
         if self.held && !down {
             self.held = false;
@@ -94,5 +97,16 @@ mod tests {
         assert_eq!(d[0].1.held.0, rb, "RB alone is the game's");
         assert_eq!(b.step(&mut pad(rb | s, rb)), Some(BackAction::Next));
         assert_eq!(b.step(&mut pad(0, rb | s)), None);
+    }
+
+    #[test]
+    fn back_y_reports_a_bug_and_the_game_never_sees_y() {
+        let mut b = BackChords::default();
+        let (s, y) = (Buttons::SELECT, Buttons::NORTH);
+        b.step(&mut pad(s, 0));
+        let mut d = pad(s | y, s);
+        assert_eq!(b.step(&mut d), Some(BackAction::ReportBug));
+        assert_eq!(d[0].1.held.0 & y, 0, "Y under Back is the host's");
+        assert_eq!(b.step(&mut pad(0, s | y)), None, "no room after the chord");
     }
 }

@@ -89,6 +89,8 @@ pub(crate) mod page {
         activity_id: u64,
         /// Back held in the room: since when (or the last chord), and whether B armed leaving.
         backs: Vec<(Device, web_time::Instant, bool)>,
+        /// The last bug report (Back + Y, F4): one per press.
+        bug_at: Option<web_time::Instant>,
         /// Pads not playing with their stick pushed, and whether one was
         /// heard since the room last ticked (the table's pads jiggle).
         pushed: Vec<Device>,
@@ -304,7 +306,7 @@ pub(crate) mod page {
     /// Back held in the room ([`back_chords`]): what it asks for, done
     /// once the room ticks (a game starting needs the host free).
     #[derive(Clone, Copy, PartialEq)]
-    enum Chord { Next, Previous }
+    enum Chord { Next, Previous, ReportBug }
 
     /// Holding Back in the room shows, after 0.16 s, what Back plus a
     /// button does (the room draws the party's `back_menu` over the
@@ -325,6 +327,7 @@ pub(crate) mod page {
             let id = h.party["players"][seat]["id"].as_str().unwrap_or_default().to_string();
             if c.pressed.has(Buttons::RIGHT_SHOULDER) { h.chord = Some(Chord::Next); h.backs[k].1 = now; }
             if c.pressed.has(Buttons::LEFT_SHOULDER) && !h.played.is_empty() { h.chord = Some(Chord::Previous); h.backs[k].1 = now; }
+            if c.pressed.has(Buttons::NORTH) { h.chord = Some(Chord::ReportBug); h.backs[k].1 = now; }
             if c.pressed.has(Buttons::EAST) {
                 if h.backs[k].2 { h.backs.remove(k); leave_party(h, &id); h.party["back_menu"] = Value::Null; h.dirty = true; return; }
                 h.backs[k].2 = true;
@@ -332,6 +335,7 @@ pub(crate) mod page {
             if now.duration_since(h.backs[k].1).as_secs_f32() < 0.16 { continue; }
             let mut chords = vec![json!({"button": "rb", "action": "next", "label": "Play the next game"})];
             if !h.played.is_empty() { chords.push(json!({"button": "lb", "action": "previous", "label": "Play the previous game"})); }
+            chords.push(json!({"button": "y", "action": "report_bug", "label": "Report a bug"}));
             chords.push(json!({"button": "b", "action": "leave", "label": "Leave the party"}));
             menu = json!({"player": id, "controller": format!("web:{dev}"), "confirm_leave": h.backs[k].2, "chords": chords});
         }
@@ -551,9 +555,11 @@ pub(crate) mod page {
             for (game, png) in with(|h| std::mem::take(&mut h.covers)) { self.lobby.set_cover(&game, &png); }
             for (game, png) in with(|h| std::mem::take(&mut h.shots)) { self.lobby.set_screenshot(&game, &png); }
             fetch_ahead();
+            if app::web::take_report_key() { with(|h| h.chord = Some(Chord::ReportBug)); }
             match with(|h| h.chord.take()) {
                 Some(Chord::Next) => next_game(),
                 Some(Chord::Previous) => previous_game(),
+                Some(Chord::ReportBug) => report_room_bug(),
                 None => {}
             }
             self.lobby.tick(controls);
@@ -780,6 +786,33 @@ pub(crate) mod page {
         });
     }
 
+    /// One bug report per 10 seconds (a held chord, a key repeat).
+    fn bug_allowed(h: &mut Host) -> bool {
+        let now = web_time::Instant::now();
+        if h.bug_at.is_some_and(|at| now.duration_since(at).as_secs() < 10) { return false; }
+        h.bug_at = Some(now);
+        true
+    }
+
+    /// Tell the table a bug was reported: the room log, and a hint on screen.
+    fn bug_noted(h: &mut Host, game: Option<&str>) {
+        let text = match game {
+            Some(g) => format!("Bug reported in {}. Say what happened on your phone.", title(&h.party, g)),
+            None => "Bug reported. Say what happened on your phone.".to_string(),
+        };
+        note(h, "game", &text, game);
+        show_hint("✓", &text);
+    }
+
+    /// Back + Y or F4 in the room: report a bug with the room on screen.
+    fn report_room_bug() {
+        if !with(|h| { let ok = bug_allowed(h); if ok { bug_noted(h, None); } ok }) { return; }
+        app::web::capture_frame(Box::new(|size, rgba| {
+            let img = image::RgbaImage::from_raw(size[0], size[1], rgba);
+            super::cloud::report_bug(None, None, img.as_ref());
+        }));
+    }
+
     /// Back or Quit in a game: the room comes back; Back keeps the game paused.
     fn leave(why: app::web::Exit) -> bool {
         with(|h| {
@@ -799,13 +832,22 @@ pub(crate) mod page {
             let keep = why != app::web::Exit::Quit;
             #[cfg(target_arch = "wasm32")]
             let keep = super::html_game::pause() && keep;
+            // Back + Y or F4 in the game: report a bug with its last frame.
+            let bug = why == app::web::Exit::ReportBug && bug_allowed(h);
+            if bug { bug_noted(h, Some(&game)); }
+            let html = game_meta(&h.party, &game).is_some_and(|m| m["web_entry"].is_string());
+            if bug && (html || !keep) {
+                super::cloud::report_bug(Some(game.clone()), Some(title(&h.party, &game)), None);
+            }
             if keep {
                 // Its last frame goes on the TV while it waits (a Warp game;
                 // an HTML game draws outside the engine's canvas).
-                if !game_meta(&h.party, &game).is_some_and(|m| m["web_entry"].is_string()) {
+                if !html {
                     let id = game.clone();
+                    let name = title(&h.party, &game);
                     app::web::capture_frame(Box::new(move |size, rgba| {
                         let Some(img) = image::RgbaImage::from_raw(size[0], size[1], rgba) else { return };
+                        if bug { super::cloud::report_bug(Some(id.clone()), Some(name), Some(&img)); }
                         let small = image::imageops::thumbnail(&img, 640, (640 * size[1] / size[0].max(1)).max(1));
                         let mut png = Vec::new();
                         if small.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).is_ok() {

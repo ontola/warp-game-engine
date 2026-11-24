@@ -171,6 +171,56 @@ pub(crate) fn start(players: usize) {
     });
 }
 
+/// Report a bug to the cloud room (`/v1/lobbies/bug-report`), as the
+/// desktop host's Back + Y does: the game on screen (None: the room), its
+/// title and a JPEG of `shot`. The phones at the table are then asked what
+/// went wrong. Without a cloud room there is nobody to tell.
+pub(crate) fn report_bug(game: Option<String>, title: Option<String>, shot: Option<&image::RgbaImage>) {
+    let screenshot = shot.and_then(jpeg_data_uri);
+    let report = json!({
+        "id": uuid(),
+        "app_version": env!("CARGO_PKG_VERSION"),
+        "platform": if cfg!(target_os = "android") { "android-host" } else { "web" },
+        "game": game,
+        "title": title,
+        "screenshot": screenshot,
+    });
+    app::web::spawn(async move {
+        let Some((origin, token)) = with(|h| Some((h.cloud.origin.clone(), h.cloud.token.clone()?))) else {
+            app::web::log("bug report: no cloud room, nothing sent");
+            return;
+        };
+        let body = report.to_string();
+        for attempt in 0..3 {
+            match app::web::request("POST", &format!("{origin}/v1/lobbies/bug-report"), &[("authorization", &format!("Bearer {token}"))], Some(&body)).await {
+                Ok((status, _)) if (200..300).contains(&status) => { app::web::log("bug report sent"); return; }
+                Ok((status, _)) if status == 400 || status == 413 => { app::web::log(&format!("bug report refused (HTTP {status})")); return; }
+                Ok((status, _)) => app::web::log(&format!("bug report: HTTP {status}")),
+                Err(e) => app::web::log(&format!("bug report: {e}")),
+            }
+            sleep(2000 * (attempt + 1)).await;
+        }
+    });
+}
+
+/// A JPEG data URI of a bug screenshot: up to 1920 wide, under the cloud's 3 MB.
+fn jpeg_data_uri(img: &image::RgbaImage) -> Option<String> {
+    use base64::Engine;
+    let (w, h) = img.dimensions();
+    if w == 0 || h == 0 { return None; }
+    let width = w.min(1920);
+    let height = ((u64::from(h) * u64::from(width)) / u64::from(w)).max(1) as u32;
+    let rgb = image::DynamicImage::ImageRgba8(if width == w { img.clone() } else { image::imageops::resize(img, width, height, image::imageops::FilterType::Triangle) }).to_rgb8();
+    for quality in [85, 70, 50] {
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, quality).encode_image(&rgb).ok()?;
+        if jpeg.len() <= 2_500_000 {
+            return Some(format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(jpeg)));
+        }
+    }
+    None
+}
+
 /// Claim waiting profile `pending` for seat `index` (a door pickup in the room).
 pub(crate) fn pickup(pending: String, index: usize) {
     app::web::spawn(async move {

@@ -449,6 +449,9 @@ pub enum Exit {
     Next,
     /// Back + LB: the game played before this one.
     Previous,
+    /// Back + Y, or F4: report a bug. The game waits, as for Back; the host
+    /// screenshots it ([`capture_frame`]) for the report.
+    ReportBug,
 }
 
 /// Call `f` when the running game quits or someone presses Back; a browser
@@ -457,7 +460,13 @@ pub enum Exit {
 /// a quit game keeps running.
 thread_local! {
     static IN_GAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// F4 went down: a game leaves to report a bug on its next tick, the room reads it with [`take_report_key`].
+    static REPORT_KEY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
+
+/// F4 was pressed in the room since the last call: report a bug there. In
+/// a game F4 leaves it with [`Exit::ReportBug`] instead.
+pub fn take_report_key() -> bool { REPORT_KEY.with(|r| r.replace(false)) }
 
 /// The host tells the shell whether a game (not its room) has the screen:
 /// only then is Back the host's, read on release with its RB/LB chords
@@ -621,8 +630,10 @@ impl Shell {
                     Some(crate::back_chord::BackAction::Room) => Some(Exit::Back),
                     Some(crate::back_chord::BackAction::Next) => Some(Exit::Next),
                     Some(crate::back_chord::BackAction::Previous) => Some(Exit::Previous),
+                    Some(crate::back_chord::BackAction::ReportBug) => Some(Exit::ReportBug),
                     None => None,
                 };
+                let why = why.or_else(|| take_report_key().then_some(Exit::ReportBug));
                 if let Some(why) = why && exit(why) { self.exited = true; }
             }
             self.game.devices(&devices);
@@ -860,6 +871,12 @@ impl ApplicationHandler for Shell {
                 }
                 if let Some(n) = [F5,F6,F7,F8,F9,F10,F11,F12].iter().position(|&k| k == code) {
                     if event.state == ElementState::Pressed && !event.repeat { self.hidden_editor=None; self.game.function_key(n as u8 + 5); }
+                    return;
+                }
+                // F4 reports a bug, from a game or the room (as Back + Y does).
+                // A game leaves on its next tick, so its screenshot is its own frame.
+                if code == F4 && takes_back() {
+                    if event.state == ElementState::Pressed && !event.repeat { REPORT_KEY.with(|r| r.set(true)); }
                     return;
                 }
                 if code == Escape && event.state == ElementState::Pressed && !event.repeat {

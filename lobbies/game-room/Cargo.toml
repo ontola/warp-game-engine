@@ -17,7 +17,7 @@ render = { path = "../../engine/crates/render" }
 app = { path = "../../engine/crates/app" }
 glam = "0.31"
 base64 = "0.22"
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 serde = { workspace = true }
 serde_json.workspace = true
 # Instant and SystemTime that also work in a browser (std::time is the same natively).
