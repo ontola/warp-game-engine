@@ -7,7 +7,7 @@
 -- Ported from the LÖVE party pack (gamenight-games love-party/games/coop/
 -- stack.lua and stack_view.lua): the same well, pieces, bag, rotation kicks,
 -- fall speed, shared hold slot and bot. No text on screen: the players'
--- faces, previews, the shared Y slot and a row meter carry everything.
+-- colours, previews, the shared Y slot and a row meter carry everything.
 
 -- Tuning, live: the `knobs` and `set_knob` tools (or `knob NAME VALUE` in
 -- the console) change a value here and reload the game; play keeps going.
@@ -457,36 +457,29 @@ local function build_backdrop()
 	world.spawn("cube", { pos = vector.create(0, 8, -20), size = vector.create(120, 70, 0.5), color = "#0d0f22", emissive = 0.0008, roughness = 0.9, tag = "backdrop" })
 end
 
--- A player's corner: a big round face beside their half, the next piece
--- under it and the shared slot under that.
+-- A player's corner beside their half: the next piece and the shared slot
+-- under it, around the middle of the well's height.
+local NEXT_Y, HOLD_Y = 11.4, 6.9
 local function build_side(p)
 	local c = player_color(p)
 	local sx = side_x(p)
-	local look = if p.lane == 1 then 1 else -1 -- towards the well
 	local v = {}
-	v.head = world.spawn("sphere", { pos = vector.create(sx, 13.2, 0), size = 3.4, color = c, emissive = 0.01, roughness = 0.45, tag = "side" })
-	v.eyes, v.pupils = {}, {}
-	for _, e in { -0.55, 0.55 } do
-		table.insert(v.eyes, world.spawn("sphere", { pos = vector.create(sx + e + look * 0.25, 13.6, 1.45), size = 0.85, color = "#f4f4ec", roughness = 0.3, solid = false, tag = "side" }))
-		table.insert(v.pupils, world.spawn("sphere", { pos = vector.create(sx + e + look * 0.4, 13.6, 1.8), size = 0.38, color = "#141418", roughness = 0.2, solid = false, tag = "side" }))
-	end
-	v.mouth = world.spawn("wire", { points = { vector.create(-0.45, 0.05, 0), vector.create(0, -0.2, 0), vector.create(0.45, 0.05, 0) }, edges = { 1, 2, 2, 3 }, pos = vector.create(sx + look * 0.25, 12.5, 1.55), width = 0.09, color = "#141418", solid = false, tag = "side" })
 	-- The next piece, on a panel tinted in the player's colour.
-	world.spawn("cube", { pos = vector.create(sx, 8.4, -0.4), size = vector.create(4.6, 3.2, 0.2), color = c * 0.18, emissive = 0.002, roughness = 0.8, tag = "side" })
+	world.spawn("cube", { pos = vector.create(sx, NEXT_Y, -0.4), size = vector.create(4.6, 3.2, 0.2), color = c * 0.18, emissive = 0.002, roughness = 0.8, tag = "side" })
 	v.next = {}
 	for _ = 1, 4 do
-		table.insert(v.next, world.spawn("cube", { pos = vector.create(sx, 8.4, 0), size = 0.78, color = BLOCKS[1], emissive = KNOBS.block_glow, roughness = 0.35, metal = 0.1, solid = false, tag = "side" }))
+		table.insert(v.next, world.spawn("cube", { pos = vector.create(sx, NEXT_Y, 0), size = 0.78, color = BLOCKS[1], emissive = KNOBS.block_glow, roughness = 0.35, metal = 0.1, solid = false, tag = "side" }))
 	end
 	-- The shared slot, on both sides: rimmed in the colour of whoever put
 	-- the piece in, with a small Y button.
-	world.spawn("cube", { pos = vector.create(sx, 3.9, -0.4), size = vector.create(4, 3.2, 0.2), color = c * 0.18, emissive = 0.002, roughness = 0.8, tag = "side" })
+	world.spawn("cube", { pos = vector.create(sx, HOLD_Y, -0.4), size = vector.create(4, 3.2, 0.2), color = c * 0.18, emissive = 0.002, roughness = 0.8, tag = "side" })
 	local pts, edges = frame_points(4, 3.2)
-	v.rim = world.spawn("wire", { points = pts, edges = edges, pos = vector.create(sx, 3.9, -0.2), width = 0.1, color = GOLD, emissive = 0.035, solid = false, tag = "side" })
+	v.rim = world.spawn("wire", { points = pts, edges = edges, pos = vector.create(sx, HOLD_Y, -0.2), width = 0.1, color = GOLD, emissive = 0.035, solid = false, tag = "side" })
 	v.hold = {}
 	for _ = 1, 4 do
-		table.insert(v.hold, world.spawn("cube", { pos = vector.create(sx, 3.9, 0), size = 0.7, color = BLOCKS[1], emissive = KNOBS.block_glow, roughness = 0.35, metal = 0.1, solid = false, visible = false, tag = "side" }))
+		table.insert(v.hold, world.spawn("cube", { pos = vector.create(sx, HOLD_Y, 0), size = 0.7, color = BLOCKS[1], emissive = KNOBS.block_glow, roughness = 0.35, metal = 0.1, solid = false, visible = false, tag = "side" }))
 	end
-	local bx, by = sx + 2, 5.5
+	local bx, by = sx + 2, HOLD_Y + 1.6
 	v.badge = world.spawn("sphere", { pos = vector.create(bx, by, 0.1), size = vector.create(0.95, 0.95, 0.35), color = GOLD, emissive = 0.012, roughness = 0.4, solid = false, tag = "side" })
 	v.y = world.spawn("wire", { points = { vector.create(-0.17, 0.2, 0), vector.create(0, 0, 0), vector.create(0.17, 0.2, 0), vector.create(0, -0.22, 0) }, edges = { 1, 2, 3, 2, 2, 4 }, pos = vector.create(bx, by, 0.3), width = 0.08, color = "#1f170a", solid = false, tag = "side" })
 	-- The half of the well this player owns, tinted in their colour.
@@ -559,7 +552,7 @@ end
 
 -- The camera keeps the well and both players' corners in view: from 23.5
 -- on a wide screen, further back on a narrow one (a browser with a sidebar).
-local HALF_WIDTH = 16.5 -- the faces at x = ±13, with a margin
+local HALF_WIDTH = 16.5 -- the side panels around x = ±13, with a margin
 local function fit_camera()
 	local w, h = hud.size()
 	local aspect = if h > 0 then w / h else 16 / 9
@@ -628,16 +621,6 @@ local function show_piece(p, v, dt)
 	else
 		world.set(v.ghost, { visible = false })
 	end
-	-- Eyes follow the piece.
-	local sx = side_x(p)
-	local px = cell_pos(v.dx + 1, v.dy).x
-	local look = math.clamp((px - sx) / 10, -1, 1) * 0.22
-	local lookup = math.clamp((cell_pos(0, v.dy).y - 13.6) / 12, -1, 1) * 0.2
-	for i, id in v.pupils do
-		local e = if i == 1 then -0.55 else 0.55
-		local base = if p.lane == 1 then 0.25 else -0.25
-		world.place(id, vector.create(sx + e + base + look, 13.6 + lookup, 1.8))
-	end
 end
 
 local function owner_color()
@@ -650,13 +633,13 @@ end
 local function show_side(p, v)
 	if v.next_kind ~= p.next then
 		v.next_kind = p.next
-		show_cubes(v.next, p.next, 0, side_x(p), 8.4, 0.78, false, true)
+		show_cubes(v.next, p.next, 0, side_x(p), NEXT_Y, 0.78, false, true)
 	end
 	local dim = p.held or state.phase ~= "play"
 	if v.hold_kind ~= state.hold or v.dim ~= dim or v.hold_by ~= state.hold_by then
 		v.hold_kind, v.dim, v.hold_by = state.hold, dim, state.hold_by
 		if state.hold ~= 0 then
-			show_cubes(v.hold, state.hold, 0, side_x(p), 3.9, 0.7, dim, true)
+			show_cubes(v.hold, state.hold, 0, side_x(p), HOLD_Y, 0.7, dim, true)
 		else
 			for _, id in v.hold do
 				world.set(id, { visible = false })
