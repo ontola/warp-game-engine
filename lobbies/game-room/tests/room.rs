@@ -4,7 +4,8 @@
 //! `godot --path lobbies/game-room -- --warp-export=DIR` in gamenight, then
 //! `game-room listing --dump DIR > tests/godot_room.txt`.
 //! Warp-only change since: the highest ledge (x -1.2..1.2, top 9.2) is gone,
-//! so drop its four lines from a fresh export.
+//! so drop its four lines from a fresh export; the couch arms are 2 cm
+//! deeper (no z-fighting with the seat).
 
 #[test]
 fn the_room_matches_the_godot_export() {

@@ -816,8 +816,9 @@ fn couch_corner(r: &mut RoomBuild) {
     let z = BACK + 0.75;
     r.box_(Vec3::new(3.3, 0.55, 1.2), Vec3::new(6.45, 0.45, z + 0.1), &fabric);
     r.box_(Vec3::new(3.3, 0.9, 0.4), Vec3::new(6.45, 1.1, z - 0.4), &dark);
+    // Arms a little deeper than the seat: shared front faces flicker.
     for s in [-1.0f32, 1.0] {
-        r.box_(Vec3::new(0.35, 0.95, 1.2), Vec3::new(6.45 + s * 1.75, 0.5, z + 0.1), &dark);
+        r.box_(Vec3::new(0.35, 0.95, 1.24), Vec3::new(6.45 + s * 1.75, 0.5, z + 0.1), &dark);
     }
     for i in 0..3 {
         r.box_(Vec3::new(1.02, 0.18, 1.0), Vec3::new(5.4 + i as f32 * 1.05, 0.8, z + 0.15), &fabric);
