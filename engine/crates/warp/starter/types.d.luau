@@ -381,6 +381,8 @@ declare game: {
 	dt: () -> number,
 	players: () -> number, -- players.count()
 	title: () -> string,
+	-- A phone or tablet host (its cheaper preset): spend less (fewer shadowed lights, people). WARP_PHONE=1 on a desktop.
+	phone: () -> boolean,
 	-- The match is over: under Splitscreen Club the party moves on to the next game.
 	finish: () -> (),
 	-- A line for the room log in the Splitscreen Club app ("Joep won"), at most 120 characters.

@@ -108,14 +108,16 @@ fn dm_fbm(p: vec2<f32>, fw: f32) -> f32 {
     var amp = 0.5;
     var q = p;
     var f = fw;
-    for (var i = 0; i < 4; i++) {
+    // Phones (SURFACE_LOW_DETAIL): the two coarse octaves only.
+    let octaves = select(4, 2, SURFACE_LOW_DETAIL);
+    for (var i = 0; i < octaves; i++) {
         let k = 1.0 - smoothstep(0.3, 1.0, f);
         sum += amp * mix(0.5, dm_noise(q), k);
         q = q * 2.03 + vec2<f32>(17.1, 9.4);
         f *= 2.03;
         amp *= 0.5;
     }
-    return sum / 0.9375;
+    return sum / select(0.9375, 0.75, SURFACE_LOW_DETAIL);
 }
 
 // Cells: x the distance to the nearest centre, y the gap to the second
@@ -583,7 +585,10 @@ fn game_surface(s: SurfaceIn) -> SurfaceOut {
     var hx = 0.0;
     var hy = 0.0;
     var bump = 1.0;
-    for (var k = 0; k < 3; k++) {
+    // The material three times: here and a step along each axis of the
+    // face, for the bumps. Phones (SURFACE_LOW_DETAIL) take it once, flat.
+    let taps = select(3, 1, SURFACE_LOW_DETAIL);
+    for (var k = 0; k < taps; k++) {
         let q = s.p + t1 * select(0.0, eps, k == 1) + t2 * select(0.0, eps, k == 2);
         let uv = vec2<f32>(dot(q, t1), dot(q, t2));
         var r = DmS(s.tint, s.rough, s.metal, 0.0);
@@ -627,6 +632,7 @@ fn game_surface(s: SurfaceIn) -> SurfaceOut {
         }
         if k == 0 { o = r; } else if k == 1 { hx = r.h; } else { hy = r.h; }
     }
+    if SURFACE_LOW_DETAIL { hx = o.h; hy = o.h; }
     // The height's slope along the face tilts the normal.
     let gx = (hx - o.h) / eps;
     let gy = (hy - o.h) / eps;

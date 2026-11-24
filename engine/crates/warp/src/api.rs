@@ -1501,6 +1501,7 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
         ("dt", f!(core, move |_, ()| Ok(1.0 / lock(&core).tick_rate))),
         ("players", f!(core, move |_, ()| Ok(lock(&core).roster.len()))),
         ("title", f!(core, move |_, ()| Ok(lock(&core).title.clone()))),
+        ("phone", lua.create_function(|_, ()| Ok(crate::phone()))?),
         ("finish", f!(core, move |_, ()| { let mut c = lock(&core); sim(&c, "game.finish")?; c.requests.finish = true; Ok(()) })),
         ("log", f!(core, move |_, text: Value| {
             let text = match &text { Value::String(s) => s.to_string_lossy(), other => other.to_string()? };

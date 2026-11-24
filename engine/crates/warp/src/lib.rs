@@ -34,6 +34,16 @@ pub mod vehicles;
 
 pub use game::{LuaGame, Overrides};
 
+/// A phone or tablet host (`game.phone()` in Luau): the browser or Android
+/// shell's phone preset (`?quality=full` turns it off). On a desktop,
+/// `WARP_PHONE=1` pretends to be one, to try a game's phone tier.
+pub fn phone() -> bool {
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+    { app::web::mobile() }
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    { std::env::var("WARP_PHONE").is_ok_and(|v| v == "1") }
+}
+
 pub mod storage;
 /// Luau games in a browser (and the Android host, app::android): fetched
 /// game folders, one sound output, the page's query.

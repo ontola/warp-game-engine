@@ -175,11 +175,12 @@ impl LuaGame {
         let lines = bank.scan();
         let mut world = World::new(dir, cfg.max_entities);
         world.scene.style = crate::surface::load_style(dir)?;
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(any(target_arch = "wasm32", target_os = "android"))]
         let detail = app::web::query_param("detail");
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         let detail = std::env::var("WARP_SURFACE_DETAIL").ok();
-        world.scene.graphics.low_surface_detail = detail.as_deref() == Some("low");
+        // Phones take the cheaper materials unless `detail=full`.
+        world.scene.graphics.low_surface_detail = match detail.as_deref() { Some("low") => true, Some("full") => false, _ => crate::phone() };
         let core: Shared = Arc::new(Mutex::new(Core {
             storage: if cfg.storage { Some(crate::storage::Storage::open(dir, &cfg.id, location).map_err(|e| format!("storage: {e}"))?) } else { None },
             world,

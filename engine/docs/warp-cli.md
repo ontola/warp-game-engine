@@ -545,7 +545,10 @@ compiled together with the engine's shading code.
 Branch on `SURFACE_LOW_DETAIL` in the shader to offer cheaper procedural materials.
 Warp specializes this boolean when the renderer starts. Select it in the browser
 with `?detail=low` (or `&detail=low` alongside other parameters), or set
-`WARP_SURFACE_DETAIL=low` before launching the native game.
+`WARP_SURFACE_DETAIL=low` before launching the native game. Phones (the
+browser's phone preset and the Android host, `game.phone()` in Luau) get it
+by default; `detail=full` turns it off there. `WARP_PHONE=1` makes a desktop
+run report `game.phone()` true, to try a game's phone tier.
 
 An edit recompiles on the next frame, on screen and over MCP (`write_file`
 takes `.wgsl`). A version that does not compile keeps the last good one

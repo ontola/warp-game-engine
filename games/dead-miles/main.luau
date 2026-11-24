@@ -89,6 +89,15 @@ local KNOBS = {
 }
 -- @end
 
+-- Phones (the Android host, a phone browser): a cheaper tier. Only the
+-- torches cast shadows (street lights become plain lights), fewer of the
+-- dead are Warp Humans (the rest stay box figures), and the materials take
+-- the flat path (SURFACE_LOW_DETAIL in surface.wgsl). WARP_PHONE=1 on a
+-- desktop tries it.
+local PHONE = game.phone()
+local MAX_SPOTS = if PHONE then 3 else 8
+local MAX_DEAD_HUMANS = if PHONE then 8 else math.huge
+
 local HZ = land.HALF_Z
 local CHUNK = land.CHUNK
 local RADIUS = 0.32 -- survivor and zombie collision radius, m
@@ -3836,10 +3845,33 @@ local function zombies_tick(dt)
 				body.demote(z.fig)
 			end
 		end
+		-- Phones: a few of the dead as humans (each one is skinned every
+		-- frame), the living first; corpses stay boxes there.
+		local dead_humans = 0
+		if PHONE then
+			for _, z in s.zombies do
+				if z.fig and body.is_human(z.fig) then dead_humans += 1 end
+			end
+		end
 		for _, z in s.zombies do
-			if z.fig and not body.is_human(z.fig) and (z.state ~= "dead" or z.corpse) and near_view(z.pos) then
+			if z.fig and not body.is_human(z.fig) and (z.state ~= "dead" or (z.corpse and not PHONE)) and near_view(z.pos) then
 				z.fig.pool = z.pool
-				if not body.promote(z.fig) and not z.corpse then
+				if PHONE and dead_humans >= MAX_DEAD_HUMANS then
+					-- Full: a corpse's human goes to this one.
+					local oldest = nil
+					for _, o in s.zombies do
+						if o.state == "dead" and o.fig and body.is_human(o.fig) and (oldest == nil or o.t < oldest.t) then oldest = o end
+					end
+					if oldest then
+						body.demote(oldest.fig)
+						dead_humans -= 1
+					end
+				end
+				if PHONE and dead_humans >= MAX_DEAD_HUMANS then
+					-- Stays a box figure.
+				elseif body.promote(z.fig) then
+					dead_humans += 1
+				elseif not z.corpse then
 					local oldest = nil
 					for _, o in s.zombies do
 						if o.state == "dead" and o.pool == z.pool and o.fig and body.is_human(o.fig) and (oldest == nil or o.t < oldest.t) then oldest = o end
@@ -4477,6 +4509,7 @@ end
 local function torches()
 	local list = {}
 	local spots = {}
+	local torch_spots = {}
 	-- A dying battery: the beam browns out and goes warm, and it sputters
 	-- now and then, in uneven bursts (never a steady blink).
 	local t = game.time()
@@ -4500,11 +4533,19 @@ local function torches()
 				local down = if u.state == "down" then 0.05 else 0.22
 				local at = v(u.pos.x + f.x * 0.85, 1.3, u.pos.z + f.z * 0.85)
 				local d = v(f.x, -down, f.z)
-				-- The torch in the hand: its light comes from the lens and
-				-- moves with the walk.
+				-- The torch in the hand: its beam goes where the lens points
+				-- and moves with the walk. The light itself starts ahead of
+				-- the body at chest height: from the lens (hand height, the
+				-- arm swinging back) the body, the arm or a low wall beside
+				-- the path shadowed the whole beam (no torch at all, phone
+				-- playtest 2026-11-24).
 				local b = u.fig
-				if b and b.torch_at and u.state ~= "down" then at, d = b.torch_at, b.torch_dir end
-				table.insert(spots, { pos = at, dir = d, color = warm, intensity = KNOBS.torch * p, range = 18 * (0.6 + 0.4 * p), angle = 28, inner = 12 })
+				if b and b.torch_dir and u.state ~= "down" then d = b.torch_dir end
+				-- In the blue hour the exposure is darker than at night: the
+				-- beam grows with it (up to 4x), so a torch still reads.
+				local dusk = 2 ^ math.clamp((s.ev or KNOBS.night_ev) - KNOBS.night_ev, 0, 2)
+				local spot = { pos = at, dir = d, color = warm, intensity = KNOBS.torch * p * dusk, range = 18 * (0.6 + 0.4 * p), angle = 28, inner = 12, bot = u.bot }
+				table.insert(torch_spots, spot)
 				table.insert(list, { pos = v(u.pos.x + f.x * 0.6, 1.6, u.pos.z + f.z * 0.6), color = warm, intensity = KNOBS.torch * 0.012 * p, range = 3 })
 			end
 			-- No torch: only a faint cold glow round them, enough to see
@@ -4513,6 +4554,20 @@ local function torches()
 				table.insert(list, { pos = v(u.pos.x, 2.2, u.pos.z), color = "#9fb4d8", intensity = 9, range = 3.2 })
 			end
 			if u.flash then table.insert(list, { pos = v(u.pos.x, 1.4, u.pos.z), color = "#ffd27a", intensity = 900, range = 14 }) end
+		end
+	end
+	-- The shadowed lights: people's torches first, then their bots'. A torch
+	-- past the limit (phones) is a soft pool where its beam lands.
+	for _, bots in { false, true } do
+		for _, t in torch_spots do
+			if (t.bot == true) == bots then
+				t.bot = nil
+				if #spots < MAX_SPOTS then
+					table.insert(spots, t)
+				else
+					table.insert(list, 1, { pos = t.pos + t.dir * 3, color = t.color, intensity = t.intensity * 0.05, range = 6 })
+				end
+			end
 		end
 	end
 	-- Things to pick up: a subtle pulsing glow just over each one in view,
@@ -4535,7 +4590,7 @@ local function torches()
 		end
 		table.sort(near, function(a, b) return a.d < b.d end)
 		for _, n in near do
-			if #spots < 8 then
+			if not PHONE and #spots < MAX_SPOTS then
 				table.insert(spots, { pos = n.l.pos, dir = v(0, -1, 0), color = "#ffd9a0", intensity = KNOBS.lamp, range = 12, angle = 62, inner = 35 })
 			else
 				table.insert(list, { pos = n.l.pos, color = "#ffd9a0", intensity = KNOBS.lamp * 0.25, range = 11 })
@@ -4544,13 +4599,13 @@ local function torches()
 	end
 	for _, c in { s.camp, s.camp_used } do
 		if c and view_dist(c) < 40 then
-			table.insert(list, { pos = v(c.x, 0.8, c.z), color = "#ff9a4a", intensity = 500 + math.sin(game.time() * 9) * 60, range = 12 })
+			table.insert(list, 1, { pos = v(c.x, 0.8, c.z), color = "#ff9a4a", intensity = 500 + math.sin(game.time() * 9) * 60, range = 12 })
 		end
 	end
 	for _, l in s.event_lights or {} do
 		if view_dist(l.pos) < 40 then table.insert(list, 1, l) end
 	end
-	while #list > 32 do table.remove(list) end
+	while #list > (if PHONE then 16 else 32) do table.remove(list) end
 	if #list > 0 then lights.set(list) else lights.clear() end
 	lights.spots(spots)
 end
