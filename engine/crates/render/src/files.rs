@@ -4,8 +4,10 @@
 
 use std::path::Path;
 
+/// Natively the disk, through the vfs: the Android host puts a fetched
+/// game's files (Space Racer's textures) in its memory overlay.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn read(path: impl AsRef<Path>) -> std::io::Result<Vec<u8>> { std::fs::read(path) }
+pub fn read(path: impl AsRef<Path>) -> std::io::Result<Vec<u8>> { vfs::read(path) }
 
 /// Whether an asset file is there: on disk natively; in a browser among
 /// the game's fetched files (vfs) or the preloaded ones.
@@ -19,8 +21,19 @@ pub fn exists(path: impl AsRef<Path>) -> bool {
 }
 
 /// Decode an image file (format from its contents or extension).
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 pub fn open_image(path: impl AsRef<Path>) -> image::ImageResult<image::DynamicImage> { image::open(path) }
+
+/// On Android from the vfs (see [`read`]), as in a browser.
+#[cfg(target_os = "android")]
+pub fn open_image(path: impl AsRef<Path>) -> image::ImageResult<image::DynamicImage> {
+    let path = path.as_ref();
+    let bytes = read(path).map_err(image::ImageError::IoError)?;
+    match image::ImageFormat::from_path(path) {
+        Ok(format) => image::load_from_memory_with_format(&bytes, format),
+        Err(_) => image::load_from_memory(&bytes),
+    }
+}
 
 #[cfg(target_arch = "wasm32")]
 pub use preloaded::*;
