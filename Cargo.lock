@@ -1716,6 +1716,7 @@ dependencies = [
  "app",
  "game-room",
  "getrandom 0.3.4",
+ "image",
  "qrcode",
  "render",
  "script",

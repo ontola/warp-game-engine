@@ -128,6 +128,17 @@ pub async fn fetch(url: &str) -> Result<Vec<u8>, String> {
     asset(url)
 }
 
+/// A browser fetches a game ahead; here the files are in the APK already,
+/// so there is nothing to keep. Returns 0.
+pub async fn prefetch(_url: &str) -> Result<usize, String> { Ok(0) }
+
+/// See [`prefetch`]: nothing kept.
+pub fn clear_prefetched() {}
+
+/// The browser hands a leaving game's last frame to `done` for the room's
+/// TV. Not yet on Android: the TV keeps its own picture.
+pub fn capture_frame(done: Box<dyn FnOnce([u32; 2], Vec<u8>)>) { drop(done); }
+
 /// Read `assets/web/<path>` from the APK.
 pub fn asset(path: &str) -> Result<Vec<u8>, String> {
     use std::io::Read;

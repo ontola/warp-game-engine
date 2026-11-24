@@ -22,5 +22,6 @@ spaceracer-app = { path = "../../../games/spaceracer/app", default-features = fa
 serde_json.workspace = true
 web-time = "1.1"
 getrandom = "0.3"
+image = { version = "0.25", default-features = false, features = ["png"] }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 android-activity = { version = "0.6", features = ["native-activity"] }
