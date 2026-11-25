@@ -410,7 +410,19 @@ mod tests {
         let card = bake_card(&brush.vertices, &brush.indices, &mut atlas, (0, 0, 128), plane);
         let normals = card.source_normals.unwrap();
         assert!(normals.iter().all(|n| n.is_normalized()));
-        assert!(normals.iter().any(|n| n.dot(normals[0]) < 0.9));
+        // Give the same spruce two known lighting directions, one on each side
+        // of the shoot. Each corner should favour needles on its own side.
+        let mut divided = brush.vertices.clone();
+        let split = divided.iter().map(|v| plane.project(Vec3::from(v.pos)).x).sum::<f32>()
+            / divided.len() as f32;
+        for vertex in &mut divided {
+            let left = plane.project(Vec3::from(vertex.pos)).x < split;
+            vertex.normal = if left { Vec3::X } else { Vec3::Y }.to_array();
+        }
+        let divided_card = bake_card(&divided, &brush.indices, &mut atlas, (0, 0, 128), plane);
+        let [bottom_left, bottom_right, top_right, top_left] = divided_card.source_normals.unwrap();
+        assert!(bottom_left.x > bottom_right.x && top_left.x > top_right.x);
+        assert!(bottom_right.y > bottom_left.y && top_right.y > top_left.y);
         assert!(atlas.pixels().any(|p| p[3] >= 128 && p[0] < 195));
         assert!(atlas.pixels().any(|p| p[3] >= 128 && p[0] > 245));
     }
