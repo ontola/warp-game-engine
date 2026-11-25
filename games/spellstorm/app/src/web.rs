@@ -78,7 +78,8 @@ mod page {
                 s.sort_by(|a, b| b.1.total_cmp(&a.1));
                 let top: Vec<String> = s.iter().take(8).map(|(n, ms)| format!("{n} {ms:.0}")).collect();
                 let tex: Vec<String> = p.textures.iter().map(|t| format!("{} {}x{} build {:.0} upload {:.0}", t.name, t.size, t.layers.len(), t.build_wall_ms, t.upload_cpu_ms)).collect();
-                app::web::log(&format!("spellstorm: renderer sections: {}; textures: {}", top.join(", "), tex.join(", ")));
+                let cache = p.pipeline_cache.as_ref().map_or("none".to_string(), |c| format!("{} (active {}), read {} KB, saved {}", c.blob_state, c.active, c.loaded_bytes / 1024, c.save_state));
+                app::web::log(&format!("spellstorm: renderer sections: {}; textures: {}; pipeline cache: {cache}", top.join(", "), tex.join(", ")));
             }
             game.view.scene = scene;
             game.set_renderer_ahead(renderer);

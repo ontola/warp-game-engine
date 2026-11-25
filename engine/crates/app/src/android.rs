@@ -709,6 +709,13 @@ fn direct_draws(gpu: &str) {
 /// The first window: the GPU, its surface and the presenter.
 fn on_window(window: NativeWindow) -> Result<(), String> {
     let size = window_size(&window);
+    // Compiled pipelines kept on the phone (Vulkan pipeline cache): the
+    // renderer's pipelines took about 8 s of a Spellstorm load on a Tab S9+;
+    // later loads read them back. No HOME on Android, so name the folder.
+    if render::switches::PIPELINE_CACHE_DIR.os().is_none() && let Some(dir) = APP.get().and_then(|a| a.internal_data_path()) {
+        // SAFETY: set before the GPU and its helper threads exist.
+        unsafe { std::env::set_var(render::switches::PIPELINE_CACHE_DIR.name, dir.join("pipelines")); }
+    }
     let instance = render::gpu::instance();
     let surface = surface_for(&instance, &window)?;
     if let Some(hz) = requested_hz() { request_frame_rate(&window, hz); }
@@ -726,10 +733,35 @@ fn on_window(window: NativeWindow) -> Result<(), String> {
     Ok(())
 }
 
+/// Once a second with fewer than 20 turns of the render loop, where the
+/// time went (round 34: the room's card froze while a renderer was made on a
+/// helper thread, yet no frame was slow).
+#[derive(Default)]
+struct Heartbeat { since: Option<Instant>, turns: u32, tasks_ms: f32, frame_ms: f32, worst_tasks: f32, worst_frame: f32 }
+
+impl Heartbeat {
+    fn turn(&mut self, tasks_ms: f32, frame_ms: f32) {
+        let since = *self.since.get_or_insert_with(Instant::now);
+        self.turns += 1;
+        self.tasks_ms += tasks_ms;
+        self.frame_ms += frame_ms;
+        self.worst_tasks = self.worst_tasks.max(tasks_ms);
+        self.worst_frame = self.worst_frame.max(frame_ms);
+        let wall = since.elapsed().as_secs_f32() * 1000.0;
+        if wall < 1000.0 { return; }
+        if self.turns < 20 {
+            log(&format!("render loop: {} turns in {wall:.0} ms; tasks {:.0} ms (worst {:.0}), frames {:.0} ms (worst {:.0}), elsewhere {:.0} ms",
+                self.turns, self.tasks_ms, self.worst_tasks, self.frame_ms, self.worst_frame, wall - self.tasks_ms - self.frame_ms));
+        }
+        *self = Heartbeat::default();
+    }
+}
+
 fn render_loop(rx: mpsc::Receiver<Event>, stop: Arc<std::sync::atomic::AtomicBool>) {
     // The config of the last surface, for the next window.
     let mut last_config: Option<wgpu::SurfaceConfiguration> = None;
     let mut back_at: Option<Instant> = None;
+    let mut beat = Heartbeat::default();
     loop {
         if stop.load(std::sync::atomic::Ordering::Acquire) { break; }
         while let Ok(event) = rx.try_recv() {
@@ -787,12 +819,16 @@ fn render_loop(rx: mpsc::Receiver<Event>, stop: Arc<std::sync::atomic::AtomicBoo
         if let Some(c) = GFX.with(|g| g.borrow().as_ref().and_then(|g| g.surface.as_ref().map(|s| s.1.clone()))) { last_config = Some(c); }
         // Tasks start once there is a GPU: the loading screen can show.
         let ready = GFX.with(|g| g.borrow().is_some());
+        let t_tasks = Instant::now();
         if ready { poll_tasks(); }
+        let tasks_ms = t_tasks.elapsed().as_secs_f32() * 1000.0;
         let drawable = GFX.with(|g| g.borrow().as_ref().is_some_and(|g| g.surface.is_some() && g.visible));
         let running = SHELL.with(|s| s.borrow().is_some());
         if drawable && running {
+            let t_frame = Instant::now();
             let result = SHELL.with(|s| s.borrow_mut().as_mut().map(|s| s.frame()));
             if let Some(Err(e)) = result { log(&format!("frame error: {e}")); std::thread::sleep(Duration::from_millis(100)); }
+            beat.turn(tasks_ms, t_frame.elapsed().as_secs_f32() * 1000.0);
         } else {
             if drawable { draw_loading(); }
             std::thread::sleep(Duration::from_millis(16));
