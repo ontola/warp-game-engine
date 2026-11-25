@@ -187,6 +187,11 @@ impl Host {
     pub fn shortfall(&self, game: &Value) -> String {
         let (humans, able, phones) = self.party_fit(game);
         if humans == 0 { return String::new(); }
+        // Only keyboards here: a game that doesn't take them (or not two on
+        // one keyboard) isn't suggested on the TV or Up next either.
+        if !self.input_fits(game) {
+            return if self.keyboard_players() >= 2 && (game["keyboard"] == true || game["mouse"] == true) { "One player per keyboard".into() } else { "Needs controllers".into() };
+        }
         if game.get("max_players").is_some_and(|v| !v.is_null()) && able > int(&game["max_players"]) { return "Too many players".into(); }
         let low = if game.get("min_players").is_none_or(Value::is_null) { 1 } else { int(&game["min_players"]).max(1) };
         let play_with = get(game, "play_with", "controller");

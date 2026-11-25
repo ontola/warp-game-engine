@@ -132,7 +132,19 @@ pub(crate) mod page {
     /// brings (Stack Together: one person and its bot).
     pub(crate) fn fits(party: &Value, game: &str, players: usize) -> bool {
         let bots = game_meta(party, game).and_then(|g| g["bots"].as_u64()).unwrap_or(0) as usize;
-        players >= 1 && players + bots >= min_players(party, game)
+        players >= 1 && players + bots >= min_players(party, game) && input_fits(party, game)
+    }
+
+    /// Whether the input at hand plays `game` (as the room's host.rs
+    /// input_fits): with only keyboards seated, the game must take keys,
+    /// and two on one keyboard only a game with `shared_keyboard` 2.
+    fn input_fits(party: &Value, game: &str) -> bool {
+        let controllers: Vec<&str> = party["seats"].as_array().into_iter().flatten()
+            .filter(|s| s["occupant"].get("player_id").is_some_and(|v| !v.is_null())).map(|s| s["controller"].as_str().unwrap_or("")).collect();
+        if controllers.is_empty() || !controllers.iter().all(|c| c.contains(":keyboard")) { return true; }
+        let Some(g) = game_meta(party, game) else { return true };
+        let shared = g["shared_keyboard"].as_u64().unwrap_or(1) as usize;
+        if controllers.len() >= 2 { shared >= controllers.len() } else { g["keyboard"] == true || g["mouse"] == true || shared >= 2 }
     }
 
     fn title(party: &Value, game: &str) -> String {
