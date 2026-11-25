@@ -4011,8 +4011,7 @@ override LIGHT_TILES: bool = true;
 // The simple/compact pass samples albedo with the pixel's real footprint
 // (ray differentials through the triangle's UVs) instead of a LOD from
 // distance alone, which read mip 0 of the 2048 px layers for everything
-// nearer than 33 m: uncached texel reads that cost an Adreno 740 about a
-// third of the pass, and shimmer. KERN_FOOTPRINT_LOD=0: the old LOD.
+// nearer than 33 m (shimmer, uncached reads). KERN_FOOTPRINT_LOD=0: the old LOD.
 override FOOTPRINT_LOD: bool = true;
 // The UV offset of a world offset `v` in a triangle's plane (edges e1, e2
 // carrying UV steps du1, du2).
@@ -4129,8 +4128,13 @@ fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool, tile_lights:u32) 
             set_pixel_footprint(ndc, p, safe_normalize(cross(e1, e2)), distance(p, view.cam.xyz));
             let du1 = uvs[1] - uvs[0]; let du2 = uvs[2] - uvs[0];
             let gx = triangle_uv_delta(fp.dx, e1, e2, du1, du2); let gy = triangle_uv_delta(fp.dy, e1, e2, du1, du2);
-            let floor_scale = albedo_grad(m.layer, gx, gy);
-            base*=textureSampleGrad(albedo,samp,uv,m.layer,gx*floor_scale,gy*floor_scale).rgb;
+            // An explicit LOD from the longer axis, not textureSampleGrad:
+            // with the anisotropic sampler that cost an Adreno 740 3.4x the
+            // whole pass (2026-11-25). Isotropic: the geometric mean of the
+            // two axes keeps slanted floors' planks (the longer axis blurred
+            // them away) and aliases a little along them.
+            let texels = sqrt(length(gx) * length(gy)) * f32(textureDimensions(albedo).x);
+            base*=textureSampleLevel(albedo,samp,uv,m.layer,max(log2(max(texels,1.0)),albedo_lod_floor(m.layer))).rgb;
         } else {
             base*=textureSampleLevel(albedo,samp,uv,m.layer,max(log2(max(distance(p,view.cam.xyz)*0.03,1.0)),albedo_lod_floor(m.layer))).rgb;
         }}
