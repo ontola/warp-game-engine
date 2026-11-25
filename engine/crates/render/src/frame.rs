@@ -2697,6 +2697,7 @@ impl Renderer {
             && scene.voxel_forest.is_none() && scene.foliage_world.is_none()
             && scene.foliage_representations.is_empty() && scene.foliage_source_groups.is_empty()
             && scene.part_wind.is_empty() && scene.part_attachments.is_empty()
+            && scene.tree_wind_batches.is_empty() && scene.tree_wind_ranges.is_empty()
             && scene.aggregate_lod.is_none() && scene.baked_animations.is_none()
             && scene.procedural_terrain.is_none() && scene.crowd.is_none()
             && scene.instances.iter().all(|i|i.flags & (crate::scene::FOLIAGE | crate::scene::LIVE_GRASS
