@@ -747,6 +747,11 @@ G3.2 upstream visibility is unchanged.
 
 ## G5 — Shared wind and animated shadow caching (NOT COMPLETE)
 
+List reusable whole-tree instance slots in `Scene::tree_wind_ranges` to apply
+root-anchored sway and update their shadows as they move. For articulated
+branches, create a `PartWindRig` when the plant becomes resident and call
+`sample_into` each frame to reuse its validated bind poses and the output buffer.
+
 - [x] G5.1 — Demand-deduplicated ancestor poses and indirect depth dispatches are
   connected. Source, voxel and shadow paths share poses; bounded fallback exists.
   Evidence: runtime pose fixtures; cached-sun raw-depth oracle passed six steps.
