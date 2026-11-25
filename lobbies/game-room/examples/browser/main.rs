@@ -311,6 +311,12 @@ pub(crate) mod page {
                 h.dirty = true;
             }
         }
+        // A sign of life per seat for the cloud room (its `idle`): any button
+        // held, stick moved or trigger pulled on the seat's own device.
+        for i in 0..h.bound.len() {
+            let Some(d) = h.bound[i] else { continue };
+            if devices.iter().any(|(x, c)| *x == d && (c.held.0 != 0 || c.pressed.0 != 0 || c.mv != [0.0; 2] || c.look != [0.0; 2] || c.triggers.iter().any(|t| *t > 0.1))) { h.cloud.heard(i); }
+        }
         h.idle_pads = devices.iter().filter(|(d, _)| matches!(d, Device::Pad(_)) && !h.bound.contains(&Some(*d))).count();
         back_chords(h, devices);
         warp::web::set_seats(seats(h));

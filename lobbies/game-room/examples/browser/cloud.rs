@@ -33,6 +33,10 @@ pub(crate) struct Cloud {
     /// Phones that asked to play on the phone alone, by their waiting id:
     /// the player made for them, and whether it was claimed for them yet.
     phone_seats: std::collections::HashMap<String, (String, bool)>,
+    /// When each seat's device last did anything: the cloud takes a profile
+    /// off a seat nobody touched for half an hour while its phone was away
+    /// too (the poll's `idle`).
+    heard: Vec<web_time::Instant>,
 }
 
 impl Cloud {
@@ -44,6 +48,7 @@ impl Cloud {
     pub(crate) fn add_seat(&mut self) {
         self.seats.push(json!({"index": self.seats.len(), "player": random_hex(16), "revision": 1}));
         self.applied.push(None);
+        self.heard.push(web_time::Instant::now());
         self.refresh = true;
     }
 
@@ -52,6 +57,7 @@ impl Cloud {
         if index >= self.seats.len() { return; }
         self.seats.remove(index);
         self.applied.remove(index);
+        if index < self.heard.len() { self.heard.remove(index); }
         for (k, seat) in self.seats.iter_mut().enumerate() { seat["index"] = json!(k); }
         self.refresh = true;
     }
@@ -61,7 +67,19 @@ impl Cloud {
         let Some(seat) = self.seats.get_mut(index) else { return };
         seat["player"] = json!(random_hex(16));
         seat["revision"] = json!(seat["revision"].as_u64().unwrap_or(1) + 1);
+        if let Some(at) = self.heard.get_mut(index) { *at = web_time::Instant::now(); }
         self.refresh = true;
+    }
+
+    /// Seat `index`'s device pressed, held or moved something.
+    pub(crate) fn heard(&mut self, index: usize) {
+        if let Some(at) = self.heard.get_mut(index) { *at = web_time::Instant::now(); }
+    }
+
+    /// Seconds since each seat's last input, by seat index.
+    fn idle(&self) -> Value {
+        let idle: serde_json::Map<String, Value> = self.heard.iter().enumerate().map(|(i, at)| (i.to_string(), json!(at.elapsed().as_secs()))).collect();
+        Value::Object(idle)
     }
 }
 
@@ -153,6 +171,7 @@ pub(crate) fn start(players: usize) {
         h.cloud.origin = origin;
         h.cloud.seats = (0..players).map(|i| json!({"index": i, "player": random_hex(16), "revision": 1})).collect();
         h.cloud.applied = vec![None; players];
+        h.cloud.heard = vec![web_time::Instant::now(); players];
     });
     app::web::spawn(async {
         let mut failures = 0u32;
@@ -280,7 +299,7 @@ fn snapshot(h: &Host) -> Value {
     let current = if session.is_null() { h.loading.clone().map(Value::from).unwrap_or(Value::Null) } else { session.clone() };
     let next = party["playlist"]["entries"].get(0).map(|e| e["game"].clone()).unwrap_or(Value::Null);
     json!({"seats": h.cloud.seats, "discovery": {"games": games, "playlist": party["playlist"], "session": party["active_session"],
-        "current": current, "next": next, "acknowledged": h.cloud.acknowledged}, "activity": h.activity})
+        "current": current, "next": next, "acknowledged": h.cloud.acknowledged}, "activity": h.activity, "idle": h.cloud.idle()})
 }
 
 /// Take a poll reply: the room's links, profiles on seats, a phone's pick.
