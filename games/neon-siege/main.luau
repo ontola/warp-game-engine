@@ -2567,7 +2567,7 @@ local function draw()
 	s = state.s
 	if not s then return end
 	local w, h = hud.size()
-	local k = h / 720
+	local k = hud.unit()
 	local dim = { 0.55, 0.7, 0.85, 0.8 }
 	-- Only the score, the multiplier and the wave, small in the corners.
 	hud.text(tostring(s.teamScore), 20 * k, 12 * k, { size = 26 * k, color = { 0.85, 0.95, 1, 0.95 } })
@@ -2673,7 +2673,7 @@ local CONTROLS = {
 
 local function menu(top)
 	local w, h = hud.size()
-	local k = h / 720
+	local k = hud.unit()
 	local rowH = 30 * k
 	local y = top + 36 * k
 	local mid = w / 2

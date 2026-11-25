@@ -129,7 +129,7 @@ end
 
 local function draw()
 	local _, h = hud.size()
-	local s = h / 720
+	local s = hud.unit()
 	for _, r in state.runners do
 		if not r.bot then
 			local x, y = hud.view(r.id)

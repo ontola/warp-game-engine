@@ -1213,6 +1213,9 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             Ok(true)
         })),
         ("size", f!(core, move |_, ()| { let s = lock(&core).screen; Ok((s[0], s[1])) })),
+        // Pixels per point of a 720-line layout: the output height / 720,
+        // times the UI scale (1.4 on a phone or tablet, `WARP_UI_SCALE`).
+        ("unit", f!(core, move |_, ()| { let s = lock(&core).screen; Ok(s[1] as f32 / 720.0 * crate::ui_scale()) })),
         ("measure", f!(core, move |_, (text, size): (Value, Option<f32>)| {
             let _ = &core;
             let text = match &text { Value::String(s) => s.to_string_lossy(), other => other.to_string()? };

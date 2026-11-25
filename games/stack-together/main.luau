@@ -912,7 +912,7 @@ end
 local CONTROLS = { { "move", "Move" }, { "A", "Rotate" }, { "B", "Drop" }, { "Y", "Hold" } }
 local function menu(top)
 	local w, h = hud.size()
-	local k = h / 720
+	local k = hud.unit()
 	local people = {}
 	for _, pl in players.by_couch() do
 		if not pl.bot then table.insert(people, pl) end

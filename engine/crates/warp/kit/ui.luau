@@ -24,7 +24,7 @@ local SHADOW = { 0, 0, 0, 0.55 }
 -- Pixels per point (720p output: 1).
 function ui.scale(): number
 	local _, h = hud.size()
-	return h / 720
+	return hud.unit()
 end
 
 -- The area of a player's view (or the screen) in pixels: x, y, w, h.

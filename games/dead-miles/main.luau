@@ -4668,7 +4668,7 @@ end
 local MENU_CONTROLS = { { "move", "Move" }, { "X", "Attack" }, { "A", "Search, pick up, revive (hold)" }, { "Y", "First aid kit" }, { "LB", "Torch on or off" } }
 local function menu_controls(top)
 	local w, h = hud.size()
-	local k = h / 720
+	local k = hud.unit()
 	-- One column per layout in use: players on the same kind of controller
 	-- share one; a keyboard (or each keyboard half) gets its own.
 	local groups, by = {}, {}
@@ -4721,7 +4721,7 @@ local function menu(top)
 	s = state.s
 	if not s then return end
 	local W, H = hud.size()
-	local k = H / 720
+	local k = hud.unit()
 	local list = {}
 	for _, u in s.survivors do
 		if not u.recruit and (u.person or u.state == "ghost") then table.insert(list, u) end
@@ -4869,7 +4869,7 @@ local function draw()
 	s = state.s
 	if not s or not s.cam then return end
 	local W, H = hud.size()
-	local k = H / 720
+	local k = hud.unit()
 	torches()
 	if state.no_hud then return end
 	-- Overrun: only the end of the story, nothing else over it.

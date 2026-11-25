@@ -90,7 +90,7 @@ end
 local MENU_CONTROLS = { { "move", "Walk, drive or fly" }, { "Y", "Take a vehicle or get out" }, { "X", "Stories" }, { "LB", "Weapon wheel (hold)" }, { "RB", "Sprint" }, { "A", "Handbrake, climb" } }
 local function menu_controls(top)
 	local w, h = hud.size()
-	local k = h / 720
+	local k = hud.unit()
 	-- One column per layout in use: players on the same kind of controller
 	-- share one; a keyboard (or each keyboard half) gets its own.
 	local groups, by = {}, {}

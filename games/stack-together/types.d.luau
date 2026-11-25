@@ -193,6 +193,9 @@ declare hud: {
 	box: (x: number, y: number, w: number, h: number, color: Color?) -> (),
 	-- The output size in pixels.
 	size: () -> (number, number),
+	-- Pixels per point of a 720-line layout: height / 720, larger on a phone
+	-- or tablet (their screens are small). Scale HUD sizes and margins by it.
+	unit: () -> number,
 	-- One line of text in the HUD font: its width and height in pixels.
 	measure: (text: string, size: number?) -> (number, number),
 	-- A person's split-screen view: x, y, width, height in pixels (a bot: the whole output).

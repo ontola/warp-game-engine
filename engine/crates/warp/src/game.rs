@@ -541,7 +541,7 @@ impl LuaGame {
     /// Where the start menu's title starts and its last item ends, in
     /// pixels: centred, or high up when the game draws under it (`menu`).
     fn menu_layout(&self, size: [u32; 2]) -> (f32, f32) {
-        let s = (size[1] as f32 / 720.0).max(0.5);
+        let s = (size[1] as f32 / 720.0).max(0.5) * crate::ui_scale();
         let n = self.menu_items().len() as f32;
         let centre = if self.host.has("menu") { size[1] as f32 * 0.26 } else { size[1] as f32 * 0.5 };
         let top = centre - (64.0 + 56.0 * n) * s * 0.5;
@@ -955,7 +955,7 @@ impl LuaGame {
         let mut list = HudDrawList::new(size);
         let full = [0.0, 0.0, size[0] as f32, size[1] as f32];
         let rgba = |c: [f32; 4]| c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
-        let s = (size[1] as f32 / 720.0).max(0.5);
+        let s = (size[1] as f32 / 720.0).max(0.5) * crate::ui_scale();
         // The menu hides the game's HUD so nothing shows through it; what a
         // `menu` hook drew goes over the menu's backdrop.
         if self.menu.is_some() { list.rect(full, [0.02, 0.02, 0.05, 0.72], full); }

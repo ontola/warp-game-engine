@@ -334,7 +334,7 @@ end
 
 local function draw()
 	local w, h = hud.size()
-	local s = h / 720
+	local s = hud.unit()
 	-- Every player's score along the top, in their colour, left to right
 	-- as they sit on the couch.
 	local list = players.by_couch()
@@ -370,7 +370,7 @@ end
 local MENU_CONTROLS = { { "move", "Turn" }, { "A", "New match, once someone has won" } }
 local function menu_controls(top)
 	local w, h = hud.size()
-	local k = h / 720
+	local k = hud.unit()
 	-- One column per layout in use: players on the same kind of controller
 	-- share one; a keyboard (or each keyboard half) gets its own.
 	local groups, by = {}, {}
