@@ -533,7 +533,7 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
     let enabled = station.as_ref().is_some_and(|s| s.enabled);
     for &(name, r) in &layout.buttons {
         let hover = mouse.is_some_and(|m| inside(r, m));
-        let (label, key, accent) = match name { "play" => ("Play now", "A", crate::lobby::GREEN), "queue" => ("Queue", "X", Color::hex("4a8fe7")), _ => ("Room", "B", Color::hex("e2574c")) };
+        let (label, key, accent) = match name { "play" => ("Play now", "A", crate::lobby::GREEN), "queue" => ("Queue", "X", crate::room::PAD_X), _ => ("Room", "B", crate::room::PAD_B) };
         let live = enabled || name == "close";
         // Only the button is coloured: a disc with its letter, then the
         // label, centred together. No pill; a mouse over it gets a faint one.
@@ -548,26 +548,67 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
         c.text(faces.bold, [disc[0] - radius, disc[1] + fs * 0.33], key, TextAlign::Center, 2.0 * radius, (fs * 0.9).floor(), Color::hex("0d1020").with_alpha(fade));
         c.text(faces.bold, [x + 2.0 * radius + gap, r[1] + r[3] / 2.0 + fs * 0.36], label, TextAlign::Left, -1.0, fs, TEXT.with_alpha(if live { fade } else { 0.4 * fade }));
     }
-    // The queue, small, bottom right.
+    // The queue (DESIGN.md "Playlist"), bottom right: green UP NEXT,
+    // numbered rows with a small cover, "+N more" muted. Clear of the
+    // buttons: where it would reach them (screens narrower than 16:9) it
+    // shrinks to one line under them.
     if !queue.is_empty() {
         let fs = (19.0 * scale).floor();
-        let line = fs * 1.55;
+        let line = fs * 1.9;
+        let margin = 32.0 * scale;
+        let pad = 20.0 * scale;
+        let buttons_right = layout.buttons.iter().map(|(_, r)| r[0] + r[2]).fold(0.0, f32::max);
+        let buttons_bottom = layout.buttons.iter().map(|(_, r)| r[1] + r[3]).fold(0.0, f32::max);
         let shown = queue.len().min(4);
-        let qw = queue.iter().take(shown).map(|e| render::hud::measure(&format!("{}  100%", e.title), faces.regular, fs)[0]).fold(160.0 * scale, f32::max) + fs * 3.2;
-        let qh = fs * 2.4 + line * shown as f32 + if queue.len() > shown { line * 0.8 } else { 0.0 };
-        let (qx, qy) = (w - qw - 32.0 * scale, h - qh - 72.0 * scale);
+        let title_of = |e: &crate::host::Entry| match lobby.host.loading_shown(&e.game) { Some(_) => format!("{}  {}%", e.title, lobby.host.loading_percent(&e.game)), None => e.title.clone() };
+        let thumb = [line * 0.62, line * 0.82];
+        let rows_w = queue.iter().take(shown).map(|e| render::hud::measure(&title_of(e), faces.regular, fs)[0]).fold(160.0 * scale, f32::max);
+        let qw = pad * 2.0 + fs * 1.6 + thumb[0] + fs * 0.6 + rows_w;
+        let full_h = pad * 2.0 + fs * 1.2 + line * shown as f32 + if queue.len() > shown { fs * 1.4 } else { 0.0 };
+        let compact = w - qw - margin < buttons_right + margin;
         c.over();
-        c.style_box([qx, qy, qw, qh], [fs * 0.5; 4], rgba(0.03, 0.03, 0.06, 0.78 * fade), None);
-        c.rect([qx, qy + fs * 0.6, 3.0 * scale, fs * 1.2], crate::lobby::GREEN.with_alpha(fade));
-        c.text(faces.bold, [qx + fs, qy + fs * 1.6], "UP NEXT", TextAlign::Left, -1.0, (fs * 0.85).floor(), crate::lobby::GREEN.with_alpha(fade));
-        for (i, e) in queue.iter().take(shown).enumerate() {
-            let y = qy + fs * 2.4 + line * (i as f32 + 0.75);
-            c.text(faces.regular, [qx + fs, y], &format!("{:02}", i + 1), TextAlign::Left, -1.0, (fs * 0.8).floor(), DIM.with_alpha(fade));
-            let title = match lobby.host.loading_shown(&e.game) { Some(_) => format!("{}  {}%", e.title, lobby.host.loading_percent(&e.game)), None => e.title.clone() };
-            c.text(faces.regular, [qx + fs * 2.6, y], &title, TextAlign::Left, -1.0, fs, TEXT.with_alpha(fade));
-        }
-        if queue.len() > shown {
-            c.text(faces.regular, [qx + fs * 2.6, qy + qh - fs * 0.6], &format!("+{} more", queue.len() - shown), TextAlign::Left, -1.0, (fs * 0.8).floor(), DIM.with_alpha(fade));
+        if compact {
+            let first = &queue[0];
+            let more = if queue.len() > 1 { format!("  +{}", queue.len() - 1) } else { String::new() };
+            let kicker = "UP NEXT  ";
+            let ks = (fs * 0.75).floor();
+            let tw = render::hud::measure(kicker, faces.bold, ks)[0] + render::hud::measure(&title_of(first), faces.regular, fs)[0] + render::hud::measure(&more, faces.regular, fs)[0];
+            let (qw, qh) = (tw + pad * 2.0, fs * 2.4);
+            let (qx, qy) = (w - qw - margin, (h - qh - margin).max(buttons_bottom + 16.0 * scale));
+            crate::paint::panel_with(c, [qx, qy, qw, qh], scale, Color { a: crate::room::PANEL.a * fade, ..crate::room::PANEL }, crate::room::LINE.with_alpha(0.1 * fade));
+            let y = qy + qh / 2.0 + fs * 0.36;
+            c.text(faces.bold, [qx + pad, y], kicker, TextAlign::Left, -1.0, ks, crate::lobby::GREEN.with_alpha(fade));
+            let x = qx + pad + render::hud::measure(kicker, faces.bold, ks)[0];
+            c.text(faces.regular, [x, y], &title_of(first), TextAlign::Left, -1.0, fs, TEXT.with_alpha(fade));
+            let x = x + render::hud::measure(&title_of(first), faces.regular, fs)[0];
+            c.text(faces.regular, [x, y], &more, TextAlign::Left, -1.0, fs, DIM.with_alpha(fade));
+        } else {
+            let (qx, qy) = (w - qw - margin, h - full_h - margin);
+            crate::paint::panel_with(c, [qx, qy, qw, full_h], scale, Color { a: crate::room::PANEL.a * fade, ..crate::room::PANEL }, crate::room::LINE.with_alpha(0.1 * fade));
+            c.text(faces.bold, [qx + pad, qy + pad + fs * 0.8], "UP NEXT", TextAlign::Left, -1.0, (fs * 0.75).floor(), crate::lobby::GREEN.with_alpha(fade));
+            for (i, e) in queue.iter().take(shown).enumerate() {
+                let top = qy + pad + fs * 1.2 + line * i as f32;
+                let mid = top + line / 2.0;
+                c.text(faces.regular, [qx + pad, mid + fs * 0.3], &format!("{:02}", i + 1), TextAlign::Left, -1.0, (fs * 0.8).floor(), DIM.with_alpha(fade));
+                let tr = [qx + pad + fs * 1.6, mid - thumb[1] / 2.0, thumb[0], thumb[1]];
+                match lobby.catalog.covers.get(&e.game).and_then(|c| c.as_ref()) {
+                    Some(art) => { c.provide(art.image, &art.picture); c.image(tr, art.image, fill_uv(art.size, tr), rgba(1.0, 1.0, 1.0, fade)); }
+                    None => {
+                        let color = shelf.iter().find(|g| g.id == e.game).map_or(VIOLET, |g| Color::from_string(&g.color, VIOLET));
+                        c.rect(tr, color.darkened(0.4).with_alpha(fade));
+                    }
+                }
+                let loading = lobby.host.loading_shown(&e.game).is_some();
+                let x = tr[0] + tr[2] + fs * 0.6;
+                c.text(faces.regular, [x, mid + fs * 0.36], &e.title, TextAlign::Left, -1.0, fs, TEXT.with_alpha(fade));
+                if loading {
+                    let x = x + render::hud::measure(&format!("{}  ", e.title), faces.regular, fs)[0];
+                    c.text(faces.regular, [x, mid + fs * 0.36], &format!("{}%", lobby.host.loading_percent(&e.game)), TextAlign::Left, -1.0, fs, crate::lobby::AMBER.with_alpha(fade));
+                }
+            }
+            if queue.len() > shown {
+                c.text(faces.regular, [qx + pad + fs * 1.6, qy + full_h - pad - fs * 0.2], &format!("+{} more", queue.len() - shown), TextAlign::Left, -1.0, (fs * 0.85).floor(), DIM.with_alpha(fade));
+            }
         }
     }
 }

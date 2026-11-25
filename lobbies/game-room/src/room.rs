@@ -28,8 +28,22 @@ pub const NIGHT_LILAC: Color = rgb(0.654_902, 0.545_098_07, 0.980_392_16);
 pub const GREEN: Color = rgb(0.239_215_69, 0.862_745_1, 0.592_156_9);
 pub const PINK: Color = rgb(1.0, 0.309_803_93, 0.545_098_07);
 pub const CYAN: Color = rgb(0.219_607_84, 0.839_215_7, 1.0);
-pub const BG: Color = rgb(0.043_137_256, 0.043_137_256, 0.070_588_24);
-pub const TEXT: Color = rgb(0.949_019_6, 0.945_098_04, 0.972_549);
+// Colour tokens: lobbies/game-room/DESIGN.md.
+pub const BG: Color = rgb(0.050980, 0.062745, 0.125490);
+pub const TEXT: Color = rgb(0.933333, 0.941176, 0.988235);
+pub const DIM: Color = rgb(0.658824, 0.678431, 0.768627);
+pub const RED: Color = rgb(0.886275, 0.341176, 0.298039);
+/// Floating panels (bg at 88 %) and menus (95 %), their 1 px edge.
+pub const PANEL: Color = Color { a: 0.88, ..BG };
+/// Opaque: the HUD blends in linear light, where 95 % still lets ~25 %
+/// of a bright TV through (DESIGN.md item 6).
+pub const PANEL_SOLID: Color = Color { a: 1.0, ..BG };
+pub const LINE: Color = Color { r: 1.0, g: 1.0, b: 1.0, a: 0.1 };
+/// Controller buttons (DESIGN.md glyphs): A green, B red, X blue, Y yellow.
+pub const PAD_A: Color = GREEN;
+pub const PAD_B: Color = RED;
+pub const PAD_X: Color = rgb(0.290196, 0.560784, 0.905882);
+pub const PAD_Y: Color = rgb(0.949020, 0.756863, 0.305882);
 
 pub const CAMERA_BASE: Vec3 = Vec3::new(0.0, 4.7, 20.4);
 pub const CAMERA_TARGET: Vec3 = Vec3::new(0.0, 4.55, 0.0);

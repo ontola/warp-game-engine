@@ -488,7 +488,8 @@ pub(crate) mod page {
         let (key, now) = (if keyboard { "Enter" } else { "A" }, app::web::game_takes_joins());
         // A pad while someone plays on the keyboard: A takes that player over.
         if let Some(who) = keyboard_player.filter(|_| !keyboard) { return show_hint(key, &format!("Play as {who} on this controller"), "Splitscreen Club is made for controllers"); }
-        let text = if now { format!("Press {key} to join this game") } else { format!("Press {key} to join; you play from the next game") };
+        // The glyph says which button (DESIGN.md: glyph, then the verb).
+        let text = if now { "Join this game".to_string() } else { "Join: you play from the next game".to_string() };
         show_hint(key, &text, "");
     }
 
@@ -553,7 +554,7 @@ pub(crate) mod page {
             let Some(doc) = web_sys::window().and_then(|w| w.document()) else { return };
             if let Some(e) = doc.get_element_by_id("join-key") {
                 e.set_text_content(Some(key));
-                let _ = if key == "A" { e.set_attribute("class", "pad-a") } else { e.remove_attribute("class") };
+                let _ = match key { "A" => e.set_attribute("class", "pad-a"), "✓" => e.set_attribute("class", "tick"), _ => e.remove_attribute("class") };
             }
             if let Some(e) = doc.get_element_by_id("join-text") { e.set_text_content(Some(text)); }
             if let Some(e) = doc.get_element_by_id("join-detail") { e.set_text_content(Some(detail)); }

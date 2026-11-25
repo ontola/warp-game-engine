@@ -34,7 +34,7 @@ in `src/room.rs` / `src/lobby.rs`; the CSS names go in `:root` of
 |---|---|---|---|---|
 | bg | `#0d1020` | `--bg` | `BG` (now `#0b0b12`, see below) | Page and full-screen backgrounds, ink on bright chips |
 | panel | `#0d1020` at 88 % | `--panel` | `PANEL` | Every floating panel, card and banner |
-| panel-solid | `#0d1020` at 95 % | `--panel-solid` | `PANEL_SOLID` | Menus (must hide what is under them) |
+| panel-solid | `#0d1020` opaque (HUD), 95 % in CSS | `--panel-solid` | `PANEL_SOLID` | Menus (must hide what is under them) |
 | line | white at 10 % | `--line` | `LINE` | 1 px panel border |
 | text | `#eef0fc` | `--text` | `TEXT` | Body text, selected menu item |
 | muted | `#a8adc4` | `--muted` | `DIM` | Secondary text, unselected items, counts |
@@ -297,7 +297,12 @@ From Joep's decisions, for every game's own UI:
 ## Where the current UI differs
 
 Found on 2026-11-25 from the code and Joep's screenshots of the browser
-host. Numbers are referenced from the thread; nothing below is fixed yet.
+host. Numbers are referenced from the thread.
+
+**Status (2026-11-25, same day):** fixed 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12,
+13, 15–19, 21 (store grids are cover only), 23, and 22 for the catalog
+and the app (the room TV keeps its big first cover). Open: 11 ("ALL GAMES" stays a white title), 14 (dev tool), 20 (each
+game's own HUD).
 
 1. **Panels have six looks.** HTML notices: rounded 18–20, 1 px border,
    blur. Mouse menu: square, 3 px violet border. Toasts, bench, error
@@ -320,9 +325,11 @@ host. Numbers are referenced from the thread; nothing below is fixed yet.
    the space). → layout zones.
 6. **The room shows through the mouse menu**: the TV's "UP NEXT / WARP
    THEFT AUTO" is readable through "Show all games" in Joep's screenshot.
-   The menu is 95 % opaque but the TV still reads; cause not checked yet
-   (likely bloom after the HUD, or a HUD layer limit). → check, then
-   panel-solid.
+   Cause (checked 2026-11-25): the HUD blends in linear light, so a 95 %
+   panel lets 5 % *linear* through, which a white TV text turns into
+   about 25 % *sRGB* grey. Fixed: `PANEL_SOLID` (and the engine start
+   menu's panel) is opaque in the HUD. Translucent HUD panels (`panel`,
+   88 %) are fine over the dim room, never over the TV.
 7. **Mouse menu has a hint footer** ("Esc closes · Controllers use their
    own Start menu"), against the no-hints rule.
 8. **Three violets.** Lobby `VIOLET #7c5cff`, HTML accent `#a78bfa`

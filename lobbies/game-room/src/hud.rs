@@ -3,7 +3,7 @@
 //! toasts and the connection and update banners.
 
 use crate::fonts::faces;
-use crate::godot::{rgba, Color};
+use crate::godot::Color;
 use crate::lobby::{short, AMBER, DIM, GREEN, TEXT, VIOLET};
 use crate::live::Lobby;
 use crate::paint::Canvas;
@@ -11,7 +11,6 @@ use glam::{Mat4, Vec3};
 use render::hud::{FontFace, HudDrawList, TextAlign};
 
 const BG: Color = crate::room::BG;
-const PANEL: Color = rgba(0.03, 0.03, 0.06, 0.88);
 
 fn regular() -> FontFace { faces().regular }
 fn bold() -> FontFace { faces().bold }
@@ -86,10 +85,9 @@ pub fn draw(lobby: &Lobby, size: [u32; 2], _alpha: f32) -> HudDrawList {
     if !error.is_empty() && error != "<null>" {
         let bw = (w * 0.9).min(1080.0 * scale);
         let r = [(w - bw) / 2.0, 24.0 * scale, bw, 112.0 * scale];
-        c.rect(r, rgba(0.03, 0.03, 0.06, 0.94));
-        c.rect([r[0], r[1], 5.0 * scale, r[3]], AMBER);
-        text(&mut c, "Could not prepare your game", [r[0] + 22.0 * scale, r[1] + 30.0 * scale], (23.0 * scale).floor(), AMBER);
-        text(&mut c, &short(&error, 120), [r[0] + 22.0 * scale, r[1] + 62.0 * scale], (21.0 * scale).floor(), TEXT);
+        crate::paint::panel_with(&mut c, r, scale, crate::room::PANEL_SOLID, crate::room::RED.with_alpha(0.6));
+        text(&mut c, "COULD NOT PREPARE YOUR GAME", [r[0] + 24.0 * scale, r[1] + 34.0 * scale], (16.0 * scale).floor(), AMBER);
+        text(&mut c, &short(&error, 120), [r[0] + 24.0 * scale, r[1] + 66.0 * scale], (21.0 * scale).floor(), TEXT);
         c.over();
     }
 
@@ -155,27 +153,28 @@ pub fn draw(lobby: &Lobby, size: [u32; 2], _alpha: f32) -> HudDrawList {
     let mut y = if catalog { 40.0 * scale } else { h - 40.0 * scale };
     for t in lobby.toasts.iter().rev() {
         let fs = (22.0 * scale).floor();
-        let tw = width(&t.text, fs) + 44.0;
+        let tw = width(&t.text, fs) + 62.0 * scale;
         let r = if catalog { [w / 2.0 - tw / 2.0, y, tw, fs + 24.0] } else { [w / 2.0 - tw / 2.0, y - fs - 20.0, tw, fs + 24.0] };
-        c.rect(r, PANEL);
-        c.rect([r[0], r[1], 4.0, r[3]], t.color);
-        text(&mut c, &t.text, [r[0] + 24.0, r[1] + fs + 4.0], fs, TEXT);
+        crate::paint::panel(&mut c, r, scale);
+        // Its colour as a small dot, not a bar (DESIGN.md "Toast").
+        c.circle([r[0] + 24.0 * scale, r[1] + r[3] / 2.0], 4.0 * scale, t.color);
+        text(&mut c, &t.text, [r[0] + 38.0 * scale, r[1] + fs + 4.0], fs, TEXT);
         y += if catalog { r[3] + 10.0 } else { -(r[3] + 10.0) };
     }
     if !lobby.host.update_ready().is_empty() {
         let fs = (18.0 * scale).floor();
         let msg = "Update ready  ·  Start to install";
-        let bw = width(msg, fs) + 40.0;
-        let r = [w - bw - 24.0 * scale, 24.0 * scale, bw, fs + 22.0];
-        c.rect(r, rgba(0.03, 0.03, 0.06, 0.85));
-        c.rect([r[0], r[1], 4.0, r[3]], GREEN);
-        text(&mut c, msg, [r[0] + 20.0, r[1] + fs + 4.0], fs, TEXT);
+        let bw = width(msg, fs) + 58.0 * scale;
+        let r = [w - bw - 32.0 * scale, 32.0 * scale, bw, fs + 22.0];
+        crate::paint::panel(&mut c, r, scale);
+        c.circle([r[0] + 22.0 * scale, r[1] + r[3] / 2.0], 4.0 * scale, GREEN);
+        text(&mut c, msg, [r[0] + 36.0 * scale, r[1] + fs + 4.0], fs, TEXT);
     }
     if !lobby.host.demo && !lobby.host.connected {
         let fs = (24.0 * scale).floor();
         let msg = "Connecting to Splitscreen Club…";
         let bw = width(msg, fs) + 48.0;
-        c.rect([w / 2.0 - bw / 2.0, 24.0, bw, fs + 28.0], rgba(0.03, 0.03, 0.06, 0.9));
+        crate::paint::panel(&mut c, [w / 2.0 - bw / 2.0, 24.0, bw, fs + 28.0], scale);
         text(&mut c, msg, [w / 2.0 - bw / 2.0 + 24.0, 24.0 + fs + 6.0], fs, AMBER);
     }
     list
@@ -194,7 +193,7 @@ fn item_hints(lobby: &Lobby, c: &mut Canvas, view_proj: Mat4, size: [u32; 2]) {
         let (Some(at), Some(above)) = (project(view_proj, size, top), project(view_proj, size, top + Vec3::new(0.0, 0.4032, 0.0))) else { continue };
         let factor = ((at[0] - above[0]).powi(2) + (at[1] - above[1]).powi(2)).sqrt() / 96.0;
         let label = if kind == game_room_sim::world::Kind::Ball { "Kick" } else { "Pick up" };
-        badge(c, at, factor, "B", label, Color::hex("e2574c"), pressed, size);
+        badge(c, at, factor, "B", label, crate::room::PAD_B, pressed, size);
     }
     // Someone carrying a player: B throws them, out of the party when the
     // exit door is close in the way they face.
@@ -206,7 +205,7 @@ fn item_hints(lobby: &Lobby, c: &mut Canvas, view_proj: Mat4, size: [u32; 2]) {
         let top = Vec3::new(p.x as f32, p.y as f32 + 3.3, lobby.actor_depth(&p.id));
         let (Some(at), Some(above)) = (project(view_proj, size, top), project(view_proj, size, top + Vec3::new(0.0, 0.4032, 0.0))) else { continue };
         let factor = ((at[0] - above[0]).powi(2) + (at[1] - above[1]).powi(2)).sqrt() / 96.0;
-        badge(c, at, factor, "B", label, Color::hex("e2574c"), 0.0, size);
+        badge(c, at, factor, "B", label, crate::room::PAD_B, 0.0, size);
     }
     c.over();
 }
@@ -220,7 +219,7 @@ fn badge(c: &mut Canvas, at: [f32; 2], k: f32, key: &str, label: &str, color: Co
     let x0 = (at[0] - full[0] / 2.0).clamp(4.0, size[0] as f32 - full[0] - 4.0);
     let y0 = (at[1] - full[1] / 2.0).clamp(4.0, size[1] as f32 - full[1] - 4.0);
     let x = x0 + 20.0 * k;
-    c.style_box([x, y0 + 6.0 * k, 96.0 * k + tw + 16.0 * k, h - 12.0 * k], [h / 2.0 - 6.0 * k; 4], rgba(0.03, 0.03, 0.06, 0.82), None);
+    c.style_box([x, y0 + 6.0 * k, 96.0 * k + tw + 16.0 * k, h - 12.0 * k], [h / 2.0 - 6.0 * k; 4], crate::room::PANEL, None);
     let center = [x + h / 2.0 - 4.0 * k, y0 + h / 2.0];
     c.circle(center, h / 2.0 - 13.0 * k, color.darkened(0.65));
     let r = h / 2.0 - 14.0 * k;
@@ -228,14 +227,13 @@ fn badge(c: &mut Canvas, at: [f32; 2], k: f32, key: &str, label: &str, color: Co
     let face = [center[0], center[1] + pressed * 10.0 * k];
     let points: Vec<[f32; 2]> = (0..32).map(|i| { let a = i as f32 / 32.0 * std::f32::consts::TAU; [face[0] + a.cos() * r, face[1] + a.sin() * r * squash] }).collect();
     c.polygon(&points, color.darkened(pressed * 0.12));
-    c.text(bold(), [x + 10.0 * k, y0 + h / 2.0 + (17.0 + pressed * 10.0) * k], key, TextAlign::Center, h - 28.0 * k, 48.0 * k, Color::hex("0b0b12"));
+    c.text(bold(), [x + 10.0 * k, y0 + h / 2.0 + (17.0 + pressed * 10.0) * k], key, TextAlign::Center, h - 28.0 * k, 48.0 * k, BG);
     c.text(bold(), [x + 90.0 * k, y0 + h / 2.0 + 16.0 * k], label, TextAlign::Left, -1.0, 44.0 * k, TEXT);
 }
 
 /// A Start menu's box and its item rows (main.gd `_draw_menu` layout),
 /// standing on `at` (bottom centre).
 const MOUSE_HEADING: &str = "KEYBOARD & MOUSE";
-const MOUSE_FOOTER: &str = "Esc closes · Controllers use their own Start menu";
 
 fn menu_layout(lobby: &Lobby, id: &str, at: [f32; 2], fs: f32, size: [u32; 2]) -> Option<([f32; 4], Vec<[f32; 4]>)> {
     lobby.menus.get(id)?;
@@ -252,7 +250,7 @@ fn menu_layout(lobby: &Lobby, id: &str, at: [f32; 2], fs: f32, size: [u32; 2]) -
     }
     mw += 80.0;
     // The keyboard and mouse menu says what it is and how to leave it.
-    if id == crate::mouse::MOUSE { mw = mw.max(width(MOUSE_HEADING, (fs * 0.7).floor()).max(width(MOUSE_FOOTER, (fs * 0.62).floor())) + 48.0); extra += fs + 10.0; }
+    if id == crate::mouse::MOUSE { mw = mw.max(width(MOUSE_HEADING, (fs * 0.7).floor()) + 48.0); }
     let mh = line * items.len() as f32 + extra + menu_head(fs) + 20.0;
     let x = (at[0] - mw / 2.0).clamp(16.0, (size[0] as f32 - mw - 16.0).max(16.0));
     let y0 = (at[1] - mh).max(16.0);
@@ -313,10 +311,10 @@ fn back_panel(lobby: &Lobby, c: &mut Canvas, view_proj: Mat4, size: [u32; 2], sc
         None => (w / 2.0 - pw / 2.0, h - ph - 120.0 * scale),
     };
     let (x, y) = (x.clamp(8.0, w - pw - 8.0), y.clamp(8.0, h - ph - 8.0));
-    c.style_box([x, y, pw, ph], [fs * 0.6; 4], rgba(0.03, 0.03, 0.06, 0.94), Some(((2.0 * scale).max(1.0), Color::hex("b4b2c8").with_alpha(0.6))));
+    crate::paint::panel_solid(c, [x, y, pw, ph], scale);
     let name = player.as_deref().map(|id| lobby.name(id)).unwrap_or_default();
     let title = if name.is_empty() { "BACK".to_string() } else { format!("BACK  ·  {}", short(&name, 14).to_uppercase()) };
-    c.text(bold(), [x + pad, y + pad + fs * 0.9], &title, TextAlign::Left, -1.0, fs, TEXT);
+    c.text(bold(), [x + pad, y + pad + fs * 0.9], &title, TextAlign::Left, -1.0, (fs * 0.7).floor(), AMBER);
     let keyboard = player.as_deref().is_some_and(|id| lobby.on_keyboard(id));
     let hold = if keyboard { "Hold Tab and press" } else { "Hold Back and press" };
     c.text(regular(), [x + pad, y + pad + fs * 1.75], hold, TextAlign::Left, -1.0, (fs * 0.8).floor(), DIM);
@@ -327,8 +325,8 @@ fn back_panel(lobby: &Lobby, c: &mut Canvas, view_proj: Mat4, size: [u32; 2], sc
             crate::paint::keycap(c, r, cap, 0.0, true);
         } else if button == "B" || button == "Y" {
             let center = [r[0] + r[2] / 2.0, r[1] + r[3] / 2.0];
-            c.circle(center, r[3] / 2.0, Color::hex(if button == "B" { "e2574c" } else { "f2c14e" }));
-            c.text(bold(), [r[0], center[1] + fs * 0.36], button, TextAlign::Center, r[2], fs, Color::hex("0b0b12"));
+            c.circle(center, r[3] / 2.0, crate::paint::pad_color(button).unwrap_or(TEXT));
+            c.text(bold(), [r[0], center[1] + fs * 0.36], button, TextAlign::Center, r[2], fs, BG);
         } else {
             crate::paint::bumper(c, r, button, 0, 0.0);
         }
@@ -346,9 +344,9 @@ fn menu(lobby: &Lobby, c: &mut Canvas, id: &str, at: [f32; 2], fs: f32) {
     let gap = fs * 0.22;
     let row = block + 12.0;
     let mouse = id == crate::mouse::MOUSE;
-    c.rect([x, y0, mw, mh], rgba(0.04, 0.035, 0.08, 0.95));
-    let edge = VIOLET.with_alpha(0.9);
-    for r in [[x, y0, mw, 3.0], [x, y0 + mh - 3.0, mw, 3.0], [x, y0, 3.0, mh], [x + mw - 3.0, y0, 3.0, mh]] { c.rect(r, edge); }
+    // One panel style (DESIGN.md "Menu"): solid, so the room doesn't read through.
+    let k = fs / 22.0;
+    crate::paint::panel_solid(c, [x, y0, mw, mh], k);
     let heading = match state.page.as_str() { "lobbies" => "CHOOSE A LOBBY".to_string(), "remove" => "REMOVE A PLAYER".into(), page if page.starts_with("player:") => lobby.name(&page["player:".len()..]).to_uppercase(), _ if mouse => MOUSE_HEADING.into(), _ => lobby.name(id).to_uppercase() };
     text(c, &heading, [x + 24.0, y0 + 18.0 + (fs * 0.7).floor()], (fs * 0.7).floor(), AMBER);
     let mut y = y0 + menu_head(fs);
@@ -359,7 +357,7 @@ fn menu(lobby: &Lobby, c: &mut Canvas, id: &str, at: [f32; 2], fs: f32) {
         let a = lobby.button_name(id, "A");
         if item.action == "quit" && state.confirm && selected { label = if mouse { "Click again to quit".into() } else { format!("Press {a} again to quit") }; }
         if item.action == "remove" && state.confirm && selected { label = if mouse { format!("Click again to remove {}", short(&item.name, 14)) } else { format!("Press {a} again to remove {}", short(&item.name, 14)) }; }
-        if selected { c.rect([x + 12.0, y, mw - 24.0, line - 4.0 + if couch { row } else { 0.0 }], VIOLET.with_alpha(0.35)); }
+        if selected { c.style_box([x + 12.0, y, mw - 24.0, line - 4.0 + if couch { row } else { 0.0 }], [12.0 * k; 4], VIOLET.with_alpha(0.35), None); }
         text(c, &label, [x + 32.0, y + fs], fs, if selected { TEXT } else { DIM });
         if couch {
             // Yours is filled.
@@ -376,7 +374,6 @@ fn menu(lobby: &Lobby, c: &mut Canvas, id: &str, at: [f32; 2], fs: f32) {
         }
         y += line;
     }
-    if mouse { text(c, MOUSE_FOOTER, [x + 24.0, y + fs * 0.62 + 4.0], (fs * 0.62).floor(), DIM); }
 }
 
 /// main.gd `_draw_bench`: players without a controller, bottom left.
@@ -389,9 +386,8 @@ fn bench(lobby: &Lobby, c: &mut Canvas, scale: f32) {
     for id in &lobby.bench { bw = bw.max(width(&(short(&lobby.name(id), 16) + "  no controller"), fs) + 44.0 * scale); }
     bw += 36.0 * scale;
     let bh = line * lobby.bench.len() as f32 + 44.0 * scale;
-    let r = [24.0 * scale, c.size[1] - bh - 24.0 * scale, bw, bh];
-    c.rect(r, rgba(0.03, 0.03, 0.06, 0.82));
-    c.rect([r[0], r[1], 4.0 * scale, r[3]], VIOLET);
+    let r = [32.0 * scale, c.size[1] - bh - 32.0 * scale, bw, bh];
+    crate::paint::panel(c, r, scale);
     let all_phones = lobby.bench.iter().all(|id| lobby.phones.contains(id));
     text(c, if all_phones { "ON PHONES" } else { "NO CONTROLLER" }, [r[0] + 18.0 * scale, r[1] + 26.0 * scale], small, AMBER);
     for (i, id) in lobby.bench.iter().enumerate() {

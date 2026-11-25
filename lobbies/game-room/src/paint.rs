@@ -12,9 +12,7 @@ use crate::room::{AMBER, GREEN, NIGHT_LILAC, PINK, VIOLET};
 use render::hud::{FontFace, HudDrawList, TextAlign, TextRun};
 use std::f32::consts::{PI, TAU};
 
-const BG: Color = crate::godot::rgb(0.043_137_256, 0.043_137_256, 0.070_588_24);
-const TEXT: Color = crate::godot::rgb(0.949_019_6, 0.945_098_04, 0.972_549);
-const DIM: Color = crate::godot::rgb(0.603_921_6, 0.596_078_46, 0.678_431_4);
+use crate::room::{BG, DIM, TEXT};
 
 /// A game as the screens show it.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -430,7 +428,7 @@ pub fn queue_titles(c: &mut Canvas, show: &Show) {
         c.line([88.0, y + 14.0], [w - 24.0, y + 14.0], Color::WHITE.with_alpha(0.08), 1.0);
     }
     let more = show.queue.len().saturating_sub(1 + rows.len());
-    if more > 0 { left(c, &format!("+{more} more in queue"), [88.0, 284.0], 30.0, GREEN); }
+    if more > 0 { left(c, &format!("+{more} more"), [88.0, 284.0], 30.0, DIM); }
 }
 
 /// main.gd `_draw_jukebox`: dark lettering on the glowing dome.
@@ -471,6 +469,58 @@ pub fn plaque(c: &mut Canvas, show: &Show) {
     }
     let code = if show.room_code.is_empty() { "· · · ·" } else { &show.room_code };
     c.text(faces().wordmark, [0.0, h - 16.0], code, TextAlign::Center, w, 52.0, TEXT);
+}
+
+/// The one floating panel (DESIGN.md "Panel"): bg at 88 %, 1 px edge,
+/// radius 18 and a soft shadow 8 px under it, all at `scale` (1 at 1080p).
+pub fn panel(c: &mut Canvas, r: [f32; 4], scale: f32) { panel_with(c, r, scale, crate::room::PANEL, crate::room::LINE); }
+
+/// A menu's panel: 95 % so the room does not read through it.
+pub fn panel_solid(c: &mut Canvas, r: [f32; 4], scale: f32) { panel_with(c, r, scale, crate::room::PANEL_SOLID, crate::room::LINE); }
+
+/// A panel with its own edge colour (an error's red edge).
+pub fn panel_with(c: &mut Canvas, r: [f32; 4], scale: f32, fill: Color, edge: Color) {
+    let radius = (18.0 * scale).min(r[3] / 2.0);
+    c.style_box([r[0], r[1] + 8.0 * scale, r[2], r[3]], [radius; 4], Color { r: 0.0, g: 0.0, b: 0.0, a: 0.3 * fill.a }, None);
+    c.style_box(r, [radius; 4], fill, Some(((1.0 * scale).max(1.0), edge)));
+}
+
+/// A face button's colour (A green, B red, X blue, Y yellow), None for others.
+pub fn pad_color(key: &str) -> Option<Color> {
+    Some(match key.to_ascii_uppercase().as_str() { "A" => crate::room::PAD_A, "B" => crate::room::PAD_B, "X" => crate::room::PAD_X, "Y" => crate::room::PAD_Y, _ => return None })
+}
+
+/// Whether `key` is a stick: L3/R3 (press) or LS/RS (move).
+pub fn is_stick(key: &str) -> bool { matches!(key.to_ascii_uppercase().as_str(), "L3" | "R3" | "LS" | "RS") }
+
+/// A stick seen from above (DESIGN.md glyphs): a grey disc with a 1.5 px
+/// edge, the cap's ring, L or R in it. L3/R3 (press) get a bar with a
+/// down chevron under the disc; LS/RS (move) a triangle on each side.
+pub fn stick(c: &mut Canvas, center: [f32; 2], radius: f32, key: &str, on: bool) {
+    let key = key.to_ascii_uppercase();
+    let edge = if on { Color::hex("b4b2c8") } else { Color::hex("55516a") };
+    let ink = if on { TEXT } else { DIM };
+    let press = key.ends_with('3');
+    let lift = if press { radius * 0.22 } else { 0.0 };
+    let o = [center[0], center[1] - lift];
+    c.circle(o, radius, edge);
+    c.circle(o, radius - (radius * 0.07).max(1.5), Color::hex("30303f"));
+    c.circle(o, radius * 0.62, edge);
+    c.circle(o, radius * 0.62 - (radius * 0.06).max(1.2), Color::hex("26262f"));
+    let size = (radius * 0.7).floor();
+    c.text(bold(), [o[0] - radius, o[1] + size * 0.36], &key[..1], TextAlign::Center, 2.0 * radius, size, ink);
+    if press {
+        // The press: a short bar under the stick, a chevron pointing into it.
+        let y = o[1] + radius + radius * 0.2;
+        c.rect([o[0] - radius * 0.5, y + radius * 0.16, radius, radius * 0.12], ink);
+        c.polygon(&[[o[0] - radius * 0.22, y - radius * 0.04], [o[0] + radius * 0.22, y - radius * 0.04], [o[0], y + radius * 0.12]], ink);
+    } else {
+        for d in [-1.0f32, 1.0] {
+            let tip = [o[0] + d * radius * 1.38, o[1]];
+            let back = o[0] + d * radius * 1.12;
+            c.polygon(&[tip, [back, o[1] - radius * 0.2], [back, o[1] + radius * 0.2]], ink);
+        }
+    }
 }
 
 /// room.gd `draw_bumper`: an Xbox-style bumper, with a chevron pointing
@@ -581,7 +631,7 @@ pub fn prompt(c: &mut Canvas, state: &Prompt) {
         c.style_box([x, 6.0, pill, h - 12.0], [h / 2.0 - 6.0; 4], if hovered { crate::godot::rgba(0.22, 0.16, 0.42, 0.95) } else { crate::godot::rgba(0.03, 0.03, 0.06, 0.82) },
             hovered.then(|| (4.0, Color::hex("f8cd34"))));
         let on = state.enabled && *item_on;
-        let color = if on { match key.as_str() { "A" => Color::hex("5cb85c"), "B" => Color::hex("e2574c"), "X" => Color::hex("3b8eea"), "Y" => Color::hex("f8cd34"), _ => TEXT } } else { Color::hex("55516a") };
+        let color = if on { pad_color(key).unwrap_or(TEXT) } else { Color::hex("55516a") };
         let pressed = state.pressed.as_ref().filter(|p| &p.0 == key).map_or(0.0, |p| p.1);
         if let Some(cap) = cap {
             keycap(c, [x + 12.0, 20.0, badge - 24.0, 56.0], cap, pressed, on);
@@ -596,6 +646,9 @@ pub fn prompt(c: &mut Canvas, state: &Prompt) {
             }
         } else if bumper_key {
             bumper(c, [x + 12.0, 18.0, 122.0, 60.0], key, 0, pressed);
+        } else if is_stick(key) && scale > 0.02 {
+            let center = [x + (h / 2.0 - 4.0) * w + 24.0 * (1.0 - w), h / 2.0 + pressed * 6.0];
+            stick(c, center, (h / 2.0 - 14.0) * scale.min(1.0), key, on);
         } else if scale > 0.02 {
             let center = [x + (h / 2.0 - 4.0) * w + 24.0 * (1.0 - w), h / 2.0];
             c.circle(center, (h / 2.0 - 13.0) * scale, color.darkened(0.65));

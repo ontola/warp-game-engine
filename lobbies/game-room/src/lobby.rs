@@ -15,7 +15,7 @@ pub const VIOLET: Color = crate::room::VIOLET;
 pub const GREEN: Color = crate::room::GREEN;
 pub const PINK: Color = crate::room::PINK;
 pub const TEXT: Color = crate::room::TEXT;
-pub const DIM: Color = crate::godot::rgb(0.603_921_6, 0.596_078_46, 0.678_431_4);
+pub const DIM: Color = crate::room::DIM;
 
 /// A player without a controller leaves after this long.
 pub const LOST_SECONDS: f32 = 30.0;
