@@ -424,7 +424,8 @@ impl RoomBuild {
 pub fn prompt_size(items: &[(String, String)]) -> [u32; 2] {
     let mut width = 40.0;
     for (key, text) in items {
-        let keys = crate::paint::key_cap(key).map_or(0.0, |cap| crate::paint::key_cap_width(cap) + 24.0);
+        // Room for the widest key any keyboard layout shows for it.
+        let keys = (0..3).filter_map(|half| crate::paint::key_cap_on(half, key)).map(|cap| crate::paint::key_cap_width(cap) + 24.0).fold(0.0, f32::max);
         width += if key == "LB" || key == "RB" { 150.0f32 } else { 96.0 }.max(keys) + crate::fonts::measure_bold(text, 44.0) + 36.0;
     }
     [(width as f32).ceil() as u32, 96]

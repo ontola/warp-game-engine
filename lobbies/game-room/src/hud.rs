@@ -316,13 +316,14 @@ fn back_panel(lobby: &Lobby, c: &mut Canvas, view_proj: Mat4, size: [u32; 2], sc
     let name = player.as_deref().map(|id| lobby.name(id)).unwrap_or_default();
     let title = if name.is_empty() { "BACK".to_string() } else { format!("BACK  ·  {}", short(&name, 14).to_uppercase()) };
     c.text(bold(), [x + pad, y + pad + fs * 0.9], &title, TextAlign::Left, -1.0, (fs * 0.7).floor(), AMBER);
-    let keyboard = player.as_deref().is_some_and(|id| lobby.on_keyboard(id));
-    let hold = if keyboard { "Hold Tab and press" } else { "Hold Back and press" };
-    c.text(regular(), [x + pad, y + pad + fs * 1.75], hold, TextAlign::Left, -1.0, (fs * 0.8).floor(), DIM);
+    let half = player.as_deref().and_then(|id| lobby.keyboard_half(id));
+    let back = half.and_then(|h| crate::paint::key_cap_on(h, "BACK")).unwrap_or("Back");
+    let hold = format!("Hold {back} and press");
+    c.text(regular(), [x + pad, y + pad + fs * 1.75], &hold, TextAlign::Left, -1.0, (fs * 0.8).floor(), DIM);
     for (i, (button, label, waiting)) in rows.iter().enumerate() {
         let top = y + pad + head + line * i as f32 + fs * 0.25;
         let r = [x + pad, top, key_w, line - fs * 0.5];
-        if let Some(cap) = keyboard.then(|| crate::paint::key_cap(button)).flatten() {
+        if let Some(cap) = half.and_then(|h| crate::paint::key_cap_on(h, button)) {
             crate::paint::keycap(c, r, cap, 0.0, true);
         } else if button == "B" || button == "Y" {
             let center = [r[0] + r[2] / 2.0, r[1] + r[3] / 2.0];
