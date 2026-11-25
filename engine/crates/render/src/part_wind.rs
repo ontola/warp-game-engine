@@ -450,7 +450,7 @@ const PRESSURE_DT: f32 = 1. / 6.;
 type PressureTrace = [Vec4; PRESSURE_STEPS + 1];
 
 fn pressure_sample(root: Vec2, direction: Vec2, phase: f32, strength: f32) -> Vec4 {
-    let gust = gust_at(root, direction, phase, strength);
+    let gust = gust_at::<true>(root, direction, phase, strength);
     let cross = Vec2::new(-direction.y, direction.x);
     let along = phase - root.dot(direction) * (std::f32::consts::TAU / (120. * crate::wind::GUST_SPEED_MPS));
     let across = root.dot(cross);
@@ -469,8 +469,7 @@ fn pressure_sample(root: Vec2, direction: Vec2, phase: f32, strength: f32) -> Ve
         let arch = 4. * t * (1. - t);
         arch * arch
     };
-    load -= 0.42 * ((1. - gust.storm_mix) * unload(gust.breeze_age) * direction
-        + gust.storm_mix * unload(gust.storm_age) * gust.storm_release);
+    load -= 0.42 * (1. - gust.storm_mix) * unload(gust.breeze_age) * direction;
     Vec4::new(load.x, load.y, local * eddy_sin, local * eddy_cos)
 }
 
@@ -486,9 +485,10 @@ fn spring_kernel(max_angle: f32, harmonic: u32, branch_phase: f32) -> (Vec2, Vec
     let identity = 0.65 * branch_phase / std::f32::consts::TAU + 0.35 * (harmonic % 17) as f32 / 16.;
     let frequency = (0.30 + 3.10 * compliance) * (0.86 + 0.28 * identity);
     let omega = std::f32::consts::TAU * frequency;
-    let damping = 0.36 - 0.19 * compliance;
-    let a = omega * damping;
-    let b = omega * (1. - damping * damping).sqrt();
+    // Specify decay per second independently of frequency. Thick limbs settle
+    // sooner in real time; the flexible tips complete more visible cycles.
+    let a = (3.75 - 4.8 * compliance).max(1.20).min(0.66 * omega);
+    let b = (omega * omega - a * a).sqrt();
     let (sin, cos) = (b * PRESSURE_DT).sin_cos();
     let advance = (-a * PRESSURE_DT).exp() * Vec2::new(cos, sin);
     let integral = complex_mul(advance - Vec2::X, Vec2::new(-a, -b))
@@ -1050,6 +1050,43 @@ mod tests {
         assert!(twig_period < 0.70 * bough_period, "{twig_period}, {bough_period}");
         assert!((sibling_period - twig_period).abs() > 0.035);
         assert!(bough_bend > 0.001 && twig_bend > 3. * bough_bend, "{twig_bend}, {bough_bend}");
+    }
+
+    #[test]
+    fn thick_limbs_dissipate_identical_impulse_energy_faster_in_real_time() {
+        // Measure successive peaks of the actual signed output after one
+        // shared step release. The logarithmic decrement gives the observed
+        // amplitude half-life in seconds independently of oscillation rate.
+        let decay = |angle: f32| {
+            let mut peaks = Vec::new();
+            let mut prev = 0.;
+            let mut prev_delta = 0.;
+            for tick in 0..450 {
+                let t = tick as f32 / 120.;
+                let trace = std::array::from_fn(|i| Vec4::X *
+                    (1. - (t - i as f32 * PRESSURE_DT) / 0.14).clamp(0., 1.));
+                let current = spring_load(&trace, angle, 13, 1., false).x;
+                let delta = current - prev;
+                if t > 0.25 && prev_delta * delta < 0. && prev.abs() > 1e-7 {
+                    peaks.push((t - 1. / 120., prev.abs()));
+                }
+                prev = current;
+                if delta != 0. { prev_delta = delta; }
+            }
+            assert!(peaks.len() >= 3);
+            // Fit the log envelope across the available ringing, so the answer
+            // does not depend on a peak landing between two pressure samples.
+            let mean_t = peaks.iter().map(|p| p.0).sum::<f32>() / peaks.len() as f32;
+            let cov = peaks.iter().map(|p| (p.0 - mean_t) * p.1.ln()).sum::<f32>();
+            let var = peaks.iter().map(|p| (p.0 - mean_t).powi(2)).sum::<f32>();
+            let half_life = -std::f32::consts::LN_2 * var / cov;
+            (half_life, peaks.iter().filter(|p| p.1 >= 0.05 * peaks[0].1).count())
+        };
+        let (thick_half_life, thick_peaks) = decay(0.048);
+        let (thin_half_life, thin_peaks) = decay(0.28);
+        assert!(thick_half_life < 0.32 && thin_half_life > 1.8 * thick_half_life,
+            "measured amplitude half-life in seconds: {thick_half_life}, {thin_half_life}");
+        assert!(thin_peaks >= thick_peaks + 2, "visible peaks: {thick_peaks}, {thin_peaks}");
     }
 
     #[test]

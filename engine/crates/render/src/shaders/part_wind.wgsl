@@ -138,7 +138,7 @@ fn unload(age: f32) -> f32 {
     return arch * arch;
 }
 fn part_pressure(root: vec2<f32>, direction: vec2<f32>, phase: f32, strength: f32) -> vec4<f32> {
-    let gust = plant_gust(root, direction, phase, strength);
+    let gust = plant_gust(root, direction, phase, strength, true);
     let crosswind = vec2<f32>(-direction.y, direction.x);
     let along = phase - dot(root, direction) * (6.28318530718 / (120.0 * 12.0));
     let across = dot(root, crosswind);
@@ -148,8 +148,7 @@ fn part_pressure(root: vec2<f32>, direction: vec2<f32>, phase: f32, strength: f3
     let local = 0.19 * pressure;
     let eddy = 217.0 * along - 0.015 * across;
     var load = (0.78 + 0.10 * gust.storm_mix) * gust.load + pressure * (slow + fast) * crosswind;
-    load -= 0.42 * ((1.0 - gust.storm_mix) * unload(gust.breeze_age) * direction
-        + gust.storm_mix * unload(gust.storm_age) * gust.storm_release);
+    load -= 0.42 * (1.0 - gust.storm_mix) * unload(gust.breeze_age) * direction;
     return vec4<f32>(load, local * sin(eddy), local * cos(eddy));
 }
 fn complex_mul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
@@ -159,9 +158,8 @@ fn spring_kernel(angle: f32, harmonic: u32, phase: f32) -> vec4<f32> {
     let compliance = angle / (angle + 0.26);
     let identity = 0.65 * phase / 6.28318530718 + 0.35 * f32(harmonic % 17u) / 16.0;
     let omega = 6.28318530718 * (0.30 + 3.10 * compliance) * (0.86 + 0.28 * identity);
-    let damping = 0.36 - 0.19 * compliance;
-    let a = omega * damping;
-    let b = omega * sqrt(1.0 - damping * damping);
+    let a = min(max(3.75 - 4.8 * compliance, 1.20), 0.66 * omega);
+    let b = sqrt(omega * omega - a * a);
     let advance = exp(-a * PRESSURE_DT) * vec2<f32>(cos(b * PRESSURE_DT), sin(b * PRESSURE_DT));
     let integral = complex_mul(advance - vec2<f32>(1.0, 0.0), vec2<f32>(-a, -b)) / (omega * omega * PRESSURE_DT);
     return vec4<f32>(complex_mul(vec2<f32>(1.0, -a / b), integral), advance);
