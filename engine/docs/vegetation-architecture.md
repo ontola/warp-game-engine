@@ -749,20 +749,24 @@ The plant card baker preserves four area-weighted source normals across each pro
 
 ## G5 — Shared wind and animated shadow caching (NOT COMPLETE)
 
-Growth assemblies count the foliage supported by each fork. Their joint budget is shared
-between main boughs and finer laterals on those boughs. Every generated joint pivots
-at its own fork on the parent limb. Descendants without a separate joint follow their
-nearest selected ancestor. A limb's radius at its attachment determines its stiffness.
-The whole crown and the growth rig sample the same travelling gust at the planting.
-Above a wind strength of 0.65, the field blends in irregular gusts that travel at
-12 m/s. Their heading, peak load and duration vary, and some fronts have two
-crests. Trees continue to sway between fronts. The storm pattern repeats after
-32 minutes and can be sampled directly at any replay time.
-Each flexible joint filters four seconds of wind pressure as a damped spring.
-The tree shares the sampled pressure across its limbs. Stiff boughs bend through
-small angles and respond slowly. Fine laterals bend under light pressure and
-oscillate faster around their moving parents. Joint flexibility and a small
-variation from branch identity set the frequency. The growth root stays anchored.
+Growth assemblies count the living foliage supported by each fork. The joint
+budget covers the central leader, lateral boughs and smaller offshoots across
+the height of the crown. A fork is ranked at the height of its highest living
+shoot. The height bands become narrower near the tip. Each joint pivots at a
+growth point on its moving parent. A limb's radius at its attachment determines
+its stiffness. The upper leader uses its radius relative to the trunk base.
+
+The crown and its branch rig sample the same front as it travels through the
+planting at 12 m/s. At high wind strengths, successive surges have different
+arrival times, intensities and headings. The crown bends into the gust and
+swings back through equilibrium in a damped arc. Another surge can set it in
+motion again while it is still settling. The weather repeats after 32 minutes
+and can be sampled directly at any replay time.
+
+Each articulated joint receives the last four seconds of wind pressure at its
+root. Stiff boughs bend through small angles and their oscillations die away
+quickly. Thin twigs bend under light pressure, oscillate faster around their
+moving parents and take longer to settle. The growth root stays anchored.
 The pose is a function of world position and time, so seeking or switching detail
 levels preserves the phase. `PartWindRig::sample_driven_into`
 samples the equilibrium for comparisons at the same instant. Stem, bark relief
