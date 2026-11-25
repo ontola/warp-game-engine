@@ -190,6 +190,16 @@ pub fn stable_shadow_extent(required: f32, previous: f32) -> f32 {
     quantized_shadow_extent(required).max(quantized_shadow_extent(previous))
 }
 
+/// As `stable_shadow_extent`, for a reach the game or KERN_SHADOW_REACH set
+/// explicitly: no 96 m floor, only whole 16 m steps. A city on a tablet asks
+/// for 40 m and its near map covers the closest 24 m (round 34: the 96 m
+/// floor kept 2.4 M caster triangles in the shared map at any reach).
+pub fn stable_shadow_extent_set(required: f32, previous: f32) -> f32 {
+    let q = |e: f32| if e.is_finite() && e > 0.0 { (e.max(EXTENT_STEP) / EXTENT_STEP).ceil() * EXTENT_STEP } else { 0.0 };
+    let e = q(required).max(q(previous));
+    if e > 0.0 { e } else { MIN_EXTENT }
+}
+
 /// Scroll a volume in complete world cells. The cell centres at overlapping
 /// world positions then remain identical when the volume moves a whole cell.
 /// `desired` is its lower corner, not its centre; floor also handles negatives.

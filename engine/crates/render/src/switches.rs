@@ -156,6 +156,7 @@ pub const SUN_CLOSE: Switch = Switch::new("KERN_SUN_CLOSE");
 pub const SUN_DITHER_TEXEL: Switch = Switch::new("KERN_SUN_DITHER_TEXEL");
 pub const SUN_INSTANCE_GROUPS: Switch = Switch::new("KERN_SUN_INSTANCE_GROUPS");
 pub const SUN_LEVELS: Switch = Switch::new("KERN_SUN_LEVELS");
+pub const SUN_SKINNED_M: Switch = Switch::new("KERN_SUN_SKINNED_M");
 pub const SUN_RECEIVER_PLANE: Switch = Switch::new("KERN_SUN_RECEIVER_PLANE");
 pub const SUN_SCENE_DEPTH: Switch = Switch::new("KERN_SUN_SCENE_DEPTH");
 pub const SUN_STAGGER: Switch = Switch::new("KERN_SUN_STAGGER");
@@ -308,6 +309,7 @@ pub const ALL: &[&Switch] = &[
     &SSSR,
     &STARTUP_PROFILE,
     &STATIC_SUN_CACHE,
+    &SUN_SKINNED_M,
     &SUN_CACHE_GUARD_METRES,
     &SUN_CLIPMAP,
     &SUN_DAMAGE_REPORT,

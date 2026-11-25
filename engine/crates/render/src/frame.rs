@@ -370,8 +370,29 @@ fn cull_profile(scene:&crate::scene::Scene) {
     let members:u64=branches.iter().map(|b|b.0 as u64).sum();
     branches.sort_by(|a,b|b.0.cmp(&a.0));
     eprintln!("  virtual branch owners: {} with {members} templates; largest {:?}",branches.len(),&branches[..branches.len().min(12)]);
+    // Which meshes the scene's triangles come from: instances per mesh
+    // (by first cluster), finest-level triangles per instance.
+    let mut per:std::collections::HashMap<u32,(u32,u64,u64,f32,u32)>=Default::default();
+    for i in &scene.instances {
+        if i.cluster_count==0 {continue;}
+        let cl=&scene.clusters[i.first_cluster as usize..(i.first_cluster+i.cluster_count) as usize];
+        let leaf:u64=cl.iter().filter(|c|c.own_error<=0.0).map(|c|c.tri_count as u64).sum();
+        let all:u64=cl.iter().map(|c|c.tri_count as u64).sum();
+        let e=per.entry(i.first_cluster).or_insert((0,leaf,all,i.sphere[3],i.flags));e.0+=1;
+    }
+    let mut per:Vec<_>=per.into_iter().collect();
+    per.sort_by_key(|(_,(n,leaf,_,_,_))|std::cmp::Reverse(*n as u64* *leaf));
+    for (first,(n,leaf,all,r,f)) in per.iter().take(25) {eprintln!("  mesh@{first}: {n} instances x {leaf} finest tris ({all} all levels), radius {r:.1}, flags {f:#x}");}
     sizes.sort_by(|a,b|b.0.cmp(&a.0));
     for (c,k,f) in sizes.iter().take(12) {let i=&scene.instances[*k];eprintln!("  owner {k}: {c} clusters, first {}, flags {f:#x}, radius {:.1}",i.first_cluster,i.sphere[3]);}
+}
+
+/// Metres from a camera within which skinned bodies cast into the shared
+/// sun map (`KERN_SUN_SKINNED_M`; 0 = everywhere). Android: 24, the near map.
+fn sun_skinned_metres() -> Option<f32> {
+    static M: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *M.get_or_init(|| crate::switches::SUN_SKINNED_M.parse::<f32>()
+        .or(cfg!(target_os = "android").then_some(24.0)).filter(|m| *m > 0.0))
 }
 
 fn split_cull_timing() -> bool {
@@ -5126,7 +5147,9 @@ impl Renderer {
         let required_extent = if self.sun_cache_guard_m>0.0 {
             (reach+spread+self.sun_cache_guard_m)/crate::static_sun::FULL_COVERAGE_NDC
         } else {reach+spread};
-        let extent = crate::stability::stable_shadow_extent(required_extent, *previous_extent);
+        let explicit = crate::switches::SHADOW_REACH.parse::<f32>().is_some() || set_reach>0.0;
+        let extent = if explicit {crate::stability::stable_shadow_extent_set(required_extent, *previous_extent)}
+            else {crate::stability::stable_shadow_extent(required_extent, *previous_extent)};
         *previous_extent = extent;
         drop(previous_extent);
         let texel = 2.0 * extent / SHADOW_SIZE as f32;
@@ -5366,6 +5389,17 @@ impl Renderer {
                 shadow_uniform.lod_cams[k] = [v.cam.pos.x, v.cam.pos.y, v.cam.pos.z, angle];
             }
             shadow_uniform.lod = [views.len().min(4) as f32, factor * SHADOW_SIZE as f32 / (2.0 * extent), 0.0, 0.0];
+        }
+        // Skinned bodies cast into the shared map only near a camera
+        // (KERN_SUN_SKINNED_M, default 24 m on Android, off elsewhere; the
+        // static sun cache needs camera-independent depth, so not with it).
+        if let Some(metres) = sun_skinned_metres().filter(|_| static_sun.is_none()) {
+            for (k, v) in views.iter().take(4).enumerate() {
+                let angle = shadow_uniform.lod_cams[k][3];
+                shadow_uniform.lod_cams[k] = [v.cam.pos.x, v.cam.pos.y, v.cam.pos.z, angle];
+            }
+            shadow_uniform.lod[2] = metres;
+            shadow_uniform.lod[3] = views.len().min(4) as f32;
         }
         shadow_uniform.fog_cull[3]=if self.sun_surface_source{1.0}else{0.0};
         // Positive extra.z is the camera material mip-gradient scale.

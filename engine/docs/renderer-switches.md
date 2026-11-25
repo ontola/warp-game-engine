@@ -80,7 +80,8 @@ Use these to compare against the old path. All of them are the normal route.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `KERN_SHADOW_REACH` | 180 | Metres of dynamic sun shadow. |
+| `KERN_SHADOW_REACH` | 180 | Metres of dynamic sun shadow. Without it the shared map covers at least 96 m each way; a reach set here or by the game drops that floor (16 m steps). |
+| `KERN_SUN_SKINNED_M` | 24 on Android, off elsewhere | Skinned bodies cast into the shared sun map only within this many metres of a camera (the near map still has them). A Warp Human is ~40k triangles with no coarser level: in Warp Theft Auto on a Tab S9+ they were 2.3 M of 2.5 M sun triangles. Phones also fit only a quarter of each human pool's optional slots (`humans::PHONE_SHARE`). |
 | `KERN_CLUSTERED_SHADOW_LAYERS` | 4 | 1024-texel layers of 256-texel shadow tiles for clustered lights (16 tiles, 4 MiB each; at most 16). A point light takes 6 tiles, a spot 1. |
 | `KERN_CLUSTERED_SHADOW_FACES` | 12 | Clustered shadow tiles redrawn per frame at most (moved lights first, then the oldest). |
 | `KERN_NEAR_SHADOW_LOD` | 1.0 | Scale on near shadow cluster error. |

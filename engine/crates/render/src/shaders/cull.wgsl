@@ -267,6 +267,18 @@ fn projected(err: f32, c: vec3<f32>, r: f32) -> f32 {
     return err / d * view.cam.w;
 }
 
+// Shared sun map (lod.z > 0, KERN_SUN_SKINNED_M): a skinned body casts there
+// only within lod.z metres of a camera (lod_cams, lod.w of them). A Warp
+// Human is ~40k triangles with no coarser level; further away the near map
+// still has it (phones: 58 pedestrians were 2.3 M sun triangles, 78 ms).
+fn far_skinned_caster(inst: Instance) -> bool {
+    if view.lod.z <= 0.0 || (inst.flags & 64u) == 0u { return false; }
+    for (var k = 0u; k < u32(view.lod.w); k++) {
+        if distance(inst.sphere.xyz, view.lod_cams[k].xyz) < view.lod.z + inst.sphere.w { return false; }
+    }
+    return true;
+}
+
 // The optional one-thread-per-owner broadphase uses exactly the same policy
 // as the legacy workgroup path: 0 rejected, 1 candidate, 2 early grass reject.
 fn instance_policy(id: u32, inst: Instance) -> u32 {
@@ -344,6 +356,7 @@ fn instance_policy(id: u32, inst: Instance) -> u32 {
     if (view.params.z > 0.5 || view.extra.y > 1.5) && (inst.flags & 4u) != 0u {
         return 0u;
     }
+    if far_skinned_caster(inst) { return 0u; }
     // Exactly the same root, camera and opacity decision as raster.vs.
     // Transition grass still renders in its own pass; no geometry is removed
     // from that pass and no threshold, alpha or source plant is changed.
@@ -916,6 +929,7 @@ fn cull_simple(@builtin(global_invocation_id) gid:vec3<u32>) {
     if inst.cluster_count==0u || inst.sphere.w<0.0 {return;}
     let shadow=view.params.z>0.5 || view.extra.y>1.5;
     if shadow && (inst.flags&4u)!=0u {return;}
+    if far_skinned_caster(inst) {return;}
     if !shadow && view.grass.z>0.5 && ((inst.flags>>8u)&(1u<<(u32(view.grass.z)-1u)))!=0u {return;}
     if !in_frustum(inst.sphere.xyz,inst.sphere.w) || hidden_by_camera_fog(inst.sphere.xyz,inst.sphere.w) {return;}
     let threshold=select(view.params.x,0.0,(inst.flags&2u)!=0u);

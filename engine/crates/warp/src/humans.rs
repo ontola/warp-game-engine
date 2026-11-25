@@ -21,6 +21,9 @@ use std::collections::BTreeMap;
 use std::f32::consts::{PI, TAU};
 use std::sync::OnceLock;
 
+/// Share (per mille) of each pool's optional slots on phones; see `attach`.
+pub const PHONE_SHARE: usize = 250;
+
 /// The most different people a pool fits in a browser.
 const BROWSER_VARIETY: usize = 2;
 
@@ -665,7 +668,13 @@ impl Humans {
             slots <= actors_free && size <= bytes_free
         };
         if !fits(0) { return Err("the device cannot fit the reserved Warp Human slots".into()); }
-        let mut share = 1000;
+        // Phones and tablets keep a quarter of each pool's optional slots: a
+        // Warp Human is ~40k triangles with no coarser level, drawn into
+        // every sun map, and skinned every frame (Warp Theft Auto on a Tab
+        // S9+, 25 November: 58 actors were 2.3 M of the sun map's 2.5 M
+        // triangles, 78 ms, plus 9.6 ms skinning). The cheap street
+        // silhouettes (`distant`) fill the crowd as before.
+        let mut share = if crate::phone() { PHONE_SHARE } else { 1000 };
         if !fits(share) {
             let (mut lo, mut hi) = (0, share);
             while hi - lo > 1 {
