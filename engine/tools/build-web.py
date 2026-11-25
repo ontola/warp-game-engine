@@ -235,9 +235,9 @@ def copy_games(names):
         lo, hi = players.get('min', 1), players.get('max', 4)
         library.append({'id': meta.get('id', name), 'folder': name, 'title': meta.get('title', name), 'tagline': meta.get('tagline', ''),
                          'players': f'{lo}-{hi}' if lo != hi else str(lo), 'min_players': lo, 'max_players': hi, 'has_cover': cover.exists(), 'has_screenshot': shot.exists(),
-                         # Keyboard and mouse play the game declares (players.keyboard): the host
+                         # Keyboard play (players.keyboard) and keyboard+mouse play (players.mouse) the game declares: the host
                          # tells a keyboard player when a game is made for controllers.
-                         'keyboard': players.get('keyboard') is True,
+                         'keyboard': players.get('keyboard') is True, 'mouse': players.get('mouse') is True,
                          # Bots the game brings itself (game.toml): they fill seats people leave empty.
                          'bots': tomllib.loads((src / 'game.toml').read_text()).get('bots', 0) if (src / 'game.toml').exists() else 0})
     for name, game in ({} if args.luau_only else RUST_GAMES).items():
@@ -262,7 +262,7 @@ def copy_games(names):
         lo, hi = players.get('min', 1), players.get('max', 4)
         library.append({'id': meta.get('id', name), 'folder': name, 'title': meta.get('title', name), 'tagline': meta.get('tagline', ''),
                          'players': f'{lo}-{hi}' if lo != hi else str(lo), 'min_players': lo, 'max_players': hi, 'has_cover': cover.exists(), 'has_screenshot': shot.exists(), 'bots': 0, 'builtin': True,
-                         'keyboard': players.get('keyboard') is True})
+                         'keyboard': players.get('keyboard') is True, 'mouse': players.get('mouse') is True})
     for meta, relative, cover in browser_games:
         game_id = meta['id']
         if any(g['id'] == game_id or g['folder'] == game_id for g in library):
@@ -276,7 +276,7 @@ def copy_games(names):
         lo, hi = meta['players']['min'], meta['players']['max']
         library.append({'id': game_id, 'folder': game_id, 'title': meta['title'], 'tagline': meta.get('tagline', ''),
                         'players': f'{lo}-{hi}' if lo != hi else str(lo), 'min_players': lo, 'max_players': hi,
-                        'has_cover': bool(cover), 'bots': 0, 'web_entry': relative, 'keyboard': meta['players'].get('keyboard') is True})
+                        'has_cover': bool(cover), 'bots': 0, 'web_entry': relative, 'keyboard': meta['players'].get('keyboard') is True, 'mouse': meta['players'].get('mouse') is True})
         names.append(game_id)
     if args.production_shelf:
         extra = [g for g in library if g.get('web_entry') and g['id'] in ('ballkickers', 'frog-fighter')]

@@ -522,11 +522,12 @@ pub(crate) mod page {
         }
     }
 
-    /// Whether `game` declares keyboard and mouse play: its catalog entry's
-    /// `players.keyboard` (gamenight.json; build-web.py copies it into
-    /// library.json as `keyboard`). Not declared: made for controllers.
+    /// Whether `game` declares keyboard play: its catalog entry's
+    /// `players.keyboard` (playable on keys) or `players.mouse` (made for
+    /// keyboard and mouse); gamenight.json, copied into library.json by
+    /// build-web.py. Neither: made for controllers.
     fn plays_on_keyboard(party: &Value, game: &str) -> bool {
-        game_meta(party, game).is_some_and(|g| g["keyboard"] == true)
+        game_meta(party, game).is_some_and(|g| g["keyboard"] == true || g["mouse"] == true)
     }
 
     /// `who` plays on the keyboard in `game` (it started so, or the
