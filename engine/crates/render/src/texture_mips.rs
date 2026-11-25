@@ -1,5 +1,5 @@
 //! Existing image processing, unchanged; shared by cache misses and CPU parity tests.
-use super::cutout_mips;
+use crate::cutout_mips;
 use crate::texture_cache::Settings;
 pub(crate) fn build(src:Option<&image::RgbaImage>, settings:Settings, enabled:bool, layer:usize)
     -> (Vec<image::RgbaImage>,crate::startup_profile::TextureLayerProfile) {

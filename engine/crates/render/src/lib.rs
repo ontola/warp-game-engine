@@ -14,6 +14,7 @@ pub mod par;
 pub mod files;
 pub mod dents;
 pub mod material_maps;
+pub mod cutout_mips;
 pub mod dfao;
 pub mod frame;
 pub mod static_sun;

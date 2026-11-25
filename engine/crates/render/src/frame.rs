@@ -9,9 +9,6 @@ use glam::{Mat4, Vec3, Vec4};
 use std::f32::consts::PI;
 use wgpu::util::DeviceExt;
 
-#[path = "cutout_mips.rs"]
-mod cutout_mips;
-
 #[path = "resource_cache.rs"]
 pub(crate) mod resource_cache;
 pub use resource_cache::CacheStats as ResourceCacheStats;

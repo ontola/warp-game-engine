@@ -41,6 +41,14 @@ pub(super) fn correct_rgb(source: &RgbaImage, chain: &mut [RgbaImage]) {
     }
 }
 
+/// Carry the nearest covered RGB into the transparent texels of one atlas chart.
+/// Alpha and covered texels are preserved. Apply before packing the chart so a
+/// neighbouring material cannot colour its edges during ordinary mip filtering.
+pub fn pad_chart_colour(chart: &mut RgbaImage) {
+    let mut valid: Vec<_> = chart.pixels().map(|p| p[3] > 0).collect();
+    extend_edge_colour(chart, &mut valid);
+}
+
 /// Deterministic nearest Manhattan-neighbour extension, bounded O(texels).
 /// Alpha and the weighted source for subsequent mips are never modified.
 fn extend_edge_colour(image: &mut RgbaImage, valid: &mut [bool]) {
@@ -81,6 +89,20 @@ fn extend_edge_colour(image: &mut RgbaImage, valid: &mut [bool]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn baked_chart_extends_the_nearest_covered_colour_without_changing_coverage() {
+        let mut chart = RgbaImage::from_fn(4, 1, |x, _| Rgba(match x {
+            0 => [32, 95, 49, 91],
+            3 => [118, 69, 44, 255],
+            _ => [0; 4],
+        }));
+        pad_chart_colour(&mut chart);
+        assert_eq!(chart.get_pixel(0, 0).0, [32, 95, 49, 91]);
+        assert_eq!(chart.get_pixel(1, 0).0, [32, 95, 49, 0]);
+        assert_eq!(chart.get_pixel(2, 0).0, [118, 69, 44, 0]);
+        assert_eq!(chart.get_pixel(3, 0).0, [118, 69, 44, 255]);
+    }
 
     #[test]
     fn opaque_average_preserves_linear_light_energy() {

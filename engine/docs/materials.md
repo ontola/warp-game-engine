@@ -19,6 +19,8 @@ The glTF material boolean `extras.warpThinFoliage` enables reflected and transmi
 
 A material using `render::scene::BARK_LAYER` sets the plate size in metres with `scale`. Warp samples grain and relief on the undeformed mesh. The planting transform supplies its scale, using the geometric mean for unequal axes. The branch and wind transforms carry relief normals with the wood.
 
+When baking masked foliage into an atlas, call `render::cutout_mips::pad_chart_colour` on each chart, including its gutter, before packing. It copies the nearest covered colour into transparent texels and preserves the alpha mask. This keeps ordinary texture minification from mixing the empty background into distant leaves.
+
 ## Material maps
 
 Each texture layer can carry a material map (`TextureSource::orm`) in glTF's
