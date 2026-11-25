@@ -303,3 +303,32 @@ host. Numbers are referenced from the thread; nothing below is fixed yet.
 14. **The story editor** (`stories/editor.css`, F2) has its own teal
     palette and 4 px radii. It is a dev tool; leave it, or move it to the
     tokens when it ships to players.
+
+### The app (Flutter, `gamepad-party/mobile`)
+
+Checked 2026-11-25 on the live web build (splitscreen.club/app, phone
+390 px and desktop 1280 px: Room, Games, game page, You, Host a room,
+More). The app is the most consistent surface: same `bg`, Outfit, the
+wordmark, one card style. Where it differs from this guide:
+
+15. **Primary violet is darker.** Buttons and the selected tab use
+    `#5143ae`, `accent` is `#7565ee`; the TV side selects with `#7c5cff`.
+    → `GnColors.button` and `accent` to `violet`, keep white text
+    (contrast still above 4.5 : 1).
+16. **The More sheet is Material grey** (the default bottom sheet colour
+    from the seed), not the navy card colour: it is the one screen that
+    looks like another app. → `bottomSheetTheme` with `GnColors.card`,
+    top radius 18, the `line` edge.
+17. **Nine radii** (4, 6, 8, 9, 10, 12, 14, 16, 18, 20). → 8 for chips,
+    12 for buttons, inputs and cover cards, 18 for cards and sheets.
+18. **One card has a coloured border** ("Save your player" on You is
+    framed in violet, every other card in `#343b53`). → same edge as the
+    others; the emphasis goes in its title or its button.
+19. **Card edges are `#343b53`**, the TV side uses white at 10 %. Both
+    read the same on `bg`; the app keeps its opaque colour (no blur on
+    phones), CSS and HUD use `line`.
+20. **Game text in store screenshots spells buttons as words**
+    ("A / Space · Plant bomb", Bombing Bugs). That is the game's own HUD:
+    see [Rules for games](#rules-for-games), glyphs.
+21. **Game card blurbs cut mid-word** ("dash tackl…") on the phone grid.
+    → two lines, cut at a word, or the catalog's short tagline.
