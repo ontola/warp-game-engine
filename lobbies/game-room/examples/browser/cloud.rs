@@ -36,6 +36,10 @@ pub(crate) struct Cloud {
 }
 
 impl Cloud {
+    /// The cloud room's code (empty until registered): also the room other
+    /// couches follow this page's games in (online.rs).
+    pub(crate) fn room_code(&self) -> &str { &self.room_code }
+
     /// A seat for a player who joined with a pad.
     pub(crate) fn add_seat(&mut self) {
         self.seats.push(json!({"index": self.seats.len(), "player": random_hex(16), "revision": 1}));

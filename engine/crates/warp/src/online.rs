@@ -54,6 +54,9 @@ pub enum Up {
     Screen([u32; 2]),
     /// Round-trip measurement: echoed back as `Down::Pong`.
     Ping(u64),
+    /// For the page around the game (the Game Room's online couches, JSON):
+    /// passed to [`Shared`] and never to a game.
+    Lobby(String),
 }
 
 /// Host to follower.
@@ -66,6 +69,8 @@ pub enum Down {
     Pong(u64),
     /// The host refused or ended this couch.
     Bye(String),
+    /// For the page around the game, as [`Up::Lobby`].
+    Lobby(String),
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -355,6 +360,104 @@ pub enum Got { Msg(Down), Empty, Closed }
 pub trait FollowLink {
     fn send(&mut self, msg: Up);
     fn poll(&mut self) -> Got;
+}
+
+/// One connection for a whole page: the Game Room talks over it
+/// ([`Up::Lobby`], [`Down::Lobby`]) and hands each online game a
+/// [`Shared::host_side`] or [`Shared::follow_side`], so the couches stay
+/// connected between games. Lobby messages never reach a game, and game
+/// messages that arrive while no game holds a side are dropped.
+pub struct Shared<L: ?Sized>(std::rc::Rc<std::cell::RefCell<SharedState<L>>>);
+
+pub struct SharedState<L: ?Sized> {
+    /// The couches connected (host side), in the order they came.
+    pub clients: Vec<u64>,
+    /// Couches that left since the page last asked (host side).
+    pub gone: Vec<u64>,
+    pub lobby: std::collections::VecDeque<(u64, String)>,
+    game: std::collections::VecDeque<SharedMsg>,
+    in_game: bool,
+    closed: bool,
+    link: Box<L>,
+}
+
+enum SharedMsg { Host(LinkEvent), Follow(Down) }
+
+impl<L: ?Sized> Clone for Shared<L> { fn clone(&self) -> Self { Shared(self.0.clone()) } }
+
+impl<L: ?Sized> Shared<L> {
+    pub fn new(link: Box<L>) -> Self {
+        Shared(std::rc::Rc::new(std::cell::RefCell::new(SharedState { clients: Vec::new(), gone: Vec::new(), lobby: Default::default(), game: Default::default(), in_game: false, closed: false, link })))
+    }
+    pub fn state(&self) -> std::cell::RefMut<'_, SharedState<L>> { self.0.borrow_mut() }
+    /// Whether the game holding a side is on screen (false: paused or gone;
+    /// its messages are dropped meanwhile).
+    pub fn set_in_game(&self, on: bool) { let mut s = self.0.borrow_mut(); s.in_game = on; s.game.clear(); }
+}
+
+impl Shared<dyn HostLink> {
+    fn pump(s: &mut SharedState<dyn HostLink>) {
+        while let Some(ev) = s.link.poll() {
+            match ev {
+                LinkEvent::Joined(c) => { if !s.clients.contains(&c) { s.clients.push(c); } if s.in_game { s.game.push_back(SharedMsg::Host(ev)); } }
+                LinkEvent::Left(c) => { s.clients.retain(|x| *x != c); s.gone.push(c); if s.in_game { s.game.push_back(SharedMsg::Host(ev)); } }
+                LinkEvent::Message(c, Up::Lobby(text)) => s.lobby.push_back((c, text)),
+                other => if s.in_game { s.game.push_back(SharedMsg::Host(other)); },
+            }
+        }
+    }
+    /// The page's messages from couches, and who joined and left.
+    pub fn poll_lobby(&self) -> Vec<(u64, String)> { let mut s = self.0.borrow_mut(); Self::pump(&mut s); s.lobby.drain(..).collect() }
+    pub fn send(&self, client: u64, msg: Down) -> bool { self.0.borrow_mut().link.send(client, msg) }
+    pub fn ticket(&self) -> String { self.0.borrow().link.ticket() }
+    /// The link for a game this page hosts.
+    pub fn host_side(&self) -> Box<dyn HostLink> { { let mut s = self.0.borrow_mut(); s.in_game = true; s.game.clear(); } Box::new(self.clone()) }
+}
+
+impl HostLink for Shared<dyn HostLink> {
+    fn poll(&mut self) -> Option<LinkEvent> {
+        let mut s = self.0.borrow_mut();
+        Self::pump(&mut s);
+        loop {
+            match s.game.pop_front()? { SharedMsg::Host(ev) => return Some(ev), SharedMsg::Follow(_) => {} }
+        }
+    }
+    fn send(&mut self, client: u64, msg: Down) -> bool { self.0.borrow_mut().link.send(client, msg) }
+    fn ticket(&self) -> String { self.0.borrow().link.ticket() }
+}
+
+impl Shared<dyn FollowLink> {
+    fn pump(s: &mut SharedState<dyn FollowLink>) {
+        loop {
+            match s.link.poll() {
+                Got::Msg(Down::Lobby(text)) => s.lobby.push_back((0, text)),
+                Got::Msg(m) => if s.in_game { s.game.push_back(SharedMsg::Follow(m)); },
+                Got::Empty => break,
+                Got::Closed => { s.closed = true; break; }
+            }
+        }
+    }
+    pub fn poll_lobby(&self) -> Vec<(u64, String)> { let mut s = self.0.borrow_mut(); Self::pump(&mut s); s.lobby.drain(..).collect() }
+    pub fn send(&self, msg: Up) { self.0.borrow_mut().link.send(msg) }
+    /// The host is gone (or never answered).
+    pub fn closed(&self) -> bool { self.0.borrow().closed }
+    /// The link for a game this page follows.
+    pub fn follow_side(&self) -> Box<dyn FollowLink> { { let mut s = self.0.borrow_mut(); s.in_game = true; s.game.clear(); } Box::new(self.clone()) }
+}
+
+impl FollowLink for Shared<dyn FollowLink> {
+    fn send(&mut self, msg: Up) { self.0.borrow_mut().link.send(msg) }
+    fn poll(&mut self) -> Got {
+        let mut s = self.0.borrow_mut();
+        Self::pump(&mut s);
+        loop {
+            match s.game.pop_front() {
+                Some(SharedMsg::Follow(m)) => return Got::Msg(m),
+                Some(SharedMsg::Host(_)) => {}
+                None => return if s.closed { Got::Closed } else { Got::Empty },
+            }
+        }
+    }
 }
 
 /// A follower couch, as the host sees it.

@@ -81,7 +81,14 @@ impl LuaGame {
                 LinkEvent::Joined(_) => {}
                 LinkEvent::Message(client, msg) => match msg {
                     Up::Hello { people, screen, game } => {
-                        if !h.remotes.contains_key(&client) && !joined.iter().any(|j| j.0 == client) { joined.push((client, people, screen, game)); }
+                        // Seated already (the game was paused, or the couch
+                        // came back to it): welcome it again from nothing.
+                        if let Some(r) = h.remotes.get_mut(&client) {
+                            r.base = Default::default();
+                            r.screen = screen;
+                            let players = r.players.clone();
+                            h.link.send(client, Down::Welcome { players, tick_rate: self.cfg.tick_rate });
+                        } else if !joined.iter().any(|j| j.0 == client) { joined.push((client, people, screen, game)); }
                     }
                     Up::Pads(pads) => if let Some(r) = h.remotes.get_mut(&client) {
                         for (i, p) in pads.iter().enumerate() { if let Some(acc) = r.pressed.get_mut(i) { *acc |= p.pressed; } }
@@ -89,6 +96,7 @@ impl LuaGame {
                     },
                     Up::Screen(s) => if let Some(r) = h.remotes.get_mut(&client) { r.screen = s; },
                     Up::Ping(t) => if h.remotes.contains_key(&client) { h.link.send(client, Down::Pong(t)); },
+                    Up::Lobby(_) => {}
                 },
                 LinkEvent::Left(client) => { if h.remotes.remove(&client).is_some() { left.push(client); } }
             }
@@ -177,7 +185,7 @@ impl LuaGame {
     /// Host, after a tick: each follower gets the changes, its cameras, the
     /// HUD drawn for its screen and the sounds played.
     pub(super) fn online_send(&mut self) {
-        let Online::Host(h) = &mut self.online else { return };
+        if !matches!(self.online, Online::Host(_)) { return }
         if !self.core().tick.is_multiple_of(online::send_every(self.cfg.tick_rate)) { return; }
         let Online::Host(h) = &mut self.online else { return };
         let clients: Vec<(u64, [u32; 2])> = h.remotes.iter().map(|(k, r)| (*k, r.screen)).collect();
@@ -269,6 +277,7 @@ impl LuaGame {
                     Down::Bye(why) => { lines.push(format!("online: the host said {why}")); f.closed = Some(why); }
                     Down::Pong(t) => { f.rtt_ms = Some((f.now_us().saturating_sub(t)) as f64 / 1000.0); }
                     Down::Frame(fr) => { f.meter.add(online::wire_size(&fr)); f.queue.push_back(fr); }
+                    Down::Lobby(_) => {}
                 }
             }
             // One frame a tick; catch up when more than a few are waiting.

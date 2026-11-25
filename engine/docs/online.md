@@ -31,9 +31,17 @@ connected, the long random code is the key).
 /play/?game=neon-siege&follow=ROOM     # another couch
 ```
 
-The Game Room build and the bare build both take these
-(`online_web::from_page`); in the Game Room only the `?game=` game goes
-online, once a page, and the next game in the queue plays locally.
+That is the bare build (`online_web::from_page`). The Game Room build
+(Splitscreen Club at `/play/`) needs no parameter: **every Luau game it
+starts is online**, under the room's own code (signal room `club-CODE`).
+The room's QR code and join link stay the one way in: on a computer that
+can host (WebGPU, a mouse, no touch screen) `/join?room=CODE` opens
+`/play/?follow=CODE`, which follows whatever the host plays, the next game
+too; a phone joins as a controller as before, and a follow page whose room
+plays nothing online goes on to `/app/?room=CODE`. One WebRTC link lasts
+the page (`online::Shared`, `Up::Lobby`/`Down::Lobby` for the page's own
+messages); `?online=off` keeps a page local. Code:
+`lobbies/game-room/examples/browser/online.rs`.
 
 `?signal=wss://HOST` points at another signaling server (default: the
 page's origin) and `?ice=stun:...,turn:...` sets the ICE servers (default

@@ -25,6 +25,8 @@
 mod builtin;
 #[cfg(target_arch = "wasm32")]
 mod html_game;
+#[cfg(target_arch = "wasm32")]
+mod online;
 #[cfg(any(target_arch = "wasm32", target_os = "android"))]
 mod cloud;
 
@@ -781,7 +783,12 @@ pub(crate) mod page {
                 None => {}
             }
             self.lobby.tick(controls);
-            for msg in self.lobby.outbox.as_mut().map(std::mem::take).unwrap_or_default() { self.command(&msg); }
+            for msg in self.lobby.outbox.as_mut().map(std::mem::take).unwrap_or_default() {
+                // Following another couch: its host picks the games.
+                #[cfg(target_arch = "wasm32")]
+                if super::online::following() && matches!(msg["type"].as_str(), Some("next" | "previous" | "close_overlay")) { continue; }
+                self.command(&msg);
+            }
         }
         fn pointer(&mut self, pointer: app::Pointer, size: [u32; 2]) { self.lobby.pointer(pointer, size); }
         // The cursor points and clicks in the room: never captured.
@@ -839,7 +846,12 @@ pub(crate) mod page {
             return empty_room(true);
         }
         // Not a game for fewer people than it needs (Relay Keepers with one).
-        if let Some(need) = with(|h| (!fits(&h.party, &game, h.players)).then(|| min_players(&h.party, &game))) {
+        // (Following another couch: its host counts everyone's people.)
+        #[cfg(target_arch = "wasm32")]
+        let following = super::online::following();
+        #[cfg(not(target_arch = "wasm32"))]
+        let following = false;
+        if let Some(need) = with(|h| (!following && !fits(&h.party, &game, h.players)).then(|| min_players(&h.party, &game))) {
             app::web::log(&format!("{game}: needs {need} players; press a button on another controller to join"));
             return;
         }
@@ -862,19 +874,26 @@ pub(crate) mod page {
         app::web::progress(Some(0.05), &format!("Loading {}", with(|h| title(&h.party, &game))));
         app::web::spawn(async move {
             let t0 = web_time::Instant::now();
+            // Not a Luau game (HTML, a built-in Rust game): it stays on this couch.
+            let local = || {
+                #[cfg(target_arch = "wasm32")]
+                super::online::local_game();
+            };
             #[cfg(target_arch = "wasm32")]
             let html = entry.map(|entry| super::html_game::HtmlGame::load(entry, with(|h| title(&h.party, &game)), players));
             #[cfg(not(target_arch = "wasm32"))]
             let html = { let _ = entry; None };
-            let loaded = if let Some(html) = html { Ok(html) } else { match super::builtin::load(&folder, players).await {
-                Some(l) => l,
-                // `?host=1` / `?follow=ROOM`: online couches (engine/docs/online.md).
-                None => warp::web::load(&folder, Some(players)).await.and_then(|(mut c, mut g)| {
+            let loaded = if let Some(html) = html { local(); Ok(html) } else { match super::builtin::load(&folder, players).await {
+                Some(l) => { local(); l }
+                // Online for other couches, or following another couch's
+                // game (online.rs, engine/docs/online.md).
+                None => warp::web::load(&folder, Some(players)).await.map(|(mut c, mut g)| {
                     #[cfg(target_arch = "wasm32")]
-                    warp::online_web::from_page(&folder, &mut c, &mut g)?;
-                    Ok((c, Box::new(g) as Box<dyn Game>))
+                    super::online::loaded(&folder, &with(|h| h.cloud.room_code().to_string()), &mut c, &mut g);
+                    (c, Box::new(g) as Box<dyn Game>)
                 }),
             } };
+
             // Its first frame compiles and uploads the scene, which can take
             // seconds on a tablet: the bar says so before that frame, and the
             // room draws it once (a frame or two) before the switch.
@@ -1040,6 +1059,8 @@ pub(crate) mod page {
                 super::html_game::show_again(session);
             }
             app::web::resume(paused, Some(Box::new(|p| with(|h| h.room = Some(p)))));
+            #[cfg(target_arch = "wasm32")]
+            super::online::on_screen(true);
             warp::web::hush(Some(false));
             h.on_screen = Some(game.clone()); app::web::set_in_game(true);
             set_session(h, Some(&game), "running");
@@ -1081,6 +1102,8 @@ pub(crate) mod page {
             let Some(room) = h.room.take() else { return false };
             let game = h.on_screen.take().unwrap_or_default();
             app::web::set_in_game(false);
+            #[cfg(target_arch = "wasm32")]
+            super::online::on_screen(false);
             if why != app::web::Exit::Quit {
                 // Back + RB / LB in the game: straight on to another game
                 // (the room plays the chord on its next tick).
@@ -1240,7 +1263,13 @@ pub(crate) mod page {
         app::web::on_devices(|d| with(|h| devices(h, d)));
         app::web::run(room_config(), Box::new(Room { lobby }));
         super::cloud::start(players);
-        if let Some(game) = warp::web::param("game") { start(game); }
+        #[cfg(target_arch = "wasm32")]
+        super::online::start();
+        #[cfg(target_arch = "wasm32")]
+        let following = super::online::following();
+        #[cfg(not(target_arch = "wasm32"))]
+        let following = false;
+        if let Some(game) = warp::web::param("game").filter(|_| !following) { start(game); }
         Ok(())
     }
 
