@@ -65,7 +65,7 @@ pub fn to_screen(view_proj: Mat4, size: [u32; 2], p: Vec3) -> Option<[f32; 2]> {
 /// Where the mouse's Start menu stands: the middle of the screen.
 fn mouse_menu_at(size: [u32; 2]) -> ([f32; 2], f32) {
     let scale = size[1] as f32 / 1080.0;
-    ([size[0] as f32 / 2.0, size[1] as f32 * 0.62], (26.0 * scale).floor())
+    ([size[0] as f32 / 2.0, size[1] as f32 * 0.62], (20.0 * scale).floor())
 }
 
 /// The mouse menu's item rows on screen, for pointing at them.
@@ -120,7 +120,7 @@ pub fn draw(lobby: &Lobby, size: [u32; 2], _alpha: f32) -> HudDrawList {
     let mut corner = 0;
     for p in &lobby.world.players {
         if !lobby.menus.contains_key(&p.id) { continue; }
-        let fs = (22.0 * scale).floor();
+        let fs = (20.0 * scale).floor();
         let at = if lobby.catalog_open() {
             // Over the catalog the players aren't seen: menus go to the
             // corners, clear of the covers' middle (bottom left first).
@@ -249,7 +249,7 @@ const MOUSE_HEADING: &str = "KEYBOARD & MOUSE";
 fn menu_layout(lobby: &Lobby, id: &str, at: [f32; 2], fs: f32, size: [u32; 2]) -> Option<([f32; 4], Vec<[f32; 4]>)> {
     lobby.menus.get(id)?;
     let items = lobby.menu_items(id);
-    let line = fs + 16.0;
+    let (line, inset) = menu_spacing(fs);
     let block = fs * 0.5;
     let gap = fs * 0.22;
     let row = block + 12.0;
@@ -259,18 +259,19 @@ fn menu_layout(lobby: &Lobby, id: &str, at: [f32; 2], fs: f32, size: [u32; 2]) -
         mw = mw.max(width(&item.label, fs));
         if item.action == "couch" { mw = mw.max(lobby.profiles.len() as f32 * (block + gap) - gap); extra += row; }
     }
-    mw += 80.0;
+    // The label's inset on both sides, plus room to breathe.
+    mw += 2.0 * (inset + menu_text_x(fs)) + fs;
     // The keyboard and mouse menu says what it is and how to leave it.
-    if id == crate::mouse::MOUSE { mw = mw.max(width(MOUSE_HEADING, (fs * 0.7).floor()) + 48.0); }
+    if id == crate::mouse::MOUSE { mw = mw.max(width(MOUSE_HEADING, (fs * 0.7).floor()) + 2.0 * (menu_spacing(fs).1 + menu_text_x(fs))); }
     // 12 under the last row, as at its sides (rows are `line - 4` tall).
-    let mh = line * items.len() as f32 + extra + menu_head(fs) + 8.0;
+    let mh = line * items.len() as f32 + extra + menu_head(fs) + inset;
     let x = (at[0] - mw / 2.0).clamp(16.0, (size[0] as f32 - mw - 16.0).max(16.0));
     let y0 = (at[1] - mh).max(16.0);
     let mut rows = vec![];
     let mut y = y0 + menu_head(fs);
     for item in &items {
         let couch = if item.action == "couch" { row } else { 0.0 };
-        rows.push([x + 12.0, y, mw - 24.0, line - 4.0 + couch]);
+        rows.push([x + inset, y, mw - 2.0 * inset, line - 4.0 + couch]);
         y += line + couch;
     }
     Some(([x, y0, mw, mh], rows))
@@ -279,7 +280,15 @@ fn menu_layout(lobby: &Lobby, id: &str, at: [f32; 2], fs: f32, size: [u32; 2]) -
 /// The menu's heading band: the first row starts below it. A fixed 50 px
 /// let large menus (a 4K HUD, a browser canvas) draw the heading over the
 /// first row.
-fn menu_head(fs: f32) -> f32 { 18.0 + (fs * 0.7).floor() + 14.0 }
+fn menu_head(fs: f32) -> f32 { menu_spacing(fs).1 * 1.6 + (fs * 0.7).floor() + menu_spacing(fs).1 }
+
+/// A menu row's height and the panel's inset around the rows, from the
+/// label size: rows with air above and below the words (Joep: the old
+/// ones felt cramped).
+fn menu_spacing(fs: f32) -> (f32, f32) { ((fs * 2.0).round(), (fs * 0.7).round()) }
+
+/// Where a row's label starts, from the row's left edge.
+fn menu_text_x(fs: f32) -> f32 { (fs * 0.8).round() }
 
 /// main.gd `_draw_menu`: a player's Start menu over their head.
 /// The rows of the host's Back panel (`back_menu` in the party): the
@@ -352,7 +361,7 @@ fn menu(lobby: &Lobby, c: &mut Canvas, id: &str, at: [f32; 2], fs: f32) {
     let items = lobby.menu_items(id);
     let Some(state) = lobby.menus.get(id) else { return };
     let Some(([x, y0, mw, mh], _)) = menu_layout(lobby, id, at, fs, [c.size[0] as u32, c.size[1] as u32]) else { return };
-    let line = fs + 16.0;
+    let (line, inset) = menu_spacing(fs);
     let block = fs * 0.5;
     let gap = fs * 0.22;
     let row = block + 12.0;
@@ -361,7 +370,7 @@ fn menu(lobby: &Lobby, c: &mut Canvas, id: &str, at: [f32; 2], fs: f32) {
     let k = fs / 22.0;
     crate::paint::panel_solid(c, [x, y0, mw, mh], k);
     let heading = match state.page.as_str() { "lobbies" => "CHOOSE A LOBBY".to_string(), "remove" => "REMOVE A PLAYER".into(), page if page.starts_with("player:") => lobby.name(&page["player:".len()..]).to_uppercase(), _ if mouse => MOUSE_HEADING.into(), _ => lobby.name(id).to_uppercase() };
-    text(c, &heading, [x + 24.0, y0 + 18.0 + (fs * 0.7).floor()], (fs * 0.7).floor(), AMBER);
+    text(c, &heading, [x + inset + menu_text_x(fs), y0 + inset * 1.6 + (fs * 0.7).floor()], (fs * 0.7).floor(), AMBER);
     let mut y = y0 + menu_head(fs);
     for (i, item) in items.iter().enumerate() {
         let selected = i == state.index;
@@ -370,15 +379,15 @@ fn menu(lobby: &Lobby, c: &mut Canvas, id: &str, at: [f32; 2], fs: f32) {
         let a = lobby.button_name(id, "A");
         if item.action == "quit" && state.confirm && selected { label = if mouse { "Click again to quit".into() } else { format!("Press {a} again to quit") }; }
         if item.action == "remove" && state.confirm && selected { label = if mouse { format!("Click again to remove {}", short(&item.name, 14)) } else { format!("Press {a} again to remove {}", short(&item.name, 14)) }; }
-        if selected { c.style_box([x + 12.0, y, mw - 24.0, line - 4.0 + if couch { row } else { 0.0 }], [12.0 * k; 4], VIOLET.with_alpha(0.35), None); }
+        if selected { c.style_box([x + inset, y, mw - 2.0 * inset, line - 4.0 + if couch { row } else { 0.0 }], [12.0 * k; 4], VIOLET.with_alpha(0.35), None); }
         // Caps centred in the row's `line - 4` (Outfit's cap height is 0.7 em).
-        text(c, &label, [x + 32.0, y + (line - 4.0 + fs * 0.7) / 2.0], fs, if selected { TEXT } else { DIM });
+        text(c, &label, [x + inset + menu_text_x(fs), y + (line - 4.0 + fs * 0.7) / 2.0], fs, if selected { TEXT } else { DIM });
         if couch {
             // Yours is filled.
             let mine = lobby.couch_place(id);
             let colour = Color::from_string(lobby.profile(id).map_or("", |p| p.color.as_str()), AMBER);
             for place in 0..lobby.profiles.len() {
-                let cell = [x + 32.0 + place as f32 * (block + gap), y + line - 2.0, block, block];
+                let cell = [x + inset + menu_text_x(fs) + place as f32 * (block + gap), y + line - 2.0, block, block];
                 if place as i64 == mine { c.rect(cell, colour); } else {
                     let e = DIM.with_alpha(if selected { 0.8 } else { 0.5 });
                     for r in [[cell[0], cell[1], block, 2.0], [cell[0], cell[1] + block - 2.0, block, 2.0], [cell[0], cell[1], 2.0, block], [cell[0] + block - 2.0, cell[1], 2.0, block]] { c.rect(r, e); }

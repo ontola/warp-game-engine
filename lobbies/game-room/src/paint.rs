@@ -61,6 +61,9 @@ pub struct Show {
     pub time: f32,
     /// What the TV shows: the running game, or the first queued one.
     pub tv: Option<(Game, Banner)>,
+    /// What "press Y" names: Y, or the key when everyone plays on the
+    /// keyboard ("" reads as Y).
+    pub y_key: String,
     /// The Up next cabinet's entries (after the TV's game).
     pub queue: Vec<Game>,
     /// The cabinet's first game is loading or broken: its status line.
@@ -363,7 +366,8 @@ fn idle_tv(c: &mut Canvas, show: &Show) {
         c.rect([0.0, i as f32 * h / 14.0, w, h / 14.0 + 1.0], Color::from_hsv(hue, 0.7, 0.35));
     }
     text(c, "NOTHING QUEUED", [0.0, h / 2.0 - 10.0], 64.0, TEXT, w, TextAlign::Center);
-    text(c, "Walk to the game shelf and press Y to add a game", [0.0, h / 2.0 + 48.0], 24.0, TEXT.darkened(0.15), w, TextAlign::Center);
+    let y = if show.y_key.is_empty() { "Y" } else { show.y_key.as_str() };
+    text(c, &format!("Walk to the game shelf and press {y} to add a game"), [0.0, h / 2.0 + 48.0], 24.0, TEXT.darkened(0.15), w, TextAlign::Center);
     scanlines(c);
 }
 

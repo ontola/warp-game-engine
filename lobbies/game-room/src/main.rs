@@ -119,7 +119,11 @@ fn run() -> Result<(), String> {
         if flag("--keyboard") {
             let mut party = lobby.host.party.clone();
             party["seats"][0]["controller"] = serde_json::json!("web:keyboard");
+            // Games that take the keyboard, so the TV has one to start.
+            if let Some(games) = party["library"].as_array_mut() { for g in games { g["keyboard"] = serde_json::json!(true); } }
+            party["warm_session"] = serde_json::Value::Null;
             lobby.set_party(party);
+            lobby.started_once = false;
         }
         // `--no-jukebox`: the room as the browser host shows it.
         if flag("--no-jukebox") { lobby.host.no_jukebox = true; }
@@ -154,6 +158,12 @@ fn run() -> Result<(), String> {
             }
             if flag("--keyboard") && t < 3 {
                 if let Some(p) = lobby.world.players.first_mut() { p.x = -9.6; p.y = 0.0; }
+            }
+            // `--walk-off N`: the first player stands at the TV, then walks
+            // off N ticks before the shot (a tucking nudge, mid-animation).
+            if let Some(n) = arg("--walk-off").and_then(|v| v.parse::<u32>().ok()) {
+                let x = if t + n < ticks { 0.0 } else { -9.0 };
+                if let Some(p) = lobby.world.players.first_mut() { p.x = x; p.y = 0.0; }
             }
             // `--keys`: someone typing, caught mid-keystroke.
             if flag("--keys") && t + 4 == ticks { lobby.key_pressed(t); }

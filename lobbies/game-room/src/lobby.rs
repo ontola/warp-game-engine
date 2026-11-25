@@ -329,6 +329,16 @@ impl Lobby {
             .map(|(token, _)| if token.ends_with("-left") { 1 } else if token.ends_with("-right") { 2 } else { 0 })
     }
 
+    /// Pad button `button` as the room names it for everyone: the key when
+    /// all players play on the same keys, else the pad button.
+    pub fn room_button(&self, button: &str) -> String {
+        let mut halves = self.world.players.iter().map(|p| self.keyboard_half(&p.id));
+        match halves.next().flatten() {
+            Some(h) if halves.all(|x| x == Some(h)) => crate::paint::key_cap_on(h, button).unwrap_or(button).into(),
+            _ => button.into(),
+        }
+    }
+
     /// Pad button `button` as player `id` presses it: its key on a keyboard.
     pub fn button_name(&self, id: &str, button: &str) -> String {
         if let Some(half) = self.keyboard_half(id) { if let Some(cap) = crate::paint::key_cap_on(half, button) { return cap.into(); } }

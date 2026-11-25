@@ -554,6 +554,8 @@ impl Lobby {
     /// What the screens show, from the party (main.gd's painters' inputs).
     fn refresh_show(&mut self) {
         use crate::paint::{Banner, Game as ShowGame, Track};
+        // "Press Y": the key, when everyone here plays on the same keys.
+        let y = self.room_button("Y");
         let h = &self.host;
         let game_of = |meta: &serde_json::Value| ShowGame { id: get(meta, "id", ""), title: get(meta, "title", "Game"), color: get(meta, "color", "") };
         let mut tv = None;
@@ -597,9 +599,11 @@ impl Lobby {
         let queue: Vec<ShowGame> = cabinet.iter().map(|e| h.game_meta(&e.game).map(game_of).unwrap_or(ShowGame { id: e.game.clone(), title: e.title.clone(), color: String::new() })).collect();
         let first = cabinet.first().map(|e| e.game.clone());
         let show = &mut self.show;
-        show.tv = tv;
+        let keyed = |t: String| if y == "Y" { t } else { t.replace("Press Y ", &format!("Press {y} ")).replace("Y at TV", &format!("{y} at TV")) };
+        show.tv = tv.map(|(g, mut b)| { b.detail = keyed(b.detail); (g, b) });
         show.queue = queue;
-        show.queue_status = first.as_ref().map(|g| (h.queue_status(g), !h.issue(g).is_empty())).filter(|s| !s.0.is_empty());
+        show.queue_status = first.as_ref().map(|g| (keyed(h.queue_status(g)), !h.issue(g).is_empty())).filter(|s| !s.0.is_empty());
+        show.y_key = y.clone();
         show.queue_loading = first.as_ref().and_then(|g| h.loading_shown(g));
         show.tv_has_next = !upcoming.is_empty();
         show.queue_first = upcoming.len() - cabinet.len();

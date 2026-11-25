@@ -372,3 +372,25 @@ fn a_keyboard_player_sees_keys() {
     assert_eq!(lobby.button_name(&id, "A"), "Space");
     assert_eq!(game_room::paint::key_cap("Y"), Some("F"));
 }
+
+#[test]
+fn a_keyboard_player_walking_off_keeps_keycaps() {
+    let mut lobby = Lobby::new(options(), 0, 1).unwrap();
+    let mut party = lobby.host.party.clone();
+    party["players"] = json!([party["players"][0].clone()]);
+    party["seats"] = json!([party["seats"][0].clone()]);
+    party["seats"][0]["controller"] = json!("web:keyboard");
+    party["warm_session"] = json!(null);
+    party["library"] = json!([{"id": "spaceracer", "title": "Space Racer", "color": "#38d6ff", "keyboard": true, "shared_keyboard": 2}]);
+    party["playlist"] = json!({"entries": [{"game": "spaceracer", "title": "Space Racer"}]});
+    lobby.set_party(party);
+    lobby.started_once = false;
+    let id = lobby.world.players[0].id.clone();
+    lobby.world.player_mut(&id).unwrap().x = 0.0;
+    for _ in 0..20 { tick(&mut lobby); lobby.update(1.0 / 60.0); }
+    lobby.world.player_mut(&id).unwrap().x = -9.0;
+    for t in 0..40 {
+        tick(&mut lobby); lobby.update(1.0 / 60.0);
+        assert!(lobby.prompts["tv"].keys, "the TV's nudge keeps its keycap as it tucks away (tick {t})");
+    }
+}
