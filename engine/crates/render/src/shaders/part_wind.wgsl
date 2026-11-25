@@ -130,6 +130,16 @@ fn part_inverse(m:array<vec4<f32>,3>)->array<vec4<f32>,3> {
     return array<vec4<f32>,3>(vec4<f32>(r[0],-dot(r[0],t)),vec4<f32>(r[1],-dot(r[1],t)),vec4<f32>(r[2],-dot(r[2],t)));
 }
 
+// Same closed-form release impulse as twig_recoil in part_wind.rs.
+fn twig_recoil(age: f32, max_angle: f32, branch_phase: f32) -> f32 {
+    if age >= 4.0 || max_angle <= 0.045 { return 0.0; }
+    let flexibility = smoothstep(0.045, 0.265, max_angle);
+    let frequency = 0.85 + 0.55 * flexibility + 0.20 * branch_phase / 6.28318530718;
+    let damping = 1.45 - 0.50 * flexibility;
+    let window = smoothstep(0.0, 0.065, age) * (1.0 - smoothstep(3.0, 4.0, age));
+    return -flexibility * window * exp(-damping * age) * sin(6.28318530718 * frequency * age);
+}
+
 @compute @workgroup_size(32)
 fn update_parts(@builtin(global_invocation_id) invocation:vec3<u32>) {
     let assembly_id=assembly_index(invocation);
@@ -143,20 +153,23 @@ fn update_parts(@builtin(global_invocation_id) invocation:vec3<u32>) {
     let root = part_descriptors[assembly.x].rest;
     let direction = part_state.field.xy;
     let crosswind = vec2<f32>(-direction.y, direction.x);
-    let gust = plant_gust(vec2<f32>(root[0].w, root[2].w), direction, part_state.field.w);
+    let sample = plant_gust(vec2<f32>(root[0].w, root[2].w), direction, part_state.field.w);
+    let gust = sample.xy;
     let flutter = 0.30 * (0.35 + 0.65 * abs(dot(gust, direction)));
     let flutter_dir = direction * 0.4 + crosswind * 0.9165;
     for(var index=assembly.x;index<assembly.x+assembly.y;index++) {
         let part=part_descriptors[index];var base=part.rest;
         if part.identity.x!=0xffffffffu {base=part_multiply(part_poses[part.identity.x].current,part.rest);}
         let phase = part_state.field.w * part.animation.y + part.animation.z;
-        let force = 0.70 * gust + flutter_dir * (flutter * sin(phase));
+        let driven = 0.70 * gust + flutter_dir * (flutter * sin(phase));
+        let recoil = 0.55 * twig_recoil(sample.z, part.animation.x, part.animation.z);
+        let force = driven + direction * recoil;
         let limb = normalize(vec3<f32>(base[0].y, base[1].y, base[2].y));
         let torque = cross(limb, vec3<f32>(force.x, 0.0, force.y));
         let magnitude = length(torque);
         var current = base;
         if magnitude > 1e-6 {
-            let angle = part.animation.x * part_state.field.z * magnitude * schedule.animation.x;
+            let angle = part.animation.x * part_state.field.z * min(magnitude, 1.0) * schedule.animation.x;
             current = part_rotate(base, torque / magnitude, angle);
         }
         var previous=part_poses[index].current;

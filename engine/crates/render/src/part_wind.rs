@@ -420,7 +420,13 @@ impl PartWindRig {
     }
 
     pub fn sample_into(&self, state: &WindState, poses: &mut Vec<Mat4>) -> Result<(), String> {
-        evaluate_poses(&self.parts, state, poses)
+        evaluate_poses(&self.parts, state, poses, true)
+    }
+
+    /// Sample the driven equilibrium at the same time as sample_into, omitting
+    /// only the damped release. Diagnostic reference for limb-tip displacement.
+    pub fn sample_driven_into(&self, state: &WindState, poses: &mut Vec<Mat4>) -> Result<(), String> {
+        evaluate_poses(&self.parts, state, poses, false)
     }
 }
 
@@ -428,11 +434,27 @@ impl PartWindRig {
 pub fn sample_poses(parts: &[PartWind], state: &WindState) -> Result<Vec<Mat4>, String> {
     bind_poses(parts)?;
     let mut poses = Vec::with_capacity(parts.len());
-    evaluate_poses(parts, state, &mut poses)?;
+    evaluate_poses(parts, state, &mut poses, true)?;
     Ok(poses)
 }
 
-fn evaluate_poses(parts: &[PartWind], state: &WindState, result: &mut Vec<Mat4>) -> Result<(), String> {
+/// Closed-form underdamped response to the trailing edge of a passing gust.
+/// The finite release window reaches zero well before the next front. Sampling
+/// in any order gives the same pose, including after an LOD wake or rewind.
+fn twig_recoil(age: f32, max_angle: f32, branch_phase: f32) -> f32 {
+    if age >= 4.0 || max_angle <= 0.045 { return 0.0; }
+    let smooth = |x: f32| {
+        let t = x.clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+    let flexibility = smooth((max_angle - 0.045) / 0.22);
+    let frequency = 0.85 + 0.55 * flexibility + 0.20 * branch_phase / std::f32::consts::TAU;
+    let damping = 1.45 - 0.50 * flexibility;
+    let window = smooth(age / 0.065) * (1.0 - smooth(age - 3.0));
+    -flexibility * window * (-damping * age).exp() * (std::f32::consts::TAU * frequency * age).sin()
+}
+
+fn evaluate_poses(parts: &[PartWind], state: &WindState, result: &mut Vec<Mat4>, release: bool) -> Result<(), String> {
     let field = field(state)?;
     result.clear();
     let direction = Vec2::new(field[0], field[1]);
@@ -440,22 +462,28 @@ fn evaluate_poses(parts: &[PartWind], state: &WindState, result: &mut Vec<Mat4>)
     let flutter_dir = direction * 0.4 + crosswind * 0.9165;
     let mut gust = Vec2::ZERO;
     let mut flutter = 0.0;
+    let mut release_age = 0.0;
     for part in parts {
         let base = if let Some(parent) = part.parent {
             result[parent as usize] * part.rest
         } else {
             let root = part.rest.w_axis;
-            gust = gust_at(Vec2::new(root.x, root.z), direction, field[3]);
+            (gust, release_age) = gust_at(Vec2::new(root.x, root.z), direction, field[3]);
             flutter = 0.30 * (0.35 + 0.65 * gust.dot(direction).abs());
             part.rest
         };
-        let phase = field[3] * part.harmonic as f32 + part.phase.rem_euclid(std::f32::consts::TAU);
-        let force = 0.70 * gust + flutter_dir * (flutter * phase.sin());
+        let branch_phase = part.phase.rem_euclid(std::f32::consts::TAU);
+        let phase = field[3] * part.harmonic as f32 + branch_phase;
+        let driven = 0.70 * gust + flutter_dir * (flutter * phase.sin());
+        let recoil = if release { 0.55 * twig_recoil(release_age, part.max_angle, branch_phase) } else { 0.0 };
+        // Free vibration oscillates about the driven equilibrium. Cap the
+        // resulting bend by the same authored limit used by culling.
+        let force = driven + direction * recoil;
         // The long axis of a growth limb is local +Y. Transverse load
         // bends it around its attachment; a wind-aligned limb feels less.
         let torque = base.y_axis.truncate().normalize().cross(Vec3::new(force.x, 0.0, force.y));
         let magnitude = torque.length();
-        let angle = part.max_angle * field[2] * magnitude;
+        let angle = part.max_angle * field[2] * magnitude.min(1.0);
         let rotation = if magnitude > 1e-6 {
             Quat::from_axis_angle(torque / magnitude, angle)
         } else {
@@ -916,6 +944,52 @@ mod tests {
         }
         assert!(max_separation > 0.12, "independent limb displacement {max_separation}");
         assert!(max_soft > 0.2 && max_soft > 6.0 * max_stiff, "{max_soft}, {max_stiff}");
+    }
+
+    #[test]
+    fn flexible_twig_overshoots_its_driven_pose_then_settles_after_the_front() {
+        let twig = PartWind { parent: Some(0), rest: Mat4::from_translation(Vec3::Y * 3.0),
+            max_angle: growth_angle(Some(0), 0.2), phase: 0.0, ..Default::default() };
+        let stiff = PartWind { max_angle: 0.04, ..twig.clone() };
+        let rig = PartWindRig::new(vec![PartWind::default(), twig, stiff]).unwrap();
+        let state = WindState { direction: Vec2::X, strength: 1.0, ..Default::default() };
+        let mut actual = Vec::new();
+        let mut driven = Vec::new();
+        let mut sample = |time_seconds| {
+            let wind = WindState { time_seconds, ..state };
+            rig.sample_into(&wind, &mut actual).unwrap();
+            rig.sample_driven_into(&wind, &mut driven).unwrap();
+            assert_eq!(actual[0], driven[0]);
+            assert_eq!(actual[2], driven[2]);
+            assert_eq!(actual[1].w_axis, driven[1].w_axis);
+            let tip = actual[1].transform_point3(Vec3::Y);
+            let equilibrium = driven[1].transform_point3(Vec3::Y);
+            (tip.x, tip.x - equilibrium.x)
+        };
+        assert_eq!(sample(0.0).1, 0.0);
+        // Release at the origin is t=0. Locate four alternating actual
+        // excursions on a 120 Hz timeline, relative to the driving load.
+        let mut peaks = [0.0_f32; 4];
+        let mut sign = -1.0_f32;
+        let mut interval = 0;
+        let mut crossed_rest = false;
+        for i in 1..240 {
+            let (tip, displacement) = sample(f64::from(i) / 120.0);
+            crossed_rest |= tip < -0.02;
+            if displacement * sign < -1e-5 {
+                interval += 1;
+                sign = -sign;
+                if interval == peaks.len() { break; }
+            }
+            peaks[interval] = peaks[interval].max(displacement.abs());
+        }
+        assert!(crossed_rest && interval == 4);
+        assert!(peaks.iter().all(|p| *p > 0.01) && peaks.windows(2).all(|w| w[1] < w[0]), "{peaks:?}");
+        assert_eq!(sample(4.1).1, 0.0);
+        assert_eq!(sample(10.0).1, 0.0);
+        let sought = sample(0.17);
+        assert!((sample(120.17).1 - sought.1).abs() < 1e-5);
+        assert_eq!(sample(0.17), sought);
     }
 
     #[test]

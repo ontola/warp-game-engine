@@ -31,7 +31,7 @@ fn field_shear(root: vec2<f32>, grass: bool) -> vec2<f32> {
         if nearest >= freeze.params.y { return vec2<f32>(0.0); }
     }
     let amplitude = select(wind.amplitudes.x,wind.amplitudes.y,grass);
-    return plant_gust(root, wind.field.xy, wind.field.w) * (amplitude * wind.field.z * still);
+    return plant_gust(root, wind.field.xy, wind.field.w).xy * (amplitude * wind.field.z * still);
 }
 
 @compute @workgroup_size(64)

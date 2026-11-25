@@ -59,7 +59,7 @@ impl WindState {
         let Ok(state) = self.validated() else { return Vec2::ZERO; };
         if !position.is_finite() || state.strength == 0.0 { return Vec2::ZERO; }
         let field = Uniform::from_state(state).field;
-        gust_at(Vec2::new(position.x, position.z), state.direction, field[3]) * state.strength
+        gust_at(Vec2::new(position.x, position.z), state.direction, field[3]).0 * state.strength
     }
 
     /// CPU counterpart of the GPU coefficient before the optional camera fade.
@@ -69,12 +69,13 @@ impl WindState {
         if !root.is_finite() || state.strength == 0.0 { return Vec2::ZERO; }
         let field = Uniform::from_state(state).field;
         let amplitude = if grass { state.grass_shear } else { state.tree_shear };
-        gust_at(Vec2::new(root.x, root.z), state.direction, field[3]) * (state.strength * amplitude)
+        gust_at(Vec2::new(root.x, root.z), state.direction, field[3]).0 * (state.strength * amplitude)
     }
 }
 
 /// CPU counterpart of plant_gust in wind_field.wgsl, with unit strength.
-pub(crate) fn gust_at(root: Vec2, direction: Vec2, phase: f32) -> Vec2 {
+/// Returns horizontal loading and seconds since the leading gust last unloaded.
+pub(crate) fn gust_at(root: Vec2, direction: Vec2, phase: f32) -> (Vec2, f32) {
     let cross = Vec2::new(-direction.y, direction.x);
     let across = root.dot(cross);
     let advected = root.dot(direction) * (std::f32::consts::TAU / (PERIOD as f32 * GUST_SPEED_MPS)) - phase;
@@ -82,7 +83,9 @@ pub(crate) fn gust_at(root: Vec2, direction: Vec2, phase: f32) -> Vec2 {
     let following = 17.0 * advected - 0.017 * across;
     let lateral = 11.0 * advected + 0.026 * across;
     let load = 0.49 + 0.36 * leading.sin() + 0.14 * following.sin();
-    direction * load + cross * (0.09 * lateral.sin())
+    let cycles = -leading / std::f32::consts::TAU;
+    let release_age = (cycles - cycles.floor()) * (PERIOD as f32 / 9.0);
+    (direction * load + cross * (0.09 * lateral.sin()), release_age)
 }
 
 #[repr(C)]
