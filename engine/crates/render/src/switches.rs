@@ -129,6 +129,7 @@ pub const PHONE_GI: Switch = Switch::new("KERN_PHONE_GI");
 pub const LIGHT_TILES: Switch = Switch::new("KERN_LIGHT_TILES");
 pub const FOOTPRINT_LOD: Switch = Switch::new("KERN_FOOTPRINT_LOD");
 pub const ALBEDO_LOD_BIAS: Switch = Switch::new("KERN_ALBEDO_LOD_BIAS");
+pub const SPLIT_SHADE: Switch = Switch::new("KERN_SPLIT_SHADE");
 pub const SHADOW_DISTANCE_LOD: Switch = Switch::new("KERN_SHADOW_DISTANCE_LOD");
 pub const SHADOW_REACH: Switch = Switch::new("KERN_SHADOW_REACH");
 pub const SIMPLE_CULL: Switch = Switch::new("KERN_SIMPLE_CULL");
@@ -286,6 +287,7 @@ pub const ALL: &[&Switch] = &[
     &LIGHT_TILES,
     &FOOTPRINT_LOD,
     &ALBEDO_LOD_BIAS,
+    &SPLIT_SHADE,
     &SHADOW_DISTANCE_LOD,
     &SHADOW_REACH,
     &SIMPLE_CULL,

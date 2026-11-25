@@ -4014,6 +4014,28 @@ override LIGHT_TILES: bool = true;
 // nearer than 33 m (shimmer, uncached reads). KERN_FOOTPRINT_LOD=1 opts in:
 // on an Adreno 740 it made the pass 3.4x slower (2026-11-25, cause open).
 override FOOTPRINT_LOD: bool = false;
+// KERN_SPLIT_SHADE=1 (the Android phone host's default): the compact pass
+// as two smaller kernels, the surface (triangle, material, albedo, sun) into
+// `surface_out` and then the light (GI, lamps, styling, fog) from it. One
+// kernel needed so many registers that an Adreno 740 ran few pixels at a time:
+// any one part cost little alone, the whole 20 ns a pixel (2026-11-25).
+@group(3) @binding(33) var surface_out: texture_storage_2d<rgba32uint, write>;
+@group(3) @binding(34) var surface_in: texture_2d<u32>;
+// Emission as RGBE (8-bit mantissas, shared exponent).
+fn pack_rgbe(c: vec3<f32>) -> u32 {
+    let mx = max(c.x, max(c.y, c.z));
+    if mx < 1e-6 { return 0u; }
+    let e = clamp(ceil(log2(mx)), -120.0, 120.0);
+    return pack4x8unorm(vec4<f32>(c / exp2(e), (e + 128.0) / 255.0));
+}
+fn unpack_rgbe(w: u32) -> vec3<f32> {
+    if w == 0u { return vec3<f32>(0.0); }
+    let v = unpack4x8unorm(w);
+    return v.rgb * exp2(round(v.a * 255.0) - 128.0);
+}
+fn pack_surface(base: vec3<f32>, sun_vis: f32, n: vec3<f32>, emit: vec3<f32>) -> vec4<u32> {
+    return vec4<u32>(pack2x16float(base.rg), pack2x16float(vec2<f32>(base.b, sun_vis)), pack2x16snorm(oct_encode(n)), pack_rgbe(emit));
+}
 // KERN_ALBEDO_LOD_BIAS=<mips>: added to the distance LOD of the simple and
 // compact passes (an experiment: does the 2048 px mip 0 cost bandwidth?).
 override ALBEDO_LOD_BIAS: f32 = 0.0;
@@ -4066,17 +4088,20 @@ fn local_light_tile(gid: vec3<u32>, lane: u32) -> u32 {
     return atomicLoad(&light_tile_mask);
 }
 
-fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool, tile_lights:u32) {
-    if any(gid.xy>=vec2<u32>(view.size.xy)) {return;}
+struct SimpleSurface { ok: bool, words: vec4<u32> };
+// The simple/compact pass for one pixel; with `split` it returns the
+// surface instead of lighting it (KERN_SPLIT_SHADE, the surface half).
+fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool, tile_lights:u32, split:bool) -> SimpleSurface {
+    if any(gid.xy>=vec2<u32>(view.size.xy)) {return SimpleSurface();}
     let px=vec2<i32>(gid.xy);
     let ndc=(vec2<f32>(gid.xy)+0.5)/view.size.xy*vec2<f32>(2.0,-2.0)+vec2<f32>(-1.0,1.0);
     let far=view.inv_view_proj*vec4<f32>(ndc,1e-4,1.0);
     let dir=normalize(far.xyz/far.w-view.cam.xyz);
     let id=textureLoad(vis_tex,px,0).r;
     if textureLoad(depth_tex,px,0)<=0.0 || id==0xffffffffu {
-        textureStore(out_hdr,px,vec4<f32>(visible_background_radiance(dir),1.0));return;
+        textureStore(out_hdr,px,vec4<f32>(visible_background_radiance(dir),1.0));return SimpleSurface();
     }
-    if SHADE_PROBE == 1u { textureStore(out_hdr,px,vec4<f32>(vec3<f32>(f32(id&255u)/255.0),1.0)); return; }
+    if SHADE_PROBE == 1u { textureStore(out_hdr,px,vec4<f32>(vec3<f32>(f32(id&255u)/255.0),1.0)); return SimpleSurface(); }
     let vis=visible[id>>7u];let cl=clusters[vis.y];let inst=instance_at(vis.x);
     irradiance_receiver_radius = select(0.0, 0.5, (inst.flags & 64u) != 0u);
     let packed=tri_word(cl.first_tri+(id&127u));
@@ -4097,7 +4122,7 @@ fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool, tile_lights:u32) 
     let authored=normals[0]*b0+normals[1]*b1+normals[2]*b2;
     var n=normalize(wind_normal(member_slot(vis.x),xform_dir(inst,authored)));
     if dot(n,dir)>0.0 {n=-n;}
-    if SHADE_PROBE == 2u { textureStore(out_hdr,px,vec4<f32>(n*0.5+0.5,1.0)); return; }
+    if SHADE_PROBE == 2u { textureStore(out_hdr,px,vec4<f32>(n*0.5+0.5,1.0)); return SimpleSurface(); }
     let m=material(cl.material);var base=m.tint;
     var surface_emit = vec3<f32>(0.0);
     var sun_vis = 1.0;
@@ -4126,7 +4151,7 @@ fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool, tile_lights:u32) 
         }
         sun_vis *= cloud_sun_transmittance(p, light.sun_dir.xyz, light.clouds, light.cloud_motion);
     }
-    if SHADE_PROBE == 3u { textureStore(out_hdr,px,vec4<f32>(base*(0.2+sun_vis)+surface_emit,1.0)); return; }
+    if SHADE_PROBE == 3u { textureStore(out_hdr,px,vec4<f32>(base*(0.2+sun_vis)+surface_emit,1.0)); return SimpleSurface(); }
     if m.layer>=0 && !(terrain_lighting && (m.flags&32770u)==32770u) {let uv=uvs[0]*b0+uvs[1]*b1+uvs[2]*b2;
         if FOOTPRINT_LOD {
             set_pixel_footprint(ndc, p, safe_normalize(cross(e1, e2)), distance(p, view.cam.xyz));
@@ -4142,6 +4167,15 @@ fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool, tile_lights:u32) 
         } else {
             if SHADE_PROBE != 7u { base*=textureSampleLevel(albedo,samp,uv,m.layer,max(log2(max(distance(p,view.cam.xyz)*0.03,1.0))+ALBEDO_LOD_BIAS,albedo_lod_floor(m.layer))).rgb; }
         }}
+    if split { return SimpleSurface(true, pack_surface(base, sun_vis, n, surface_emit)); }
+    light_simple_surface(px, p, n, dir, base, sun_vis, surface_emit, m, inst.flags, vis.x, cl.material, tile_lights);
+    return SimpleSurface();
+}
+
+// The lit half of the simple/compact pass: everything after the surface
+// (albedo, normal, sun visibility, emission) is known.
+fn light_simple_surface(px:vec2<i32>, p:vec3<f32>, n:vec3<f32>, dir:vec3<f32>, base:vec3<f32>, sun_vis:f32, surface_emit:vec3<f32>,
+        m:Material, inst_flags:u32, instance:u32, material_index:u32, tile_lights:u32) {
     var ambient=sky_irradiance(n);
     if FEATURE_IRRADIANCE && gi.params.w > 0.0 {
         let cached=irradiance_sample(p+n*0.05,n);
@@ -4178,9 +4212,9 @@ fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool, tile_lights:u32) 
     let style = styled_light(material_kind(m), m.flags, p, n, base, rad, 1.0);
     rad = style.radiance;
     if SHADE_PROBE == 6u { textureStore(out_hdr,px,vec4<f32>(min(rad,vec3<f32>(65504.0)),1.0)); return; }
-    let flash=select(f32(instance_byte(inst.flags)) / 255.0, 0.0, lod_proxy(m.layer));
+    let flash=select(f32(instance_byte(inst_flags)) / 255.0, 0.0, lod_proxy(m.layer));
     rad=mix(rad,vec3<f32>(1.0,0.97,0.92)*light.anim.z*(0.8+0.2*max(dot(n,-dir),0.0)),flash*0.9);
-    let glow=game_glow(p,vis.x,cl.material);rad=rad*(1.0-glow.a)+glow.rgb;
+    let glow=game_glow(p,instance,material_index);rad=rad*(1.0-glow.a)+glow.rgb;
     rad=apply_distance_fog(rad,distance(p,view.cam.xyz),dir);
     if light.sky.z==2.0 {rad=base*6000.0;}
     if light.sky.z==11.0 {rad=(n*0.5+0.5)*6000.0;}
@@ -4188,9 +4222,39 @@ fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool, tile_lights:u32) 
 }
 
 @compute @workgroup_size(8, 8)
-fn shade_simple(@builtin(global_invocation_id) gid:vec3<u32>) { shade_simple_material(gid, false, 0xffffffffu); }
+fn shade_simple(@builtin(global_invocation_id) gid:vec3<u32>) { _ = shade_simple_material(gid, false, 0xffffffffu, false); }
 
 @compute @workgroup_size(8, 8)
 fn shade_compact(@builtin(global_invocation_id) gid:vec3<u32>, @builtin(local_invocation_index) lane:u32) {
-    shade_simple_material(gid, true, local_light_tile(gid, lane));
+    _ = shade_simple_material(gid, true, local_light_tile(gid, lane), false);
+}
+
+// The surface half of the split compact pass (KERN_SPLIT_SHADE).
+@compute @workgroup_size(8, 8)
+fn shade_compact_surface(@builtin(global_invocation_id) gid:vec3<u32>) {
+    let surface = shade_simple_material(gid, true, 0u, true);
+    if surface.ok { textureStore(surface_out, vec2<i32>(gid.xy), surface.words); }
+}
+
+// The light half of the split compact pass (KERN_SPLIT_SHADE): the surface
+// pass wrote the background itself and `surface_in` for the rest.
+@compute @workgroup_size(8, 8)
+fn shade_compact_light(@builtin(global_invocation_id) gid:vec3<u32>, @builtin(local_invocation_index) lane:u32) {
+    let tile_lights = local_light_tile(gid, lane);
+    if any(gid.xy>=vec2<u32>(view.size.xy)) {return;}
+    let px=vec2<i32>(gid.xy);
+    let id=textureLoad(vis_tex,px,0).r;
+    let depth=textureLoad(depth_tex,px,0);
+    if depth<=0.0 || id==0xffffffffu {return;}
+    let ndc=(vec2<f32>(gid.xy)+0.5)/view.size.xy*vec2<f32>(2.0,-2.0)+vec2<f32>(-1.0,1.0);
+    let far=view.inv_view_proj*vec4<f32>(ndc,1e-4,1.0);
+    let dir=normalize(far.xyz/far.w-view.cam.xyz);
+    let h=view.inv_view_proj*vec4<f32>(ndc,depth,1.0);
+    let p=h.xyz/h.w;
+    let vis=visible[id>>7u];let cl=clusters[vis.y];let inst=instance_at(vis.x);
+    irradiance_receiver_radius = select(0.0, 0.5, (inst.flags & 64u) != 0u);
+    let w=textureLoad(surface_in,px,0);
+    let rg=unpack2x16float(w.x);let bs=unpack2x16float(w.y);
+    light_simple_surface(px, p, oct_decode(unpack2x16snorm(w.z)), dir, vec3<f32>(rg, bs.x), bs.y, unpack_rgbe(w.w),
+        material(cl.material), inst.flags, vis.x, cl.material, tile_lights);
 }

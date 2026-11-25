@@ -63,6 +63,7 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_WORLD_TERRAIN_VISIBILITY` | `Scene::world_terrain_visibility`. `KERN_TERRAIN_NODE_BUDGET` caps its traversal. |
 | `KERN_SIMPLE_LIGHTING`, `KERN_SIMPLE_CULL` | The scene's graphics settings (`terrain_fly` turns simple lighting on). |
 | `KERN_COMPACT_SHADE` | `1`: the compact shade pass (simple lighting plus game surfaces and sun shadows) even where the GPU binds enough textures for the full one. The Android phone host turns it on. |
+| `KERN_SPLIT_SHADE` | `1`: the compact shade pass as two smaller kernels, the surface (triangle, material, albedo, sun) into an Rgba32Uint target and then the light (GI, lamps, styling, fog) from it. The Android phone host turns it on: one kernel's registers let an Adreno 740 run few pixels at a time. |
 | `KERN_PHONE_GI` | `1`: the irradiance volume blends its eight probes by distance and facing only (no DDGI reach masks, probe visibility or gradients): about a third of the compact pass on an Adreno 740. The Android phone host turns it on; light can leak through a thin wall. |
 | `KERN_CLUSTERED_LIGHTS` | `Graphics::clustered_lights` (off): clustered local lights, hundreds per frame, some shadowed ([rendering](rendering.md#clustered-local-lights)). `1` turns them on, `0` off. |
 | `KERN_BOUNDED_DRAWS` | On for Adreno (Quest) with simple culling. |
