@@ -33,3 +33,18 @@ fn every_screen_has_a_painter() {
     }
     assert!(!list.text.is_empty());
 }
+
+#[test]
+fn table_pads_come_back_to_their_spot_after_hours_off_the_table() {
+    use game_room::room::Mood;
+    let mut room = game_room::room::build();
+    let down = Mood { pad_drop: [Some(0.0); 4], ..Default::default() };
+    room.pose(0.0, 0.0, &down);
+    let before: Vec<[f32; 16]> = room.dump.instances.iter().map(|i| i.transform).collect();
+    let away = Mood { pad_drop: [None; 4], ..Default::default() };
+    for f in 0..50_000 { room.pose(f as f32 / 120.0, 1.0 / 120.0, &away); }
+    room.pose(0.0, 0.0, &down);
+    for (a, b) in before.iter().zip(room.dump.instances.iter().map(|i| i.transform)) {
+        assert!(a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-4), "{a:?} drifted to {b:?}");
+    }
+}

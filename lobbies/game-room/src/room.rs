@@ -217,6 +217,8 @@ pub struct RoomBuild {
     pub shapes: Vec<Shape>,
     /// Each pad's pose as last posed.
     pad_pose: Vec<Affine3A>,
+    /// Each pad's parts and their transforms relative to the pad as built.
+    pad_parts: Vec<Vec<(usize, Affine3A)>>,
     meshes: HashMap<String, usize>,
     pub(crate) group: String,
     rng: Pcg,
@@ -246,6 +248,7 @@ impl RoomBuild {
             pads: vec![],
             shapes: vec![],
             pad_pose: vec![],
+            pad_parts: vec![],
             jukebox: 0..0,
             meshes: HashMap::new(),
             group: String::new(),
@@ -1240,12 +1243,17 @@ impl RoomBuild {
             // A pad not on the table waits under the floor.
             let drop = mood.pad_drop.get(i).copied().flatten().map_or(-50.0, |h| h);
             let pad = pad_xf(pos + Vec3::Y * drop, yaw, k, side);
-            let back = self.pad_pose[i].inverse();
-            for n in self.find(&name) {
-                let at = Affine3A::from_mat4(glam::Mat4::from_cols_array(&self.dump.instances[n].transform));
-                set_transform(&mut self.dump.instances[n].transform, pad * back * at);
+            // Each part from its place on the pad as built, never from last
+            // frame's: composing frame on frame drifted a pad (far under the
+            // floor while not on the table) through the table over hours.
+            if self.pad_parts.len() <= i {
+                let back = self.pad_pose[i].inverse();
+                let parts = self.find(&name).into_iter().map(|n| (n, back * Affine3A::from_mat4(glam::Mat4::from_cols_array(&self.dump.instances[n].transform)))).collect();
+                self.pad_parts.push(parts);
             }
-            self.pad_pose[i] = pad;
+            for &(n, local) in &self.pad_parts[i] {
+                set_transform(&mut self.dump.instances[n].transform, pad * local);
+            }
             let glow = 0.5 + 1.6 * k.max((mood.pad_activity / 0.6).clamp(0.0, 1.0) * 0.4);
             self.dump.materials[body]["emission_energy"] = json!(glow);
         }
