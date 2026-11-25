@@ -172,11 +172,7 @@ impl CookedPlant {
                 parent: branch.parent,
                 rest: branch.rest,
                 assembly_rest: rest[i],
-                max_angle: if branch.parent.is_none() {
-                    0.0
-                } else {
-                    0.22 * (1.0 - branch.stiffness).clamp(0.15, 1.0)
-                },
+                max_angle: crate::part_wind::growth_angle(branch.parent, branch.stiffness),
                 volume: None,
                 aggregate: Vec::new(),
                 aggregate_motion_error: 0.0,
@@ -606,13 +602,6 @@ fn wind_margin(plant: &CookedPlant, branch: usize, asset: &VoxelAsset, root_scal
     margin * root_scale
 }
 
-fn phase(id: u64, branch: u64) -> f32 {
-    let mut x = id ^ branch;
-    x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-    x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
-    ((x ^ (x >> 31)) >> 40) as f32 / 16_777_216.0 * std::f32::consts::TAU
-}
-
 impl<'a> SceneVegetation<'a> {
     pub fn new(scene: &'a mut Scene, limits: AttachLimits) -> Result<Self, String> {
         if scene.voxel_forest.is_some()
@@ -916,6 +905,7 @@ impl<'a> SceneVegetation<'a> {
                 self.scene.foliage_source_groups.push(SourceGroup { owner, members });
             }
             if templates.is_some() { branch_owners[i] = owner; }
+            let (harmonic, phase) = crate::part_wind::growth_oscillator(instance.id, branch.id);
             self.scene.part_wind.push(PartWind {
                 parent: branch.parent.map(|p| pose_base as u32 + p),
                 owner,
@@ -926,8 +916,8 @@ impl<'a> SceneVegetation<'a> {
                     branch.rest
                 },
                 max_angle: branch.max_angle,
-                harmonic: 7 + (branch.id % 13) as u32,
-                phase: phase(instance.id, branch.id),
+                harmonic,
+                phase,
             });
         }
         self.ids.insert(instance.id);

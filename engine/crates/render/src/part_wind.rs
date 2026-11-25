@@ -92,6 +92,20 @@ impl Default for PartWind {
     }
 }
 
+/// Growth-assembly angular response, shared by resident and streamed trees.
+pub fn growth_angle(parent: Option<u32>, stiffness: f32) -> f32 {
+    if parent.is_none() { 0. } else { 0.22 * (1. - stiffness).clamp(0.15, 1.) }
+}
+
+/// Stable, periodic oscillator of a particular growth branch in a particular plant.
+pub fn growth_oscillator(plant: u64, branch: u64) -> (u32, f32) {
+    let mut x = plant ^ branch;
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
+    let phase = ((x ^ (x >> 31)) >> 40) as f32 / 16_777_216.0 * std::f32::consts::TAU;
+    (7 + (branch % 13) as u32, phase)
+}
+
 /// One reused primitive attached to a shared branch pose. Its local transform
 /// may contain a proper rotation and positive nonuniform scale. Wind never
 /// changes this rest transform or adds another sine evaluation per primitive.
@@ -394,10 +408,33 @@ fn field(state:&WindState)->Result<[f32;4],String> {
         (state.time_seconds.rem_euclid(PERIOD)*std::f64::consts::TAU/PERIOD) as f32])
 }
 
-/// Independent CPU pose reference for fixtures; production updates stay on the
-/// GPU. Uses quaternion composition instead of the shader's Rodrigues rows.
-pub fn sample_poses(parts:&[PartWind],state:&WindState)->Result<Vec<Mat4>,String> {
-    bind_poses(parts)?;let field=field(state)?;let mut result:Vec<Mat4>=Vec::with_capacity(parts.len());
+/// Small streamed rigs can retain their validated rest hierarchy and evaluate
+/// the same oscillator as the GPU into a caller-owned pose buffer.
+pub struct PartWindRig {
+    parts: Vec<PartWind>,
+}
+impl PartWindRig {
+    pub fn new(parts: Vec<PartWind>) -> Result<Self, String> {
+        bind_poses(&parts)?;
+        Ok(Self { parts })
+    }
+
+    pub fn sample_into(&self, state: &WindState, poses: &mut Vec<Mat4>) -> Result<(), String> {
+        evaluate_poses(&self.parts, state, poses)
+    }
+}
+
+/// One-off CPU pose sample using the same validated hierarchy as streamed rigs.
+pub fn sample_poses(parts: &[PartWind], state: &WindState) -> Result<Vec<Mat4>, String> {
+    bind_poses(parts)?;
+    let mut poses = Vec::with_capacity(parts.len());
+    evaluate_poses(parts, state, &mut poses)?;
+    Ok(poses)
+}
+
+fn evaluate_poses(parts: &[PartWind], state: &WindState, result: &mut Vec<Mat4>) -> Result<(), String> {
+    let field = field(state)?;
+    result.clear();
     let axis=Vec3::new(-field[1],0.0,field[0]).try_normalize().unwrap_or(Vec3::X);
     for part in parts {
         let base=part.parent.map(|p|result[p as usize]).unwrap_or(Mat4::IDENTITY)*part.rest;
@@ -405,7 +442,7 @@ pub fn sample_poses(parts:&[PartWind],state:&WindState)->Result<Vec<Mat4>,String
         let rotation=Quat::from_axis_angle(axis,angle);let pivot=base.w_axis.truncate();
         result.push(Mat4::from_translation(pivot)*Mat4::from_quat(rotation)*Mat4::from_translation(-pivot)*base);
     }
-    Ok(result)
+    Ok(())
 }
 
 pub struct PartWindRenderer {
@@ -805,6 +842,30 @@ mod tests {
             PartWind {parent:Some(0),rest:Mat4::from_translation(Vec3::new(0.0,2.0,0.0)),max_angle:0.15,phase:0.7,..Default::default()},
             PartWind {parent:Some(1),rest:Mat4::from_rotation_translation(Quat::from_rotation_z(0.2),Vec3::new(0.0,1.0,0.0)),max_angle:0.08,harmonic:17,phase:1.1,..Default::default()}]
     }
+    #[test]
+    fn cached_growth_branch_poses_use_the_resident_plant_oscillator() {
+        let mut parts = assembly();
+        for (i, part) in parts.iter_mut().enumerate() {
+            part.max_angle = growth_angle(part.parent, 0.7);
+            (part.harmonic, part.phase) = growth_oscillator(47, 731+i as u64);
+        }
+        assert_eq!(parts[0].max_angle, 0.0);
+        assert_eq!(growth_angle(Some(0), 0.0), 0.22);
+        assert!(growth_angle(Some(0), 0.8) < growth_angle(Some(0), 0.2));
+        assert_ne!(growth_oscillator(47, 731), growth_oscillator(48, 731));
+        let rig = PartWindRig::new(parts.clone()).unwrap();
+        let mut poses = Vec::with_capacity(parts.len());
+        let buffer = poses.as_ptr();
+        for (strength, time_seconds) in [(0.0, 17.0), (0.8, 0.2), (0.8, 120.2), (0.5, 21.0)] {
+            let state = WindState { strength, time_seconds, ..Default::default() };
+            rig.sample_into(&state, &mut poses).unwrap();
+            assert_eq!(poses, sample_poses(&parts, &state).unwrap());
+            assert_eq!(poses.as_ptr(), buffer);
+        }
+        parts[1].parent = Some(2);
+        assert!(PartWindRig::new(parts).is_err());
+    }
+
     #[test]
     fn parent_attachment_root_and_inverse_ray_stretch_are_preserved() {
         let parts=assembly();let (rest,_)=bind_poses(&parts).unwrap();
