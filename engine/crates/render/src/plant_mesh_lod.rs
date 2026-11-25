@@ -329,7 +329,9 @@ impl PlantCards {
     /// The materials the mesh's clusters index, cards sampling `layer`.
     pub fn materials(&self, layer: i32) -> Vec<Material> {
         let mut all = self.wood.clone();
-        all.extend(self.cards.iter().map(|m| Material { layer, flags: ALPHA_TEST | TWO_SIDED, ..*m }));
+        all.extend(self.cards.iter().map(|m| Material {
+            layer, flags: ALPHA_TEST | TWO_SIDED | (m.flags & THIN_FOLIAGE), ..*m
+        }));
         all
     }
 
@@ -391,6 +393,12 @@ mod tests {
         let assembly = plant_recipe::build(&SPRUCE, BuildOptions::new(1), plant_recipe::recipe_limits()).unwrap();
         let started = web_time::Instant::now();
         let cards = PlantCards::cook(&assembly, 0.03).unwrap();
+        let materials = cards.materials(3);
+        assert!(cards.cards.iter().any(|m| m.flags & THIN_FOLIAGE != 0));
+        assert!(cards.cards.iter().any(|m| m.flags & THIN_FOLIAGE == 0));
+        for (source, card) in cards.cards.iter().zip(&materials[cards.wood.len()..]) {
+            assert_eq!(card.flags, ALPHA_TEST | TWO_SIDED | (source.flags & THIN_FOLIAGE));
+        }
         let roots: usize = cards.mesh.clusters.iter().filter(|c| !c.parent_error.is_finite()).map(|c| c.tri_count as usize).sum();
         eprintln!("PLANTCARDS {} quads, {} wood tris -> {} leaf tris, {} levels, coarsest {} tris, {:.1} s",
             cards.quads, cards.wood_triangles, cards.mesh.leaf_triangles(), cards.mesh.levels, roots, started.elapsed().as_secs_f64());

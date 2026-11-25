@@ -112,6 +112,16 @@ Measured on a Galaxy Tab S9+ (Adreno 740) and a Xiaomi 13 class phone
   system's choice, 60 Hz on the Tab S9+.
 - `env=NAME:VALUE,NAME:VALUE` in the query sets renderer switches for a test
   run. Frame and GPU pass times are in logcat every 300 frames or 5 s.
+- `bench=1` (or `bench=H1,H2`) measures what each game costs on this device
+  for the hardware-fit table (gamenight-internal
+  docs/strategy/hardware-fit.md, `app::bench`): 10 s warm-up, 20 s at 540
+  lines, 20 s at 1080 (capped to the screen), adaptive quality held still,
+  then one `BENCH {json}` line in logcat with frame, CPU, swapchain-wait and
+  GPU medians per height and a fit of GPU time into a fixed part
+  (`gpu_fixed_ms`) and a part per 3D pixel (`gpu_ns_per_px`). Each game
+  switch starts it again, so `bench=1&game=spellstorm&players=2&cloud=off`
+  measures that game, and the room alone measures the room. About a minute
+  per game. `tier=` is copied into the line.
 
 ## Open
 

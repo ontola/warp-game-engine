@@ -29,7 +29,7 @@ pub const GRASS: u32 = 64;
 pub const NO_AMBIENT_OCCLUSION: u32 = 128;
 /// Drawn by the sorted forward pass, never the opaque or shadow raster pass.
 pub const BLEND: u32 = 256;
-/// True leaf/needle geometry: thin-leaf lighting without alpha-tested cards.
+/// Leaf or needle material with diffuse transmission. May also use alpha-tested coverage.
 pub const THIN_FOLIAGE: u32 = 512;
 /// Self-lit surface (lava, lamps, tracers): adds `tint * scale` nits of
 /// radiance; `scale` is the emission, not a repeat. With a texture `layer`

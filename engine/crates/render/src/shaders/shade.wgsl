@@ -3714,7 +3714,10 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     let sky_vis = sky_visibility(p, visibility_n);
     var meadow_edge=vec2<f32>(1.0);
     if FEATURE_MEADOW && (m.flags&6u)!=0u {meadow_edge=meadow_edge_visibility(p,surface_n,l);}
-    if procedural_leaf {shadow*=NEEDLE_BRUSH_OWN;}
+    // A projected spray already includes the overlap of its source needles.
+    // Keep the sub-cell brush extinction for individual needle geometry.
+    let brush_sun = select(NEEDLE_BRUSH_OWN, 1.0, (m.flags & 1u) != 0u);
+    if procedural_leaf {shadow*=brush_sun;}
     let sun_e = light.sun_color.rgb * light.sun_dir.w * shadow * meadow_edge.y * field_sun;
     let refl = reflect(dir, n);
     let ssao = screen_space_ao(px, size, p, visibility_n, dist);
@@ -3729,7 +3732,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     var specular:vec3<f32>;
     if procedural_leaf {
         // Sky through the brush too, as voxels' crown_sky.
-        let brush_sky=0.25+0.75*sqrt(NEEDLE_BRUSH_OWN);
+        let brush_sky=0.25+0.75*sqrt(brush_sun);
         let sky_vis=sky_vis*brush_sky;
         let back_sky_vis=sky_visibility(p,-visibility_n)*brush_sky;
         let front_ambient=(sky_irradiance(n)*sky_vis+bounce*(1.0-sky_vis))*contact.x;
@@ -3737,7 +3740,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         let spec_contact=mix(contact.y,contact.x,smoothstep(0.08,0.6,rough));
         let env=mix(bounce/PI,environment(refl,rough,bounce),reflection_vis)*spec_contact;
         let response=thin_foliage_response(base,n,v,rough,1.0,sun_e,front_ambient,back_ambient,env);
-        direct=response.direct;indirect=response.indirect;specular=response.specular;
+        direct=response.direct;indirect=response.indirect*orm.x;specular=response.specular;
     } else if FEATURE_GRASS && grass {
         let height=clamp((p.y-inst.r1.w)/max(inst.scale*0.5,1e-4),0.0,1.0);
         let response=grass_leaf_response(base,height,v,sun_e,shadow,sky_vis,contact,rough);

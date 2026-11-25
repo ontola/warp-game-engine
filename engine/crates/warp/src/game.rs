@@ -922,7 +922,7 @@ impl LuaGame {
         let s = (size[1] as f32 / 720.0).max(0.5);
         // The menu hides the game's HUD so nothing shows through it; what a
         // `menu` hook drew goes over the menu's backdrop.
-        if self.menu.is_some() { list.rect(full, [0.051, 0.063, 0.125, 0.72], full); }
+        if self.menu.is_some() { list.rect(full, [0.02, 0.02, 0.05, 0.72], full); }
         let items = self.core().hud.clone();
         for (k, item) in items.iter().enumerate() {
             match item {
@@ -934,33 +934,19 @@ impl LuaGame {
                 }),
             }
         }
-        // The start menu over the whole screen, in the club's look
-        // (lobbies/game-room/DESIGN.md "Menu"): one solid panel, the title
-        // in Outfit 800, items in Outfit 600, the selection a violet row.
+        // The start menu over the whole screen: the title, then the items.
         if let Some(sel) = self.menu {
             let w = size[0] as f32;
             let items = self.menu_items();
-            let (top, _) = self.menu_layout(size);
-            let (title_face, item_face) = menu_faces();
-            let title_size = 48.0 * s;
-            let title_w = render::hud::measure(&self.cfg.title, title_face, title_size)[0];
-            let pw = (380.0 * s).max(title_w + 64.0 * s).min(w - 32.0 * s);
-            // 16 under the last row's highlight, as at its sides.
-            let panel = [w * 0.5 - pw * 0.5, top - 28.0 * s, pw, (122.0 + 56.0 * items.len() as f32) * s];
-            let item_size = 26.0 * s;
-            // Caps centred in the 46 px row (Outfit's cap height is 0.7 em).
-            let item_dy = 15.0 * s - render::hud::baseline(item_face, item_size) + 0.35 * item_size;
-            rounded(&mut list, [panel[0], panel[1] + 6.0 * s, panel[2], panel[3]], 18.0 * s, [0.0, 0.0, 0.0, 0.3], full);
-            rounded(&mut list, [panel[0] - 1.0, panel[1] - 1.0, panel[2] + 2.0, panel[3] + 2.0], 18.0 * s + 1.0, [1.0, 1.0, 1.0, 0.10], full);
-            rounded(&mut list, panel, 18.0 * s, [0.051, 0.063, 0.125, 1.0], full);
-            list.text.push(TextRun { id: 20_000, text: self.cfg.title.clone(), position: [0.0, top + 4.0 * s], bounds: full, font_size: title_size, color: [0xee, 0xf0, 0xfc, 255],
-                font: title_face, align: render::hud::TextAlign::Center, width: w });
+            let top = self.menu_layout(size).0;
+            list.text.push(TextRun { id: 20_000, text: self.cfg.title.clone(), position: [0.0, top], bounds: full, font_size: 56.0 * s, color: [255, 255, 255, 255],
+                font: FontFace::Title, align: render::hud::TextAlign::Center, width: w });
             for (i, item) in items.iter().enumerate() {
                 let y = top + (96.0 + 56.0 * i as f32) * s;
                 let on = i == sel;
-                if on { rounded(&mut list, [panel[0] + 16.0 * s, y - 8.0 * s, pw - 32.0 * s, 46.0 * s], 12.0 * s, [0.486, 0.361, 1.0, 0.35], full); }
-                list.text.push(TextRun { id: 20_001 + i as u64, text: item.label().into(), position: [0.0, y + item_dy], bounds: full, font_size: item_size,
-                    color: if on { [0xee, 0xf0, 0xfc, 255] } else { [0xa8, 0xad, 0xc4, 255] }, font: item_face, align: render::hud::TextAlign::Center, width: w });
+                if on { list.rect([w * 0.5 - 170.0 * s, y - 8.0 * s, 340.0 * s, 48.0 * s], [1.0, 1.0, 1.0, 0.16], full); }
+                list.text.push(TextRun { id: 20_001 + i as u64, text: item.label().into(), position: [0.0, y], bounds: full, font_size: 30.0 * s,
+                    color: if on { [255, 214, 90, 255] } else { [230, 230, 240, 255] }, font: FontFace::Body, align: render::hud::TextAlign::Center, width: w });
             }
         }
         // Script errors stay on screen until fixed: live iteration needs to see them.
@@ -1401,27 +1387,4 @@ impl live::SoundHook for LuaGame {
         let opts = audio::cli::Opts { set: params.to_vec(), seconds, ..Default::default() };
         Ok(Box::new(move || audio::cli::report(&patch, &opts).map(|t| vec![live::Content::Text(t)])))
     }
-}
-
-/// Outfit 800 and 600, the club's UI faces, for the start menu.
-fn menu_faces() -> (FontFace, FontFace) {
-    static FACES: std::sync::OnceLock<(FontFace, FontFace)> = std::sync::OnceLock::new();
-    *FACES.get_or_init(|| (
-        render::hud::register_font(include_bytes!("../../../assets/fonts/outfit-800.ttf")),
-        render::hud::register_font(include_bytes!("../../../assets/fonts/outfit-600.ttf")),
-    ))
-}
-
-/// A filled rectangle with round corners of `radius`, as one polygon.
-fn rounded(list: &mut HudDrawList, r: [f32; 4], radius: f32, color: [f32; 4], clip: [f32; 4]) {
-    let k = radius.min(r[2] * 0.5).min(r[3] * 0.5).max(0.0);
-    let corners = [[r[0] + r[2] - k, r[1] + k, -0.5], [r[0] + r[2] - k, r[1] + r[3] - k, 0.0], [r[0] + k, r[1] + r[3] - k, 0.5], [r[0] + k, r[1] + k, 1.0]];
-    let mut points = Vec::with_capacity(36);
-    for [cx, cy, start] in corners {
-        for j in 0..=8 {
-            let a = (start + j as f32 / 16.0) * std::f32::consts::PI;
-            points.push([cx + k * a.cos(), cy + k * a.sin()]);
-        }
-    }
-    list.polygon(&points, color, clip);
 }

@@ -4657,6 +4657,65 @@ local function profile_card(u, cx, cy, a, k)
 end
 
 -- The start menu (open, the game frozen): everyone's profile card under it.
+-- The start menu shows each player's controls on their own buttons (a
+-- disc on a controller, the key on a keyboard or keyboard half).
+local MENU_CONTROLS = { { "move", "Move" }, { "X", "Attack" }, { "A", "Search, pick up, revive (hold)" }, { "Y", "First aid kit" }, { "LB", "Torch on or off" } }
+local function menu_controls(top)
+	local w, h = hud.size()
+	local k = h / 720
+	local people = {}
+	for _, pl in players.list() do
+		if not pl.bot then table.insert(people, pl) end
+	end
+	if #people == 0 then return end
+	local y0 = top + 30 * k
+	hud.text("CONTROLS", 0, y0, { size = 16 * k, align = "center", width = w, color = { 0.85, 0.3, 0.25, 1 } })
+	-- One player: the controls in a row (wrapping), so they fit under
+	-- whatever the game shows; more: a column each, rows as tall as fit.
+	if #people == 1 then
+		local pl = people[1]
+		local size, gap, maxw = 28 * k, 32 * k, math.min(w - 80 * k, 1000 * k)
+		local items = {}
+		for _, row in MENU_CONTROLS do
+			local key = hud.key(pl.id, row[1])
+			local bw = if key then math.max(size, hud.measure(key, size * 0.56) + size * 0.6) else size
+			table.insert(items, { row = row, w = bw + 10 * k + hud.measure(row[2], 18 * k) })
+		end
+		local lines, line, lw = {}, {}, 0
+		for _, it in items do
+			if #line > 0 and lw + gap + it.w > maxw then table.insert(lines, { items = line, w = lw }); line, lw = {}, 0 end
+			lw += (if #line > 0 then gap else 0) + it.w
+			table.insert(line, it)
+		end
+		table.insert(lines, { items = line, w = lw })
+		local y = y0 + 34 * k
+		for _, l in lines do
+			local x = w / 2 - l.w / 2
+			for _, it in l.items do
+				local bw = hud.button(pl.id, it.row[1], x, y, size)
+				hud.text(it.row[2], x + bw + 10 * k, y + 3 * k, { size = 18 * k, color = { 0.88, 0.85, 0.8, 1 } })
+				x += it.w + gap
+			end
+			y += 40 * k
+		end
+		return
+	end
+	local colw = 300 * k
+	local left = w / 2 - colw * #people / 2
+	local step = math.clamp((h - 12 * k - (y0 + 70 * k)) / #MENU_CONTROLS, 30 * k, 40 * k)
+	for n, pl in people do
+		local x = left + (n - 1) * colw + 30 * k
+		local y = y0 + 34 * k
+		hud.text(pl.name, x, y, { size = 20 * k, color = { pl.color.x, pl.color.y, pl.color.z, 1 } })
+		y += 36 * k
+		for _, row in MENU_CONTROLS do
+			local bw = hud.button(pl.id, row[1], x, y, step * 0.75)
+			hud.text(row[2], x + bw + 12 * k, y + 4 * k, { size = step * 0.47, width = colw - bw - 40 * k, color = { 0.88, 0.85, 0.8, 1 } })
+			y += step
+		end
+	end
+end
+
 local function menu(top)
 	s = state.s
 	if not s then return end
@@ -4666,7 +4725,7 @@ local function menu(top)
 	for _, u in s.survivors do
 		if not u.recruit and (u.person or u.state == "ghost") then table.insert(list, u) end
 	end
-	if #list == 0 then return end
+	if #list == 0 then menu_controls(top) return end
 	local cw, ch, gap = CARD_W * k, CARD_H * k, 14 * k
 	local per = math.max(1, math.min(#list, math.floor((W - 40 * k + gap) / (cw + gap))))
 	for i, u in list do
@@ -4683,6 +4742,9 @@ local function menu(top)
 			hud.text("waiting for someone to join", cx + 16 * k, cy + 40 * k, { size = 14 * k, width = cw - 28 * k, color = { 0.55, 0.53, 0.5, 1 } })
 		end
 	end
+	-- Each player's controls under their cards.
+	local rows = (#list - 1) // per + 1
+	menu_controls(top + 24 * k + rows * (ch + gap))
 end
 
 local function draw_over(W, H, k)

@@ -12,7 +12,7 @@ games. The last section lists where the current UI does not follow it yet.
 Two layers, two rules:
 
 - **Club chrome**: everything Splitscreen Club draws (lobby HUD, catalog,
-  page overlays, Back panel, engine start menu of Luau games). One look,
+  page overlays, Back panel). One look,
   defined here.
 - **Game UI**: what a game draws inside its own world (Spellstorm's
   parchment menus, Sideways' rally HUD). Games keep their own art style, but
@@ -293,19 +293,20 @@ From Joep's decisions, for every game's own UI:
   suggestion there, not a rule.
 - Enemy attacks are always telegraphed.
 - Never freeze on load or on a new player: load in the background.
-- The engine's built-in start menu (Luau games, `warp/src/game.rs`) is
-  club chrome: it uses this guide (Outfit, panel-solid, violet selection).
+- A game's start menu is the game's own, including the engine's built-in
+  one for Luau games (`warp/src/game.rs`): it fits the game's brand, not
+  the club's (Joep, 2026-11-25). Only the structure rules above apply.
 
 ## Where the current UI differs
 
 Found on 2026-11-25 from the code and Joep's screenshots of the browser
 host. Numbers are referenced from the thread.
 
-**Status (2026-11-25, same day):** fixed 1–13, 15–19, 21 (store grids
+**Status (2026-11-25, same day):** fixed 1–9, 11–13, 15–19, 21 (store grids
 are cover only), 22 (room TV, list, catalog and app share the Playlist
 component; the TV keeps its big first cover, numbered 01) and 23. Left:
-14 (dev tool). 20 is out of scope: games' own HUDs keep their own style
-(Joep, 2026-11-25).
+14 (dev tool). 10 and 20 are out of scope: games' own start menus and
+HUDs keep their own style (Joep, 2026-11-25).
 
 1. **Panels have six looks.** HTML notices: rounded 18–20, 1 px border,
    blur. Mouse menu: square, 3 px violet border. Toasts, bench, error
