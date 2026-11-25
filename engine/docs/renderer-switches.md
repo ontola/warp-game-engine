@@ -177,3 +177,9 @@ image at an eighth of its size: bright pass, separable blur, screened over
 the image, strength from the bloom options. No shadows or TAA. Made for tile GPUs
 (phones, tablets, Quest); see the plan "Mobiel renderpad voor Warp". A
 game's own `Graphics::minimal_forward` keeps its vertex-lit minimum profile.
+Game surfaces (`SURFACE`) run there too, with `SURFACE_LOW_DETAIL` true; a
+surface that does not compile there leaves the scene to the medium tier.
+`KERN_FORWARD=auto` (the Android default) picks the low tier wherever the
+scene has no terrain, grass, foliage, crowds, debris or skinned meshes; the
+log line `graphics tier: ...` says which tier draws and why. See
+`graphics-tiers.md`.

@@ -14,9 +14,10 @@ renderpad voor Warp" for the reasoning).
 
 Today the low tier is chosen with `KERN_FORWARD=1` (on Android:
 `env=KERN_FORWARD:1` in the host's query). The Android host defaults to
-`KERN_FORWARD=auto`: the low tier wherever the scene has no procedural game
-surfaces (`SURFACE`) or terrain, which it would show as plain tint, and no
-grass, foliage or skinned meshes. `env=KERN_FORWARD:0` turns it off. The
+`KERN_FORWARD=auto`: the low tier wherever the scene has no terrain, grass,
+foliage, crowds, debris or skinned meshes, and the game's surface compiles
+there. `env=KERN_FORWARD:0` turns it off. The renderer logs its choice, for
+example `graphics tier: medium; low tier wanted but skinned meshes`. The
 automatic choice per device comes with the hardware-fit work.
 
 Measured on a Samsung Tab S9+ (Adreno 740, 120 Hz), Game Room, 25 November
@@ -35,16 +36,21 @@ lights were each cheap, together in one kernel slow).
 The low tier draws every visible mesh once, in one pass, with a small
 fragment shader:
 
-1. the material's tint times its albedo texture layer,
-2. the room's baked light: the irradiance probes from
+1. the material's tint times its albedo texture layer, or the game's own
+   `game_surface` (`SURFACE`), or a car part's colour, metal and clear coat,
+2. the sky's irradiance (its SH) plus the room fill, or where there is one
+   the room's baked light: the irradiance probes from
    `Renderer::set_irradiance_volume` as one 3D texture, three filtered taps,
-3. every spot and local light, without shadows,
-4. emission,
-5. light beams of `Lighting::volumetric` (the analytic in-scatter of
+3. every spot and local light, without shadows, and of the clustered lights
+   the 32 nearest the cameras,
+4. the sky in what is glossy: its SH at the mirror direction (a blurred
+   reflection) by Fresnel,
+5. emission,
+6. light beams of `Lighting::volumetric` (the analytic in-scatter of
    `volumetric.wgsl`, three samples, nearest 16 lights),
-6. exposure, AgX, contrast and saturation, straight to the display format.
+7. exposure, AgX, contrast and saturation, straight to the display format.
 
-Glow (`forward_bloom.wgsl`) then works on the finished image at an eighth of
+Where no mesh is, the sky's SH as a soft gradient. Glow (`forward_bloom.wgsl`) then works on the finished image at an eighth of
 its size. Sprites, text tags and `fx` draw as on the other tiers.
 
 ## Material primitives
@@ -60,14 +66,16 @@ the cheapest one that gives the look.
 | Lit texture | `layer` set to an albedo layer | Plus one texture tap | Posters, wood, painted screens (`Screen`) |
 | Lit plus glow | `EMISSIVE` with `scale` | As lit, plus an add | A lamp shade that is lit and glows |
 | Cutout | `ALPHA_TEST` with a texture | As lit texture, plus discard | Leaves, fences. Costs more on tile GPUs; use sparingly |
-| Glass | `BLEND` | As lit, drawn after the opaque meshes without depth write | Keep it to a few large surfaces |
+| Glass, cards | `BLEND` (`set_material_blend`, `set_material_additive`) | As lit, drawn after the opaque meshes without depth write, premultiplied; additive adds | Glows and halos as additive emissive cards |
 | Two-sided | `TWO_SIDED` | Same | The normal turns towards the camera |
+| Game surface | `SURFACE` with `game_surface` | Whatever the surface costs | Gets `SURFACE_LOW_DETAIL = true`: branch on it for the cheap version. Reads only `view.cam`, `light.sun_dir/sun_color/anim`, `aux_word`, `instances`, `albedo`, `samp` and `sky_irradiance` |
 
-What the low tier leaves out: shadows of any kind, roughness and metalness
-(everything is diffuse), normal and material maps, procedural `SURFACE` and
-`TERRAIN` materials (they show their tint), foliage, grass, terrain,
-skinned meshes and debris. A scene with grass, terrain, foliage or skinned
-actors stays on the medium tier until the low tier supports them.
+What the low tier leaves out: shadows of any kind, highlights of lights
+(roughness only fades the sky's reflection), normal and material maps,
+`TERRAIN` materials, foliage, grass, terrain, crowds, skinned meshes and
+debris, and a game surface that reads more than listed above (Warp Theft
+Auto's reads the sky's radiance and GI). Such a scene stays on the medium
+tier until the low tier supports it.
 
 ## Checking a game on the low tier
 
