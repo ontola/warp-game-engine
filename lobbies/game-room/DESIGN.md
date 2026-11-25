@@ -185,6 +185,10 @@ What a player must do next. Top centre, one at a time.
 
 ### Toast
 
+A game someone asked to start is not a toast but one loading card in the
+toast spot ("Loading Dead Miles  40%" over the progress bar), until the game
+runs. A newer ask replaces it, so starts never stack.
+
 Something happened ("Joep joined", "Update ready"). Bottom centre in the
 room, top centre in the catalog view (so it doesn't cover the buttons),
 stacked 12 apart, newest nearest the edge. Panel, Body text, an optional

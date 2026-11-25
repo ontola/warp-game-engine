@@ -151,6 +151,27 @@ pub fn draw(lobby: &Lobby, size: [u32; 2], _alpha: f32) -> HudDrawList {
     // buttons and hints.
     let catalog = lobby.catalog_open();
     let mut y = if catalog { 40.0 * scale } else { h - 40.0 * scale };
+    // The game someone asked to start: one card with the progress bar
+    // (DESIGN.md "Progress"), visible wherever the camera is.
+    if let Some((game, title, _)) = &lobby.starting {
+        let fs = (22.0 * scale).floor();
+        let shown = lobby.host.loading_shown(game);
+        let label = match lobby.host.loading_session(game) {
+            Some(l) if l.stage == "download" => format!("Downloading {title}"),
+            Some(_) => format!("Loading {title}"),
+            None => format!("Starting {title}"),
+        };
+        let pct = shown.map(|p| format!("{}%", p as i64)).unwrap_or_default();
+        let tw = (width(&label, fs) + width(&pct, fs) + 96.0 * scale).max(420.0 * scale);
+        let ch = fs + 54.0 * scale;
+        let r = if catalog { [w / 2.0 - tw / 2.0, y, tw, ch] } else { [w / 2.0 - tw / 2.0, y - ch + 4.0, tw, ch] };
+        crate::paint::panel(&mut c, r, scale);
+        let base = r[1] + 18.0 * scale + fs * 0.8;
+        text(&mut c, &label, [r[0] + 24.0 * scale, base], fs, TEXT);
+        if !pct.is_empty() { text(&mut c, &pct, [r[0] + r[2] - 24.0 * scale - width(&pct, fs), base], fs, DIM); }
+        crate::paint::progress(&mut c, [r[0] + 24.0 * scale, r[1] + r[3] - 22.0 * scale, r[2] - 48.0 * scale, 8.0 * scale], shown.unwrap_or(0.0) / 100.0, 1.0);
+        y += if catalog { r[3] + 10.0 } else { -(r[3] + 10.0) };
+    }
     for t in lobby.toasts.iter().rev() {
         let fs = (22.0 * scale).floor();
         let tw = width(&t.text, fs) + 62.0 * scale;
