@@ -18,6 +18,7 @@ pub mod kit;
 mod editor_menus;
 pub use live::knobs;
 pub mod luajson;
+pub mod online;
 pub mod party;
 pub mod plants;
 pub mod ragdoll;

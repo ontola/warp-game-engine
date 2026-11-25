@@ -1,5 +1,9 @@
 # Networking
 
+Luau games play online through the engine, without netcode of their own:
+see [online couches](online.md). This page is the transport and the
+Rust games' own netcode.
+
 The `net` crate carries a game's own message types between a host and its
 clients over [iroh](https://iroh.computer): QUIC with hole punching and
 relays, which are meant to let players connect without opening ports. The crate is

@@ -701,8 +701,9 @@ KERN_ADAPTER=software warp script games/hello-warp games/hello-warp/scripts/smok
 
 - Skinned and animated glTF (Warp Humans aside), physics bodies
   (the `physics` crate) and terrain are not exposed to Luau yet.
-- No online play. The determinism rules are meant to make lockstep or
-  host-authoritative play possible later.
+- Online play is host-authoritative and needs nothing from the game:
+  `warp run DIR --host` and `--join TICKET` ([online couches](online.md)).
+  Humans, vehicles and explosions are not replicated yet.
 - `game.toml` and assets do not hot-reload.
 - Splitscreen Club party settings (`declare_settings`), phone buttons
   (`declare_actions`) and per-player settings are not exposed to Luau yet.

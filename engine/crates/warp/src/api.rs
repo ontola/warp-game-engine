@@ -135,11 +135,13 @@ pub struct Player {
     /// The Splitscreen Club face (`hud.face`): its sources and the composed art.
     pub face_src: (String, String),
     pub face: Option<std::sync::Arc<crate::face::Face>>,
+    /// The online couch (follower) this person sits on; None: this couch.
+    pub remote: Option<u64>,
 }
 
 impl Player {
     pub fn new(id: u32, name: String, color: Option<[f32; 3]>, bot: bool) -> Self {
-        Player { id, name, color: color.unwrap_or(PLAYER_COLORS[(id as usize - 1) % 4]), bot, seat: None, couch: None, cam: Cam::default(), cam_prev: Cam::default(), view: None, face_src: (String::new(), String::new()), face: None }
+        Player { id, name, color: color.unwrap_or(PLAYER_COLORS[(id as usize - 1) % 4]), bot, seat: None, couch: None, cam: Cam::default(), cam_prev: Cam::default(), view: None, face_src: (String::new(), String::new()), face: None, remote: None }
     }
 
     /// Recompose the face when the profile's skin or art changed.

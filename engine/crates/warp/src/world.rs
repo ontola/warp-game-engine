@@ -528,6 +528,20 @@ impl World {
         Ok(id)
     }
 
+    /// Spawn under a given id (an online follower mirrors the host's ids).
+    pub(crate) fn spawn_as(&mut self, id: u32, s: Spawn) -> Result<(), String> {
+        let next = self.next;
+        self.next = id;
+        let r = self.spawn(s);
+        self.next = next.max(id + 1);
+        r.map(|_| ())
+    }
+
+    /// Set where an entity is, how it is turned and its size (an online follower).
+    pub(crate) fn set_pose(&mut self, id: u32, pos: Vec3, rot: Vec3, size: Vec3) -> Result<(), String> {
+        self.transform(id, |e| { e.pos = pos; e.rot = rot; e.size = size; })
+    }
+
     pub(crate) fn add_heightfield(&mut self, grid: physics::terrain::HeightGrid, origin: Vec3, tag: String) -> Result<u32,String> {
         let pos = origin + grid.center_offset();
         if !pos.is_finite() { return Err("heightfield origin and extent must be finite".into()); }

@@ -32,6 +32,10 @@ const USAGE: &str = "warp: run a game made of Luau scripts, synth patches and as
       headless in real time with live control (default port 7878)
   warp check DIR [--ticks N]
       load, init and tick without a GPU; print errors and the state
+  warp run DIR --host [--lan] [--ticket-file F]  |  warp run DIR --join TICKET [--lan]
+      online couches: the host prints a ticket, another couch joins with it (engine/docs/online.md)
+  warp nettest DIR [--ticks N]
+      an online host and a follower over loopback, without a GPU: checks the mirror, prints the bandwidth
   --storage-dir DIR (run, script, serve, check)
       use this local save directory; headless commands otherwise use fresh in-memory storage
   warp audio render FILE.luau [...] | check FILES | units
@@ -107,6 +111,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         Some("script") => script(&args),
         Some("serve") => serve(&args),
         Some("check") => check(&args),
+        Some("nettest") => nettest(&args),
         Some("audio") => audio::cli::run(args[1..].to_vec()).map_err(|e| match e.strip_prefix("usage: ") { Some(u) => format!("usage: warp audio {u}"), None => e }),
         Some("new") => new(&args),
         Some("templates") => { for t in warp::starter::TEMPLATES { println!("{:<12} {}", t.name, t.about); } Ok(()) }
@@ -175,6 +180,18 @@ fn play(args: &[String]) -> Result<(), String> {
     if let Err(e) = &speaker { eprintln!("sound off: {e}"); }
     println!("{} warp: sound open", app::manners::stamp());
     let mut game = load_game(&dir, args, sender, true)?;
+    let lan = args.iter().any(|a| a == "--lan");
+    if args.iter().any(|a| a == "--host") {
+        let ticket = game.host_online(lan)?;
+        println!("{} warp: online host. Another couch joins with:\n  warp run {} --join {ticket}", app::manners::stamp(), dir.display());
+        if let Some(file) = value(args, "--ticket-file") { std::fs::write(&file, &ticket).map_err(|e| format!("{file}: {e}"))?; }
+    }
+    if let Some(ticket) = value(args, "--join") {
+        let ticket = if std::path::Path::new(&ticket).is_file() { std::fs::read_to_string(&ticket).map_err(|e| format!("{ticket}: {e}"))?.trim().to_string() } else { ticket };
+        println!("{} warp: joining the host", app::manners::stamp());
+        game.follow_online(&ticket, lan, size(args, game.cfg.size)?)?;
+        println!("{} warp: following the host", app::manners::stamp());
+    }
     if game.connect_party() { println!("{} warp: connected to the party host", app::manners::stamp()); }
     if let Some(cfg) = live::Config::from_args(&game.live_name(), args)? { game.start_live(cfg)?; }
     else if game.party.is_some() && std::env::var("WARP_LIVE").as_deref() != Ok("0") {
@@ -186,7 +203,9 @@ fn play(args: &[String]) -> Result<(), String> {
         if let Err(e) = game.start_live(cfg) { eprintln!("live: {e}"); }
     }
     let cfg = app::Config {
-        title: game.cfg.title.clone(), size: size(args, game.cfg.size)?, tick_hz: game.cfg.tick_rate,
+        title: game.cfg.title.clone(), size: size(args, game.cfg.size)?,
+        // A follower shows the host's frames as they come (online::SEND_HZ).
+        tick_hz: if game.is_following() { game.cfg.tick_rate / warp::online::send_every(game.cfg.tick_rate) as f32 } else { game.cfg.tick_rate },
         fullscreen: app::startup::fullscreen(args), keyboard: true, pointer: false, frames: parse(args, "--frames")?.unwrap_or(0), max_render_height: None, target_fps: None,
     };
     let r = app::run(cfg, &mut game);
@@ -231,6 +250,58 @@ fn check(args: &[String]) -> Result<(), String> {
     println!("{}", serde_json::to_string_pretty(&game.state_json()).unwrap());
     let errors = game.errors();
     if errors.is_empty() { Ok(()) } else { Err(format!("{} error(s):\n{}", errors.len(), errors.join("\n"))) }
+}
+
+/// An online host and a follower couch in one process over loopback: the
+/// follower's world must match the host's, and the line says the bandwidth.
+fn nettest(args: &[String]) -> Result<(), String> {
+    let dir = dir(args)?;
+    let ticks: u32 = parse(args, "--ticks")?.unwrap_or(600);
+    let mut host = load_game(&dir, args, None, false)?;
+    host.echo = false;
+    let mut follower = load_game(&dir, args, None, false)?;
+    follower.echo = false;
+    let ticket = host.host_online(true)?;
+    follower.follow_online(&ticket, true, [1920, 1080])?;
+    let hz = host.cfg.tick_rate;
+    let hp = app::Game::local_players(&host);
+    let fp = app::Game::local_players(&follower);
+    // The follower's people fly right and fire, so their input must reach the host.
+    let push = app::Controls { mv: [1.0, 0.0], aim: [1.0, 0.0], held: app::Buttons(app::Buttons::RIGHT_TRIGGER), ..Default::default() };
+    let t0 = std::time::Instant::now();
+    for _ in 0..ticks {
+        app::Game::tick(&mut host, &vec![app::Controls::default(); hp]);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        app::Game::tick(&mut follower, &vec![push; fp]);
+    }
+    // Let the last frames arrive.
+    for _ in 0..50 { std::thread::sleep(std::time::Duration::from_millis(10)); app::Game::tick(&mut follower, &vec![push; fp]); }
+    let (wrong, extra) = follower.mirror_errors(&host);
+    let bytes = host.online_sent();
+    let kbit = bytes as f64 * 8.0 / 1000.0 / (ticks as f64 / hz as f64);
+    let state = host.state_json();
+    let remote_people: Vec<&serde_json::Value> = state["players"].as_array().map(|a| a.iter().filter(|p| p["name"].as_str().is_some_and(|n| n.starts_with("Online"))).collect()).unwrap_or_default();
+    // Where the game itself put the follower's people (any table with their name), to see their input arrive.
+    fn find(v: &serde_json::Value, out: &mut Vec<serde_json::Value>) {
+        match v {
+            serde_json::Value::Object(m) => {
+                if m.get("name").and_then(|n| n.as_str()).is_some_and(|n| n.starts_with("Online")) && m.contains_key("x") { out.push(serde_json::json!({ "name": m["name"], "x": m["x"], "y": m["y"] })); }
+                for x in m.values() { find(x, out); }
+            }
+            serde_json::Value::Array(a) => for x in a { find(x, out); },
+            _ => {}
+        }
+    }
+    let mut in_game = Vec::new();
+    find(&state["state"], &mut in_game);
+    println!("{}", serde_json::json!({ "follower_people_in_game": in_game,
+        "ticks": ticks, "seconds_real": t0.elapsed().as_secs_f32(), "entities_host": host.core().world.entities.len(), "entities_follower": follower.core().world.entities.len(),
+        "mismatched": wrong, "extra_on_follower": extra, "bytes": bytes, "kbit_per_s_at_tick_rate": kbit.round(), "bytes_per_tick": bytes / ticks as u64, "bytes_full_poses_hud_rest": host.online_parts(),
+        "follower": follower.online_state(), "host_online_people": remote_people.len(), "host_errors": host.errors(), "follower_errors": follower.errors(),
+    }));
+    if wrong > 0 || extra > 0 { return Err(format!("the follower's world differs: {wrong} wrong, {extra} extra")); }
+    if remote_people.is_empty() { return Err("the follower's people never reached the host".into()); }
+    Ok(())
 }
 
 fn new(args: &[String]) -> Result<(), String> {

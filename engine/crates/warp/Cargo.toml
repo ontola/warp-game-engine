@@ -31,6 +31,7 @@ jsonschema = { version = "0.60.2", default-features = false }
 directories = "6.0.0"
 sha2.workspace = true
 mlua = { version = "0.12", features = ["serde"] }
+postcard = { version = "1", features = ["alloc"] }
 
 [dev-dependencies]
 tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
@@ -38,6 +39,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 
 # Game saves; a browser build (wasm32) keeps them in memory instead.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+net = { path = "../net" }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 
 # The browser build: warp::web, examples/warp_web.rs, engine/docs/browser.md.

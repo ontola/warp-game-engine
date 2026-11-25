@@ -128,7 +128,14 @@ pub struct LuaGame {
     /// main.luau as it runs after temporary knob changes (not saved yet).
     trial: Option<String>,
     editor_pages: (Vec<render::debug_ui::DebugMenu>, Vec<render::debug_ui::DebugControl>),
+    /// Online couches: hosting other couches, or following a host.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) online: online_game::Online,
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "online_game.rs"]
+mod online_game;
 
 /// The start menu's items: Joep's convention for every Splitscreen Club game
 /// (the title on top, Resume, then New round; no button hints).
@@ -211,7 +218,8 @@ impl LuaGame {
         if single.is_none() { host.enable_libraries(); }
         crate::kit::install(&mut host);
         let mut g = LuaGame { dir: dir.to_path_buf(), single: single.clone(), seed: cfg.seed, fresh, cfg, host, core, inited: BTreeSet::new(), light: Lighting::default(), applied_sky: None, sky_upload: None, daylight: None,
-            log: VecDeque::new(), live: None, live_logs: None, default_sky, echo: true, party: None, menu: None, menu_stick: 0.0, running_for: 0, ready_due: false, windowed: false, polls: 0, next_id: 1, quit: false, back: false, page_seats: 0, surface: GameSurface::new(dir), trial: None, editor_pages: Default::default() };
+            log: VecDeque::new(), live: None, live_logs: None, default_sky, echo: true, party: None, menu: None, menu_stick: 0.0, running_for: 0, ready_due: false, windowed: false, polls: 0, next_id: 1, quit: false, back: false, page_seats: 0, surface: GameSurface::new(dir), trial: None, editor_pages: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))] online: Default::default() };
         g.surface.install();
         match &over.seats {
             Some(seats) => { let seats = g.with_bots(seats); g.seat_all(&seats, true); }
@@ -1104,7 +1112,7 @@ impl Game for LuaGame {
     }
 
     /// The people; bots need no controls.
-    fn local_players(&self) -> usize { self.core().roster.iter().filter(|p| !p.bot).count().max(1) }
+    fn local_players(&self) -> usize { self.core().roster.iter().filter(|p| !p.bot && p.remote.is_none()).count().max(1) }
     // A new seat reaches a Luau game through the page's seats (`page_seats`,
     // then its `player_joined` hook), up to four people.
     fn takes_joins(&self) -> bool { self.core().roster.iter().filter(|p| !p.bot).count() < 4 }
@@ -1123,6 +1131,8 @@ impl Game for LuaGame {
             c.world.tick_start();
             for p in &mut c.roster { p.cam_prev = p.cam; }
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.is_following() { self.follow_tick(controls); return; }
         #[cfg(target_arch = "wasm32")]
         crate::web::update_story(self);
         if let Some(mut l) = self.live.take() { l.serve(self); self.live = Some(l); }
@@ -1138,6 +1148,8 @@ impl Game for LuaGame {
             Some(None) => { self.send_requests(); return; }
             Some(Some(c)) => c,
         };
+        #[cfg(not(target_arch = "wasm32"))]
+        let controls = self.online_controls(controls);
         if self.menu_tick(&controls) { return; }
         let input = match self.input(self.host.lua(), &controls) { Ok(t) => t, Err(e) => { self.say(format!("input: {e}")); return; } };
         self.core().humans.tick_start();
@@ -1154,6 +1166,8 @@ impl Game for LuaGame {
         }
         self.ears();
         self.send_requests();
+        #[cfg(not(target_arch = "wasm32"))]
+        self.online_send();
     }
 
     fn screen(&self) -> app::Screen { self.party.as_ref().map_or(app::Screen::Normal, |p| p.screen()) }
@@ -1175,7 +1189,14 @@ impl Game for LuaGame {
     fn take_back(&mut self) -> bool { std::mem::take(&mut self.back) }
 
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
-        let views = frame.rects(self.views());
+        // Online, this screen shows only this couch's views; the others' views
+        // (and the HUD drawn into them) lie off screen.
+        #[cfg(not(target_arch = "wasm32"))]
+        let shown = self.local_views();
+        #[cfg(target_arch = "wasm32")]
+        let shown = self.views();
+        let mut views = frame.rects(shown);
+        views.resize(self.views().max(shown), crate::online::OFFSCREEN);
         {
             let mut c = self.core();
             c.screen = frame.size;
@@ -1185,7 +1206,14 @@ impl Game for LuaGame {
         }
         // With the start menu open a game may draw under its items (its
         // `menu(y)` hook, y where the free space starts) instead of its HUD.
-        if self.menu.is_some() {
+        #[cfg(not(target_arch = "wasm32"))]
+        let following = self.is_following();
+        #[cfg(target_arch = "wasm32")]
+        let following = false;
+        if following {
+            #[cfg(not(target_arch = "wasm32"))]
+            self.follow_hud(frame.size);
+        } else if self.menu.is_some() {
             let below = self.menu_layout(frame.size).1;
             self.hook("menu", || Ok(mlua::MultiValue::from_vec(vec![Value::Number(below as f64)])));
         } else {
@@ -1296,6 +1324,7 @@ impl Game for LuaGame {
         seen.sort_by_key(|(v, _)| *v);
         seen.dedup_by_key(|(v, _)| *v);
         if seen.is_empty() { seen.push((0, Cam::default())); }
+        seen.truncate(shown);
         let cameras = seen.into_iter().map(|(_, k)| k).map(|k| Camera { pos: k.pos, target: k.target, fov_y: k.fov.to_radians(), near: 0.05 }).collect();
         drop(c);
         if let Some(line) = surface_line { self.say(line); }

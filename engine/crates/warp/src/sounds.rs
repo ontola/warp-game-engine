@@ -195,13 +195,15 @@ pub struct SoundOut {
     pub played: u64,
     pub recent: VecDeque<(String, u64)>,
     ears: Vec<Ear>,
+    /// An online host keeps every play here for its followers.
+    pub record: Option<Vec<crate::online::SoundEvent>>,
 }
 
 const HANDLES: usize = 512;
 
 impl SoundOut {
     pub fn new(bank: Bank, tx: Option<SoundSender>) -> Self {
-        SoundOut { bank, tx, handles: HashMap::new(), order: VecDeque::new(), next: 1, played: 0, recent: VecDeque::new(), ears: Vec::new() }
+        SoundOut { bank, tx, handles: HashMap::new(), order: VecDeque::new(), next: 1, played: 0, recent: VecDeque::new(), ears: Vec::new(), record: None }
     }
 
     pub fn has_output(&self) -> bool { self.tx.is_some() }
@@ -215,6 +217,7 @@ impl SoundOut {
         let params: Vec<(String, f32)> = if sampled { params.iter().filter(|(n, _)| n == "rate" || n == "gain").cloned().collect() } else { params.to_vec() };
         let params = &params[..];
         if !sampled { check_params(&patch, params)?; }
+        if let Some(r) = &mut self.record { r.push(crate::online::SoundEvent { name: name.into(), params: params.to_vec(), at, db, pitch }); }
         let id = self.next;
         self.next = self.next.wrapping_add(1).max(1);
         self.played += 1;
