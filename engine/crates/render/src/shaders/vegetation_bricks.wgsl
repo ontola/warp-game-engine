@@ -111,7 +111,7 @@ fn brick_radiance(sample:VolumeSample,p:vec3<f32>,v:vec3<f32>)->vec3<f32> {
         let front=sky_irradiance(n)*sky_vis+bounce*(1.0-sky_vis);
         let back=sky_irradiance(-n)*back_vis+bounce*(1.0-back_vis);
         let env=mix(bounce/PI,environment(reflect(-v,n),rough,bounce),sky_vis);
-        let response=thin_foliage_response(base,n,v,rough,sample.leaf_fraction,
+        let response=thin_foliage_response(base,n,v,rough,sample.leaf_fraction,sample.leaf_fraction,
             light.sun_color.rgb*light.sun_dir.w*shadow,front,back,env);
         direct+=response.direct*moment.w;indirect+=response.indirect*moment.w;specular+=response.specular*moment.w;
         for(var lamp=0u;lamp<incident_light_count(p);lamp++) {

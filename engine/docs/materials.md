@@ -13,7 +13,7 @@ buffers per stage ([browser](browser.md)) still holds.
 
 ## Thin foliage in glTF
 
-The glTF material boolean `extras.warpThinFoliage` enables reflected and transmitted light for leaves and needles. It defaults to `false`. A masked woody twig can share the same atlas and keep an opaque lighting response. The alpha mask controls the silhouette independently.
+The glTF material boolean `extras.warpThinFoliage` enables reflected and transmitted light for leaves and needles. It defaults to `false`. A masked woody twig can share the same atlas and keep an opaque lighting response. The alpha mask controls the silhouette independently. A cutout spray can represent many needles or leaves with one shading normal. Warp weights its direct solar highlight by the projected area and uses roughness to limit the grazing reflection of the group. The diffuse light transmitted through the leaves keeps its source colour. The same filtering applies to the leaf fraction of a foliage voxel.
 
 ## Material maps
 

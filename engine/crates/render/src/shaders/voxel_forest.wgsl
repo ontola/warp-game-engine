@@ -428,7 +428,7 @@ fn volume_radiance(sample:VolumeSample,tree:VolumeTree,p:vec3<f32>,v:vec3<f32>,s
             let back=sky_irradiance(-n)*sky_vis+bounce*(1.0-sky_vis);
             let refl=reflect(-v,n);
             let env=mix(bounce/PI,environment(refl,rough,bounce),sky_vis);
-            let response=thin_foliage_response(base,n,v,rough,sample.leaf_fraction,sun_e,front,back,env);
+            let response=thin_foliage_response(base,n,v,rough,sample.leaf_fraction,sample.leaf_fraction,sun_e,front,back,env);
             direct+=response.direct*weight;indirect+=response.indirect*weight;specular+=response.specular*weight;
             continue;
         }

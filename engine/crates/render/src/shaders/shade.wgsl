@@ -437,7 +437,7 @@ fn shade_voxel(px: vec2<i32>, size: vec2<u32>, dir: vec3<f32>, depth: f32) {
     let back = (sky_irradiance(-n) * back_sky_vis + bounce * (1.0 - back_sky_vis)) * contact.x;
     let spec_contact = mix(contact.y, contact.x, smoothstep(0.08, 0.6, rough));
     let env = mix(bounce / PI, environment(refl, rough, bounce), sky_vis) * spec_contact;
-    let response = thin_foliage_response(base, n, v, rough, leaf, sun_e, front, back, env);
+    let response = thin_foliage_response(base, n, v, rough, leaf, leaf, sun_e, front, back, env);
     var rad = response.direct + response.indirect + response.specular;
     let style = styled_light(-1, 512u, p, n, base, rad, shadow);
     rad = apply_distance_fog(style.radiance, dist, dir);
@@ -934,7 +934,7 @@ fn reflected_visibility(p: vec3<f32>, n: vec3<f32>, r: vec3<f32>) -> f32 {
 const PI: f32 = 3.14159265;
 
 // GGX microfacet specular for a light from l (Karis 2013): D * Vis * F * n.l.
-fn ggx(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, rough: f32, f0: vec3<f32>) -> vec3<f32> {
+fn ggx_lobe(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, rough: f32, f0: vec3<f32>, f90: vec3<f32>) -> vec3<f32> {
     let h = normalize(v + l);
     let ndl = max(dot(n, l), 0.0);
     let ndv = max(dot(n, v), 1e-4);
@@ -943,8 +943,12 @@ fn ggx(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, rough: f32, f0: vec3<f32>) -> v
     let a2 = a * a;
     let d = a2 / (PI * pow(ndh * ndh * (a2 - 1.0) + 1.0, 2.0));
     let vis = 0.5 / (ndl * sqrt(ndv * ndv * (1.0 - a2) + a2) + ndv * sqrt(ndl * ndl * (1.0 - a2) + a2) + 1e-5);
-    let f = f0 + (1.0 - f0) * pow(1.0 - max(dot(v, h), 0.0), 5.0);
+    let f = f0 + (f90 - f0) * pow(1.0 - max(dot(v, h), 0.0), 5.0);
     return d * vis * f * ndl;
+}
+
+fn ggx(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, rough: f32, f0: vec3<f32>) -> vec3<f32> {
+    return ggx_lobe(n, v, l, rough, f0, vec3<f32>(1.0));
 }
 
 // Split-sum environment BRDF, analytic fit (Karis, mobile).
@@ -2735,7 +2739,7 @@ struct ThinFoliageResponse {direct:vec3<f32>,indirect:vec3<f32>,specular:vec3<f3
 // A modest diffuse-transmission fraction is a material approximation, not
 // measured plant optics. Reflection/transmission SHARE the coloured diffuse
 // budget. There is no fixed green backlight, world-up normal or night glow.
-fn thin_foliage_response(base:vec3<f32>,n:vec3<f32>,v:vec3<f32>,rough:f32,leaf_fraction:f32,
+fn thin_foliage_response(base:vec3<f32>,n:vec3<f32>,v:vec3<f32>,rough:f32,leaf_fraction:f32,unresolved_leaf:f32,
     sun_e:vec3<f32>,front_irradiance:vec3<f32>,back_irradiance:vec3<f32>,env:vec3<f32>)->ThinFoliageResponse {
     let f0=vec3<f32>(0.04);
     let specular_weight=clamp(env_brdf(f0,rough,max(dot(n,v),1e-4)),vec3<f32>(0.0),vec3<f32>(1.0));
@@ -2751,8 +2755,13 @@ fn thin_foliage_response(base:vec3<f32>,n:vec3<f32>,v:vec3<f32>,rough:f32,leaf_f
     // the sun's shadow at the leaf already gates it.
     let deep=budget*clamp(base/max(max(base.r,max(base.g,base.b)),1e-4),vec3<f32>(0.0),vec3<f32>(1.0));
     let forward=1.0+3.0*pow(max(dot(-v,light.sun_dir.xyz),0.0),6.0);
+    // A projected spray represents many leaf orientations. At grazing angles
+    // only a fraction of its visible area can reflect the sun coherently.
+    let f90 = mix(vec3<f32>(1.0), max(f0, vec3<f32>(1.0 - rough)), unresolved_leaf);
+    let highlight_area = mix(1.0, clamp(dot(n, v), 0.0, 1.0), unresolved_leaf);
+    let sun_gloss = ggx_lobe(n, v, light.sun_dir.xyz, rough, f0, f90) * highlight_area;
     result.direct=sun_e*(budget*reflection*max(ndl,0.0)+deep*transmission*forward*max(-ndl,0.0))
-        +sun_e*ggx(n,v,light.sun_dir.xyz,rough,f0);
+        +sun_e*sun_gloss;
     result.indirect=budget*(reflection*front_irradiance+transmission*back_irradiance);
     result.specular=env*specular_weight;
     return result;
@@ -3739,7 +3748,8 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         let back_ambient=(sky_irradiance(-n)*back_sky_vis+bounce*(1.0-back_sky_vis))*contact.x;
         let spec_contact=mix(contact.y,contact.x,smoothstep(0.08,0.6,rough));
         let env=mix(bounce/PI,environment(refl,rough,bounce),reflection_vis)*spec_contact;
-        let response=thin_foliage_response(base,n,v,rough,1.0,sun_e,front_ambient,back_ambient,env);
+        let unresolved_leaf = select(0.0, 1.0, (m.flags & 1u) != 0u);
+        let response=thin_foliage_response(base,n,v,rough,1.0,unresolved_leaf,sun_e,front_ambient,back_ambient,env);
         direct=response.direct;indirect=response.indirect*orm.x;specular=response.specular;
     } else if FEATURE_GRASS && grass {
         let height=clamp((p.y-inst.r1.w)/max(inst.scale*0.5,1e-4),0.0,1.0);
