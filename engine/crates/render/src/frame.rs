@@ -1326,9 +1326,9 @@ pub struct Renderer {
     sun_cache_anchor: std::sync::Mutex<crate::static_sun::GuardedAnchor>,
     /// `KERN_WIND_FREEZE=start,end`: trees past `end` from every camera stand
     /// still; with the static sun cache and a guard they are cached casters.
-    wind_freeze: Option<crate::wind::WindFreeze>,
+    wind_freeze: std::sync::Mutex<Option<crate::wind::WindFreeze>>,
     /// Camera positions the frozen-tree partition was pinned around.
-    wind_freeze_pin: std::sync::Mutex<Option<Vec<Vec3>>>,
+    wind_freeze_pin: std::sync::Mutex<Option<(f32, Vec<Vec3>)>>,
     sun_terrain_error: bool,
     sun_surface_source: bool,
     camera_sun_occlusion: bool,
@@ -2261,7 +2261,7 @@ impl Renderer {
         crate::foliage_representation::validate_bindings(scene).expect("invalid foliage representation bindings");
         let replacement_words = crate::voxel_forest::replacement_materials(scene);
         let voxel_replacement = buffer(gpu, "voxel crown replacement", bytemuck::cast_slice(&replacement_words), u | wgpu::BufferUsages::COPY_SRC);
-        let wind = crate::wind::WindRenderer::with_tree_slots(gpu, &instances, &voxel_replacement, scene.instances.len(), &scene.tree_wind_ranges)
+        let wind = crate::wind::WindRenderer::with_tree_slots(gpu, &instances, &voxel_replacement, scene.instances.len(), &scene.tree_wind_ranges, &scene.tree_wind_batches)
             .expect("scene exceeds bounded wind storage");
         startup.mark("foliage_validation_wind_resources");
         let albedo_src: Vec<Option<&image::RgbaImage>> = scene.textures.iter().map(|t| Some(&t.rgba)).collect();
@@ -2411,7 +2411,7 @@ impl Renderer {
             .transpose().expect("invalid GPU forest runtime");
         let shadow_damage=scene.gpu_forest.as_ref().map(|spec|crate::shadow_damage::Damage::new(gpu,&instances,voxel_forest.as_ref().unwrap().tree_buffer(),&gpu_forest.as_ref().unwrap().0.choices,
             [scene.instances.len()as u32,(voxel_forest.as_ref().unwrap().tree_buffer().size()/96)as u32,spec.slots,spec.first_owner])).transpose().expect("invalid forest shadow damage cache");
-        let legacy_shadow_wind=!scene.tree_wind_ranges.is_empty() || scene.instances.iter().any(|i|i.sphere[3]>=0. && (i.first_cluster!=0 || i.cluster_count!=0) && i.flags&crate::scene::PART_WIND==0 && i.flags&(crate::scene::FOLIAGE|crate::scene::WIND_GRASS)!=0);
+        let legacy_shadow_wind=!scene.tree_wind_batches.is_empty() || !scene.tree_wind_ranges.is_empty() || scene.instances.iter().any(|i|i.sphere[3]>=0. && (i.first_cluster!=0 || i.cluster_count!=0) && i.flags&crate::scene::PART_WIND==0 && i.flags&(crate::scene::FOLIAGE|crate::scene::WIND_GRASS)!=0);
         if let (Some(voxels),Some((forest,_)))=(&voxel_forest,&gpu_forest){voxels.initialize_pages(gpu,forest).expect("invalid voxel cache publication");}
         let foliage_world=scene.foliage_world.as_ref().map(|field|
             crate::foliage_world_render::WorldRenderer::new(gpu,field,scene.instances.len()as u32,
@@ -3144,7 +3144,7 @@ impl Renderer {
             sun_guard_bounds,
             sun_cache_guard_m,
             sun_cache_anchor: Default::default(),
-            wind_freeze: crate::wind::WindFreeze::configured(crate::switches::WIND_FREEZE.get().as_deref()),
+            wind_freeze: std::sync::Mutex::new(crate::wind::WindFreeze::configured(crate::switches::WIND_FREEZE.get().as_deref())),
             wind_freeze_pin: Default::default(),
             sun_terrain_error: crate::switches::SUN_TERRAIN_ERROR.on(),
             sun_surface_source: crate::switches::SUN_SURFACE_SOURCE.on(),
@@ -3923,6 +3923,14 @@ impl Renderer {
         self.invalidate_dynamic_shadow();
         self.reset_history();
         Ok(())
+    }
+
+    /// Change the fade distance for all views. None keeps wind active at every distance.
+    /// The next render updates both wind and the cached shadow caster partition.
+    pub fn set_wind_freeze(&self, freeze: Option<crate::wind::WindFreeze>) {
+        if freeze.is_some_and(|f| !f.fade_start.is_finite() || !f.frozen_beyond.is_finite()
+            || f.fade_start < 0. || f.frozen_beyond <= f.fade_start) { return; }
+        *self.wind_freeze.lock().unwrap() = freeze;
     }
 
     /// One world wind field for every camera, source mesh LOD and sun map.
@@ -5224,7 +5232,7 @@ impl Renderer {
         // Wind freeze: one view-independent radius for every pass (wind.wgsl).
         // More than four views would exceed the freeze uniform: keep wind.
         let cameras: Vec<Vec3> = views.iter().map(|v| v.cam.pos).collect();
-        let wind_freeze = self.wind_freeze.filter(|_| cameras.len() <= crate::wind::MAX_FREEZE_CAMERAS);
+        let wind_freeze = self.wind_freeze.lock().unwrap().filter(|_| cameras.len() <= crate::wind::MAX_FREEZE_CAMERAS);
         if self.wind.set_freeze(gpu, wind_freeze, &cameras) {
             self.invalidate_dynamic_shadow();
         }
@@ -5235,11 +5243,11 @@ impl Renderer {
             if self.sun_cache_guard_m > 0.0 {
                 let guard = self.sun_cache_guard_m;
                 let mut pin = self.wind_freeze_pin.lock().unwrap();
-                let stale = pin.as_ref().is_none_or(|p| p.len() != cameras.len()
+                let stale = pin.as_ref().is_none_or(|(radius,p)| *radius != freeze.frozen_beyond || p.len() != cameras.len()
                     || p.iter().zip(&cameras).any(|(a, b)| glam::Vec2::new(a.x - b.x, a.z - b.z).length() > guard));
                 if stale {
                     cache.pin_frozen_trees(gpu, &cameras, freeze.frozen_beyond + guard);
-                    *pin = Some(cameras.clone());
+                    *pin = Some((freeze.frozen_beyond, cameras.clone()));
                     wind_freeze_repinned = true;
                 }
             }

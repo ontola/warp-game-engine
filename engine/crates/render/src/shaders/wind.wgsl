@@ -15,34 +15,12 @@ struct WindFreeze { params: vec4<f32>, cameras: array<vec4<f32>, 4> };
 @group(0) @binding(4) var<uniform> freeze: WindFreeze;
 @group(0) @binding(5) var<storage,read> tree_slots: array<u32>;
 
-@compute @workgroup_size(64)
-fn update_wind(@builtin(global_invocation_id) id: vec3<u32>) {
-    let owner = id.x;
-    if owner >= arrayLength(&output) { return; }
-    let inst = wind_instances[owner];
-    output[owner] = vec4<f32>(0.0);
-    // FOLIAGE=1, LIVE_GRASS=8, WIND_GRASS=16. A volume crown and its source
-    // trunk/shadows remain at rest together until volume deformation is ready.
-    if inst.cluster_count == 0u || wind.field.z == 0.0 || (inst.flags & 32u) != 0u { return; }
-    if (inst.flags & 25u) == 0u {
-        let word = owner >> 5u;
-        if word >= arrayLength(&tree_slots) { return; }
-        if (tree_slots[word] & (1u << (owner & 31u))) == 0u { return; }
-    }
-    if wind_voxel_replacement[owner] != 0u
-        && (wind_voxel_replacement[owner] & 0xc0000000u) != 0x40000000u { return; }
-    let direction = wind.field.xy;
-    let across_dir = vec2<f32>(-direction.y, direction.x);
-    let root = vec2<f32>(inst.r0.w, inst.r2.w);
-    let along = dot(root,direction);
-    let across = dot(root,across_dir);
-    let phase = wind.field.w;
-    let a = along*0.12 - phase*9.0;
-    let b = along*0.057 + across*0.033 - phase*17.0;
-    let c = along*0.21 + across*0.37 - phase*41.0;
-    let wave = 0.52 + 0.26*sin(a) + 0.09*sin(b);
-    let grass = (inst.flags & 24u) != 0u;
-    let amplitude = select(wind.amplitudes.x,wind.amplitudes.y,grass);
+// A batch header stores its min/max root height and its offset into this palette.
+// Following the physical instance records are the planted world roots; shared
+// camera and shadow batches use the same indices. Ordinary scenes bind one zero.
+@group(0) @binding(6) var<storage,read> batch_roots: array<vec4<f32>>;
+
+fn field_shear(root: vec2<f32>, grass: bool) -> vec2<f32> {
     var still = 1.0;
     if !grass && freeze.params.w != 0.0 {
         var nearest = 1e30;
@@ -50,9 +28,66 @@ fn update_wind(@builtin(global_invocation_id) id: vec3<u32>) {
             nearest = min(nearest, distance(root, freeze.cameras[k].xz));
         }
         still = 1.0 - smoothstep(freeze.params.x, freeze.params.y, nearest);
-        if nearest >= freeze.params.y { return; }
+        if nearest >= freeze.params.y { return vec2<f32>(0.0); }
     }
-    let shear = (direction*wave + across_dir*(0.13*sin(c)))*(amplitude*wind.field.z*still);
+    let direction = wind.field.xy;
+    let across_dir = vec2<f32>(-direction.y, direction.x);
+    let along = dot(root,direction);
+    let across = dot(root,across_dir);
+    let phase = wind.field.w;
+    let a = along*0.12 - phase*9.0;
+    let b = along*0.057 + across*0.033 - phase*17.0;
+    let c = along*0.21 + across*0.37 - phase*41.0;
+    let wave = 0.52 + 0.26*sin(a) + 0.09*sin(b);
+    let amplitude = select(wind.amplitudes.x,wind.amplitudes.y,grass);
+    return (direction*wave + across_dir*(0.13*sin(c)))*(amplitude*wind.field.z*still);
+}
+
+@compute @workgroup_size(64)
+fn update_wind(@builtin(global_invocation_id) id: vec3<u32>) {
+    let owner = id.x;
+    if owner >= arrayLength(&output) { return; }
+    output[owner] = vec4<f32>(0.0);
+    if wind.field.z == 0.0 { return; }
+    if owner >= arrayLength(&wind_instances) {
+        let root = batch_roots[owner];
+        if root.w < 0.0 {
+            // Integer length is exact; raster and motion use it to bound tags.
+            output[owner].w = -root.w;
+        } else {
+            output[owner] = vec4<f32>(field_shear(root.xz, false), 0.0, root.y);
+        }
+        return;
+    }
+    let inst = wind_instances[owner];
+    if inst.cluster_count == 0u || (inst.flags & 32u) != 0u { return; }
+    if owner < arrayLength(&batch_roots) {
+        let batch = batch_roots[owner];
+        if batch.w > 0.0 {
+            // Cull with the worst possible member shear. Freeze only once the
+            // entire batch lies beyond every camera, including its outer roots.
+            if freeze.params.w != 0.0 {
+                let root_circle = batch_roots[u32(batch.w) - 1u];
+                var nearest = 1e30;
+                for (var k = 0u; k < u32(freeze.params.z); k++) {
+                    nearest = min(nearest, distance(root_circle.xy, freeze.cameras[k].xz));
+                }
+                if nearest >= freeze.params.y + root_circle.z { return; }
+            }
+            let amplitude = wind.amplitudes.x * wind.field.z;
+            let height = max(abs(inst.sphere.y-batch.x),abs(inst.sphere.y-batch.y)) + inst.sphere.w;
+            output[owner] = vec4<f32>(amplitude, 0.0, height * amplitude, batch.w);
+            return;
+        }
+    }
+    if (inst.flags & 25u) == 0u {
+        let word = owner >> 5u;
+        if word >= arrayLength(&tree_slots) { return; }
+        if (tree_slots[word] & (1u << (owner & 31u))) == 0u { return; }
+    }
+    if wind_voxel_replacement[owner] != 0u
+        && (wind_voxel_replacement[owner] & 0xc0000000u) != 0x40000000u { return; }
+    let shear = field_shear(vec2<f32>(inst.r0.w, inst.r2.w), (inst.flags & 24u) != 0u);
     // Triangle vertices lie in the original instance sphere. Height above the
     // anchor is bounded by |centre.y-root.y|+radius, even for unusual meshes.
     let displacement = (abs(inst.sphere.y-inst.r1.w)+inst.sphere.w)*length(shear);

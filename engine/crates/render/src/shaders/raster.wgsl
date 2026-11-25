@@ -190,7 +190,7 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut 
     let v = cluster_vert(cl.first_vert + local) * 8u;
     let p = vec4<f32>(vertex_f32(v), vertex_f32(v + 1u), vertex_f32(v + 2u), 1.0);
     let rest = vec3<f32>(dot(inst.r0, p), dot(inst.r1, p), dot(inst.r2, p));
-    var w = wind_position(member_slot(vis.x), inst.r1.w, rest);
+    var w = triangle_wind_position(triangle_wind(member_slot(vis.x), inst.r1.w, packed), rest);
     w = needle_widen(w, vec2<f32>(vertex_f32(v + 6u), vertex_f32(v + 7u)), inst);
     o.pos = view.view_proj * vec4<f32>(w, 1.0);
     o.world = w; o.instance = vis.x;

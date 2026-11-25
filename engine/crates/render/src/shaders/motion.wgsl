@@ -106,7 +106,27 @@ fn previous_source_point(owner:u32,world:vec3<f32>,cluster:u32,tri:u32)->vec4<f3
     // Match raster's actual affine wind buffer (zero for PART_WIND). The full
     // cofactor inverse is required: a nonuniform root followed by a rotated
     // child/primitive attachment can produce a nonorthogonal world basis.
-    let rest=deform(world,now.r1.w,-current_wind[slot].xy)-rest_root(now);
+    var current = current_wind[slot];
+    var prior = bitcast<vec4<f32>>(previous_wind[slot]);
+    var pivot = now.r1.w;
+    var prior_pivot = old.r1.w;
+    if current.w > 0.0 || prior.w > 0.0 {
+        if cluster >= arrayLength(&clusters) || tri >= clusters[cluster].tri_count { return vec4<f32>(0.0); }
+        let member = topology[motion.skin.z + clusters[cluster].first_tri + tri] >> 24u;
+        if current.w > 0.0 {
+            let first = u32(current.w);
+            let last = u32(current_wind[first - 1u].w) - 1u;
+            current = current_wind[first + min(last, member)];
+            pivot = current.w;
+        }
+        if prior.w > 0.0 {
+            let first = u32(prior.w);
+            let last = u32(bitcast<vec4<f32>>(previous_wind[first - 1u]).w) - 1u;
+            prior = bitcast<vec4<f32>>(previous_wind[first + min(last, member)]);
+            prior_pivot = prior.w;
+        }
+    }
+    let rest=deform(world,pivot,-current.xy)-rest_root(now);
     let co0=cross(now.r1.xyz,now.r2.xyz);let co1=cross(now.r2.xyz,now.r0.xyz);let co2=cross(now.r0.xyz,now.r1.xyz);
     let determinant=dot(now.r0.xyz,co0);
     if !(abs(determinant)>1e-12 && abs(determinant)<1e20) {return vec4<f32>(0.0);}
@@ -118,7 +138,7 @@ fn previous_source_point(owner:u32,world:vec3<f32>,cluster:u32,tri:u32)->vec4<f3
         if before.w==0.0 {return before;}
         return vec4<f32>(transform(old,before.xyz),1.0);
     }
-    return vec4<f32>(deform(transform(old,local),old.r1.w,bitcast<vec4<f32>>(previous_wind[slot]).xy),1.0);
+    return vec4<f32>(deform(transform(old,local),prior_pivot,prior.xy),1.0);
 }
 
 // Previous-frame clip position of the second visible surface under a mixed

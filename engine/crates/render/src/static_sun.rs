@@ -124,6 +124,7 @@ impl Partition {
             Ok(())
         };
         for range in scene.dynamic_instances.iter().chain(&scene.tree_wind_ranges) { for owner in range.clone() {mark(owner as u32)?;} }
+        for batch in &scene.tree_wind_batches { for &owner in &batch.owners { mark(owner as u32)?; } }
         for part in &scene.part_wind { if let Some(owner) = part.owner { mark(owner)?; } }
         for attachment in &scene.part_attachments { mark(attachment.owner)?; }
         if let Some(animation) = &scene.baked_animations {

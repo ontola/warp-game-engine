@@ -16,7 +16,7 @@ const PERIOD: f64 = 120.0;
 /// Largest shear a tree (and a grass) part can get from any valid wind
 /// state: wind.wgsl scales the amplitude by at most 1. The cull refines by
 /// 1 + |shear| (cluster_traversal.wgsl), so budgets bound it with these.
-pub const MAX_TREE_SHEAR: f32 = 0.08;
+pub const MAX_TREE_SHEAR: f32 = 0.32;
 pub const MAX_GRASS_SHEAR: f32 = 0.6;
 
 /// World-space wind direction is X/Z. Shear is horizontal metres per vertical
@@ -43,7 +43,7 @@ impl WindState {
             || !self.strength.is_finite() || !(0.0..=1.0).contains(&self.strength)
             || !self.tree_shear.is_finite() || !(0.0..=MAX_TREE_SHEAR).contains(&self.tree_shear)
             || !self.grass_shear.is_finite() || !(0.0..=MAX_GRASS_SHEAR).contains(&self.grass_shear) {
-            return Err("wind requires finite time, a nonzero direction, strength 0..1, tree shear 0..0.08 and grass shear 0..0.6".into());
+            return Err("wind requires finite time, a nonzero direction, strength 0..1, tree shear 0..0.32 and grass shear 0..0.6".into());
         }
         Ok(Self { direction: self.direction.normalize(), ..*self })
     }
@@ -183,6 +183,41 @@ fn tree_slot_mask(count: usize, ranges: &[std::ops::Range<usize>]) -> Result<Vec
     Ok(mask)
 }
 
+/// Up to 256 world-space roots shared by static stand meshes. Each triangle's
+/// high byte is its root index. Colour and shadow owners may share one palette.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TreeWindBatch {
+    pub owners: Vec<usize>,
+    pub roots: Vec<Vec3>,
+}
+
+fn batch_roots(count: usize, batches: &[TreeWindBatch]) -> Result<Vec<[f32; 4]>, String> {
+    if batches.is_empty() { return Ok(Vec::new()); }
+    let mut table = vec![[0.; 4]; count];
+    for batch in batches {
+        if batch.owners.is_empty() || batch.roots.is_empty() || batch.roots.len() > 256
+            || batch.roots.iter().any(|r| !r.is_finite()) {
+            return Err("a wind batch needs owners and 1..256 finite world roots".into());
+        }
+        // A header before each palette stores a conservative horizontal root
+        // circle and the member count. The root circle can extend outside the
+        // mesh sphere for leaning trees or a shadow cut containing only tips.
+        let center = batch.roots.iter().map(|p| Vec2::new(p.x,p.z)).sum::<Vec2>() / batch.roots.len() as f32;
+        let radius = batch.roots.iter().map(|p| center.distance(Vec2::new(p.x,p.z))).fold(0., f32::max);
+        table.push([center.x, center.y, radius, -(batch.roots.len() as f32)]);
+        let first = table.len();
+        if first + batch.roots.len() >= 1 << 24 { return Err("wind root index exceeds exact f32 range".into()); }
+        let min_y = batch.roots.iter().map(|r| r.y).fold(f32::INFINITY, f32::min);
+        let max_y = batch.roots.iter().map(|r| r.y).fold(f32::NEG_INFINITY, f32::max);
+        for &owner in &batch.owners {
+            if owner >= count || table[owner][3] != 0. { return Err("wind batch owner out of range or repeated".into()); }
+            table[owner] = [min_y, max_y, 0., first as f32];
+        }
+        table.extend(batch.roots.iter().map(|r| r.extend(0.).to_array()));
+    }
+    Ok(table)
+}
+
 pub struct WindRenderer {
     pipeline: wgpu::ComputePipeline,
     bind: wgpu::BindGroup,
@@ -198,12 +233,13 @@ impl WindRenderer {
     /// are vec4(shear_x, shear_z, conservative world displacement, reserved).
     pub fn new(gpu: &Gpu, instances: &wgpu::Buffer, replacements: &wgpu::Buffer,
         instance_count: usize) -> Result<Self, String> {
-        Self::with_tree_slots(gpu, instances, replacements, instance_count, &[])
+        Self::with_tree_slots(gpu, instances, replacements, instance_count, &[], &[])
     }
 
     pub(crate) fn with_tree_slots(gpu: &Gpu, instances: &wgpu::Buffer, replacements: &wgpu::Buffer,
-        instance_count: usize, ranges: &[std::ops::Range<usize>]) -> Result<Self, String> {
-        let count = u32::try_from(instance_count).map_err(|_| "wind instance count exceeds u32")?;
+        instance_count: usize, ranges: &[std::ops::Range<usize>], batches: &[TreeWindBatch]) -> Result<Self, String> {
+        let roots = batch_roots(instance_count, batches)?;
+        let count = u32::try_from(instance_count.max(roots.len())).map_err(|_| "wind instance count exceeds u32")?;
         let bytes = u64::from(count.max(1)) * 16;
         if bytes > u64::from(gpu.limits.max_storage_buffer_binding_size)
             || count.div_ceil(64) > gpu.limits.max_compute_workgroups_per_dimension {
@@ -212,6 +248,11 @@ impl WindRenderer {
         let mask = tree_slot_mask(instance_count, ranges)?;
         let tree_slots = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("tree wind slot mask"), contents: bytemuck::cast_slice(&mask),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let batch_roots = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("batched wind roots and owner offsets"),
+            contents: if roots.is_empty() { &[0; 16] } else { bytemuck::cast_slice(&roots) },
             usage: wgpu::BufferUsages::STORAGE,
         });
         let initial = Uniform::zeroed();
@@ -244,6 +285,7 @@ impl WindRenderer {
                 wgpu::BindGroupEntry { binding: 3, resource: coefficients.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 4, resource: freeze.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 5, resource: tree_slots.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 6, resource: batch_roots.as_entire_binding() },
             ],
         });
         Ok(Self { pipeline, bind, uniform, coefficients, freeze, count,
@@ -315,6 +357,28 @@ pub(crate) fn shade_source_with(lighting: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn batched_compute_shader_validates_for_webgpu() {
+        let source = include_str!("shaders/wind.wgsl");
+        let module = naga::front::wgsl::parse_str(source).unwrap_or_else(|error| panic!("{}", error.emit_to_string(source)));
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
+            .validate(&module).unwrap_or_else(|error| panic!("{}", error.emit_to_string(source)));
+    }
+
+    #[test]
+    fn a_stand_shares_only_its_own_root_palette_across_the_two_passes() {
+        let a = TreeWindBatch { owners: vec![0,2], roots: vec![Vec3::ZERO, Vec3::ONE] };
+        let b = TreeWindBatch { owners: vec![1], roots: vec![Vec3::Y * 3.] };
+        let table = batch_roots(4, &[a.clone(), b]).unwrap();
+        assert_eq!(table[0], [0., 1., 0., 5.]);
+        assert_eq!(table[2], table[0]);
+        assert_eq!(table[1], [3., 3., 0., 8.]);
+        assert_eq!(table[3], [0.; 4]);
+        assert_eq!(table[6], [1.,1.,1.,0.]);
+        assert_eq!(table[4][3], -2.);
+        assert!(batch_roots(4, &[a.clone(), a]).is_err());
+    }
 
     #[test]
     fn streamed_roots_share_one_wind_bit_per_slot() {
@@ -402,7 +466,7 @@ mod tests {
     #[test]
     fn phase_is_root_stable_bounded_and_continuous_across_wrap() {
         let root = Vec3::new(-386.3, 120.0, 234.6);
-        let state = WindState { strength: 1.0, ..Default::default() };
+        let state = WindState { strength: 1.0, tree_shear: MAX_TREE_SHEAR, ..Default::default() };
         let mut previous = Vec2::ZERO;
         for i in 0..480 {
             let state = WindState { time_seconds: i as f64 * 0.25, ..state };

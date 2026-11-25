@@ -137,8 +137,8 @@ impl MotionRenderer {
     pub(crate) fn with_geometry(gpu:&Gpu,instances:&wgpu::Buffer,wind:&wgpu::Buffer,instance_count:usize,geometry:Option<Geometry<'_>>)->Result<Self,String> {
         if instance_count >= 0x00ff_ffff {return Err("motion owner metadata supports fewer than 16777215 instances".into());}
         let instance_bytes=instance_count as u64*80;
-        let wind_bytes=instance_count as u64*16;
-        if instances.size()<instance_bytes || wind.size()<wind_bytes
+        let wind_bytes=wind.size();
+        if instances.size()<instance_bytes || wind_bytes<instance_count as u64*16
             || !instances.usage().contains(wgpu::BufferUsages::COPY_SRC)
             || !wind.usage().contains(wgpu::BufferUsages::COPY_SRC) {
             return Err("motion requires complete COPY_SRC instance and wind buffers".into());
@@ -193,7 +193,7 @@ impl MotionRenderer {
         if fits {gpu.queue.write_buffer(&previous_wind,table_vec4*16,bytemuck::cast_slice(&table));}
         let placeholder=|label|gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some(label),size:256,usage:wgpu::BufferUsages::STORAGE,mapped_at_creation:false});
         let (topology,clusters,topology_starts)=match &geometry {
-            Some(g) if fits=>(g.topology.buffer.clone(),g.clusters.clone(),g.topology.starts()),
+            Some(g) if fits || wind_bytes>instance_count as u64*16=>(g.topology.buffer.clone(),g.clusters.clone(),g.topology.starts()),
             _=>(placeholder("no skinned motion topology"),placeholder("no skinned motion clusters"),[0,0]),
         };
         Ok(Self {pipeline,current_instances:instances.clone(),current_wind:wind.clone(),

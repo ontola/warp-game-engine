@@ -3021,6 +3021,7 @@ fn terrain_coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
     let m = material(cl.material);
     let inst = instance_at(vis.x);
     let packed = tri_word(cl.first_tri + (id & 127u));
+    let gust = triangle_wind(member_slot(vis.x), inst.r1.w, packed);
     var vi: array<u32, 3>;
     for (var k = 0u; k < 3u; k++) { vi[k] = vtx(cluster_vert(cl.first_vert + ((packed >> (8u * k)) & 0xffu))); }
     // The ray through the quad's centre, on the triangle of its terrain pixel.
@@ -3028,9 +3029,9 @@ fn terrain_coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
     let ndc = vec2<f32>(centre.x / view.size.x * 2.0 - 1.0, 1.0 - centre.y / view.size.y * 2.0);
     let far = view.inv_view_proj * vec4<f32>(ndc, 1e-4, 1.0);
     let dir = normalize(far.xyz / far.w - view.cam.xyz);
-    let p0 = wind_position(member_slot(vis.x), inst.r1.w, xform(inst, pos_of(vi[0])));
-    let p1 = wind_position(member_slot(vis.x), inst.r1.w, xform(inst, pos_of(vi[1])));
-    let p2 = wind_position(member_slot(vis.x), inst.r1.w, xform(inst, pos_of(vi[2])));
+    let p0 = triangle_wind_position(gust, xform(inst, pos_of(vi[0])));
+    let p1 = triangle_wind_position(gust, xform(inst, pos_of(vi[1])));
+    let p2 = triangle_wind_position(gust, xform(inst, pos_of(vi[2])));
     let e1 = p1 - p0;
     let e2 = p2 - p0;
     let pv = cross(dir, e2);
@@ -3049,7 +3050,7 @@ fn terrain_coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
         n += vec3<f32>(vertex_f32(v + 3u), vertex_f32(v + 4u), vertex_f32(v + 5u)) * w[k];
         uv += vec2<f32>(vertex_f32(v + 6u), vertex_f32(v + 7u)) * w[k];
     }
-    n = normalize(wind_normal(member_slot(vis.x), xform_dir(inst, n)));
+    n = normalize(triangle_wind_normal(gust, xform_dir(inst, n)));
     let geo_n = normalize(cross(e1, e2));
     // One full-resolution pixel's footprint, as `shade` filters there.
     let px_x = view.inv_view_proj * vec4<f32>(ndc + vec2<f32>(2.0 * view.size.z, 0.0), 1e-4, 1.0);
@@ -3228,15 +3229,16 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     let inst = instance_at(vis.x);
     irradiance_receiver_radius = select(0.0, 0.5, (inst.flags & 64u) != 0u);
     let packed = tri_word(cl.first_tri + tri);
+    let gust = triangle_wind(member_slot(vis.x), inst.r1.w, packed);
     var vi: array<u32, 3>;
     for (var k = 0u; k < 3u; k++) {
         vi[k] = vtx(cluster_vert(cl.first_vert + ((packed >> (8u * k)) & 0xffu)));
     }
     // Match the actual deformed raster triangle before ray intersection and
     // texture derivatives. Rest-pose reconstruction would slide UVs and light.
-    let p0 = wind_position(member_slot(vis.x), inst.r1.w, xform(inst, pos_of(vi[0])));
-    let p1 = wind_position(member_slot(vis.x), inst.r1.w, xform(inst, pos_of(vi[1])));
-    let p2 = wind_position(member_slot(vis.x), inst.r1.w, xform(inst, pos_of(vi[2])));
+    let p0 = triangle_wind_position(gust, xform(inst, pos_of(vi[0])));
+    let p1 = triangle_wind_position(gust, xform(inst, pos_of(vi[1])));
+    let p2 = triangle_wind_position(gust, xform(inst, pos_of(vi[2])));
     // Ray-triangle intersection for perspective-correct barycentrics.
     let e1 = p1 - p0;
     let e2 = p2 - p0;
@@ -3257,7 +3259,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         n += vec3<f32>(vertex_f32(v + 3u), vertex_f32(v + 4u), vertex_f32(v + 5u)) * w[k];
         uv += vec2<f32>(vertex_f32(v + 6u), vertex_f32(v + 7u)) * w[k];
     }
-    n = normalize(wind_normal(member_slot(vis.x), xform_dir(inst, n)));
+    n = normalize(triangle_wind_normal(gust, xform_dir(inst, n)));
     let geo_n = normalize(cross(e1, e2));
     sun_receiver_tri[0]=p0;sun_receiver_tri[1]=p1;sun_receiver_tri[2]=p2;
     sun_receiver_tri_set=true;
@@ -4118,13 +4120,14 @@ fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool, tile_lights:u32, 
     let vis=visible[id>>7u];let cl=clusters[vis.y];let inst=instance_at(vis.x);
     irradiance_receiver_radius = select(0.0, 0.5, (inst.flags & 64u) != 0u);
     let packed=tri_word(cl.first_tri+(id&127u));
+    let gust = triangle_wind(member_slot(vis.x), inst.r1.w, packed);
     var points:array<vec3<f32>,3>;var normals:array<vec3<f32>,3>;var uvs:array<vec2<f32>,3>;
     var local_points:array<vec3<f32>,3>;
     for(var k=0u;k<3u;k++) {
         let v=cluster_vert(cl.first_vert+((packed>>(8u*k))&255u))*8u;
         let pos=vec4<f32>(vertex_f32(v),vertex_f32(v+1u),vertex_f32(v+2u),1.0);
         local_points[k]=pos.xyz;
-        points[k]=wind_position(member_slot(vis.x),inst.r1.w,vec3<f32>(dot(inst.r0,pos),dot(inst.r1,pos),dot(inst.r2,pos)));
+        points[k]=triangle_wind_position(gust,vec3<f32>(dot(inst.r0,pos),dot(inst.r1,pos),dot(inst.r2,pos)));
         normals[k]=vec3<f32>(vertex_f32(v+3u),vertex_f32(v+4u),vertex_f32(v+5u));
         uvs[k]=vec2<f32>(vertex_f32(v+6u),vertex_f32(v+7u));
     }
@@ -4133,7 +4136,7 @@ fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool, tile_lights:u32, 
     let b1=clamp(dot(tv,pv)*inv,0.0,1.0);let b2=clamp(dot(dir,cross(tv,e1))*inv,0.0,1.0-b1);let b0=1.0-b1-b2;
     let p=points[0]*b0+points[1]*b1+points[2]*b2;
     let authored=normals[0]*b0+normals[1]*b1+normals[2]*b2;
-    var n=normalize(wind_normal(member_slot(vis.x),xform_dir(inst,authored)));
+    var n=normalize(triangle_wind_normal(gust,xform_dir(inst,authored)));
     if dot(n,dir)>0.0 {n=-n;}
     if SHADE_PROBE == 2u { textureStore(out_hdr,px,vec4<f32>(n*0.5+0.5,1.0)); return SimpleSurface(); }
     let m=material(cl.material);var base=m.tint;
