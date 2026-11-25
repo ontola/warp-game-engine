@@ -330,9 +330,10 @@ pub(crate) mod page {
     }
 
     /// G on the keyboard while one player has it whole: a second player
-    /// joins on it. The keyboard splits ([`app::split_keyboard`]): the first
-    /// player keeps the right half (arrows, Enter), the new one gets the
-    /// left (WASD, Space). In a game, only one that takes two on a keyboard.
+    /// joins on it. The keyboard splits ([`app::split_keyboard`]): who sits
+    /// left on the couch gets the left half (WASD, Space), who sits right
+    /// the arrows ([`whole_keyboard`] keeps it so). In a game, only one that
+    /// takes two on a keyboard.
     fn share_keyboard(h: &mut Host) {
         if app::keyboard_split() { return; }
         let Some(first) = h.bound.iter().position(|b| *b == Some(Device::Keyboard)) else { return };
@@ -342,16 +343,24 @@ pub(crate) mod page {
         h.bound[first] = Some(Device::KeyHalf(1));
         if !seat_device(h, Device::KeyHalf(0)) { h.bound[first] = Some(Device::Keyboard); return; }
         app::split_keyboard(true);
-        let who = name(h, first);
-        show_hint("✓", "Two players on the keyboard", &format!("{who} plays on the arrows, the new player on WASD"));
+        // Left on the couch: WASD; right: the arrows.
+        whole_keyboard(h);
+        show_hint("✓", "Two players on the keyboard", "Left on the couch plays on WASD, right on the arrows");
     }
 
     /// One player left on a split keyboard (the other left, or took a
-    /// controller): they get the whole keyboard back, with the mouse.
+    /// controller): they get the whole keyboard back, with the mouse. Two:
+    /// the halves follow the couch (left WASD, right arrows).
     fn whole_keyboard(h: &mut Host) {
         if !app::keyboard_split() { return; }
-        let halves: Vec<usize> = (0..h.bound.len()).filter(|&i| matches!(h.bound[i], Some(Device::KeyHalf(_)))).collect();
-        if halves.len() >= 2 { return; }
+        let mut halves: Vec<usize> = (0..h.bound.len()).filter(|&i| matches!(h.bound[i], Some(Device::KeyHalf(_)))).collect();
+        if halves.len() >= 2 {
+            // Fixed by couch position (Joep): who sits left plays on WASD,
+            // who sits right on the arrows, also after moving seats.
+            halves.sort_by_key(|&i| (h.party["players"][i]["couch"].as_i64().unwrap_or(i as i64), i));
+            for (k, &i) in halves.iter().enumerate() { h.bound[i] = Some(Device::KeyHalf(k.min(1) as u8)); }
+            return;
+        }
         for i in halves { h.bound[i] = Some(Device::Keyboard); }
         app::split_keyboard(false);
         h.last_keys = None;
@@ -574,6 +583,8 @@ pub(crate) mod page {
             }
             let Some(root) = doc.document_element() else { return };
             let _ = if split { root.set_attribute("data-kb-split", "") } else { root.remove_attribute("data-kb-split") };
+            // Hidden with X: back for other keyboard players.
+            let _ = root.remove_attribute("data-kb-nudge-hidden");
             // An old join hint (its 4 s long over) would hold the banner back.
             if who.is_some() { let _ = root.remove_attribute("data-join-hint"); }
             let _ = if who.is_some() { root.set_attribute("data-kb-nudge", "") } else { root.remove_attribute("data-kb-nudge") };

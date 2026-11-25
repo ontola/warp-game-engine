@@ -526,9 +526,9 @@ impl Game for Racer {
             .filter(|(d, _)| d.is_pad() || matches!(d, Device::KeyHalf(_)))
             .map(|(d, _)| *d)
             .collect();
-        // The host seats the keyboard's first player on the right half
-        // (arrows), the one who joined with G on the left: the same order here.
-        self.devices.sort_by_key(|d| match d { Device::KeyHalf(h) => (0, 1 - *h as u32), Device::Pad(n) => (1, *n), Device::Keyboard => (2, 0) });
+        // Two on one keyboard: left (WASD) first, as the host seats the one
+        // on the left of the couch there.
+        self.devices.sort_by_key(|d| match d { Device::KeyHalf(h) => (0, *h as u32), Device::Pad(n) => (1, *n), Device::Keyboard => (2, 0) });
     }
     fn seats(&self) -> Option<Vec<Vec<Device>>> {
         Some(

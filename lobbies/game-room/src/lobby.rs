@@ -784,11 +784,18 @@ impl Lobby {
                 let k = keys.entry(crate::mouse::prompt_name(&station).to_string()).or_insert(true);
                 *k = *k && self.on_keyboard(id);
                 let half = self.keyboard_half(id).unwrap_or(0);
-                let h = halves.entry(crate::mouse::prompt_name(&station).to_string()).or_insert(Some(half));
-                if *h != Some(half) { *h = None; }
+                // Two keyboard halves at one place: the first player's keys
+                // (a keyboard player never sees a pad button).
+                halves.entry(crate::mouse::prompt_name(&station).to_string()).or_insert(Some(half));
                 if !occupied.contains_key(&station.id) || station.enabled { occupied.insert(station.id.clone(), station); }
             }
         }
+        // A prompt nobody stands at (the TV's first-game nudge, a door):
+        // keycaps when everyone here plays on the same keys.
+        let everyone_keys: Option<u8> = {
+            let mut it = ids.iter().map(|id| self.keyboard_half(id));
+            match it.next().flatten() { Some(h) if it.all(|x| x == Some(h)) => Some(h), _ => None }
+        };
         // The mouse lights what it points at, as if someone stood there;
         // where no player stands, the buttons show the mouse instead of Y/X.
         let mut mouse_only = None;
@@ -837,9 +844,9 @@ impl Lobby {
             let mouse = mouse_only.as_deref() == Some(name.as_str());
             let hover = if mouse { self.mouse.hover.as_ref().and_then(|h| h.1.clone()) } else { None };
             if p.mouse != mouse || p.hover != hover { p.mouse = mouse; p.hover = hover; self.screens_dirty = true; }
-            let half = halves.get(name).copied().flatten();
+            let half = if keys.contains_key(name) { halves.get(name).copied().flatten() } else { everyone_keys };
             // Left and right halves at one place: neither's keys fit both.
-            let k = keys.get(name).copied().unwrap_or(false) && half.is_some();
+            let k = keys.get(name).copied().unwrap_or(everyone_keys.is_some()) && half.is_some();
             let half = half.unwrap_or(0);
             if p.keys != k || p.half != half { p.keys = k; p.half = half; self.screens_dirty = true; }
         }

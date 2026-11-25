@@ -129,8 +129,16 @@ html[data-kb-nudge][data-join-hint] #kb-nudge{animation:kb-nudge-yield 4s ease f
 #kb-nudge svg{flex:none;width:44px;height:44px}
 #kb-nudge small{display:block;color:var(--amber);font-weight:800;font-size:clamp(11px,1.15vw,14px);letter-spacing:.04em;text-transform:uppercase}
 #kb-nudge strong{display:block;font-weight:800;font-size:clamp(17px,2vw,22px)}
+/* X (or a click) hides it until the keyboard players change (html[data-kb-nudge-hidden]). */
+html[data-kb-nudge][data-kb-nudge-hidden] #kb-nudge{opacity:0;visibility:hidden;transform:translate(-50%,-12px);transition:opacity .25s ease-in,visibility .25s}
+#kb-nudge-hide{align-self:center;display:flex;align-items:center;gap:8px;margin-left:8px;padding:0;border:0;background:none;color:var(--muted);font:600 clamp(13px,1.4vw,16px) Outfit,system-ui;cursor:pointer}
+#kb-nudge-hide:hover{color:var(--text)}
 #kb-nudge .kb-share{display:block;margin-top:4px;font-size:clamp(12px,1.3vw,15px)}
-html[data-kb-split] #kb-nudge .kb-share{display:none}
+html[data-kb-split] /* X (or a click) hides it until the keyboard players change (html[data-kb-nudge-hidden]). */
+html[data-kb-nudge][data-kb-nudge-hidden] #kb-nudge{opacity:0;visibility:hidden;transform:translate(-50%,-12px);transition:opacity .25s ease-in,visibility .25s}
+#kb-nudge-hide{align-self:center;display:flex;align-items:center;gap:8px;margin-left:8px;padding:0;border:0;background:none;color:var(--muted);font:600 clamp(13px,1.4vw,16px) Outfit,system-ui;cursor:pointer}
+#kb-nudge-hide:hover{color:var(--text)}
+#kb-nudge .kb-share{display:none}
 #kb-nudge>div>span{color:var(--muted);font-size:clamp(14px,1.6vw,17px)}
 /* The A button: a green disc with bg ink (DESIGN.md glyphs). */
 .pad-a{margin:0 .15em}
@@ -203,6 +211,7 @@ body.debug #warp-games{display:flex!important}
   <svg viewBox="0 0 48 48" aria-hidden="true"><rect x="4" y="12" width="40" height="22" rx="10" fill="#ffb454"/><circle cx="12" cy="30" r="9" fill="#ffb454"/><circle cx="36" cy="30" r="9" fill="#ffb454"/>
     <rect x="9" y="21" width="10" height="3.5" rx="1.75" fill="#0d1020"/><rect x="12.25" y="17.75" width="3.5" height="10" rx="1.75" fill="#0d1020"/><circle cx="33" cy="19.5" r="2.6" fill="#0d1020"/><circle cx="38" cy="24.5" r="2.6" fill="#0d1020"/></svg>
   <div><small id="kb-nudge-who">Keyboard &amp; mouse · Player 1</small><strong>Splitscreen Club is made for controllers</strong><span>Connect one and press <i class="pad-a">A</i> to take over your player</span><span class="kb-share">Two on one keyboard? The second player presses <kbd>G</kbd></span></div>
+  <button type="button" id="kb-nudge-hide" aria-label="Hide"><kbd>X</kbd>Hide</button>
 </div>
 <div id="key-hint" role="status"><kbd>Enter</kbd><div>Play with the keyboard</div></div>
 <link rel="stylesheet" href="stories/editor.css">
@@ -358,6 +367,13 @@ async function showDirectGames(reason) {
     addEventListener('pointerdown', first, true);
     addEventListener('mousemove', () => { if (root.hasAttribute('data-calm')) update(); }, { passive: true });
   }
+}
+// X hides the keyboard banner (also a click on Hide); the engine shows it
+// again when the keyboard players change (main.rs controller_nudge).
+{
+  const root = document.documentElement, hide = () => root.setAttribute('data-kb-nudge-hidden', '');
+  document.getElementById('kb-nudge-hide').addEventListener('click', e => { e.stopPropagation(); hide(); });
+  addEventListener('keydown', e => { if (e.code === 'KeyX' && !e.repeat && root.hasAttribute('data-kb-nudge')) hide(); }, true);
 }
 // The engine stopped: show it, with the browser's message (app::web
 // install_panic_hook calls this), instead of a page that just hangs.
