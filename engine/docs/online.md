@@ -17,6 +17,27 @@ warp nettest games/neon-siege --ticks 600   # both in one process over loopback,
 `--ticket-file F` (host) writes the ticket to a file that `--join F` reads.
 `--players N` on the follower sets how many people sit on that couch.
 
+## In the browser
+
+The same couches over WebRTC (`engine/crates/warp/src/online_web.rs`): one
+ordered data channel per follower carries the same messages, in chunks of
+at most 16 KB. Offers, answers and ICE candidates go through the cloud's
+signaling socket `/v1/signal/ROOM` (gamenight-internal
+`crates/gamenight-cloud/src/signal.rs`; a room lives while its host is
+connected, the long random code is the key).
+
+```text
+/play/?game=neon-siege&host=1          # prints the follow link in the log (?debug)
+/play/?game=neon-siege&follow=ROOM     # another couch
+```
+
+`?signal=wss://HOST` points at another signaling server (default: the
+page's origin) and `?ice=stun:...,turn:...` sets the ICE servers (default
+`stun:stun.cloudflare.com:3478`; `?ice=` for none, on one machine). Built
+with `engine/tools/build-web.py --warp --bare`. Tested 2026-11-25 with two
+pages of one Chromium (software GPU) and a local `gamenight-cloud`: the
+follower joined, got the world and its player was seated on the host.
+
 ## What travels
 
 The code is `engine/crates/warp/src/online.rs` (wire format and diff) and
@@ -78,6 +99,8 @@ about 5 ms. Not yet measured between two machines.
   pad. A game hook for that (`predict`) is the next step if it feels slow.
 - Under a Splitscreen Club party host, seats from the party and online
   seats are not combined yet.
-- The browser has no `net` (no tokio, no UDP). Plan: WebRTC data channels
-  (and an audio track for voice), signalled through the cloud room.
+- Browser and native hosts cannot play together yet: native speaks iroh,
+  the browser WebRTC. Native WebRTC (str0m or webrtc-rs) closes that gap.
+- No TURN server yet: two couches behind strict NATs may not connect.
+- Voice is not in yet (an audio track on the same peer connection).
 - Rust games keep their own netcode (Growing Guns, [networking.md](networking.md)).

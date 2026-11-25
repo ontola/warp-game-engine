@@ -28,7 +28,26 @@ async fn first() -> Result<(app::Config, warp::LuaGame), String> {
     let index = warp::web::games().await?;
     let name = warp::web::param("game").or_else(|| index.first().cloned()).ok_or("no games next to the page")?;
     if !index.contains(&name) { return Err(format!("no game {name:?} here; there are {}", index.join(", "))); }
-    warp::web::load(&name, players()).await
+    let (mut cfg, mut game) = warp::web::load(&name, players()).await?;
+    online(&name, &mut cfg, &mut game)?;
+    Ok((cfg, game))
+}
+
+/// `?host` (or `?host=ROOM`) opens this game to other couches over WebRTC;
+/// `?follow=ROOM` joins one (engine/docs/online.md).
+#[cfg(target_arch = "wasm32")]
+fn online(name: &str, cfg: &mut app::Config, game: &mut warp::LuaGame) -> Result<(), String> {
+    if let Some(room) = warp::web::param("follow") {
+        game.follow_with(Box::new(warp::online_web::Client::join(&room)?), cfg.size);
+        cfg.tick_hz = game.cfg.tick_rate / warp::online::send_every(game.cfg.tick_rate) as f32;
+        app::web::log(&format!("online: following room {room}"));
+    } else if let Some(room) = warp::web::param("host") {
+        let room = if room.len() >= 8 { room } else { warp::online_web::room_code() };
+        game.host_with(Box::new(warp::online_web::Host::start(&room)?));
+        let link = format!("{}{}?game={name}&follow={room}", app::web::origin(), web_sys::window().and_then(|w| w.location().pathname().ok()).unwrap_or_default());
+        app::web::log_pinned(&format!("online: other couches join with {link}"));
+    }
+    Ok(())
 }
 
 /// Switch to game `name` without reloading the page or the engine: the

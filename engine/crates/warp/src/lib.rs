@@ -19,6 +19,8 @@ mod editor_menus;
 pub use live::knobs;
 pub mod luajson;
 pub mod online;
+#[cfg(target_arch = "wasm32")]
+pub mod online_web;
 pub mod party;
 pub mod plants;
 pub mod ragdoll;

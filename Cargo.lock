@@ -6726,6 +6726,7 @@ dependencies = [
  "directories",
  "glam 0.31.1",
  "image",
+ "js-sys",
  "jsonschema",
  "kern",
  "live",

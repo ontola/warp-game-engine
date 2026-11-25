@@ -46,4 +46,5 @@ rusqlite = { version = "0.41.1", features = ["bundled"] }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["Location", "Window"] }
+web-sys = { version = "0.3", features = ["Location", "Window", "Crypto", "MessageEvent", "WebSocket", "BinaryType", "RtcPeerConnection", "RtcConfiguration", "RtcIceServer", "RtcDataChannel", "RtcDataChannelInit", "RtcDataChannelType", "RtcDataChannelEvent", "RtcIceCandidate", "RtcIceCandidateInit", "RtcPeerConnectionIceEvent", "RtcSdpType", "RtcSessionDescription", "RtcSessionDescriptionInit"] }
+js-sys = "0.3"
