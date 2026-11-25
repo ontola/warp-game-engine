@@ -56,6 +56,19 @@ mod page {
         // The scene now, not in the first frame, where it froze the screen.
         game.prepare()?;
         app::web::log(&format!("spellstorm: arena built in {:.0} ms", t2.elapsed().as_secs_f32() * 1000.0));
+        // On a phone the renderer (buffers, texture arrays, mips) is made on a
+        // helper thread, so the room's loading card keeps moving; in a
+        // browser there is one thread and the first frame makes it.
+        #[cfg(target_os = "android")]
+        if let Some(gpu) = app::android::gpu() {
+            app::web::progress(Some(0.85), "Spellstorm: preparing the graphics");
+            let t3 = web_time::Instant::now();
+            let (scene, light) = (std::mem::take(&mut game.view.scene), game.view.light.clone());
+            let (renderer, scene) = app::android::off_thread(move || (render::Renderer::with_generated_streaming(&gpu, &scene, &light, true), scene)).await;
+            game.view.scene = scene;
+            game.set_renderer_ahead(renderer);
+            app::web::log(&format!("spellstorm: renderer made ahead in {:.0} ms", t3.elapsed().as_secs_f32() * 1000.0));
+        }
         let cfg = app::Config { title: "Spellstorm".into(), size: [1920, 1080], tick_hz: 60.0, keyboard: true, pointer: false, ..Default::default() };
         Ok((cfg, Box::new(game)))
     }

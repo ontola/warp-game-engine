@@ -137,8 +137,12 @@ pub async fn sleep(ms: u32) {
     std::future::poll_fn(move |_| if Instant::now() >= until { Poll::Ready(()) } else { Poll::Pending }).await
 }
 
+/// The GPU device, for work on a helper thread (a renderer made while
+/// loading, see Frame::set_renderer). None before the window has one.
+pub fn gpu() -> Option<render::Gpu> { GFX.with(|g| g.borrow().as_ref().map(|g| g.gpu.clone())) }
+
 /// Run `work` on a helper thread; ready with its result.
-async fn off_thread<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+pub async fn off_thread<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
     let slot: Arc<Mutex<Option<T>>> = Arc::default();
     let fill = slot.clone();
     std::thread::spawn(move || { let r = work(); *fill.lock().unwrap_or_else(|e| e.into_inner()) = Some(r); });

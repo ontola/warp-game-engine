@@ -27,6 +27,9 @@ pub struct Spellstorm {
     /// The scene was built ahead ([`Spellstorm::prepare`]): the first draw
     /// only hands it to the renderer.
     prebuilt: bool,
+    /// The renderer for the prebuilt scene, made on a helper thread while
+    /// the host's loading card moves ([`Spellstorm::set_renderer_ahead`]).
+    renderer_ahead: Option<render::Renderer>,
     /// Prepared: tell the host ready once the run's scene is built, so the
     /// build never stalls a started game.
     ready_after_build: bool,
@@ -75,6 +78,12 @@ pub fn pad(c: &Controls) -> Pad {
 impl Spellstorm {
     /// Build the scene before the first frame (while the host's loading
     /// bar shows), so that frame only uploads it.
+    /// The renderer made ahead for the scene [`Spellstorm::prepare`] built:
+    /// the first frame only takes it (on a tablet it took 6.6 s in there).
+    pub fn set_renderer_ahead(&mut self, renderer: render::Renderer) {
+        if self.prebuilt { self.renderer_ahead = Some(renderer); }
+    }
+
     pub fn prepare(&mut self) -> Result<(), String> {
         if !self.built && !self.prebuilt {
             self.view.build(&self.world)?;
@@ -115,7 +124,7 @@ impl Spellstorm {
         // Straight into the first level, no title screen (Joep); Start
         // opens the menu.
         let _ = humans;
-        Spellstorm { world, view: View::new(kits), hud, menu, humans, drive: (0..humans).collect(), party, party_seats: vec![], quit: false, built: false, prebuilt: false, ready_after_build: false, interp: Default::default(), tuning, shader, live: None, scan_t: 0 }
+        Spellstorm { world, view: View::new(kits), hud, menu, humans, drive: (0..humans).collect(), party, party_seats: vec![], quit: false, built: false, prebuilt: false, renderer_ahead: None, ready_after_build: false, interp: Default::default(), tuning, shader, live: None, scan_t: 0 }
     }
 
     /// The party's seats (main.gd _on_prepared): a wizard for each, couch
@@ -293,11 +302,22 @@ impl app::Game for Spellstorm {
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
         self.live_frame(frame);
         if !self.built || self.view.stale(&self.world) {
-            if !std::mem::take(&mut self.prebuilt) || self.view.stale(&self.world) { self.view.build(&self.world)?; }
-            frame.set_scene(&self.view.scene, &self.view.light);
+            let t0 = web_time::Instant::now();
+            if !std::mem::take(&mut self.prebuilt) || self.view.stale(&self.world) {
+                self.renderer_ahead = None;
+                self.view.build(&self.world)?;
+            }
+            let t1 = web_time::Instant::now();
+            match self.renderer_ahead.take() {
+                Some(r) => frame.set_renderer(r),
+                None => frame.set_scene(&self.view.scene, &self.view.light),
+            }
+            let t2 = web_time::Instant::now();
             let r = frame.renderer().ok_or("no renderer")?;
             self.view.upload(frame.gpu, r)?;
             self.built = true;
+            let ms = |a: web_time::Instant, b: web_time::Instant| (b - a).as_secs_f32() * 1000.0;
+            app::web::log(&format!("spellstorm: scene {:.0} ms, renderer {:.0} ms, upload {:.0} ms", ms(t0, t1), ms(t1, t2), ms(t2, web_time::Instant::now())));
         }
         if self.ready_after_build {
             self.ready_after_build = false;
