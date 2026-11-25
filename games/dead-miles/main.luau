@@ -1362,6 +1362,10 @@ local function light_step(dt)
 		-- Night only: just the first leg opens in the blue hour.
 		local t = if NIGHT_ONLY and (day > 1 or in_day == 0 or in_day >= 6) then 1 else smooth(u / 1.5)
 		ev = lerp(7.2, KNOBS.night_ev, t)
+		-- A tablet or phone, seen in a lit room, showed the night as black
+		-- (Joep, Tab S9+, 25 November): a stop and a half brighter there,
+		-- as Spellstorm's phone tier does.
+		if PHONE then ev -= 1.5 * t end
 		lux = KNOBS.moon * (30 ^ (1 - t))
 		local d = v(-0.9 + 0.55 * t, lerp(0.22, 0.8, t), lerp(0.25, 0.5, t))
 		sun = d / vector.magnitude(d)

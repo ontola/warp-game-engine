@@ -75,6 +75,18 @@ fn ambient_irradiance(p:vec3<f32>,n:vec3<f32>)->vec3<f32> {
 }
 
 // Shadowed spots lose their shadow here; their cone and falloff stay.
+// Highlights of the lights on glossy surfaces (Blinn-Phong, normalised):
+// shade() sets the view and the exponent (0: rough, none), the light
+// functions add each light's highlight radiance before the Fresnel term.
+var<private> spec_view:vec3<f32>;
+var<private> spec_power:f32;
+var<private> highlight:vec3<f32>;
+fn add_highlight(irradiance:vec3<f32>,n:vec3<f32>,l:vec3<f32>) {
+ if spec_power<=0.0 {return;}
+ let h=normalize(l+spec_view);
+ highlight+=irradiance*pow(max(dot(n,h),0.0),spec_power)*(spec_power+8.0)/(8.0*PI);
+}
+
 fn spot_irradiance(index:u32,p:vec3<f32>,n:vec3<f32>)->vec3<f32> {
  let lamp=headlights.lights[index];
  let offset=p-lamp.position_range.xyz;let d2=dot(offset,offset);let dist=sqrt(d2);
@@ -88,8 +100,10 @@ fn spot_irradiance(index:u32,p:vec3<f32>,n:vec3<f32>)->vec3<f32> {
  let nr=d2/(lamp.position_range.w*lamp.position_range.w);
  let window=max(0.0,1.0-nr*nr);
  let fade=select(1.0-smoothstep(lamp.position_range.w*0.8,lamp.position_range.w,dist),window*window,kk<0.0);
- let spread=select(pow(max(d2,0.04),k*0.5),max(d2,0.04),k==2.0);
- return lamp.intensity_inner.rgb*(cone*fade*lambert/spread);
+ let spread=select(pow(max(d2,0.16),k*0.5),max(d2,0.16),k==2.0);
+ let e=lamp.intensity_inner.rgb*(cone*fade*lambert/spread);
+ add_highlight(e,n,-outward);
+ return e;
 }
 
 fn local_irradiance(index:u32,p:vec3<f32>,n:vec3<f32>)->vec3<f32> {
@@ -102,8 +116,13 @@ fn local_irradiance(index:u32,p:vec3<f32>,n:vec3<f32>)->vec3<f32> {
  let cone=smoothstep(lamp.direction_outer.w,lamp.intensity_inner.w,dot(outward,lamp.direction_outer.xyz));
  if cone*lambert<=0.0 {return vec3<f32>(0.0);}
  let normalized=d2/(range*range);let fade=max(0.0,1.0-normalized*normalized);
- let spread=select(pow(max(d2,lamp.source.x),lamp.source.y*0.5),max(d2,lamp.source.x),lamp.source.y==2.0||lamp.source.y==0.0);
- return lamp.intensity_inner.rgb*(cone*fade*fade*lambert/spread);
+ // Unshadowed, a lamp right by a surface (a staff by its robe) would blow
+ // out what its shadow hides on the other tiers: no closer than 0.4 m.
+ let near=max(lamp.source.x,0.16);
+ let spread=select(pow(max(d2,near),lamp.source.y*0.5),max(d2,near),lamp.source.y==2.0||lamp.source.y==0.0);
+ let e=lamp.intensity_inner.rgb*(cone*fade*fade*lambert/spread);
+ add_highlight(e,n,-outward);
+ return e;
 }
 
 
@@ -251,19 +270,24 @@ fn shade(in:Out)->vec4<f32> {
   if u32(colour.w)!=6u {base=colour.rgb;}
   rough=surface.x;metal=surface.y;coat=surface.z;
  }
+ let a2=max(rough*rough,0.02);
+ spec_view=normalize(u.camera.xyz-p);spec_power=select(0.0,min(2.0/(a2*a2)-2.0,2048.0),rough<0.7);highlight=vec3<f32>(0.0);
  var irradiance=ambient_irradiance(p,n);
  let spots=min(headlights.count.x,8u);
  for(var i=0u;i<spots;i++) {irradiance+=spot_irradiance(i,p,n);}
  let locals=select(min(headlights.count.y,32u),0u,any(p<headlights.local_min.xyz)||any(p>headlights.local_max.xyz));
  for(var i=0u;i<locals;i++) {irradiance+=local_irradiance(i,p,n);}
- irradiance+=light.sun_color.rgb*light.sun_dir.w*max(dot(n,light.sun_dir.xyz),0.0);
+ let sun=light.sun_color.rgb*light.sun_dir.w*max(dot(n,light.sun_dir.xyz),0.0);
+ add_highlight(sun,n,light.sun_dir.xyz);
+ irradiance+=sun;
  // The sky in what is glossy: its SH at the mirror direction (a blurred
  // reflection), by Schlick's Fresnel, fading out with roughness.
  let v=normalize(u.camera.xyz-p);let r=reflect(-v,n);
  let f0=mix(vec3<f32>(0.04),base,metal);let k=pow(1.0-clamp(dot(n,v),0.0,1.0),5.0);
  let gloss=(1.0-rough)*(1.0-rough);
  let env=sky_irradiance(r)/PI;
- let specular=(f0+(1.0-f0)*k)*gloss*env+coat*(0.04+0.96*k)*env;
+ let fresnel=f0+(1.0-f0)*k;
+ let specular=fresnel*(gloss*env+highlight)+coat*(0.04+0.96*k)*(env+highlight);
  // Metal keeps a quarter of its diffuse: without the local lights' highlights
  // (none here) a metal would only show the sky.
  var rad=base*(1.0-0.75*metal)*irradiance/PI+specular+emit*lit.tone.y;

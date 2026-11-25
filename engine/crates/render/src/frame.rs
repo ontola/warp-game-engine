@@ -2727,6 +2727,15 @@ impl Renderer {
         let minimal_forward=((forward_lit || scene.graphics.minimal_forward) && plain_meshes && (forward_lit || scene.skinning.actors.is_empty())
             && scene.debris.is_none_or(|d|d.capacity==0)).then(||std::sync::Mutex::new(crate::forward::Forward::new(gpu,scene,&materials,
                 forward_source.map(|source|crate::forward::LitInputs{albedo:&albedo_view,headlights:&headlights.uniform,scene_tables:&scene_tables.buffer,instances:&instances,source,prepass:scene.materials.iter().any(|m|m.flags&crate::scene::SURFACE!=0)}))));
+        // A volume the scene packed into aux itself (Space Racer's ambient
+        // cube, Spellstorm's baked rooms) reaches the low tier's probe texture too.
+        if let (Some(f),Some((offset,grid)))=(&minimal_forward,scene.irradiance_volume) {
+            let start=offset+8;let n=grid.count();
+            if let Some(words)=scene.aux.get(start..start+n*crate::irradiance_volume::PROBE_WORDS) {
+                let probes:Vec<_>=words.chunks(crate::irradiance_volume::PROBE_WORDS).map(|w|crate::irradiance_volume::Probe{axes:std::array::from_fn(|i|Vec3::new(f32::from_bits(w[i*3]),f32::from_bits(w[i*3+1]),f32::from_bits(w[i*3+2])))}).collect();
+                if probes.iter().any(|p|p.axes.iter().any(|a|a.max_element()>0.0)) {f.lock().unwrap().set_probes(gpu,grid,&probes);}
+            }
+        }
         if wanted {
             // Which tier draws, and why not the low one (logcat on the phone hosts).
             let skinned=!forward_lit && !scene.skinning.actors.is_empty();let debris=scene.debris.is_some_and(|d|d.capacity>0);
