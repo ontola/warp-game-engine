@@ -239,10 +239,12 @@ relative URLs. Each HTML entry is relative to the site's root, for example
 
 Production also serves the profile's `godot/` directory persistently under
 `https://splitscreen.club/play/godot/`, outside replaceable lobby releases.
-The standard `--warp` page at that origin merges the two entries from
-`godot/library.json` into its bundled shelf when missing. The external
-covers live at `godot/<id>/cover.png`. Offline hosts, other origins, explicit
-custom shelves and the native Android host use their own catalog. A missing,
+The standard `--warp` page at that origin adds entries from `godot/library.json`
+when their ID and folder are both new to the shelf. Use the same lowercase
+alphanumeric slug with optional hyphens for the ID and folder, with the game
+at `godot/<id>/index.html` and cover at `godot/<id>/cover.png`. Offline hosts,
+other origins, explicit custom shelves and the native Android host use their
+own catalog. A missing,
 invalid or slow production manifest leaves the bundled games available.
 
 The browser host opens each HTML game on demand in a same-origin iframe. The

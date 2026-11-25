@@ -33,6 +33,29 @@ test('production merges valid same-origin entries and retains packaged games and
   assert.deepEqual(requests,['games/library.json?v=v','/play/godot/library.json']);
 });
 
+test('new managed games use one slug for their folder, entry point and cover', async () => {
+  const game = {
+    ...titles[0], id:'bombing-bugs', folder:'bombing-bugs', title:'Bombing Bugs',
+    web_entry:'godot/bombing-bugs/index.html',
+  };
+  const invalid = [
+    ...['', '../other', 'other/game', 'other%2fgame', 'UPPER', 'two--parts', 123].map(id => ({
+      ...game, id, folder:id, web_entry:'godot/' + id + '/index.html',
+    })),
+    {...game, folder:'another-folder'},
+    {...game, web_entry:'godot/another-folder/index.html'},
+    {...game, web_entry:'https://splitscreen.club/play/godot/bombing-bugs/index.html'},
+    {...game, min_players:0},
+    {...game, max_players:9},
+  ];
+  const {games} = await read({extra:[...invalid, game, game]});
+  assert.deepEqual(games.map(row => row.id), ['bombing-bugs']);
+  assert.deepEqual({...games[0]}, {...game, web_cover:'godot/bombing-bugs/cover.png'});
+
+  const packaged = {id:'another-id', folder:game.folder};
+  assert.deepEqual((await read({base:[packaged], extra:[game]})).games, [packaged]);
+});
+
 test('other origins, paths and custom shelves make no overlay request',async()=>{
   for (const options of [{origin:'http://localhost:8790'}, {origin:'https://other.example'}, {path:'/archive/'}, {custom:true}]) {
     const {games,requests}=await read(options);

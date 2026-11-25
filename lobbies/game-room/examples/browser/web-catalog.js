@@ -21,7 +21,7 @@
       if (!Array.isArray(extra)) return games;
       for (const row of extra) {
         const id = row?.id;
-        if (!['ballkickers', 'frog-fighter'].includes(id) || row.folder !== id ||
+        if (typeof id !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id) || row.folder !== id ||
             row.web_entry !== 'godot/' + id + '/index.html' || typeof row.title !== 'string' ||
             !Number.isInteger(row.min_players) || !Number.isInteger(row.max_players) ||
             row.min_players < 1 || row.max_players < row.min_players || row.max_players > 8 ||
