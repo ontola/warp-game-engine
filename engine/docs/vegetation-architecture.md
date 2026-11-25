@@ -783,7 +783,7 @@ root-anchored sway and update their shadows as they move. For articulated
 branches, create a `PartWindRig` when the plant becomes resident and call
 `sample_into` each frame to reuse its validated bind poses and the output buffer.
 Use `sample_weighted_into` to fade articulation with distance while sampling
-the same storm as the surrounding stand. [Branch and canopy measurements](log/2026-11-25-forest-storm-gusts.md).
+the same storm as the surrounding stand. [Branch and canopy measurements](log/2026-11-25-forest-crown-springs.md).
 
 - [x] G5.1 — Demand-deduplicated ancestor poses and indirect depth dispatches are
   connected. Source, voxel and shadow paths share poses; bounded fallback exists.
