@@ -1,0 +1,12 @@
+{
+  "about": "Measured cost per game and GPU (app::bench, `bench=1`), for the room's 'May stutter here' (host.rs hardware_note). Keyed by the GPU name the adapter reports. build-web.py copies each game's entry into games/library.json as `bench`. Measurements only, never typed guesses; see gamenight-internal docs/strategy/hardware-fit.md. Moves to the store's /v1/game-catalog later.",
+  "measured": {
+    "Adreno (TM) 740": {"source": "2026-11-25 Tab S9+ SM-X810, warp cbb66871, tier medium, 2 players", "games": {
+      "splitscreen-club": {"gpu_fixed_ms": 1.5, "gpu_ns_per_px": 15.0},
+      "spellstorm": {"gpu_fixed_ms": 18.5, "gpu_ns_per_px": 43.8},
+      "dead-miles": {"gpu_fixed_ms": 25.1, "gpu_ns_per_px": 81.4},
+      "neon-siege": {"gpu_fixed_ms": 1.5, "gpu_ns_per_px": 17.1},
+      "stack-together": {"gpu_fixed_ms": 7.0, "gpu_ns_per_px": 6.9}
+    }}
+  }
+}

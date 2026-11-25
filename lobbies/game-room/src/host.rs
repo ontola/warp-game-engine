@@ -58,6 +58,34 @@ pub struct Station {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Loading { pub game: String, pub stage: String, pub progress: Option<f64>, pub label: String }
 
+/// The screen and GPU this host draws on, for [`Host::hardware_note`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HostDevice {
+    /// As the adapter reports it ("Adreno (TM) 740"); empty in a browser
+    /// that hides it.
+    pub gpu: String,
+    pub size: [u32; 2],
+    /// The phone preset (its 3D view starts at 1080 lines, not 1440).
+    pub phone: bool,
+}
+
+/// The lowest step of the shells' resolution ladder (app::quality, 0.67 of
+/// the start height, which is 1080 lines on a phone and 1440 elsewhere).
+pub fn ladder_floor(d: &HostDevice) -> u32 {
+    let start = d.size[1].min(if d.phone { 1080 } else { 1440 });
+    (start as f32 * 0.67) as u32
+}
+
+/// The GPU time `bench` (a game's measured cost on this GPU: fixed ms + ns
+/// per 3D pixel) predicts at `lines` on this screen.
+pub fn predicted_gpu_ms(bench: &Value, d: &HostDevice, lines: u32) -> Option<f64> {
+    let fixed = bench["gpu_fixed_ms"].as_f64()?;
+    let per_px = bench["gpu_ns_per_px"].as_f64()?;
+    let aspect = f64::from(d.size[0]) / f64::from(d.size[1].max(1));
+    let px = f64::from(lines) * f64::from(lines) * aspect;
+    Some(fixed + per_px * px / 1e6)
+}
+
 #[derive(Default)]
 pub struct Host {
     pub party: Value,
@@ -76,6 +104,8 @@ pub struct Host {
     /// Doors emptied by a pickup the host hasn't confirmed yet.
     pub claimed_doors: HashMap<String, f32>,
     load_shown: HashMap<String, f32>,
+    /// Set by the shell that draws the room; None: no hardware notes.
+    pub device: Option<HostDevice>,
     load_report: HashMap<String, (f64, f32, String)>,
 }
 
@@ -214,6 +244,26 @@ impl Host {
     }
 
     pub fn fits_party(&self, game: &Value) -> bool { self.shortfall(game).is_empty() }
+
+    /// "May stutter here" when the game's cost measured on this GPU (its
+    /// `bench` in library.json, from lobbies/game-room/hardware-fit.json)
+    /// misses its frame rate by more than 10% even at the ladder's lowest
+    /// step; empty when it fits or nothing was measured on this GPU. The
+    /// game can still be picked; autoplay leaves it out
+    /// (gamenight-internal docs/strategy/hardware-fit.md).
+    pub fn hardware_note(&self, game: &Value) -> String {
+        let Some(d) = self.device.as_ref().filter(|d| !d.gpu.is_empty() && d.size[1] > 0) else { return String::new() };
+        let bench = &game["bench"][d.gpu.as_str()];
+        let hz = game["frame_target_hz"].as_f64().filter(|hz| *hz >= 20.0).unwrap_or(60.0);
+        match predicted_gpu_ms(bench, d, ladder_floor(d)) {
+            Some(ms) if ms > 1000.0 / hz * 1.1 => "May stutter here".into(),
+            _ => String::new(),
+        }
+    }
+
+    /// Whether the room picks `game` by itself (autoplay, the next game):
+    /// it fits the party and runs smoothly here.
+    pub fn runs_smoothly(&self, game: &Value) -> bool { self.hardware_note(game).is_empty() }
 
     /// The running (or paused) game with its phase, or None.
     pub fn current_game(&self) -> Option<Value> {
@@ -552,5 +602,27 @@ mod tests {
         assert_eq!(at(l::stand_x(l::EXIT_DOOR)).unwrap().0, "exit");
         assert_eq!(at(l::stand_x(l::PROFILE_DOORS[0])), Some(("door0".into(), "Hold Y to become Sanne".into(), true)));
         assert_eq!(at(l::stand_x(7.0)), None);
+    }
+
+    #[test]
+    fn hardware_notes_from_the_tablet_bench() {
+        // The 25 November bench on the Tab S9+ (hardware-fit.json).
+        let fit: Value = serde_json::from_str(include_str!("../hardware-fit.json")).unwrap();
+        let tab = &fit["measured"]["Adreno (TM) 740"]["games"];
+        let game = |id: &str| json!({"id": id, "bench": {"Adreno (TM) 740": tab[id]}});
+        let mut h = host(json!({}));
+        assert_eq!(h.hardware_note(&game("spellstorm")), "", "no device: no note");
+        h.device = Some(HostDevice { gpu: "Adreno (TM) 740".into(), size: [2800, 1752], phone: true });
+        assert_eq!(ladder_floor(h.device.as_ref().unwrap()), 723);
+        for light in ["splitscreen-club", "neon-siege", "stack-together"] { assert_eq!(h.hardware_note(&game(light)), "", "{light}"); }
+        for heavy in ["spellstorm", "dead-miles"] { assert_eq!(h.hardware_note(&game(heavy)), "May stutter here", "{heavy}"); }
+        assert!(!h.runs_smoothly(&game("spellstorm")));
+        // At 30 fps Spellstorm's floor fits (18.5 + 43.8 ns x 836k px = 55 ms > 36.7: still not).
+        assert_eq!(h.hardware_note(&json!({"bench": {"Adreno (TM) 740": tab["spellstorm"]}, "frame_target_hz": 30})), "May stutter here");
+        // Another GPU, or a browser that hides its name: nothing measured, no note.
+        h.device = Some(HostDevice { gpu: "Apple M5 Pro".into(), size: [3024, 1964], phone: false });
+        assert_eq!(h.hardware_note(&game("spellstorm")), "");
+        h.device = Some(HostDevice { gpu: String::new(), size: [3024, 1964], phone: false });
+        assert_eq!(h.hardware_note(&game("spellstorm")), "");
     }
 }

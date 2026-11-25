@@ -475,7 +475,9 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
         }
         // A game this party can't play yet: dimmed, its reason on it.
         let fits = games.get(i).is_none_or(|g| lobby.host.fits_party(g));
-        let k = (if mid { 1.0 } else if hover { 0.9 } else { 0.72 }) * if fits { 1.0 } else { 0.4 };
+        // Too heavy for this device: a little dimmed, still playable.
+        let smooth = games.get(i).is_none_or(|g| lobby.host.runs_smoothly(g));
+        let k = (if mid { 1.0 } else if hover { 0.9 } else { 0.72 }) * if !fits { 0.4 } else if !smooth { 0.65 } else { 1.0 };
         let open = intersect(r, area);
         opens.push((i, r, open));
         match cover(i) {
@@ -517,7 +519,7 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
             c.rect(bar, rgba(1.0, 1.0, 1.0, 0.15 * fade));
             c.rect([bar[0], bar[1], bar[2] * (percent / 100.0).clamp(0.0, 1.0), bar[3]], crate::lobby::AMBER.with_alpha(fade));
         }
-        let reason = games.get(i).map(|g| lobby.host.shortfall(g)).unwrap_or_default();
+        let reason = games.get(i).map(|g| Some(lobby.host.shortfall(g)).filter(|r| !r.is_empty()).unwrap_or_else(|| lobby.host.hardware_note(g))).unwrap_or_default();
         if !reason.is_empty() {
             let fs = (22.0 * scale).floor();
             let band = [r[0], r[1] + r[3] - fs * 2.4, r[2], fs * 2.4];

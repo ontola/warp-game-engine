@@ -284,6 +284,11 @@ def copy_games(names):
             shutil.copyfile(out / game['id'] / 'cover.png', OUT / 'godot' / game['id'] / 'cover.png')
         (OUT / 'godot/library.json').write_text(json.dumps(extra), encoding='utf-8')
     (out / 'index.json').write_text(json.dumps(names))
+    # Measured cost per GPU (app::bench) for the room's "May stutter here".
+    fit = json.loads((ROOT / 'lobbies/game-room/hardware-fit.json').read_text())['measured']
+    for game in library:
+        bench = {gpu: m['games'][game['id']] for gpu, m in fit.items() if game['id'] in m['games']}
+        if bench: game['bench'] = bench
     (out / 'library.json').write_text(json.dumps(library))
 
 if args.assets_only:
