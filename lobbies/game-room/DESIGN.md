@@ -40,7 +40,8 @@ in `src/room.rs` / `src/lobby.rs`; the CSS names go in `:root` of
 | muted | `#a8adc4` | `--muted` | `DIM` | Secondary text, unselected items, counts |
 | amber | `#ffb454` | `--amber` | `AMBER` | Brand ("Splitscreen"), kickers/eyebrows, warnings, loading |
 | lilac | `#a78bfa` | `--lilac` | `NIGHT_LILAC` | Brand (".Club"), links, focus ring |
-| violet | `#7c5cff` | `--violet` | `VIOLET` | Selection fill (at 35 %), primary button fill, progress end |
+| violet | `#7c5cff` | `--violet` | `VIOLET` | Selection fill (at 35 %), progress end |
+| violet-deep | `#5143ae` | `--violet-deep` | `VIOLET_DEEP` | Filled primary buttons with white text (app, HTML) |
 | green | `#3ddc97` | `--green` | `GREEN` | Ready, joined, queued ("Up next"), success |
 | red | `#e2574c` | `--red` | `RED` | Errors, leaving, destructive confirm |
 
@@ -184,7 +185,7 @@ coloured dot (8 px) for its colour: no left bar.
 Pill, height 54 @1080p (5 % of the screen), glyph disc left, label
 centred in the rest. Rest: panel fill with a 2 px border in the button's
 colour; hover/focus: fill the colour darkened 20 %. HTML buttons (crash
-screen, links) are the same pill: violet fill for the primary action,
+screen, links) are the same pill: violet-deep fill and white text for the primary action,
 white at 10 % for the other.
 
 ### Cover card
