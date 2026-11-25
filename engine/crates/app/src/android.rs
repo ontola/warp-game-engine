@@ -1135,7 +1135,17 @@ fn round_rect(d: &mut HudDrawList, [x, y, w, h]: [f32; 4], r: f32, color: [f32; 
     d.rect([x + r, y, w - 2.0 * r, h], color, clip);
     d.rect([x, y + r, r, h - 2.0 * r], color, clip);
     d.rect([x + w - r, y + r, r, h - 2.0 * r], color, clip);
-    for c in [[x + r, y + r], [x + w - r, y + r], [x + r, y + h - r], [x + w - r, y + h - r]] { d.circle(c, r, color, clip); }
+    // Each corner's disc clipped to its own corner square: whole discs would
+    // overlap the rectangles, and a see-through colour shows the overlap
+    // as a second, darker rim at the corners (Joep, 25 November).
+    let corner = |cx: f32, cy: f32| {
+        let (x0, y0) = (cx.max(clip[0]), cy.max(clip[1]));
+        let (x1, y1) = ((cx + r).min(clip[0] + clip[2]), (cy + r).min(clip[1] + clip[3]));
+        [x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0)]
+    };
+    for (c, sq) in [([x + r, y + r], (x, y)), ([x + w - r, y + r], (x + w - r, y)), ([x + r, y + h - r], (x, y + h - r)), ([x + w - r, y + h - r], (x + w - r, y + h - r))] {
+        d.circle(c, r, color, corner(sq.0, sq.1));
+    }
 }
 
 /// The browser page's controller icon (index.html #club-notice), `size`
