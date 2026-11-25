@@ -107,6 +107,9 @@ Measured on a Galaxy Tab S9+ (Adreno 740) and a Xiaomi 13 class phone
   starts at the screen's own height instead of 1080 lines (tablets).
   `env=KERN_SHADE_PROBE:N` times the compact shade pass stage by stage
   ([renderer switches](renderer-switches.md)).
+- `fps=120` asks the display for that rate (ANativeWindow_setFrameRate, API 30+)
+  and makes the resolution ladder chase it. Without it the host runs at the
+  system's choice, 60 Hz on the Tab S9+.
 - `env=NAME:VALUE,NAME:VALUE` in the query sets renderer switches for a test
   run. Frame and GPU pass times are in logcat every 300 frames or 5 s.
 

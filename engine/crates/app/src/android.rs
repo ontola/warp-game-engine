@@ -306,6 +306,29 @@ pub fn mobile() -> bool { !matches!(query_param("quality").as_deref(), Some("ful
 
 const MOBILE_BASE_HEIGHT: u32 = 1080;
 
+/// The display rate to ask for (`fps=120` in the query); None leaves the
+/// system's choice (60 Hz on the Tab S9+).
+pub fn requested_hz() -> Option<f32> { query_param("fps").and_then(|v| v.parse::<f32>().ok()).filter(|hz| *hz >= 20.0) }
+
+/// Ask the display for `hz` (ANativeWindow_setFrameRate, API 30; looked up
+/// at run time since the host also runs on API 26).
+fn request_frame_rate(w: &NativeWindow, hz: f32) {
+    unsafe extern "C" {
+        fn dlopen(name: *const std::ffi::c_char, flags: i32) -> *mut std::ffi::c_void;
+        fn dlsym(handle: *mut std::ffi::c_void, name: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+    }
+    type SetFrameRate = unsafe extern "C" fn(*mut ndk_sys::ANativeWindow, f32, i8) -> i32;
+    // SAFETY: libandroid.so is loaded already; the symbol has this signature
+    // (compatibility 0 = default) and the window outlives the call.
+    let rc = unsafe {
+        let lib = dlopen(c"libandroid.so".as_ptr(), 1);
+        let f = if lib.is_null() { std::ptr::null_mut() } else { dlsym(lib, c"ANativeWindow_setFrameRate".as_ptr()) };
+        if f.is_null() { log("ANativeWindow_setFrameRate missing (API < 30)"); return }
+        std::mem::transmute::<*mut std::ffi::c_void, SetFrameRate>(f)(w.ptr().as_ptr(), hz, 0)
+    };
+    log(&format!("asked the display for {hz} Hz ({})", if rc == 0 { "ok" } else { "refused" }));
+}
+
 fn mobile_light(mut light: render::Lighting) -> render::Lighting {
     // GI stays: the compact pass only looks the baked irradiance volume up
     // (cheap), and without it Spellstorm and the room were far too dark
@@ -648,6 +671,7 @@ fn on_window(window: NativeWindow) -> Result<(), String> {
     let size = window_size(&window);
     let instance = render::gpu::instance();
     let surface = surface_for(&instance, &window)?;
+    if let Some(hz) = requested_hz() { request_frame_rate(&window, hz); }
     let (gpu, config) = Gpu::for_surface(&instance, &surface, size[0], size[1])?;
     surface.configure(&gpu.device, &config);
     log(&format!("GPU: {} ({:?}), {}x{}, {:?}", gpu.info.name, gpu.info.backend, config.width, config.height, config.format));
@@ -683,6 +707,7 @@ fn render_loop(rx: mpsc::Receiver<Event>, stop: Arc<std::sync::atomic::AtomicBoo
                                     config.width = size[0];
                                     config.height = size[1];
                                     surface.configure(&gfx.gpu.device, &config);
+                                    if let Some(hz) = requested_hz() { request_frame_rate(&w, hz); }
                                     gfx.surface = Some((surface, config, w));
                                     log(&format!("window back, {}x{}", size[0], size[1]));
                                 }
@@ -937,7 +962,7 @@ impl Shell {
             self.switched = Some(Instant::now());
             self.times.clear();
             self.profiling = false;
-            if let Some(q) = &mut self.quality { q.set_enabled(false); q.set_enabled(true); q.idle(); q.set_target_fps(self.game.target_fps(), None); }
+            if let Some(q) = &mut self.quality { q.set_enabled(false); q.set_enabled(true); q.idle(); q.set_target_fps(self.game.target_fps(), requested_hz().map(f64::from)); }
         }
         follow_window(live);
         let Some((_, config, _)) = live.surface.as_ref() else { return Ok(()) };
@@ -1009,7 +1034,7 @@ impl Shell {
             }
         };
         let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let quality = self.quality.get_or_insert_with(|| crate::quality::AdaptiveQuality::new(self.game.target_fps(), None, Instant::now()).unwrap_or_else(|| unreachable!()));
+        let quality = self.quality.get_or_insert_with(|| crate::quality::AdaptiveQuality::new(self.game.target_fps(), requested_hz().map(f64::from), Instant::now()).unwrap_or_else(|| unreachable!()));
         let base = |game: Option<u32>| match (self.mobile, game) {
             (true, _) => self.render_height.unwrap_or(if self.upscale.is_some() { size[1] } else { MOBILE_BASE_HEIGHT }).min(game.filter(|h| *h > 0).unwrap_or(u32::MAX)).min(size[1]),
             (false, Some(0)) => size[1],
