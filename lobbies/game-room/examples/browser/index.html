@@ -132,7 +132,7 @@ html[data-kb-nudge][data-join-hint] #kb-nudge{animation:kb-nudge-yield 4s ease f
 #kb-nudge>div>span{color:var(--muted);font-size:clamp(14px,1.6vw,17px)}
 /* The A button: a green disc with bg ink (DESIGN.md glyphs). */
 .pad-a{margin:0 .15em}
-.pad-a,#join-hint kbd.pad-a{display:inline-grid;place-items:center;width:1.4em;height:1.4em;padding:0;border-radius:50%;background:#3ddc97;color:#0d1020;font:800 .85em/1 Outfit,system-ui;vertical-align:-.3em;box-shadow:none;border:0;min-width:0}
+.pad-a,#join-hint kbd.pad-a{display:inline-grid;place-items:center;width:1.4em;height:1.4em;padding:0;border-radius:50%;background:#3ddc97;color:#0d1020;font:800 .85em/1 Outfit,system-ui;vertical-align:middle;position:relative;top:-.06em;box-shadow:none;border:0;min-width:0}
 #join-hint kbd.tick{background:none;box-shadow:none;color:var(--green);font-size:1.3em;padding:0}
 #join-detail{display:block;color:var(--muted);font-size:.85em}
 #join-detail:empty{display:none}
@@ -200,7 +200,7 @@ body.debug #warp-games{display:flex!important}
 <div id="kb-nudge" role="status">
   <svg viewBox="0 0 48 48" aria-hidden="true"><rect x="4" y="12" width="40" height="22" rx="10" fill="#ffb454"/><circle cx="12" cy="30" r="9" fill="#ffb454"/><circle cx="36" cy="30" r="9" fill="#ffb454"/>
     <rect x="9" y="21" width="10" height="3.5" rx="1.75" fill="#0d1020"/><rect x="12.25" y="17.75" width="3.5" height="10" rx="1.75" fill="#0d1020"/><circle cx="33" cy="19.5" r="2.6" fill="#0d1020"/><circle cx="38" cy="24.5" r="2.6" fill="#0d1020"/></svg>
-  <div><small>Keyboard &amp; mouse · <span id="kb-nudge-who">Player 1</span></small><strong>Splitscreen Club is made for controllers</strong><span>Connect one and press <i class="pad-a">A</i>: it takes over your player</span></div>
+  <div><small>Keyboard &amp; mouse · <span id="kb-nudge-who">Player 1</span></small><strong>Splitscreen Club is made for controllers</strong><span>Connect one and press <i class="pad-a">A</i> to take over your player</span></div>
 </div>
 <div id="key-hint" role="status"><kbd>Enter</kbd><div>Play with the keyboard</div></div>
 <link rel="stylesheet" href="stories/editor.css">
