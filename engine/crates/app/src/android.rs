@@ -385,7 +385,8 @@ pub fn run(cfg: crate::Config, game: Box<dyn Game>) {
     let mobile = mobile();
     if mobile { log("phone preset: lower resolution, no RSM, bloom or contact occlusion (quality=full turns it off)"); }
     let shell = Shell { cfg, game, devices, acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), announced: false, switched: None, exited: false, back: Default::default(),
-        times: Vec::new(), render_height: query_param("render").and_then(|h| h.parse().ok()), quality: None, mobile, profiling: false, gpu_passes: Vec::new(), gpu_total: 0.0 };
+        times: Vec::new(), render_height: query_param("render").and_then(|h| h.parse().ok()), quality: None, mobile, profiling: false, gpu_passes: Vec::new(), gpu_total: 0.0,
+        upscale: query_param("upscale").and_then(|m| m.parse().map_err(|e: String| log(&e)).ok()).filter(|m| *m != render::upscale::UpscaleMode::Native) };
     SHELL.with(|s| *s.borrow_mut() = Some(shell));
 }
 
@@ -858,6 +859,12 @@ struct Shell {
     profiling: bool,
     gpu_passes: Vec<(&'static str, f64)>,
     gpu_total: f64,
+    /// `upscale=temporal-quality|temporal-balanced|temporal-performance`:
+    /// the 3D view renders below the picture and Warp's portable temporal
+    /// upscaler rebuilds it, so the ladder can start at the screen's own
+    /// height (tablets) instead of [`MOBILE_BASE_HEIGHT`]. None when off or
+    /// when the renderer refused it.
+    upscale: Option<render::upscale::UpscaleMode>,
 }
 
 impl Shell {
@@ -947,6 +954,11 @@ impl Shell {
         if self.mobile { draw.light = mobile_light(draw.light); }
         draw_banner(&mut draw.hud, size);
         let Some(renderer) = live.renderer.as_ref() else { return Ok(()) };
+        // Once per renderer in effect (set_upscale returns at once when the
+        // mode holds); a refusal turns it off for the rest of the run.
+        if let Some(mode) = self.upscale {
+            if let Err(e) = renderer.set_upscale(&live.gpu, mode) { log(&format!("upscale {} off: {e}", mode.as_str())); self.upscale = None; }
+        }
         let draw_ms = ms(t_draw);
         let t_out = Instant::now();
         let (surface, config, _) = live.surface.as_ref().ok_or("no surface")?;
@@ -960,7 +972,7 @@ impl Shell {
         let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let quality = self.quality.get_or_insert_with(|| crate::quality::AdaptiveQuality::new(self.game.target_fps(), None, Instant::now()).unwrap_or_else(|| unreachable!()));
         let base = |game: Option<u32>| match (self.mobile, game) {
-            (true, _) => self.render_height.unwrap_or(MOBILE_BASE_HEIGHT).min(game.filter(|h| *h > 0).unwrap_or(u32::MAX)).min(size[1]),
+            (true, _) => self.render_height.unwrap_or(if self.upscale.is_some() { size[1] } else { MOBILE_BASE_HEIGHT }).min(game.filter(|h| *h > 0).unwrap_or(u32::MAX)).min(size[1]),
             (false, Some(0)) => size[1],
             (false, Some(h)) => h,
             (false, None) => size[1].min(1440),
@@ -983,7 +995,12 @@ impl Shell {
             let mut passes = self.gpu_passes.clone();
             passes.sort_by(|a, b| b.1.total_cmp(&a.1));
             let top: Vec<String> = passes.iter().take(8).map(|(n, ms)| format!("{n} {ms:.1}")).collect();
-            log(&format!("{}: GPU {:.1} ms at {}x{} out, 3D {} lines: {}", self.cfg.title, self.gpu_total, size[0], size[1], height.unwrap_or(size[1]), top.join(", ")));
+            let lines = height.unwrap_or(size[1]);
+            let upscale = match self.upscale.and_then(|m| m.portable_scale().map(|s| (m, s))) {
+                Some((m, s)) => format!(" ({} from {} lines)", m.as_str(), (lines as f32 * s).round() as u32),
+                None => String::new(),
+            };
+            log(&format!("{}: GPU {:.1} ms at {}x{} out, 3D {lines} lines{upscale}: {}", self.cfg.title, self.gpu_total, size[0], size[1], top.join(", ")));
         }
         if self.frames == 1 { log(&format!("first frame {:.1} s after start", self.started.elapsed().as_secs_f32())); QUIET.with(|q| q.set((q.get().0, q.get().0))); }
         if let Some(at) = self.switched.take() { log(&format!("{}: first frame {:.0} ms after the switch", self.cfg.title, at.elapsed().as_secs_f32() * 1000.0)); }

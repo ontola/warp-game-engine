@@ -262,6 +262,11 @@ override VOXEL_PASS: bool = false;
 // Like the voxel pass: the kernel's size, not its work, set the pace.
 override SHADE_CLASS: u32 = 0u;
 override SHADE_DIAGNOSTICS: bool = true;
+// KERN_SHADE_PROBE=N (frame.rs): the simple/compact pass stops after stage N
+// and stores what it has, to time each stage on a device. 1 the visibility
+// and depth reads, 2 + triangle and normal, 3 + material, surfaces and sun,
+// 4 + albedo texture and ambient/GI, 5 + local lights. 0 the whole pass.
+override SHADE_PROBE: u32 = 0u;
 // Voxel leaves light like the needle brushes they stand for (KERN_VOXEL_LEAF_PARITY,
 // 1 default, 0 = before): the brushes' own sub-cell shade (NEEDLE_BRUSH_OWN) on sun
 // and sky, and sky visibility read at the surface as for a mesh needle.
@@ -4000,6 +4005,7 @@ fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool) {
     if textureLoad(depth_tex,px,0)<=0.0 || id==0xffffffffu {
         textureStore(out_hdr,px,vec4<f32>(visible_background_radiance(dir),1.0));return;
     }
+    if SHADE_PROBE == 1u { textureStore(out_hdr,px,vec4<f32>(vec3<f32>(f32(id&255u)/255.0),1.0)); return; }
     let vis=visible[id>>7u];let cl=clusters[vis.y];let inst=instance_at(vis.x);
     irradiance_receiver_radius = select(0.0, 0.5, (inst.flags & 64u) != 0u);
     let packed=tri_word(cl.first_tri+(id&127u));
@@ -4020,6 +4026,7 @@ fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool) {
     let authored=normals[0]*b0+normals[1]*b1+normals[2]*b2;
     var n=normalize(wind_normal(member_slot(vis.x),xform_dir(inst,authored)));
     if dot(n,dir)>0.0 {n=-n;}
+    if SHADE_PROBE == 2u { textureStore(out_hdr,px,vec4<f32>(n*0.5+0.5,1.0)); return; }
     let m=material(cl.material);var base=m.tint;
     var surface_emit = vec3<f32>(0.0);
     var sun_vis = 1.0;
@@ -4048,6 +4055,7 @@ fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool) {
         }
         sun_vis *= cloud_sun_transmittance(p, light.sun_dir.xyz, light.clouds, light.cloud_motion);
     }
+    if SHADE_PROBE == 3u { textureStore(out_hdr,px,vec4<f32>(base*(0.2+sun_vis)+surface_emit,1.0)); return; }
     if m.layer>=0 && !(terrain_lighting && (m.flags&32770u)==32770u) {let uv=uvs[0]*b0+uvs[1]*b1+uvs[2]*b2;
         base*=textureSampleLevel(albedo,samp,uv,m.layer,max(log2(max(distance(p,view.cam.xyz)*0.03,1.0)),albedo_lod_floor(m.layer))).rgb;}
     var ambient=sky_irradiance(n);
@@ -4064,11 +4072,13 @@ fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool) {
         }
     }
     var rad=base*(ambient+light.sun_color.rgb*light.sun_dir.w*sun_vis*max(dot(n,light.sun_dir.xyz),0.0))/3.14159265;
+    if SHADE_PROBE == 4u { textureStore(out_hdr,px,vec4<f32>(min(rad,vec3<f32>(65504.0)),1.0)); return; }
     for(var index=0u;index<incident_light_count(p);index++) {
         if dot(n,incident_light_position(index)-p)<=0.0 {continue;}
         let sample=incident_light_sample(index,p,n);
         rad+=base*sample.irradiance*max(dot(n,sample.direction),0.0)/PI;
     }
+    if SHADE_PROBE == 5u { textureStore(out_hdr,px,vec4<f32>(min(rad,vec3<f32>(65504.0)),1.0)); return; }
     rad += surface_emit * light.anim.y;
     if (m.flags&1024u)!=0u {rad+=base*abs(m.scale)*light.anim.y;}
     if (m.flags&4096u)!=0u {rad=base*m.scale*light.anim.y;}

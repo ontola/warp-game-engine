@@ -1714,6 +1714,7 @@ version = "0.1.0"
 dependencies = [
  "android-activity",
  "app",
+ "base64 0.22.1",
  "game-room",
  "getrandom 0.3.4",
  "image",

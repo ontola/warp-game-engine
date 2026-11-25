@@ -2848,6 +2848,7 @@ impl Renderer {
         // playtest cameras in registers alone.
         let diagnostic_constants: Vec<(&'static str, f64)> = shade_constants.clone();
         shade_constants.push(("SHADE_DIAGNOSTICS", 0.0));
+        if let Some(stage) = crate::switches::SHADE_PROBE.parse::<u32>() { shade_constants.push(("SHADE_PROBE", f64::from(stage))); }
         let shade = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label:Some("shade"),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some(if compact_shade {"shade_compact"} else if simple_lighting {"shade_simple"} else {"shade"}),
             compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),

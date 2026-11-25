@@ -102,6 +102,11 @@ Measured on a Galaxy Tab S9+ (Adreno 740) and a Xiaomi 13 class phone
   likely cost Spellstorm its walls and wizards.
 - Texture arrays use the desktop sizes (render feature `phone`); the 512 px
   headset layers cut off and stretched the room's painted screens.
+- `upscale=temporal-quality` (or `-balanced`, `-performance`) renders the 3D
+  view below the picture with Warp's portable temporal upscaler; the view then
+  starts at the screen's own height instead of 1080 lines (tablets).
+  `env=KERN_SHADE_PROBE:N` times the compact shade pass stage by stage
+  ([renderer switches](renderer-switches.md)).
 - `env=NAME:VALUE,NAME:VALUE` in the query sets renderer switches for a test
   run. Frame and GPU pass times are in logcat every 300 frames or 5 s.
 

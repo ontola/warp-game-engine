@@ -110,6 +110,7 @@ Use these to compare against the old path. All of them are the normal route.
 | --- | --- |
 | `KERN_CPU_SPANS=1`, `KERN_STARTUP_PROFILE=1` | CPU time per frame phase; renderer construction profile. |
 | `KERN_DIAGNOSTIC_HIDE` | Hide geometry categories in captures. |
+| `KERN_SHADE_PROBE=N` | The simple/compact shade pass stops after stage N and stores what it has, so a device's pass times show what each stage costs: `1` visibility and depth reads, `2` + triangle and normal, `3` + material, game surfaces and sun, `4` + albedo texture and ambient/GI, `5` + local lights (the rest is styling, glow and fog). The image is a debug view. |
 | `KERN_SUN_DAMAGE_REPORT=1` | Prints, every frame, how many of the 4096 tiles of each cached sun map were marked changed, and how many casters changed by snapshot row (blocking readback). |
 | `KERN_FAR_CROWN_DEBUG` | Debug colours on the painted far forest: `1` red for the averaged share and green for single-crown cover, `2` white noise in 2 m world cells, `3` red where the stand field reaches the ground (`terrain_surface.wgsl`). |
 | `KERN_SPLIT_SELECTION_TIMING=1` | Times the GPU forest selection's parts (seed classify, refine, compact and finish, residency) separately (`frame.rs`). |

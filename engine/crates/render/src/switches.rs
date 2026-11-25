@@ -124,6 +124,7 @@ pub const SHADER_DIR: Switch = Switch::new("KERN_SHADER_DIR");
 pub const SHADE_CLASSES: Switch = Switch::new("KERN_SHADE_CLASSES");
 pub const SHADE_FEATURES: Switch = Switch::new("KERN_SHADE_FEATURES");
 pub const SHADE_UNLIT: Switch = Switch::new("KERN_SHADE_UNLIT");
+pub const SHADE_PROBE: Switch = Switch::new("KERN_SHADE_PROBE");
 pub const SHADOW_DISTANCE_LOD: Switch = Switch::new("KERN_SHADOW_DISTANCE_LOD");
 pub const SHADOW_REACH: Switch = Switch::new("KERN_SHADOW_REACH");
 pub const SIMPLE_CULL: Switch = Switch::new("KERN_SIMPLE_CULL");
@@ -276,6 +277,7 @@ pub const ALL: &[&Switch] = &[
     &SHADE_CLASSES,
     &SHADE_FEATURES,
     &SHADE_UNLIT,
+    &SHADE_PROBE,
     &SHADOW_DISTANCE_LOD,
     &SHADOW_REACH,
     &SIMPLE_CULL,
