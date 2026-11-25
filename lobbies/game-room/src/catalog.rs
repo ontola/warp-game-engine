@@ -535,14 +535,18 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
         let hover = mouse.is_some_and(|m| inside(r, m));
         let (label, key, accent) = match name { "play" => ("Play now", "A", crate::lobby::GREEN), "queue" => ("Queue", "X", Color::hex("4a8fe7")), _ => ("Room", "B", Color::hex("e2574c")) };
         let live = enabled || name == "close";
-        let bg = if hover && live { accent.darkened(0.2) } else { rgba(0.06, 0.06, 0.1, 0.92) };
-        c.style_box(r, [r[3] / 2.0; 4], bg.with_alpha(bg.a * fade), Some((2.0 * scale, accent.with_alpha(if live { fade } else { 0.35 * fade }))));
+        // Only the button is coloured: a disc with its letter, then the
+        // label, centred together. No pill; a mouse over it gets a faint one.
+        if hover && live { c.style_box(r, [r[3] / 2.0; 4], rgba(1.0, 1.0, 1.0, 0.08 * fade), None); }
         let fs = (r[3] * 0.42).floor();
-        // The controller button in a little disc, then the label.
-        let disc = [r[0] + r[3] * 0.55, r[1] + r[3] / 2.0];
-        c.circle(disc, r[3] * 0.32, accent.with_alpha(if live { fade } else { 0.35 * fade }));
-        c.text(faces.bold, [disc[0] - r[3], disc[1] + fs * 0.36], key, TextAlign::Center, 2.0 * r[3], (fs * 0.9).floor(), Color::hex("0c0a16").with_alpha(fade));
-        c.text(faces.regular, [r[0] + r[3], r[1] + r[3] / 2.0 + fs * 0.36], label, TextAlign::Center, r[2] - r[3] * 1.2, fs, TEXT.with_alpha(if live { fade } else { 0.4 * fade }));
+        let radius = r[3] * 0.32;
+        let gap = r[3] * 0.25;
+        let tw = render::hud::measure(label, faces.bold, fs)[0];
+        let x = r[0] + (r[2] - (2.0 * radius + gap + tw)) / 2.0;
+        let disc = [x + radius, r[1] + r[3] / 2.0];
+        c.circle(disc, radius, accent.with_alpha(if live { fade } else { 0.35 * fade }));
+        c.text(faces.bold, [disc[0] - radius, disc[1] + fs * 0.33], key, TextAlign::Center, 2.0 * radius, (fs * 0.9).floor(), Color::hex("0d1020").with_alpha(fade));
+        c.text(faces.bold, [x + 2.0 * radius + gap, r[1] + r[3] / 2.0 + fs * 0.36], label, TextAlign::Left, -1.0, fs, TEXT.with_alpha(if live { fade } else { 0.4 * fade }));
     }
     // The queue, small, bottom right.
     if !queue.is_empty() {

@@ -71,7 +71,16 @@ HUD badge, catalog button, Back panel.
 | LB / RB / LT / RT | rounded bumper (`paint::bumper`) | `#30303f`, 1.5 px `#b4b2c8` edge | text |
 | Start / Back | pill | `#30303f`, 1.5 px `#b4b2c8` edge | text |
 | Keyboard key | keycap (`paint::keycap`) | `#f2f1f8` key on a `bg` shadow | bg |
+| Left / right stick | stick (see below) | `#30303f`, 1.5 px `#b4b2c8` edge, inner cap ring | text |
+| D-pad | plus shape, the used arm lit in `text` | `#30303f` | |
 
+- **Sticks** are the hardest to read, so they follow one drawing: a top
+  view of the stick, a `#30303f` disc with a 1.5 px `#b4b2c8` edge and a
+  second ring at 62 % of its radius (the cap), the letter **L** or **R** in
+  the middle. Moving it: a small triangle on the side it moves to (all
+  four for "any direction"). Clicking it (L3/R3): a short bar under the
+  disc with a down chevron, and the label says "Press". Never write "L3",
+  "R3" or "LS" as text on screen.
 - Size: the glyph is as tall as the line it sits in (1.4 × the text size);
   the label next to it is Outfit 800.
 - Keyboard keys are **keycaps** (light key, dark text), in HTML too: not
@@ -122,7 +131,8 @@ Radii:
 | Key cap, small chip | 8 |
 | Cover card, catalog selection frame | 12 |
 | Panel, notice, toast, menu, Back panel, Up next | 18 |
-| Button, pill, hint row | full (height / 2) |
+| Button (HTML, app) | 12 |
+| Pill, hover pill, hint row | full (height / 2) |
 
 Elevation: panels get one shadow, `0 12px 36px rgba(0,0,0,.45)` (HUD: a
 `style_box` 8 px lower at 45 % black, as the catalog cards already do).
@@ -180,20 +190,51 @@ room, top centre in the catalog view (so it doesn't cover the buttons),
 stacked 12 apart, newest nearest the edge. Panel, Body text, an optional
 coloured dot (8 px) for its colour: no left bar.
 
-### Button (catalog, crash screen)
+### Controller action (catalog, TV screens)
 
-Pill, height 54 @1080p (5 % of the screen), glyph disc left, label
-centred in the rest. Rest: panel fill with a 2 px border in the button's
-colour; hover/focus: fill the colour darkened 20 %. HTML buttons (crash
-screen, links) are the same pill: violet-deep fill and white text for the primary action,
-white at 10 % for the other.
+An action a pad triggers is **the glyph and its label, nothing around
+them** (Joep, 2026-11-25: the coloured pills were too loud). Only the
+glyph is coloured; the label is Outfit 800 in `text`, the pair centred in
+its slot, 54 px tall @1080p (5 % of the screen), gap 0.25 × the height.
+Disabled: glyph at 35 %, label at 40 %. A mouse over it gets a faint
+pill (white 8 %, radius full) so it reads as clickable; no border.
+
+### Button (HTML, app)
+
+Things you click or tap are buttons: radius 12, `violet-deep` fill and
+white text for the primary action, white at 10 % for the others, no
+border. The crash screen, the loading page links and the app use these.
 
 ### Cover card
 
-3:4, radius 12. Unselected 72 % brightness; hover 90 %; selected 100 % and
+3:4, radius 12. **Cover only in every store grid** (app, website Artwork
+view, catalog): the art carries the title; tagline, player count and
+price live on the game page. Without a cover: the game's colour with its
+title. The website's Gameplay view shows screenshots, so it keeps a title.
+ Unselected 72 % brightness; hover 90 %; selected 100 % and
 a 5 px `text` frame at radius 12 (catalog). Badges on a cover: 52 px disc,
 3 px `bg` ring, top right: green with the queue number, amber with
 play/pause for the game on now, amber with the dot ring while loading.
+
+### Playlist (Up next)
+
+The queue looks the same in the room (TV cabinet and the list under
+it), the catalog view and the app (Playlist card), only bigger or
+smaller (Joep, 2026-11-25: "the playlist looks consistent throughout").
+
+- Kicker **UP NEXT** in green. When the game on now is shown with it, it
+  comes first under an amber **ON NOW** kicker.
+- One row per game: two-digit number in `muted` (01 is the next game,
+  the same number as the green badge on its cover in the catalog), a
+  small 3:4 cover, the title in `text`.
+- The first row may be larger (the TV cabinet's big cover); the numbers
+  and order do not change with it.
+- Loading: the percentage after the title in amber, an amber bar under
+  the first row. Problems (cannot start): the status line in red.
+- Where the queue came from (Queued, Autoplay) is a small `muted` line
+  under the title, never a colour.
+- Too many rows: **+N more** in `muted`, one row's height.
+- Rows of the same size in all three; the panel is the standard panel.
 
 ### Progress
 
@@ -334,3 +375,10 @@ wordmark, one card style. Where it differs from this guide:
     see [Rules for games](#rules-for-games), glyphs.
 21. **Game card blurbs cut mid-word** ("dash tackl…") on the phone grid.
     → two lines, cut at a word, or the catalog's short tagline.
+22. **The playlist has three looks.** Room TV: big cover for the first
+    game, rows numbered from 02, "+N more in queue" in green. Catalog: rows
+    numbered from 01, no covers, "+6 more" in muted. App: covers, no
+    numbers, "UP NEXT" in muted, status words as subtitles. → the
+    Playlist component above.
+23. **Sticks are drawn as text** ("R3 All games" at the shelf). → the
+    stick glyph.
