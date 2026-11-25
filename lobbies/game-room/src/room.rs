@@ -1148,7 +1148,7 @@ pub struct Mood {
 
 impl Default for Mood {
     fn default() -> Self {
-        Mood { music_playing: false, color: VIOLET, pad_hop: 99.0, pad_activity: 0.0, pad_drop: [Some(0.0), Some(0.0), None, None] }
+        Mood { music_playing: false, color: VIOLET, pad_hop: 99.0, pad_activity: 0.0, pad_drop: [None; crate::pads::MAX] }
     }
 }
 

@@ -56,7 +56,7 @@ impl TablePads {
     }
 
     /// Each pad's height above its spot on the table; None: not there. The
-    /// room's default (two pads down) until the host has said.
+    /// room has none until the host has said.
     pub fn heights(&self) -> Option<[Option<f32>; MAX]> {
         self.count?;
         Some(self.fall.map(|f| f.and_then(height)))
