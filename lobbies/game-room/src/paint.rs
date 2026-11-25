@@ -476,11 +476,11 @@ pub fn plaque(c: &mut Canvas, show: &Show) {
         text(c, "Phone joining", [qr[0], cy - 6.0], 16.0, DIM, side, TextAlign::Center);
         text(c, "starts with Splitscreen Club", [qr[0], cy + 18.0], 16.0, DIM, side, TextAlign::Center);
     } else {
-        // Dark modules on a light square, the host's SVG margin as the quiet
+        // Dark modules on a white square, the host's SVG margin as the quiet
         // zone: Android's scanner (ML Kit) does not read inverted codes at
-        // all. Light grey, not white, so the square does not bloom into the
-        // modules after tone mapping.
-        c.rect(qr, Color::hex("d9d9d9"));
+        // all. White for the most contrast (Joep, 25 November 2026: it read
+        // grey); the plaque's screen is bright enough to show it as white.
+        c.rect(qr, Color::WHITE);
         for m in &show.qr { c.rect([qr[0] + m[0] * side, qr[1] + m[1] * side, m[2] * side, m[3] * side], Color::hex("0c0a16")); }
     }
     let code = if show.room_code.is_empty() { "· · · ·" } else { &show.room_code };

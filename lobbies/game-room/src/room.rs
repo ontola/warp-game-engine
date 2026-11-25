@@ -937,8 +937,9 @@ fn plaque(r: &mut RoomBuild) {
     let c = v3(l::PLAQUE_CENTER);
     r.box_(Vec3::new(2.3, 2.75, 0.1), c + Vec3::new(0.0, 0.0, -0.02), &m(Color::hex("0e0c18"), 0.4));
     let texture = r.screen("plaque", [320, 380], false);
-    // White enough to read after tone mapping, low enough not to bloom.
-    let mut material = RoomBuild::screen_material(texture, 1.15);
+    // Bright enough that the QR code's white square shows white after tone
+    // mapping (the room's dark plaque stays dark).
+    let mut material = RoomBuild::screen_material(texture, 1.6);
     material.filter = 0;
     r.quad(Vec2::new(2.2, 2.63), c + Vec3::new(0.0, 0.0, 0.04), &material);
 }

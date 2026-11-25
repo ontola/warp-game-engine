@@ -94,6 +94,13 @@ impl Lobby {
         // A click on a player opens what the room can do with them.
         if p.pressed {
             if let Some(id) = self.player_at(at, size) { self.open_player_menu(&id); return; }
+            // A click on the QR code copies the room code (a browser host).
+            if self.outbox.is_some() && !self.show.room_code.is_empty() && self.plaque_at(at, size) {
+                let code = self.show.room_code.clone();
+                if let Some(out) = &mut self.outbox { out.push(serde_json::json!({"type": "copy_room_code", "code": code})); }
+                self.toast(format!("Room code {code} copied"), crate::room::GREEN);
+                return;
+            }
         }
         if used {
             let pointed = self.pointed(at, size);
@@ -219,6 +226,15 @@ impl Lobby {
             if hit && best.as_ref().is_none_or(|b| depth > b.0) { best = Some((depth, p.id.clone())); }
         }
         best.map(|b| b.1)
+    }
+
+    /// Whether `at` is on the plaque with the room's QR code and code.
+    pub fn plaque_at(&self, at: [f32; 2], size: [u32; 2]) -> bool {
+        let view_proj = crate::hud::view_proj(&self.stage.room.camera, size);
+        let c = Vec3::new(l::PLAQUE_CENTER[0] as f32, l::PLAQUE_CENTER[1] as f32, l::PLAQUE_CENTER[2] as f32 + 0.04);
+        let corner = |dx: f32, dy: f32| crate::hud::to_screen(view_proj, size, c + Vec3::new(dx * 1.1, dy * 1.315, 0.0));
+        let (Some(a), Some(b)) = (corner(-1.0, 1.0), corner(1.0, -1.0)) else { return false };
+        inside([a[0].min(b[0]), a[1].min(b[1]), (b[0] - a[0]).abs(), (b[1] - a[1]).abs()], at)
     }
 
     /// The station, and the button of it, under the cursor at `at`.

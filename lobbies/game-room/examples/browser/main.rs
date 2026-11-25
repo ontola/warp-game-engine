@@ -731,6 +731,11 @@ pub(crate) mod page {
                     list[i]["couch"] = to;
                     h.dirty = true;
                 }),
+                // A click on the room's QR code (mouse.rs): the code to the clipboard.
+                "copy_room_code" => {
+                    #[cfg(target_arch = "wasm32")]
+                    if let (Some(code), Some(w)) = (msg["code"].as_str(), web_sys::window()) { let _ = w.navigator().clipboard().write_text(code); }
+                }
                 "room_pickup" => {
                     let seat = msg["player_id"].as_str().and_then(|p| with(|h| seat_of(h, p)));
                     if let (Some(pending), Some(seat)) = (msg["pending"].as_str(), seat) { super::cloud::pickup(pending.to_string(), seat); }
