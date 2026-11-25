@@ -24,6 +24,9 @@ pub struct Spellstorm {
     party_seats: Vec<usize>,
     quit: bool,
     built: bool,
+    /// The scene was built ahead ([`Spellstorm::prepare`]): the first draw
+    /// only hands it to the renderer.
+    prebuilt: bool,
     /// Prepared: tell the host ready once the run's scene is built, so the
     /// build never stalls a started game.
     ready_after_build: bool,
@@ -70,6 +73,16 @@ pub fn pad(c: &Controls) -> Pad {
 }
 
 impl Spellstorm {
+    /// Build the scene before the first frame (while the host's loading
+    /// bar shows), so that frame only uploads it.
+    pub fn prepare(&mut self) -> Result<(), String> {
+        if !self.built && !self.prebuilt {
+            self.view.build(&self.world)?;
+            self.prebuilt = true;
+        }
+        Ok(())
+    }
+
     /// `humans` seats for local players first, then `bots`.
     pub fn new(kits: Kits, humans: usize, bots: usize, seed: u64) -> Spellstorm {
         Self::with_party(kits, humans, bots, seed, None)
@@ -102,7 +115,7 @@ impl Spellstorm {
         // Straight into the first level, no title screen (Joep); Start
         // opens the menu.
         let _ = humans;
-        Spellstorm { world, view: View::new(kits), hud, menu, humans, drive: (0..humans).collect(), party, party_seats: vec![], quit: false, built: false, ready_after_build: false, interp: Default::default(), tuning, shader, live: None, scan_t: 0 }
+        Spellstorm { world, view: View::new(kits), hud, menu, humans, drive: (0..humans).collect(), party, party_seats: vec![], quit: false, built: false, prebuilt: false, ready_after_build: false, interp: Default::default(), tuning, shader, live: None, scan_t: 0 }
     }
 
     /// The party's seats (main.gd _on_prepared): a wizard for each, couch
@@ -280,7 +293,7 @@ impl app::Game for Spellstorm {
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
         self.live_frame(frame);
         if !self.built || self.view.stale(&self.world) {
-            self.view.build(&self.world)?;
+            if !std::mem::take(&mut self.prebuilt) || self.view.stale(&self.world) { self.view.build(&self.world)?; }
             frame.set_scene(&self.view.scene, &self.view.light);
             let r = frame.renderer().ok_or("no renderer")?;
             self.view.upload(frame.gpu, r)?;

@@ -83,11 +83,15 @@ pub fn quiet_progress() { QUIET.with(|q| q.set((true, q.get().1))); }
 /// The loading screen's progress (`None`: done), drawn at once.
 pub fn progress(fraction: Option<f32>, step: &str) {
     log(&format!("loading: {step}"));
-    if fraction.is_some() && QUIET.with(|q| q.get().1) { return; }
     LOADING.with(|l| *l.borrow_mut() = (fraction, step.to_string()));
+    if fraction.is_some() && QUIET.with(|q| q.get().1) { return; }
     let shown = SHELL.try_with(|s| s.try_borrow().map(|s| s.as_ref().is_some_and(|s| s.frames > 0)).unwrap_or(true)).unwrap_or(true);
     if !shown && fraction.is_some() { draw_loading(); }
 }
+
+/// The last [`progress`] reported, also after the first frame (the Game
+/// Room shows it on its loading card).
+pub fn loading() -> (Option<f32>, String) { LOADING.with(|l| l.borrow().clone()) }
 
 /// A short line over the picture, at the top: for `seconds`, or, without,
 /// until [`clear_banner`] (a notice that stays; passing lines show over it
@@ -115,7 +119,12 @@ pub fn clear_banner(text: Option<&str>) {
 }
 
 /// Nothing to yield to: frames are the render thread's own.
-pub async fn yield_to_browser() {}
+pub async fn yield_to_browser() {
+    // Pending through two of the render loop's turns: a frame (the room
+    // with its loading card) is drawn before the blocking step that follows.
+    let mut turns = 0;
+    std::future::poll_fn(move |_| { turns += 1; if turns > 2 { Poll::Ready(()) } else { Poll::Pending } }).await
+}
 
 /// Run `task` on the render thread, between frames.
 pub fn spawn(task: impl Future<Output = ()> + 'static) {
@@ -1094,7 +1103,7 @@ impl Shell {
             log(&format!("{}: GPU {:.1} ms at {}x{} out, 3D {lines} lines{upscale}: {}", self.cfg.title, self.gpu_total, size[0], size[1], top.join(", ")));
         }
         if self.frames == 1 { log(&format!("first frame {:.1} s after start", self.started.elapsed().as_secs_f32())); QUIET.with(|q| q.set((q.get().0, q.get().0))); }
-        if let Some(at) = self.switched.take() { log(&format!("{}: first frame {:.0} ms after the switch", self.cfg.title, at.elapsed().as_secs_f32() * 1000.0)); }
+        if let Some(at) = self.switched.take() { log(&format!("{}: first frame {:.0} ms after the switch (game draw {draw_ms:.0} ms, renderer draw {:.0} ms)", self.cfg.title, at.elapsed().as_secs_f32() * 1000.0, ms(t_out))); }
         Ok(())
     }
 }

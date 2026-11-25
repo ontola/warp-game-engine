@@ -29,7 +29,9 @@ mod page {
         let t0 = web_time::Instant::now();
         let mut bytes = 0;
         for (i, rel) in files.iter().enumerate() {
-            app::web::progress(Some(0.3 + 0.4 * i as f32 / files.len().max(1) as f32), &format!("Loading Spellstorm ({}/{})", i + 1, files.len()));
+            // The files are the first 60% of the bar: reading the kits and
+            // building the arena come after (Joep: it sat at 200/200).
+            app::web::progress(Some(0.05 + 0.55 * i as f32 / files.len().max(1) as f32), &format!("Loading Spellstorm ({}/{})", i + 1, files.len()));
             let data = app::web::fetch(&format!("{SERVED}/{rel}")).await?;
             bytes += data.len();
             vfs::insert(root.join(rel), data);
@@ -42,11 +44,18 @@ mod page {
     /// local players (keyboard, then pads in the order they wake up).
     pub async fn load(players: usize, seed: u64) -> Result<(app::Config, Box<dyn app::Game>), String> {
         fetch_assets().await?;
+        app::web::progress(Some(0.62), "Spellstorm: reading the wizards and monsters");
         app::web::yield_to_browser().await;
         let t1 = web_time::Instant::now();
         let kits = crate::kits::Kits::load(None)?;
-        let game = crate::play::Spellstorm::with_party(kits, players.max(1), 0, seed, None);
+        let mut game = crate::play::Spellstorm::with_party(kits, players.max(1), 0, seed, None);
         app::web::log(&format!("spellstorm: kits loaded in {:.0} ms", t1.elapsed().as_secs_f32() * 1000.0));
+        app::web::progress(Some(0.78), "Spellstorm: building the arena");
+        app::web::yield_to_browser().await;
+        let t2 = web_time::Instant::now();
+        // The scene now, not in the first frame, where it froze the screen.
+        game.prepare()?;
+        app::web::log(&format!("spellstorm: arena built in {:.0} ms", t2.elapsed().as_secs_f32() * 1000.0));
         let cfg = app::Config { title: "Spellstorm".into(), size: [1920, 1080], tick_hz: 60.0, keyboard: true, pointer: false, ..Default::default() };
         Ok((cfg, Box::new(game)))
     }

@@ -139,7 +139,7 @@ pub async fn fetch_game(name: &str) -> Result<PathBuf, String> {
     let t0 = web_time::Instant::now();
     let mut bytes = 0;
     for (i, rel) in files.iter().enumerate() {
-        app::web::progress(Some(0.3 + 0.4 * i as f32 / files.len().max(1) as f32), &format!("Loading {name} ({}/{})", i + 1, files.len()));
+        app::web::progress(Some(0.05 + 0.7 * i as f32 / files.len().max(1) as f32), &format!("Loading {name} ({}/{})", i + 1, files.len()));
         let data = app::web::fetch(&format!("games/{name}/{rel}")).await?;
         bytes += data.len();
         vfs::insert(dir.join(rel), data);
@@ -154,6 +154,8 @@ pub async fn fetch_game(name: &str) -> Result<PathBuf, String> {
 /// ([`set_seats`]) gets them in the game, with their names and colours.
 pub async fn load(name: &str, players: Option<usize>) -> Result<(app::Config, crate::LuaGame), String> {
     let dir = fetch_game(name).await?;
+    app::web::progress(Some(0.8), &format!("Starting {name}"));
+    app::web::yield_to_browser().await;
     let t1 = web_time::Instant::now();
     let seats = SEATS.with(|s| { let s = s.borrow(); (s.0 > 0).then(|| s.1.clone()) });
     let over = crate::Overrides { fresh: true, players, seats, ..Default::default() };

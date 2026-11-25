@@ -121,6 +121,7 @@ fn page_holds() -> bool {
 
 pub fn progress(fraction: Option<f32>, step: &str) {
     web_sys::console::log_1(&format!("loading: {step}").into());
+    LAST_PROGRESS.with(|l| *l.borrow_mut() = (fraction, step.to_string()));
     if fraction.is_some() && QUIET.with(|q| q.get().1) { return; }
     show_progress(fraction, step);
 }
@@ -139,6 +140,14 @@ fn stopped(step: &str) {
     web_sys::console::log_1(&step.into());
     show_progress(Some(1.0), step);
 }
+
+thread_local! {
+    static LAST_PROGRESS: RefCell<(Option<f32>, String)> = const { RefCell::new((None, String::new())) };
+}
+
+/// The last [`progress`] reported (also after the first frame, when the
+/// page may show it its own way, as the Game Room's loading card).
+pub fn loading() -> (Option<f32>, String) { LAST_PROGRESS.with(|l| l.borrow().clone()) }
 
 fn show_progress(fraction: Option<f32>, step: &str) {
     let Some(document) = web_sys::window().and_then(|w| w.document()) else { return };

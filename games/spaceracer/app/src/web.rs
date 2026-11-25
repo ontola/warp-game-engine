@@ -31,7 +31,7 @@ mod page {
         let t0 = web_time::Instant::now();
         let mut bytes = 0;
         for (i, rel) in files.iter().enumerate() {
-            app::web::progress(Some(0.3 + 0.4 * i as f32 / files.len().max(1) as f32), &format!("Loading Space Racer ({}/{})", i + 1, files.len()));
+            app::web::progress(Some(0.05 + 0.65 * i as f32 / files.len().max(1) as f32), &format!("Loading Space Racer ({}/{})", i + 1, files.len()));
             let data = app::web::fetch(&format!("{SERVED}/{rel}")).await?;
             bytes += data.len();
             vfs::insert(root.join(rel), data);

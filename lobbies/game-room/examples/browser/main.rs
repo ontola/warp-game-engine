@@ -741,6 +741,7 @@ pub(crate) mod page {
     impl Game for Room {
         fn local_players(&self) -> usize { self.lobby.local_players() }
         fn tick(&mut self, controls: &[Controls]) {
+            follow_loading();
             if let Some(party) = with(|h| std::mem::take(&mut h.dirty).then(|| h.party.clone())) {
                 let ids = party["players"].as_array().map(|l| l.iter().filter_map(|p| p["id"].as_str().map(String::from)).collect()).unwrap_or_default();
                 self.lobby.set_local(ids);
@@ -874,6 +875,14 @@ pub(crate) mod page {
                     Ok((c, Box::new(g) as Box<dyn Game>))
                 }),
             } };
+            // Its first frame compiles and uploads the scene, which can take
+            // seconds on a tablet: the bar says so before that frame, and the
+            // room draws it once (a frame or two) before the switch.
+            if loaded.is_ok() {
+                app::web::progress(Some(0.95), &format!("{}: preparing the graphics", with(|h| title(&h.party, &game))));
+                follow_loading();
+                app::web::sleep(60).await;
+            }
             with(|h| {
                 h.loading = None;
                 h.party["warm_session"] = Value::Null;
@@ -898,6 +907,23 @@ pub(crate) mod page {
                 // After the Back hint (the first game's 7 s) in the same place.
                 h.kb_hint = Some((game.clone(), web_time::Instant::now() + std::time::Duration::from_secs_f32(if h.played.len() == 1 { 7.5 } else { 1.0 })));
             });
+        });
+    }
+
+    /// The game being started reports its steps ([`app::web::progress`]):
+    /// the room's loading card follows them, every phase counted, instead
+    /// of a fixed 50% (Joep: it sat at 200/200, then waited uncounted).
+    fn follow_loading() {
+        with(|h| {
+            let Some(id) = h.loading.clone() else { return };
+            let (Some(f), step) = app::web::loading() else { return };
+            let progress = (f.clamp(0.0, 1.0) * 100.0).round() as i64;
+            let label = step.split_once(": ").map_or(step.as_str(), |(_, s)| s).to_string();
+            let warm = &h.party["warm_session"];
+            if warm["game"] == id.as_str() && (warm["progress"] != progress || warm["progress_label"] != label.as_str()) {
+                h.party["warm_session"] = json!({"game": id, "phase": "preparing", "progress": progress, "progress_label": label});
+                h.dirty = true;
+            }
         });
     }
 
