@@ -424,6 +424,9 @@ pub fn main(app: AndroidApp, start: impl FnOnce() + Send + 'static) {
     // skips game surfaces.
     if std::env::var_os("KERN_RSM").is_none() { unsafe { std::env::set_var("KERN_RSM", "0") } }
     if std::env::var_os("KERN_SIMPLE_LIGHTING").is_none() && std::env::var_os("KERN_COMPACT_SHADE").is_none() { unsafe { std::env::set_var("KERN_COMPACT_SHADE", "1") } }
+    // The cheap irradiance blend (KERN_PHONE_GI): 2026-11-25 the full DDGI
+    // lookup was about a third of the compact pass on the Adreno 740.
+    if std::env::var_os("KERN_PHONE_GI").is_none() { unsafe { std::env::set_var("KERN_PHONE_GI", "1") } }
     install_panic_hook();
     use android_activity::WindowManagerFlags as F;
     app.set_window_flags(F::KEEP_SCREEN_ON | F::FULLSCREEN | F::LAYOUT_IN_SCREEN, F::empty());

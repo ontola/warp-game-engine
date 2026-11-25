@@ -62,6 +62,7 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_WORLD_TERRAIN_VISIBILITY` | `Scene::world_terrain_visibility`. `KERN_TERRAIN_NODE_BUDGET` caps its traversal. |
 | `KERN_SIMPLE_LIGHTING`, `KERN_SIMPLE_CULL` | The scene's graphics settings (`terrain_fly` turns simple lighting on). |
 | `KERN_COMPACT_SHADE` | `1`: the compact shade pass (simple lighting plus game surfaces and sun shadows) even where the GPU binds enough textures for the full one. The Android phone host turns it on. |
+| `KERN_PHONE_GI` | `1`: the irradiance volume blends its eight probes by distance and facing only (no DDGI reach masks, probe visibility or gradients): about a third of the compact pass on an Adreno 740. The Android phone host turns it on; light can leak through a thin wall. |
 | `KERN_CLUSTERED_LIGHTS` | `Graphics::clustered_lights` (off): clustered local lights, hundreds per frame, some shadowed ([rendering](rendering.md#clustered-local-lights)). `1` turns them on, `0` off. |
 | `KERN_BOUNDED_DRAWS` | On for Adreno (Quest) with simple culling. |
 | `KERN_VIRTUAL_MEMBERS` | The game's `set_virtual_members` choice for recipe forests. |
@@ -110,7 +111,7 @@ Use these to compare against the old path. All of them are the normal route.
 | --- | --- |
 | `KERN_CPU_SPANS=1`, `KERN_STARTUP_PROFILE=1` | CPU time per frame phase; renderer construction profile. |
 | `KERN_DIAGNOSTIC_HIDE` | Hide geometry categories in captures. |
-| `KERN_SHADE_PROBE=N` | The simple/compact shade pass stops after stage N and stores what it has, so a device's pass times show what each stage costs: `1` visibility and depth reads, `2` + triangle and normal, `3` + material, game surfaces and sun, `4` + albedo texture and ambient/GI, `5` + local lights (the rest is styling, glow and fog). The image is a debug view. |
+| `KERN_SHADE_PROBE=N` | The simple/compact shade pass stops after stage N and stores what it has, so a device's pass times show what each stage costs: `1` visibility and depth reads, `2` + triangle and normal, `3` + material, game surfaces and sun, `4` + albedo texture and ambient/GI, `5` + local lights, `6` + the game's light styling (the rest is flash, glow and fog). The image is a debug view. |
 | `KERN_SUN_DAMAGE_REPORT=1` | Prints, every frame, how many of the 4096 tiles of each cached sun map were marked changed, and how many casters changed by snapshot row (blocking readback). |
 | `KERN_FAR_CROWN_DEBUG` | Debug colours on the painted far forest: `1` red for the averaged share and green for single-crown cover, `2` white noise in 2 m world cells, `3` red where the stand field reaches the ground (`terrain_surface.wgsl`). |
 | `KERN_SPLIT_SELECTION_TIMING=1` | Times the GPU forest selection's parts (seed classify, refine, compact and finish, residency) separately (`frame.rs`). |

@@ -265,8 +265,15 @@ override SHADE_DIAGNOSTICS: bool = true;
 // KERN_SHADE_PROBE=N (frame.rs): the simple/compact pass stops after stage N
 // and stores what it has, to time each stage on a device. 1 the visibility
 // and depth reads, 2 + triangle and normal, 3 + material, surfaces and sun,
-// 4 + albedo texture and ambient/GI, 5 + local lights. 0 the whole pass.
+// 4 + albedo texture and ambient/GI, 5 + local lights, 6 + the game's light
+// styling. 0 the whole pass (6 + flash, glow and fog).
 override SHADE_PROBE: u32 = 0u;
+// KERN_PHONE_GI=1 (the Android phone host's default): the irradiance volume
+// blends its eight probes by distance and facing only, without the DDGI
+// reach masks, probe visibility and gradients. 7.6 of the compact pass's
+// 20.6 ns a pixel on an Adreno 740 were texture plus this lookup. Light can
+// leak through a thin wall where a probe sits behind it.
+override GI_PHONE: bool = false;
 // Voxel leaves light like the needle brushes they stand for (KERN_VOXEL_LEAF_PARITY,
 // 1 default, 0 = before): the brushes' own sub-cell shade (NEEDLE_BRUSH_OWN) on sun
 // and sky, and sky visibility read at the surface as for a mesh needle.
@@ -1619,7 +1626,7 @@ fn irradiance_sample_at(o: u32, p: vec3<f32>, surface: vec3<f32>, n: vec3<f32>) 
         // Probe gradients (irradiance_volume::pack_gradients), after the
         // reach masks: header 1 when uploaded.
         let gradients=u32(gi.trace.w)+dims.x*dims.y*dims.z*81u;
-        let smooth_weights=ddgi&&aux_word(gradients)==1u;
+        let smooth_weights=ddgi&&!GI_PHONE&&aux_word(gradients)==1u;
         let ts=t*t*(3.0-2.0*t);
         for(var c=0u;c<8u;c++) {
             let corner=vec3<u32>(c&1u,(c>>1u)&1u,(c>>2u)&1u);
@@ -1649,10 +1656,10 @@ fn irradiance_sample_at(o: u32, p: vec3<f32>, surface: vec3<f32>, n: vec3<f32>) 
                 // With visibility, the fallback below uses only probes that reach
                 // the point through open space (a probe outdoors behind the wall
                 // must not light a room whatever else fails).
-                if ddgi { valid*=probe_reaches(index,origin+vec3<f32>(g)*cell,surface+n*(0.3*cell),dims,cell); }
+                if ddgi && !GI_PHONE { valid*=probe_reaches(index,origin+vec3<f32>(g)*cell,surface+n*(0.3*cell),dims,cell); }
                 let inside=valid;
                 if ddgi {
-                    valid*=probe_sees(index,probe,surface+n*(0.3*cell));
+                    if !GI_PHONE { valid*=probe_sees(index,probe,surface+n*(0.3*cell)); }
                 } else if mode==5u {
                     let plane=vec4<f32>(aux_f32(base+1u),aux_f32(base+2u),aux_f32(base+4u),aux_f32(base+5u));
                     // Zero plane passes through. Blend over 15 cm to avoid a hard edge.
@@ -4084,6 +4091,7 @@ fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool) {
     if (m.flags&4096u)!=0u {rad=base*m.scale*light.anim.y;}
     let style = styled_light(material_kind(m), m.flags, p, n, base, rad, 1.0);
     rad = style.radiance;
+    if SHADE_PROBE == 6u { textureStore(out_hdr,px,vec4<f32>(min(rad,vec3<f32>(65504.0)),1.0)); return; }
     let flash=select(f32(instance_byte(inst.flags)) / 255.0, 0.0, lod_proxy(m.layer));
     rad=mix(rad,vec3<f32>(1.0,0.97,0.92)*light.anim.z*(0.8+0.2*max(dot(n,-dir),0.0)),flash*0.9);
     let glow=game_glow(p,vis.x,cl.material);rad=rad*(1.0-glow.a)+glow.rgb;
