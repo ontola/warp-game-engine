@@ -15,6 +15,10 @@ buffers per stage ([browser](browser.md)) still holds.
 
 The glTF material boolean `extras.warpThinFoliage` enables reflected and transmitted light for leaves and needles. It defaults to `false`. A masked woody twig can share the same atlas and keep an opaque lighting response. The alpha mask controls the silhouette independently. A cutout spray can represent many needles or leaves with one shading normal. Warp weights its direct solar highlight by the projected area and uses roughness to limit the grazing reflection of the group. The diffuse light transmitted through the leaves keeps its source colour. The same filtering applies to the leaf fraction of a foliage voxel.
 
+## Procedural bark
+
+A material using `render::scene::BARK_LAYER` sets the plate size in metres with `scale`. Warp samples grain and relief on the undeformed mesh. The planting transform supplies its scale, using the geometric mean for unequal axes. The branch and wind transforms carry relief normals with the wood.
+
 ## Material maps
 
 Each texture layer can carry a material map (`TextureSource::orm`) in glTF's

@@ -2723,6 +2723,27 @@ fn bark_surface(p: vec3<f32>, n: vec3<f32>, plate: f32) -> Bark {
     let normal = normalize(n - (t1 * d1 + t2 * d2) * 0.07);
     return Bark(albedo, normal, mix(0.86, 0.98, h.z), mix(1.0, 0.35, h.z));
 }
+// Rest vertices are shared by the static mesh and all posed branches. Both
+// visibility paths interpolate them on the actual deformed triangle.
+fn posed_bark(local: vec3<f32>, authored: vec3<f32>, inst: Instance, gust: vec3<f32>,
+              facing: vec3<f32>, plate: f32) -> Bark {
+    // The geometric mean scale converts model units to metres. Root shear,
+    // rotations and translations leave it invariant even on articulated parts.
+    let c0 = cross(inst.r1.xyz, inst.r2.xyz);
+    let c1 = cross(inst.r2.xyz, inst.r0.xyz);
+    let c2 = cross(inst.r0.xyz, inst.r1.xyz);
+    let det = dot(inst.r0.xyz, c0);
+    let metres = pow(abs(det), 1.0 / 3.0);
+    var bark = bark_surface(local * metres, safe_normalize(authored), plate);
+    // Relief is a normal in that same rest frame. The cofactor rows give the
+    // full inverse transpose (up to magnitude), including CPU branch shear.
+    let relief = vec3<f32>(dot(c0, bark.normal), dot(c1, bark.normal), dot(c2, bark.normal));
+    let outward = vec3<f32>(dot(c0, authored), dot(c1, authored), dot(c2, authored));
+    let world = safe_normalize(triangle_wind_normal(gust, relief));
+    bark.normal = select(-world, world, dot(triangle_wind_normal(gust, outward), facing) >= 0.0);
+    return bark;
+}
+
 fn hash2(p: vec2<f32>) -> f32 {
     return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);
 }
@@ -3259,6 +3280,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         n += vec3<f32>(vertex_f32(v + 3u), vertex_f32(v + 4u), vertex_f32(v + 5u)) * w[k];
         uv += vec2<f32>(vertex_f32(v + 6u), vertex_f32(v + 7u)) * w[k];
     }
+    let authored_normal = n;
     n = normalize(triangle_wind_normal(gust, xform_dir(inst, n)));
     let geo_n = normalize(cross(e1, e2));
     sun_receiver_tri[0]=p0;sun_receiver_tri[1]=p1;sun_receiver_tri[2]=p2;
@@ -3509,7 +3531,8 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     // Not a game surface: their layer -2 - kind is -3 for kind 1.
     var bark_ao = 1.0;
     if m.layer == -3 && (m.flags & (4608u | 32768u)) == 0u {
-        let b = bark_surface(p, n, m.scale);
+        let rest = pos_of(vi[0]) * b0 + pos_of(vi[1]) * b1 + pos_of(vi[2]) * b2;
+        let b = posed_bark(rest, authored_normal, inst, gust, n, m.scale);
         base = b.albedo;
         rough_m = b.rough;
         n = b.normal;
@@ -4157,7 +4180,8 @@ fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool, tile_lights:u32, 
             n = surface.normal;
             surface_emit = surface.emission;
         } else if m.layer == -3 && (m.flags & (4608u | 32768u)) == 0u {
-            let bark = bark_surface(p, n, m.scale);
+            let rest = local_points[0]*b0 + local_points[1]*b1 + local_points[2]*b2;
+            let bark = posed_bark(rest, authored, inst, gust, n, m.scale);
             base = bark.albedo;
             n = bark.normal;
         }
