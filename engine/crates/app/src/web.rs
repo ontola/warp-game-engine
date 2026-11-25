@@ -318,6 +318,8 @@ struct Shell {
     /// `?render=H`: draw the 3D view at most H pixels high (to tell GPU-bound
     /// from CPU-bound), whatever the game asks.
     render_height: Option<u32>,
+    /// `bench=1`: fixed heights and one `BENCH {json}` line per game ([`crate::bench`]).
+    bench: Option<crate::bench::Bench>,
     /// Lowers the 3D view's resolution while frames miss the game's target
     /// (60 fps unless it names one), as the native shell does.
     quality: Option<crate::quality::AdaptiveQuality>,
@@ -507,7 +509,8 @@ pub fn run(cfg: crate::Config, game: Box<dyn Game>) {
     let mut devices = Devices::new(cfg.keyboard);
     devices.pointer_enabled = cfg.pointer;
     let shell = Shell { cfg, game, devices, window: None, live: Rc::new(RefCell::new(None)), acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), failed: false, announced: false, hidden_editor:None, switched: Some((next_presentation(), Instant::now())), exited: false, back: Default::default(), times: Vec::new(),
-        render_height: query_param("render").and_then(|h| h.parse().ok()), quality: None, mobile: mobile(), lock_seen: false };
+        render_height: query_param("render").and_then(|h| h.parse().ok()), quality: None, mobile: mobile(), lock_seen: false,
+        bench: crate::bench::Bench::from_query(query_param("bench").as_deref()) };
     if shell.mobile { log("phone preset: lower resolution, no bloom or contact occlusion (?quality=full turns it off)"); }
     match EventLoop::new() {
         Ok(events) => events.spawn_app(shell),
@@ -581,6 +584,7 @@ impl Shell {
             self.acc = 0.0;
             self.switched = Some((generation, Instant::now()));
             self.times.clear();
+            if let Some(b) = &mut self.bench { b.restart(); }
             // Each game starts at full resolution, chasing its own target.
             if let Some(q) = &mut self.quality { q.set_enabled(false); q.set_enabled(true); q.idle(); q.set_target_fps(chase(self.game.target_fps()), None); }
             if let Some(w) = &self.window {
@@ -689,6 +693,8 @@ impl Shell {
                 return Err(format!("canvas texture: {other:?}"));
             }
         };
+        // Waiting for a free canvas image is the GPU's time, not the CPU's.
+        let wait_ms = ms(t_out);
         let view = texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(live.config.format.add_srgb_suffix()), ..Default::default() });
         let quality = self.quality.get_or_insert_with(|| crate::quality::AdaptiveQuality::new(chase(self.game.target_fps()), None, Instant::now()).unwrap_or_else(|| unreachable!()));
         // The refresh rate just became known: chase what the screen can show.
@@ -706,15 +712,23 @@ impl Shell {
             Some(h) => Some(h),
             None => Some(quality.render_height(base(self.cfg.max_render_height))).filter(|h| *h < size[1]),
         };
+        let benching = self.bench.as_mut().and_then(|b| b.height(size));
+        let height = match benching { Some(h) => Some(h).filter(|h| *h < size[1]), None => height };
         live.out.draw(&live.gpu, renderer, &draw, size, split, &view, height)?;
         if let Some(done) = CAPTURE.with(|c| c.borrow_mut().take()) { capture(&live.gpu, &texture.texture, done); }
         live.gpu.queue.present(texture);
         self.frames += 1;
-        if self.switched.is_none() && (self.render_height.is_none() || self.mobile) {
+        if self.switched.is_none() && benching.is_none() && (self.render_height.is_none() || self.mobile) {
             if quality.frame(f64::from(dt) * 1000.0, Instant::now()) {
                 let next = quality.render_height(base(self.cfg.max_render_height));
                 log(&format!("{}: 3D view now {} lines high (chasing {:.0} fps)", self.cfg.title, next.min(size[1]), quality.target_fps()));
             }
+        }
+        if self.switched.is_none() && let Some(b) = &mut self.bench {
+            // No GPU timestamps on wasm32: the fit uses frame times.
+            let sample = crate::bench::Sample { frame_ms: dt * 1000.0, cpu_ms: tick_ms + draw_ms + (ms(t_out) - wait_ms).max(0.0), wait_ms, gpu_ms: None };
+            let about = crate::bench::About { game: self.cfg.title.clone(), gpu: live.gpu.info.name.clone(), platform: "browser", tier: query_param("tier").unwrap_or_else(|| if self.mobile { "medium" } else { "high" }.into()), players: self.game.local_players(), memory_mb: memory_mb() };
+            if let Some(line) = b.frame(sample, size, &about) { log(&line); }
         }
         if self.switched.is_none() { stats(&mut self.times, &self.cfg.title, [dt * 1000.0, tick_ms, draw_ms, ms(t_out)]); }
         // A 1x1 canvas can precede the first layout. Ready means the actual

@@ -139,7 +139,10 @@ one), logging each change. On a MacBook Pro M5 Pro (Chrome, 2992x1704
 canvas) the room is GPU-bound: 19.4 ms a frame at full size with about
 5 ms on the page thread, 8.3 ms (120 Hz) at 1080 lines. Every 300 frames
 the page logs the frame interval and the page thread's ticks, draw and
-encode; `?render=H` fixes the 3D view's height to tell GPU from CPU. As
+encode; `?render=H` fixes the 3D view's height to tell GPU from CPU. `?bench=1` runs
+the hardware-fit bench and logs one `BENCH {json}` line per game (see
+android-host.md; the browser has no GPU timestamps, so the fit uses frame
+times, `"fit_on": "frame"`). As
 natively, the lower rungs also drop contact occlusion and then bloom.
 
 Phones get a cheaper preset (`app::web::mobile`): an Android, iPhone or iPad

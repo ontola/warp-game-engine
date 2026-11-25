@@ -409,7 +409,8 @@ pub fn run(cfg: crate::Config, game: Box<dyn Game>) {
     if mobile { log("phone preset: lower resolution, no RSM, bloom or contact occlusion (quality=full turns it off)"); }
     let shell = Shell { cfg, game, devices, acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), announced: false, switched: None, exited: false, back: Default::default(),
         times: Vec::new(), render_height: query_param("render").and_then(|h| h.parse().ok()), quality: None, mobile, profiling: false, gpu_passes: Vec::new(), gpu_total: 0.0,
-        upscale: query_param("upscale").and_then(|m| m.parse().map_err(|e: String| log(&e)).ok()).filter(|m| *m != render::upscale::UpscaleMode::Native) };
+        upscale: query_param("upscale").and_then(|m| m.parse().map_err(|e: String| log(&e)).ok()).filter(|m| *m != render::upscale::UpscaleMode::Native),
+        bench: crate::bench::Bench::from_query(query_param("bench").as_deref()) };
     SHELL.with(|s| *s.borrow_mut() = Some(shell));
 }
 
@@ -929,6 +930,8 @@ struct Shell {
     /// height (tablets) instead of [`MOBILE_BASE_HEIGHT`]. None when off or
     /// when the renderer refused it.
     upscale: Option<render::upscale::UpscaleMode>,
+    /// `bench=1`: fixed heights and one `BENCH {json}` line per game ([`crate::bench`]).
+    bench: Option<crate::bench::Bench>,
 }
 
 impl Shell {
@@ -962,6 +965,7 @@ impl Shell {
             self.switched = Some(Instant::now());
             self.times.clear();
             self.profiling = false;
+            if let Some(b) = &mut self.bench { b.restart(); }
             if let Some(q) = &mut self.quality { q.set_enabled(false); q.set_enabled(true); q.idle(); q.set_target_fps(self.game.target_fps(), requested_hz().map(f64::from)); }
         }
         follow_window(live);
@@ -1033,6 +1037,8 @@ impl Shell {
                 return Err(format!("surface texture: {other:?}"));
             }
         };
+        // Waiting for a free swapchain image is the GPU's time, not the CPU's.
+        let wait_ms = ms(t_out);
         let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let quality = self.quality.get_or_insert_with(|| crate::quality::AdaptiveQuality::new(self.game.target_fps(), requested_hz().map(f64::from), Instant::now()).unwrap_or_else(|| unreachable!()));
         let base = |game: Option<u32>| match (self.mobile, game) {
@@ -1045,15 +1051,22 @@ impl Shell {
             Some(h) => Some(h),
             None => Some(quality.render_height(base(self.cfg.max_render_height))).filter(|h| *h < size[1]),
         };
+        let benching = self.bench.as_mut().and_then(|b| b.height(size));
+        let height = match benching { Some(h) => Some(h).filter(|h| *h < size[1]), None => height };
         live.out.draw(&live.gpu, renderer, &draw, size, split, &view, height)?;
         live.gpu.queue.present(texture);
         // GPU pass times (timestamps, when the GPU has them), with the frame stats.
         if !self.profiling { self.profiling = renderer.set_async_gpu_profiling(&live.gpu, true).is_ok(); }
         if let Some(sample) = renderer.drain_gpu_profiles(&live.gpu).samples.pop() { self.gpu_passes = sample.gpu_ms; self.gpu_total = sample.covered_union_ms; }
         self.frames += 1;
-        if self.switched.is_none() && (self.render_height.is_none() || self.mobile) && quality.frame(f64::from(dt) * 1000.0, Instant::now()) {
+        if self.switched.is_none() && benching.is_none() && (self.render_height.is_none() || self.mobile) && quality.frame(f64::from(dt) * 1000.0, Instant::now()) {
             let next = quality.render_height(base(self.cfg.max_render_height));
             log(&format!("{}: 3D view now {} lines high (chasing {:.0} fps)", self.cfg.title, next.min(size[1]), quality.target_fps()));
+        }
+        if self.switched.is_none() && let Some(b) = &mut self.bench {
+            let sample = crate::bench::Sample { frame_ms: dt * 1000.0, cpu_ms: tick_ms + draw_ms + (ms(t_out) - wait_ms).max(0.0), wait_ms, gpu_ms: (self.profiling && self.gpu_total > 0.0).then_some(self.gpu_total as f32) };
+            let about = crate::bench::About { game: self.cfg.title.clone(), gpu: live.gpu.info.name.clone(), platform: "android", tier: query_param("tier").unwrap_or_else(|| if self.mobile { "medium" } else { "high" }.into()), players: self.game.local_players(), memory_mb: memory_mb() };
+            if let Some(line) = b.frame(sample, size, &about) { log(&line); }
         }
         if self.switched.is_none() && stats(&mut self.times, &self.cfg.title, [dt * 1000.0, tick_ms, draw_ms, ms(t_out)]) {
             let mut passes = self.gpu_passes.clone();
