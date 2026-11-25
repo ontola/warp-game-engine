@@ -313,8 +313,9 @@ wordmark, one card style. Where it differs from this guide:
 
 15. **Primary violet is darker.** Buttons and the selected tab use
     `#5143ae`, `accent` is `#7565ee`; the TV side selects with `#7c5cff`.
-    → `GnColors.button` and `accent` to `violet`, keep white text
-    (contrast still above 4.5 : 1).
+    → `accent` to `violet`. Filled buttons with white text keep the
+    darker `#5143ae` (white on `#7c5cff` is only 4.4 : 1); name it
+    `violet-deep` here and use it for filled buttons in HTML too.
 16. **The More sheet is Material grey** (the default bottom sheet colour
     from the seed), not the navy card colour: it is the one screen that
     looks like another app. → `bottomSheetTheme` with `GnColors.card`,
