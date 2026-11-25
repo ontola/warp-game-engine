@@ -33,6 +33,9 @@ impl Buttons {
     /// Stick clicks (L3, R3).
     pub const LEFT_STICK: u32 = 16384;
     pub const RIGHT_STICK: u32 = 32768;
+    /// G on the whole keyboard: a second player asks to join the same
+    /// keyboard ([`split_keyboard`]). Games never bind it.
+    pub const KEYBOARD_JOIN: u32 = 1 << 16;
     pub fn has(self, b: u32) -> bool { self.0 & b != 0 }
 }
 
@@ -115,9 +118,45 @@ fn key_button(k: KeyCode) -> u32 {
         KeyCode::ArrowDown => Buttons::DOWN,
         KeyCode::ArrowLeft => Buttons::LEFT,
         KeyCode::ArrowRight => Buttons::RIGHT,
+        KeyCode::KeyG => Buttons::KEYBOARD_JOIN,
         _ => 0,
     }
 }
+
+/// Two players on one keyboard ([`split_keyboard`]): the left half
+/// (`Device::KeyHalf(0)`: WASD, Space A, left Shift B, Q X, E Y, Tab Back,
+/// 1 Start) and the right half (`KeyHalf(1)`: arrows, right Shift A, / B,
+/// . X, ' Y, Backspace Back, Enter Start). Each half is a pad: the arrows
+/// are its stick, not its D-pad.
+fn half_button(half: u8, k: KeyCode) -> u32 {
+    use KeyCode::*;
+    match (half, k) {
+        (0, Space) | (1, ShiftRight) => Buttons::SOUTH,
+        (0, ShiftLeft) | (1, Slash) => Buttons::EAST,
+        (0, KeyQ) | (1, Period) => Buttons::WEST,
+        (0, KeyE) | (1, Quote) => Buttons::NORTH,
+        (0, Tab) | (1, Backspace) => Buttons::SELECT,
+        (0, Digit1) | (1, Enter) => Buttons::START,
+        _ => 0,
+    }
+}
+
+/// The stick of keyboard half `half`: WASD or the arrows.
+fn half_stick(half: u8) -> [KeyCode; 4] {
+    use KeyCode::*;
+    if half == 0 { [KeyD, KeyA, KeyW, KeyS] } else { [ArrowRight, ArrowLeft, ArrowUp, ArrowDown] }
+}
+
+static SPLIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Two players share the keyboard (the host sets it when a second one
+/// joins with G, and clears it when one leaves): [`Devices::device_controls`]
+/// then reports the two halves (`Device::KeyHalf(0)`, `KeyHalf(1)`)
+/// instead of `Device::Keyboard`, without the mouse.
+pub fn split_keyboard(on: bool) { SPLIT.store(on, std::sync::atomic::Ordering::Relaxed); }
+
+/// Whether the keyboard is split ([`split_keyboard`]).
+pub fn keyboard_split() -> bool { SPLIT.load(std::sync::atomic::Ordering::Relaxed) }
 
 #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 fn pad_button(b: PadButton) -> u32 {
@@ -154,7 +193,7 @@ use crate::web_pads as pads;
 use crate::android_pads as pads;
 
 #[derive(Default)]
-struct Keyboard { keys: HashSet<KeyCode>, mouse: u32, look: [f64; 2], pressed: u32 }
+struct Keyboard { keys: HashSet<KeyCode>, mouse: u32, look: [f64; 2], pressed: u32, half_pressed: [u32; 2] }
 
 /// Touch screens, for first-person walking: a touch that starts in the
 /// left 40 % of the screen is a thumb stick (it moves, from where the
@@ -258,7 +297,10 @@ impl Devices {
     pub fn key(&mut self, code: KeyCode, state: ElementState, repeat: bool) {
         let b = key_button(code);
         if state == ElementState::Pressed {
-            if !repeat { self.kb.pressed |= b; }
+            if !repeat {
+                self.kb.pressed |= b;
+                for h in 0..2u8 { self.kb.half_pressed[h as usize] |= half_button(h, code); }
+            }
             self.kb.keys.insert(code);
         } else {
             self.kb.keys.remove(&code);
@@ -354,6 +396,7 @@ impl Devices {
     pub(crate) fn reset_keyboard(&mut self) {
         self.kb.keys.clear();
         self.kb.pressed=0;
+        self.kb.half_pressed = [0; 2];
     }
 
     /// Capture transitions must not carry a menu click or old look delta into play.
@@ -401,7 +444,8 @@ impl Devices {
     /// enabled), then the pads in connection order.
     pub fn connected(&self) -> Vec<Device> {
         let mut v = Vec::new();
-        if self.keyboard_enabled { v.push(Device::Keyboard); }
+        if self.keyboard_enabled && keyboard_split() { v.extend([Device::KeyHalf(0), Device::KeyHalf(1)]); }
+        else if self.keyboard_enabled { v.push(Device::Keyboard); }
         #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
         if let Some(g) = &self.gilrs { v.extend(self.pads.iter().filter(|p| g.gamepad(p.0).is_connected()).map(|p| Device::Pad(usize::from(p.0) as u32))); }
         #[cfg(any(target_arch = "wasm32", target_os = "android"))]
@@ -421,7 +465,22 @@ impl Devices {
     pub fn device_controls(&mut self, dt: f32) -> Vec<(Device, Controls)> {
         let t = self.tuning;
         let mut devices = Vec::new();
-        if self.keyboard_enabled {
+        if self.keyboard_enabled && keyboard_split() {
+            let k = &mut self.kb;
+            k.pressed = 0;
+            k.look = [0.0; 2];
+            for half in 0..2u8 {
+                let key = |c| k.keys.contains(&c) as i32 as f32;
+                let [r, l, u, d] = half_stick(half);
+                let mut mv = [key(r) - key(l), key(u) - key(d)];
+                let len = (mv[0] * mv[0] + mv[1] * mv[1]).sqrt();
+                if len > 1.0 { mv = [mv[0] / len, mv[1] / len]; }
+                let held = k.keys.iter().fold(0, |a, &c| a | half_button(half, c));
+                let pressed = std::mem::take(&mut k.half_pressed[half as usize]);
+                devices.push((Device::KeyHalf(half), Controls { mv, held: Buttons(held), pressed: Buttons(pressed), ..Default::default() }));
+            }
+        } else if self.keyboard_enabled {
+            self.kb.half_pressed = [0; 2];
             let k = &mut self.kb;
             let key = |c| k.keys.contains(&c) as i32 as f32;
             let held = k.keys.iter().fold(k.mouse, |a, &c| a | key_button(c));
@@ -494,21 +553,31 @@ impl Devices {
 /// An input device on this machine. Pad numbers are stable while the
 /// program runs (a reconnected pad may get a new one).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum Device { Keyboard, Pad(u32) }
+pub enum Device {
+    Keyboard,
+    Pad(u32),
+    /// Half of a keyboard two players share: 0 left (WASD), 1 right
+    /// (arrows). See [`split_keyboard`].
+    KeyHalf(u8),
+}
 
 impl Device {
     /// `keyboard`, `pad0`, `pad1`.. (scripts, logs).
     pub fn parse(s: &str) -> Result<Device, String> {
         let s = s.trim().to_ascii_lowercase();
         if s == "keyboard" || s == "kbm" { return Ok(Device::Keyboard); }
-        s.strip_prefix("pad").and_then(|n| n.parse().ok()).map(Device::Pad).ok_or(format!("unknown device {s} (keyboard, pad0, pad1..)"))
+        if s == "keyboard-left" { return Ok(Device::KeyHalf(0)); }
+        if s == "keyboard-right" { return Ok(Device::KeyHalf(1)); }
+        s.strip_prefix("pad").and_then(|n| n.parse().ok()).map(Device::Pad).ok_or(format!("unknown device {s} (keyboard, keyboard-left, keyboard-right, pad0, pad1..)"))
     }
     pub fn is_pad(self) -> bool { matches!(self, Device::Pad(_)) }
+    /// The keyboard, whole or a half of it.
+    pub fn is_keys(self) -> bool { matches!(self, Device::Keyboard | Device::KeyHalf(_)) }
 }
 
 impl std::fmt::Display for Device {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self { Device::Keyboard => write!(f, "keyboard"), Device::Pad(n) => write!(f, "pad{n}") }
+        match self { Device::Keyboard => write!(f, "keyboard"), Device::Pad(n) => write!(f, "pad{n}"), Device::KeyHalf(0) => write!(f, "keyboard-left"), Device::KeyHalf(_) => write!(f, "keyboard-right") }
     }
 }
 
@@ -578,6 +647,26 @@ mod tests {
         let c = d.controls(1, 1.0 / 60.0)[0];
         assert_eq!(c.look, [0.0; 2]);
         assert!(!c.pressed.has(Buttons::RIGHT_TRIGGER) && !c.held.has(Buttons::RIGHT_TRIGGER));
+    }
+
+    #[test]
+    fn a_split_keyboard_is_two_halves() {
+        let mut d = Devices::new(true);
+        for k in [KeyCode::KeyG, KeyCode::KeyW, KeyCode::ArrowLeft, KeyCode::Space, KeyCode::ShiftRight] { d.key(k, ElementState::Pressed, false); }
+        let whole = d.device_controls(0.016);
+        assert_eq!(whole.len(), 1);
+        assert!(whole[0].1.pressed.has(Buttons::KEYBOARD_JOIN) && whole[0].1.pressed.has(Buttons::SOUTH));
+        split_keyboard(true);
+        d.key(KeyCode::Space, ElementState::Pressed, false);
+        let halves = d.device_controls(0.016);
+        split_keyboard(false);
+        assert_eq!(halves.iter().map(|(d, _)| *d).collect::<Vec<_>>(), [Device::KeyHalf(0), Device::KeyHalf(1)]);
+        let (left, right) = (halves[0].1, halves[1].1);
+        assert_eq!(left.mv, [0.0, 1.0]);
+        assert_eq!(right.mv, [-1.0, 0.0]);
+        assert!(left.pressed.has(Buttons::SOUTH) && !right.pressed.has(Buttons::SOUTH));
+        assert!(left.held.has(Buttons::SOUTH) && right.held.has(Buttons::SOUTH), "right Shift is the right half's A");
+        assert_eq!(Device::parse("keyboard-right"), Ok(Device::KeyHalf(1)));
     }
 
     #[test]

@@ -199,6 +199,9 @@ Controllers take the local seats; keyboard takes seat one when no pad is present
 Keyboard: W/S throttle/brake, A/D steer, arrows up/down trim, Space boost,
 R fire, F reset, Q/E bump, Enter start/pause. F10/F11/F12 are engine debug,
 fullscreen and feedback capture. Touch input is not ported.
+Two players can share one keyboard in the browser host (G joins the second):
+the first drives with the arrows (right Shift boost), the second with WASD
+(Space boost).
 
 ## Luau / native boundary
 

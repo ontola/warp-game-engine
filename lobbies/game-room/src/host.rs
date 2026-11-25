@@ -96,14 +96,24 @@ impl Host {
     /// Whether everyone seated plays on the browser's keyboard.
     pub fn keyboard_only(&self) -> bool {
         let seated: Vec<&Value> = arr(&self.party["seats"]).iter().filter(|seat| seat["occupant"].get("player_id").is_some_and(|v| !v.is_null())).collect();
-        !seated.is_empty() && seated.iter().all(|seat| seat["controller"].as_str().is_some_and(|c| c.ends_with(":keyboard")))
+        !seated.is_empty() && seated.iter().all(|seat| seat["controller"].as_str().is_some_and(|c| c.contains(":keyboard")))
+    }
+
+    /// Players on the keyboard: 2 when two share it (its halves,
+    /// "web:keyboard-left" / "-right").
+    fn keyboard_players(&self) -> usize {
+        arr(&self.party["seats"]).iter().filter(|seat| seat["controller"].as_str().is_some_and(|c| c.contains(":keyboard"))).count()
     }
 
     /// Whether the input at hand plays `game`: anything does, unless only
     /// the keyboard is here and the game doesn't declare keys
     /// (`players.keyboard` or `players.mouse` in its catalog entry).
+    /// Two on one keyboard: the game must take that many
+    /// (`players.shared_keyboard`).
     fn input_fits(&self, game: &Value) -> bool {
-        !self.keyboard_only() || game["keyboard"] == true || game["mouse"] == true
+        if !self.keyboard_only() { return true; }
+        let shared = game["shared_keyboard"].as_u64().unwrap_or(1) as usize;
+        match self.keyboard_players() { 0 | 1 => game["keyboard"] == true || game["mouse"] == true || shared >= 2, n => shared >= n }
     }
 
     /// Games left off the shelf because only the keyboard is here.
@@ -464,6 +474,20 @@ mod tests {
         assert!(h.keyboard_only());
         assert_eq!(h.shelf_games().iter().map(|g| get(g, "id", "")).collect::<Vec<_>>(), ["keys", "mouse"]);
         assert_eq!(h.hidden_for_keyboard(), 1);
+    }
+
+    #[test]
+    fn two_on_one_keyboard_only_see_shared_keyboard_games() {
+        let mut seats = seats(2);
+        seats[0]["controller"] = json!("web:keyboard-right");
+        seats[1]["controller"] = json!("web:keyboard-left");
+        let h = host(json!({
+            "seats": seats,
+            "library": [{"id": "pads", "title": "Pads"}, {"id": "keys", "title": "Keys", "keyboard": true}, {"id": "two", "title": "Two", "keyboard": true, "shared_keyboard": 2}],
+            "playlist": {"entries": [], "current": null},
+        }));
+        assert!(h.keyboard_only());
+        assert_eq!(h.shelf_games().iter().map(|g| get(g, "id", "")).collect::<Vec<_>>(), ["two"]);
     }
 
     #[test]

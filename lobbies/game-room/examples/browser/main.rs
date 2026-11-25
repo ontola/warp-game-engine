@@ -101,6 +101,9 @@ pub(crate) mod page {
         kb_enter: bool,
         /// The game whose keyboard hint is due, and when ([`keyboard_game_hint`]).
         kb_hint: Option<(String, web_time::Instant)>,
+        /// The keyboard (or keyboard half) that last pressed a key: the one
+        /// a new pad takes over when two share the keyboard.
+        last_keys: Option<Device>,
         /// A chord to run when the room ticks.
         chord: Option<Chord>,
         /// Games started, oldest first (Back + LB plays the last again).
@@ -206,6 +209,10 @@ pub(crate) mod page {
             // Any key on the keyboard: the keyboard on the room's table hops.
             // (WASD and the arrows move: they count as keys too.)
             let key_action = c.pressed.0 != 0 || c.mv != [0.0; 2];
+            if dev.is_keys() && key_action { h.last_keys = Some(*dev); }
+            // G while one player has the whole keyboard: a second one joins
+            // on it, and the keyboard splits in two halves.
+            if *dev == Device::Keyboard && c.pressed.has(Buttons::KEYBOARD_JOIN) && h.bound.contains(&Some(Device::Keyboard)) { share_keyboard(h); continue; }
             // A solo game link already reserved one player. Their first movement,
             // action or captured mouse look can claim that seat in this tick.
             let solo_seat = h.on_screen.is_some() && h.bound.as_slice() == [None] && !h.phone[0];
@@ -227,6 +234,8 @@ pub(crate) mod page {
                 // As at home: A joins; anything else only jiggles the pads on the table.
                 // A pad that pressed A on the loading page joins as soon as it shows up.
                 Device::Pad(i) => c.pressed.has(Buttons::SOUTH) || (!h.seen.contains(dev) && early_pad(*i)),
+                // Halves are only there while both are seated ([`share_keyboard`]).
+                Device::KeyHalf(_) => false,
             };
             // A pad first heard during a game (the browser shows a pad only
             // once a button is pressed): how to join, unless it pressed A.
@@ -249,41 +258,27 @@ pub(crate) mod page {
             // someone plays on the keyboard hands that player (seat, look,
             // profile) to the pad instead of adding a second player. The
             // keyboard is free again: Enter joins it as someone new.
-            if let Device::Pad(_) = dev && let Some(seat) = h.bound.iter().position(|b| *b == Some(Device::Keyboard)) {
+            // Two on the keyboard: the one who last pressed a key.
+            let kb_seat = h.bound.iter().position(|b| b.is_some() && *b == h.last_keys).or_else(|| h.bound.iter().position(|b| b.is_some_and(|d| d.is_keys())));
+            if let Device::Pad(_) = dev && let Some(seat) = kb_seat {
                 h.bound[seat] = Some(*dev);
                 h.kb_enter = false;
                 let who = name(h, seat);
                 show_hint("✓", &format!("{who} plays on the controller now"), "");
                 note(h, "joined", &format!("{who} switched from the keyboard to a controller"), None);
                 app::web::log(&format!("{dev} takes over {who} from the keyboard"));
+                whole_keyboard(h);
                 continue;
             }
-            let (seat, new_player) = match (0..h.bound.len()).find(|&i| h.bound[i].is_none() && !h.phone[i]) {
-                Some(i) => (i, false),
-                None if h.bound.len() < MAX_SEATS => (add_player(h, false), true),
-                None => continue,
-            };
-            h.bound[seat] = Some(*dev);
-            // A reserved seat already has a player in the running game.
-            // Only adding a party seat needs another game player.
-            if new_player && h.on_screen.is_some() {
-                let info = &seats(h)[seat];
-                if app::web::game_takes_joins() { show_hint("✓", &format!("{} joined the game", info.name), ""); } else { next_game_hint(&info.name); }
-                app::web::player_joins(&info.name, info.color);
-            }
-            let text = format!("{} joined with {}", name(h, seat), if *dev == Device::Keyboard { "the keyboard" } else { "a controller" });
-            note(h, "joined", &text, None);
-            app::web::log(&format!("{dev} plays as {}", h.party["players"][seat]["name"].as_str().unwrap_or("?")));
-            // Keyboard in a game (a game link, or Play picked with the
-            // mouse): the room's banner isn't on screen, so say it once here.
-            if *dev == Device::Keyboard && let Some(game) = h.on_screen.clone() { h.kb_hint = Some((game, web_time::Instant::now())); }
+            seat_device(h, *dev);
         }
-        if h.kb_hint.as_ref().is_some_and(|(_, at)| web_time::Instant::now() >= *at) {
+        whole_keyboard(h);
+                if h.kb_hint.as_ref().is_some_and(|(_, at)| web_time::Instant::now() >= *at) {
             let (game, _) = h.kb_hint.take().unwrap();
             if h.on_screen.as_deref() == Some(game.as_str()) && let Some(who) = keyboard_player(h) { keyboard_game_hint(h, &game, &who); }
         }
         // In the room, for as long as someone plays on the keyboard.
-        controller_nudge(if h.on_screen.is_none() { keyboard_player(h) } else { None });
+        controller_nudge(if h.on_screen.is_none() { keyboard_player(h) } else { None }, app::keyboard_split());
         for (i, b) in h.bound.iter().enumerate() {
             let controller = match b {
                 Some(d) if devices.iter().any(|(x, _)| x == d) => json!(format!("web:{d}")),
@@ -302,6 +297,64 @@ pub(crate) mod page {
         warp::web::set_seats(seats(h));
         for line in warp::web::take_room_log() { let game = h.on_screen.clone(); note(h, "game", &line, game.as_deref()); }
         Some(h.bound.iter().map(|b| b.iter().copied().collect()).collect())
+    }
+
+    /// `dev` takes the first free seat, or a new player's; false: no seat left.
+    fn seat_device(h: &mut Host, dev: Device) -> bool {
+        let (seat, new_player) = match (0..h.bound.len()).find(|&i| h.bound[i].is_none() && !h.phone[i]) {
+            Some(i) => (i, false),
+            None if h.bound.len() < MAX_SEATS => (add_player(h, false), true),
+            None => return false,
+        };
+        h.bound[seat] = Some(dev);
+        // A reserved seat already has a player in the running game.
+        // Only adding a party seat needs another game player.
+        if new_player && h.on_screen.is_some() {
+            let info = &seats(h)[seat];
+            if app::web::game_takes_joins() { show_hint("✓", &format!("{} joined the game", info.name), ""); } else { next_game_hint(&info.name); }
+            app::web::player_joins(&info.name, info.color);
+        }
+        let text = format!("{} joined with {}", name(h, seat), if dev.is_keys() { "the keyboard" } else { "a controller" });
+        note(h, "joined", &text, None);
+        app::web::log(&format!("{dev} plays as {}", h.party["players"][seat]["name"].as_str().unwrap_or("?")));
+        // Keyboard in a game (a game link, or Play picked with the
+        // mouse): the room's banner isn't on screen, so say it once here.
+        if dev == Device::Keyboard && let Some(game) = h.on_screen.clone() { h.kb_hint = Some((game, web_time::Instant::now())); }
+        true
+    }
+
+    /// How many players `game` takes on one keyboard (its catalog entry's
+    /// `players.shared_keyboard`; 1 when it doesn't say).
+    fn shared_keyboard(party: &Value, game: &str) -> usize {
+        game_meta(party, game).and_then(|g| g["shared_keyboard"].as_u64()).unwrap_or(1) as usize
+    }
+
+    /// G on the keyboard while one player has it whole: a second player
+    /// joins on it. The keyboard splits ([`app::split_keyboard`]): the first
+    /// player keeps the right half (arrows, Enter), the new one gets the
+    /// left (WASD, Space). In a game, only one that takes two on a keyboard.
+    fn share_keyboard(h: &mut Host) {
+        if app::keyboard_split() { return; }
+        let Some(first) = h.bound.iter().position(|b| *b == Some(Device::Keyboard)) else { return };
+        if let Some(game) = h.on_screen.clone() && shared_keyboard(&h.party, &game) < 2 {
+            return show_hint("G", &format!("{} takes one player per keyboard", title(&h.party, &game)), "A second player joins with a controller, or on the keyboard in the room");
+        }
+        h.bound[first] = Some(Device::KeyHalf(1));
+        if !seat_device(h, Device::KeyHalf(0)) { h.bound[first] = Some(Device::Keyboard); return; }
+        app::split_keyboard(true);
+        let who = name(h, first);
+        show_hint("✓", "Two players on the keyboard", &format!("{who} plays on the arrows, the new player on WASD"));
+    }
+
+    /// One player left on a split keyboard (the other left, or took a
+    /// controller): they get the whole keyboard back, with the mouse.
+    fn whole_keyboard(h: &mut Host) {
+        if !app::keyboard_split() { return; }
+        let halves: Vec<usize> = (0..h.bound.len()).filter(|&i| matches!(h.bound[i], Some(Device::KeyHalf(_)))).collect();
+        if halves.len() >= 2 { return; }
+        for i in halves { h.bound[i] = Some(Device::Keyboard); }
+        app::split_keyboard(false);
+        h.last_keys = None;
     }
 
     /// The first game in the queue these players can play; the ones before
@@ -495,7 +548,8 @@ pub(crate) mod page {
 
     /// The player on the keyboard, if anyone plays on it: their name.
     fn keyboard_player(h: &Host) -> Option<String> {
-        h.bound.iter().position(|b| *b == Some(Device::Keyboard)).map(|seat| name(h, seat))
+        let names: Vec<String> = (0..h.bound.len()).filter(|&i| h.bound[i].is_some_and(|d| d.is_keys())).map(|i| name(h, i)).collect();
+        (!names.is_empty()).then(|| names.join(" & "))
     }
 
     /// The room's banner while `who` plays on the keyboard (and mouse):
@@ -503,10 +557,10 @@ pub(crate) mod page {
     /// that pad then takes `who` over ([`devices`]). `<html data-kb-nudge>`,
     /// see index.html `#kb-nudge`. None: no banner (nobody on the keyboard,
     /// or a game on screen).
-    fn controller_nudge(who: Option<String>) {
-        thread_local! { static SHOWN: RefCell<Option<Option<String>>> = const { RefCell::new(None) }; }
-        if SHOWN.with(|s| s.borrow().as_ref() == Some(&who)) { return; }
-        SHOWN.with(|s| *s.borrow_mut() = Some(who.clone()));
+    fn controller_nudge(who: Option<String>, split: bool) {
+        thread_local! { static SHOWN: RefCell<Option<(Option<String>, bool)>> = const { RefCell::new(None) }; }
+        if SHOWN.with(|s| s.borrow().as_ref() == Some(&(who.clone(), split))) { return; }
+        SHOWN.with(|s| *s.borrow_mut() = Some((who.clone(), split)));
         #[cfg(target_os = "android")]
         {
             const TEXT: &str = "Splitscreen Club is made for controllers\nConnect one and press A to take over from the keyboard";
@@ -515,8 +569,11 @@ pub(crate) mod page {
         #[cfg(target_arch = "wasm32")]
         {
             let Some(doc) = web_sys::window().and_then(|w| w.document()) else { return };
-            if let (Some(e), Some(who)) = (doc.get_element_by_id("kb-nudge-who"), &who) { e.set_text_content(Some(who)); }
+            if let (Some(e), Some(who)) = (doc.get_element_by_id("kb-nudge-who"), &who) {
+                e.set_text_content(Some(&if split { format!("Keyboard · {who}") } else { format!("Keyboard & mouse · {who}") }));
+            }
             let Some(root) = doc.document_element() else { return };
+            let _ = if split { root.set_attribute("data-kb-split", "") } else { root.remove_attribute("data-kb-split") };
             // An old join hint (its 4 s long over) would hold the banner back.
             if who.is_some() { let _ = root.remove_attribute("data-join-hint"); }
             let _ = if who.is_some() { root.set_attribute("data-kb-nudge", "") } else { root.remove_attribute("data-kb-nudge") };

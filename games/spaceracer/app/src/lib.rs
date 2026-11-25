@@ -522,9 +522,13 @@ impl Game for Racer {
     fn devices(&mut self, d: &[(Device, Controls)]) {
         self.devices = d
             .iter()
-            .filter(|(d, _)| d.is_pad())
+            // Two on one keyboard: its halves drive seats as pads do.
+            .filter(|(d, _)| d.is_pad() || matches!(d, Device::KeyHalf(_)))
             .map(|(d, _)| *d)
             .collect();
+        // The host seats the keyboard's first player on the right half
+        // (arrows), the one who joined with G on the left: the same order here.
+        self.devices.sort_by_key(|d| match d { Device::KeyHalf(h) => (0, 1 - *h as u32), Device::Pad(n) => (1, *n), Device::Keyboard => (2, 0) });
     }
     fn seats(&self) -> Option<Vec<Vec<Device>>> {
         Some(
@@ -697,7 +701,7 @@ impl Game for Racer {
             controls
                 .iter()
                 .enumerate()
-                .map(|(i, c)| Self::controls(*c, self.devices.get(i).is_some()))
+                .map(|(i, c)| Self::controls(*c, self.devices.get(i).is_some_and(|d| d.is_pad())))
                 .collect()
         };
         if self.demo {
