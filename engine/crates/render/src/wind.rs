@@ -467,6 +467,10 @@ mod tests {
     fn phase_is_root_stable_bounded_and_continuous_across_wrap() {
         let root = Vec3::new(-386.3, 120.0, 234.6);
         let state = WindState { strength: 1.0, tree_shear: MAX_TREE_SHEAR, ..Default::default() };
+        // Bound the quarter-second increment from the field's three harmonic
+        // derivatives; the storm raises the metre amplitude, not its frequency.
+        let rate = Vec2::new(0.26 * 9. + 0.09 * 17., 0.13 * 41.).length()
+            * std::f32::consts::TAU / PERIOD as f32;
         let mut previous = Vec2::ZERO;
         for i in 0..480 {
             let state = WindState { time_seconds: i as f64 * 0.25, ..state };
@@ -476,7 +480,7 @@ mod tests {
             assert!(grass.length() <= state.grass_shear);
             assert_eq!(tree, state.sample_shear(root + Vec3::Y * 400.0, false));
             assert!((tree - state.sample_shear(root, false)).length() == 0.0);
-            if i != 0 { assert!((tree - previous).length() < 0.015); }
+            if i != 0 { assert!((tree - previous).length() <= rate * 0.25 * state.tree_shear + 1e-5); }
             previous = tree;
         }
         let before = WindState { time_seconds: PERIOD - 1e-5, ..state }.sample_shear(root, true);
