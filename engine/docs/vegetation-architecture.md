@@ -754,11 +754,15 @@ between main boughs and finer laterals on those boughs. Every generated joint pi
 at its own fork on the parent limb. Descendants without a separate joint follow their
 nearest selected ancestor. A limb's radius at its attachment determines its stiffness.
 The whole crown and the growth rig sample the same travelling gust at the planting.
-Each limb bends with the component of the gust across its axis and has a smaller,
-independent flutter. When the trailing edge passes, flexible twigs recoil past their
-driven equilibrium and oscillate with decaying amplitude for up to four seconds.
-Frequency depends on flexibility and the branch ID. The root and stiff limbs have
-no release response. The pose is a function of world position and time, so seeking
+Above a wind strength of 0.65, the field blends in irregular gusts that travel at
+12 m/s. Their heading, peak load and duration vary, and some fronts have two
+crests. Trees continue to sway between fronts. The storm pattern repeats after
+32 minutes and can be sampled directly at any replay time.
+Each flexible joint filters four seconds of wind pressure as a damped spring.
+The tree shares the sampled pressure across its limbs. Stiff boughs bend through
+small angles and respond slowly. Fine laterals bend under light pressure and
+oscillate faster around their moving parents. Joint flexibility and a small
+variation from branch identity set the frequency. The growth root stays anchored. The pose is a function of world position and time, so seeking
 or switching detail levels preserves the phase. `PartWindRig::sample_driven_into`
 samples the equilibrium for comparisons at the same instant. Stem, bark relief
 and foliage follow the same pose with the bark grain anchored in rest space.
@@ -767,6 +771,8 @@ List reusable whole-tree instance slots in `Scene::tree_wind_ranges` to apply
 root-anchored sway and update their shadows as they move. For articulated
 branches, create a `PartWindRig` when the plant becomes resident and call
 `sample_into` each frame to reuse its validated bind poses and the output buffer.
+Use `sample_weighted_into` to fade articulation with distance while sampling
+the same storm as the surrounding stand.
 
 - [x] G5.1 — Demand-deduplicated ancestor poses and indirect depth dispatches are
   connected. Source, voxel and shadow paths share poses; bounded fallback exists.

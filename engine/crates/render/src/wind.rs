@@ -11,8 +11,16 @@ use glam::{Vec2, Vec3};
 use std::sync::Mutex;
 use wgpu::util::DeviceExt;
 
-pub(crate) const PERIOD: f64 = 120.0;
-/// The three gust components travel downwind together. Adjacent crowns see
+const PERIOD: f64 = 120.0;
+pub(crate) const STORM_PERIOD: f64 = 1920.0;
+
+/// Keep branch harmonics in their original units. Wrap the storm in f64 before
+/// narrowing so replay and large clocks retain precise, spatially stable events.
+pub(crate) fn phase(state: &WindState) -> f32 {
+    let period = if state.strength <= 0.65 { PERIOD } else { STORM_PERIOD };
+    (state.time_seconds.rem_euclid(period) * std::f64::consts::TAU / PERIOD) as f32
+}
+/// Wind fronts travel downwind together. Adjacent crowns see
 /// the same front with a delay given by their separation along the wind.
 pub const GUST_SPEED_MPS: f32 = 12.0;
 pub(crate) const SHADER: &str = concat!(include_str!("shaders/wind_field.wgsl"), "\n", include_str!("shaders/wind.wgsl"));
@@ -59,7 +67,7 @@ impl WindState {
         let Ok(state) = self.validated() else { return Vec2::ZERO; };
         if !position.is_finite() || state.strength == 0.0 { return Vec2::ZERO; }
         let field = Uniform::from_state(state).field;
-        gust_at(Vec2::new(position.x, position.z), state.direction, field[3]).0 * state.strength
+        gust_at(Vec2::new(position.x, position.z), state.direction, field[3], state.strength).load * state.strength
     }
 
     /// CPU counterpart of the GPU coefficient before the optional camera fade.
@@ -69,23 +77,86 @@ impl WindState {
         if !root.is_finite() || state.strength == 0.0 { return Vec2::ZERO; }
         let field = Uniform::from_state(state).field;
         let amplitude = if grass { state.grass_shear } else { state.tree_shear };
-        gust_at(Vec2::new(root.x, root.z), state.direction, field[3]).0 * (state.strength * amplitude)
+        gust_at(Vec2::new(root.x, root.z), state.direction, field[3], state.strength).load * (state.strength * amplitude)
     }
 }
 
-/// CPU counterpart of plant_gust in wind_field.wgsl, with unit strength.
-/// Returns horizontal loading and seconds since the leading gust last unloaded.
-pub(crate) fn gust_at(root: Vec2, direction: Vec2, phase: f32) -> (Vec2, f32) {
+#[derive(Default)]
+pub(crate) struct Gust {
+    pub load: Vec2,
+    pub breeze_age: f32,
+    pub storm_age: f32,
+    pub storm_release: Vec2,
+    pub storm_mix: f32,
+}
+
+fn smooth(t: f32) -> f32 {
+    let t = t.clamp(0., 1.);
+    t * t * (3. - 2. * t)
+}
+
+/// CPU counterpart of plant_gust in wind_field.wgsl. The gust timetable is in
+/// advected world coordinates, so a distant stand, branch and shadow all meet the
+/// same front. A stable slot hash varies rise, hold, fall, direction and amplitude.
+pub(crate) fn gust_at(root: Vec2, direction: Vec2, phase: f32, strength: f32) -> Gust {
     let cross = Vec2::new(-direction.y, direction.x);
     let across = root.dot(cross);
     let advected = root.dot(direction) * (std::f32::consts::TAU / (PERIOD as f32 * GUST_SPEED_MPS)) - phase;
-    let leading = 9.0 * advected + 0.012 * across;
-    let following = 17.0 * advected - 0.017 * across;
-    let lateral = 11.0 * advected + 0.026 * across;
-    let load = 0.49 + 0.36 * leading.sin() + 0.14 * following.sin();
-    let cycles = -leading / std::f32::consts::TAU;
-    let release_age = (cycles - cycles.floor()) * (PERIOD as f32 / 9.0);
-    (direction * load + cross * (0.09 * lateral.sin()), release_age)
+    let storm_mix = smooth((strength - 0.65) / 0.35);
+    let mut gust = Gust { storm_mix, ..Default::default() };
+    if storm_mix < 1.0 {
+        let leading = 9.0 * advected + 0.012 * across;
+        let following = 17.0 * advected - 0.017 * across;
+        let lateral = 11.0 * advected + 0.026 * across;
+        let load = 0.49 + 0.36 * leading.sin() + 0.14 * following.sin();
+        let cycles = -leading / std::f32::consts::TAU;
+        gust.breeze_age = (cycles - cycles.floor()) * (PERIOD as f32 / 9.0);
+        gust.load = direction * load + cross * (0.09 * lateral.sin());
+    }
+    if storm_mix == 0.0 { return gust; }
+
+    let time = -advected * (PERIOD as f32 / std::f32::consts::TAU)
+        + 1.5 * (0.018 * across).sin() + 0.6 * (0.041 * across).sin();
+    // Unequal intervals tile each period exactly, including negative world coordinates.
+    let block = (time / 30.).floor();
+    let block_id = block.rem_euclid((STORM_PERIOD / 30.) as f32) as u32;
+    let block_t = time - block * 30.;
+    let split = 10.5 + (9. / 63.) * ((13 * block_id + 21) % 64) as f32;
+    let (slot, local, duration) = if block_t < split {
+        (block_id * 2, block_t, split)
+    } else {
+        (block_id * 2 + 1, block_t - split, 30. - split)
+    };
+    let mut bits = (slot + 1).wrapping_mul(0x9e3779b9);
+    bits = (bits ^ (bits >> 16)).wrapping_mul(0x85ebca6b);
+    bits ^= bits >> 13;
+    let unit = |shift: u32| ((bits >> shift) & 15) as f32 / 15.;
+    // Leave time for the spring to decay before the next slot. Wide fronts can
+    // have two distinct crests as the flow gathers again during their plateau.
+    let span = duration - 4.;
+    let start = span * (0.025 + 0.14 * unit(0));
+    let rise = span * (0.13 + 0.12 * unit(4));
+    let crest = start + rise;
+    let double = duration > 16.;
+    let hold = span * (if double { 0.33 } else { 0.06 } + 0.06 * unit(8));
+    let falling = crest + hold;
+    let fall = span * (0.14 + 0.11 * unit(12));
+    let mut pulse = smooth((local - start) / rise) * (1. - smooth((local - falling) / fall));
+    if double {
+        let t = (local - crest) / hold;
+        pulse *= 1. - 0.53 * smooth(t / 0.42) * (1. - smooth((t - 0.51) / 0.49));
+    }
+    let breadth = 0.93 + 0.07 * (0.031 * across + std::f32::consts::TAU * unit(24)).cos();
+    let peak = (0.68 + 0.32 * unit(16)) * breadth;
+    let heading = (direction + cross * (1.30 * unit(20) - 0.65)).normalize();
+    let background = direction * (0.18 + 0.06 * (11. * advected - 0.016 * across).sin())
+        + cross * (0.045 * (15. * advected + 0.022 * across).sin());
+    gust.load = gust.load.lerp(background.lerp(heading * peak, pulse), storm_mix);
+    // Measure the impulse from the unloading edge. It varies with the strength,
+    // heading and fall time of this actual event, then decays during the lull.
+    gust.storm_age = (local - falling - 0.5 * fall).max(0.);
+    gust.storm_release = (heading * peak - direction * 0.18) / fall.sqrt().max(1.);
+    gust
 }
 
 #[repr(C)]
@@ -99,7 +170,7 @@ impl Uniform {
         if state.strength == 0.0 { return Self::zeroed(); }
         // Integer temporal harmonics make the wrapped phase continuous. Do the
         // modulo in f64 before narrowing so long sessions retain time precision.
-        let phase = (state.time_seconds.rem_euclid(PERIOD) * std::f64::consts::TAU / PERIOD) as f32;
+        let phase = phase(&state);
         Self { field: [state.direction.x, state.direction.y, state.strength, phase],
             amplitudes: [state.tree_shear, state.grass_shear, 0.0, 0.0] }
     }
@@ -486,10 +557,9 @@ mod tests {
     fn phase_is_root_stable_bounded_and_continuous_across_wrap() {
         let root = Vec3::new(-386.3, 120.0, 234.6);
         let state = WindState { strength: 1.0, tree_shear: MAX_TREE_SHEAR, ..Default::default() };
-        // Bound the quarter-second increment from the field's three harmonic
-        // derivatives; the storm raises the metre amplitude, not its frequency.
-        let rate = Vec2::new(0.36 * 9. + 0.14 * 17., 0.09 * 11.).length()
-            * std::f32::consts::TAU / PERIOD as f32;
+        // Smoothstep peaks at 1.5/time. The shortest rise is 0.13 * 6.5 s;
+        // keep margin for the slow crosswind background between fronts.
+        let rate = 2.;
         let mut previous = Vec2::ZERO;
         for i in 0..480 {
             let state = WindState { time_seconds: i as f64 * 0.25, ..state };
@@ -502,9 +572,38 @@ mod tests {
             if i != 0 { assert!((tree - previous).length() <= rate * 0.25 * state.tree_shear + 1e-5); }
             previous = tree;
         }
-        let before = WindState { time_seconds: PERIOD - 1e-5, ..state }.sample_shear(root, true);
-        let after = WindState { time_seconds: PERIOD + 1e-5, ..state }.sample_shear(root, true);
+        let before = WindState { time_seconds: STORM_PERIOD - 1e-5, ..state }.sample_shear(root, true);
+        let after = WindState { time_seconds: STORM_PERIOD + 1e-5, ..state }.sample_shear(root, true);
         assert!((before-after).length() < 1e-4);
+    }
+
+    #[test]
+    fn storm_fronts_vary_in_strength_spacing_and_heading_with_moving_lulls() {
+        let state = WindState { strength: 1., direction: Vec2::X, ..Default::default() };
+        let mut arrivals = Vec::new();
+        let mut crest = Vec2::ZERO;
+        let mut crests = Vec::new();
+        let mut quiet = Vec::new();
+        for tick in 0..14400 {
+            let time = tick as f64 / 60.;
+            let load = WindState { time_seconds: time, ..state }.sample_gust(Vec3::ZERO);
+            let speed = load.length();
+            if speed > 0.58 {
+                if crest == Vec2::ZERO { arrivals.push(time); }
+                if speed > crest.length() { crest = load; }
+            } else if crest != Vec2::ZERO {
+                crests.push(crest);
+                crest = Vec2::ZERO;
+            }
+            if speed < 0.25 { quiet.push(load); }
+        }
+        // A deep trough between two crests and irregular long gaps distinguish
+        // compound fronts from a repeated sine or a pulse on a fixed clock.
+        let gaps: Vec<_> = arrivals.windows(2).map(|a| a[1] - a[0]).collect();
+        assert!(arrivals.len() > 16 && gaps.iter().any(|&gap| gap < 7.) && gaps.iter().any(|&gap| gap > 15.), "{gaps:?}");
+        assert!(crests.iter().any(|v| v.length() > 0.85) && crests.iter().any(|v| v.length() < 0.75));
+        assert!(crests.iter().any(|v| v.y > 0.2) && crests.iter().any(|v| v.y < -0.2));
+        assert!(quiet.len() > 1200 && quiet.iter().any(|v| v.x < 0.14) && quiet.iter().any(|v| v.x > 0.22));
     }
 
     #[test]

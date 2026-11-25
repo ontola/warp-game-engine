@@ -23,7 +23,7 @@ pub const MAX_ATTACHMENTS: usize = 65_536;
 pub const HISTORY_EPOCH: u32 = 1 << 7;
 pub const MAX_ANIMATION_VIEWS: usize = 32;
 const ATTACHMENT_PAGE: usize = 256;
-use crate::wind::{gust_at, PERIOD};
+use crate::wind::{gust_at, phase};
 const NONE: u32 = u32::MAX;
 
 #[derive(Clone, Copy, Debug)]
@@ -405,7 +405,7 @@ fn field(state:&WindState)->Result<[f32;4],String> {
     let state=state.validated()?;
     if state.strength==0.0 {return Ok([0.0;4]);}
     Ok([state.direction.x,state.direction.y,state.strength,
-        (state.time_seconds.rem_euclid(PERIOD)*std::f64::consts::TAU/PERIOD) as f32])
+        phase(&state)])
 }
 
 /// Small streamed rigs can retain their validated rest hierarchy and evaluate
@@ -420,13 +420,18 @@ impl PartWindRig {
     }
 
     pub fn sample_into(&self, state: &WindState, poses: &mut Vec<Mat4>) -> Result<(), String> {
-        evaluate_poses(&self.parts, state, poses, true)
+        evaluate_poses(&self.parts, state, poses, 1., true)
     }
 
-    /// Sample the driven equilibrium at the same time as sample_into, omitting
-    /// only the damped release. Diagnostic reference for limb-tip displacement.
+    /// Fade articulation without changing the strength or timing of the weather.
+    pub fn sample_weighted_into(&self, state: &WindState, weight: f32, poses: &mut Vec<Mat4>) -> Result<(), String> {
+        if !(0.0..=1.0).contains(&weight) { return Err("wind pose weight must be in 0..1".into()); }
+        evaluate_poses(&self.parts, state, poses, weight, true)
+    }
+
+    /// Sample the instantaneous equilibrium under the same pressure, before spring response.
     pub fn sample_driven_into(&self, state: &WindState, poses: &mut Vec<Mat4>) -> Result<(), String> {
-        evaluate_poses(&self.parts, state, poses, false)
+        evaluate_poses(&self.parts, state, poses, 1., false)
     }
 }
 
@@ -434,56 +439,109 @@ impl PartWindRig {
 pub fn sample_poses(parts: &[PartWind], state: &WindState) -> Result<Vec<Mat4>, String> {
     bind_poses(parts)?;
     let mut poses = Vec::with_capacity(parts.len());
-    evaluate_poses(parts, state, &mut poses, true)?;
+    evaluate_poses(parts, state, &mut poses, 1., true)?;
     Ok(poses)
 }
 
-/// Closed-form underdamped response to the trailing edge of a passing gust.
-/// The finite release window reaches zero well before the next front. Sampling
-/// in any order gives the same pose, including after an LOD wake or rewind.
-fn twig_recoil(age: f32, max_angle: f32, branch_phase: f32) -> f32 {
-    if age >= 4.0 || max_angle <= 0.045 { return 0.0; }
-    let smooth = |x: f32| {
-        let t = x.clamp(0.0, 1.0);
-        t * t * (3.0 - 2.0 * t)
+// A short pressure history is shared by every joint of an assembly. Sampling it at
+// render time also reproduces the pose after a rewind, camera cut or LOD wake.
+const PRESSURE_STEPS: usize = 24;
+const PRESSURE_DT: f32 = 1. / 6.;
+type PressureTrace = [Vec4; PRESSURE_STEPS + 1];
+
+fn pressure_sample(root: Vec2, direction: Vec2, phase: f32, strength: f32) -> Vec4 {
+    let gust = gust_at(root, direction, phase, strength);
+    let cross = Vec2::new(-direction.y, direction.x);
+    let along = phase - root.dot(direction) * (std::f32::consts::TAU / (120. * crate::wind::GUST_SPEED_MPS));
+    let across = root.dot(cross);
+    // Passing eddies load nearby limbs together even during a breeze. Both the
+    // eddies and their local projections vanish as the incoming pressure falls.
+    let pressure = gust.load.length();
+    let slow = 0.12 * (67. * along - 0.019 * across).sin();
+    let fast = 0.12 * (169. * along + 0.026 * across).sin();
+    let local = 0.19 * pressure;
+    let (eddy_sin, eddy_cos) = (217. * along - 0.015 * across).sin_cos();
+    let mut load = (0.78 + 0.10 * gust.storm_mix) * gust.load + pressure * (slow + fast) * cross;
+    // The steep trailing edge briefly unloads exposed shoots before the flow
+    // settles. The input is a single pulse; the joint supplies all ringing.
+    let unload = |age: f32| {
+        let t = (age / 0.42).clamp(0., 1.);
+        let arch = 4. * t * (1. - t);
+        arch * arch
     };
-    let flexibility = smooth((max_angle - 0.045) / 0.22);
-    let frequency = 0.85 + 0.55 * flexibility + 0.20 * branch_phase / std::f32::consts::TAU;
-    let damping = 1.45 - 0.50 * flexibility;
-    let window = smooth(age / 0.065) * (1.0 - smooth(age - 3.0));
-    -flexibility * window * (-damping * age).exp() * (std::f32::consts::TAU * frequency * age).sin()
+    load -= 0.42 * ((1. - gust.storm_mix) * unload(gust.breeze_age) * direction
+        + gust.storm_mix * unload(gust.storm_age) * gust.storm_release);
+    Vec4::new(load.x, load.y, local * eddy_sin, local * eddy_cos)
 }
 
-fn evaluate_poses(parts: &[PartWind], state: &WindState, result: &mut Vec<Mat4>, release: bool) -> Result<(), String> {
+fn complex_mul(a: Vec2, b: Vec2) -> Vec2 {
+    Vec2::new(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x)
+}
+
+// Exact integral of the damped step residual over one linearly interpolated
+// pressure interval. The remaining taps follow by a complex multiply, requiring
+// one exponential and one sin/cos pair per joint for the whole history.
+fn spring_kernel(max_angle: f32, harmonic: u32, branch_phase: f32) -> (Vec2, Vec2) {
+    let compliance = max_angle / (max_angle + 0.26);
+    let identity = 0.65 * branch_phase / std::f32::consts::TAU + 0.35 * (harmonic % 17) as f32 / 16.;
+    let frequency = (0.30 + 3.10 * compliance) * (0.86 + 0.28 * identity);
+    let omega = std::f32::consts::TAU * frequency;
+    let damping = 0.36 - 0.19 * compliance;
+    let a = omega * damping;
+    let b = omega * (1. - damping * damping).sqrt();
+    let (sin, cos) = (b * PRESSURE_DT).sin_cos();
+    let advance = (-a * PRESSURE_DT).exp() * Vec2::new(cos, sin);
+    let integral = complex_mul(advance - Vec2::X, Vec2::new(-a, -b))
+        / (omega * omega * PRESSURE_DT);
+    (complex_mul(Vec2::new(1., -a / b), integral), advance)
+}
+
+fn spring_load(history: &PressureTrace, angle: f32, harmonic: u32, phase: f32, driven: bool) -> Vec4 {
+    let mut value = history[0];
+    if driven || angle == 0. { return value; }
+    let (mut coefficient, advance) = spring_kernel(angle, harmonic, phase);
+    for pair in history.windows(2) {
+        value -= (pair[0] - pair[1]) * coefficient.x;
+        coefficient = complex_mul(coefficient, advance);
+    }
+    value
+}
+
+fn evaluate_poses(parts: &[PartWind], state: &WindState, result: &mut Vec<Mat4>, weight: f32, spring: bool) -> Result<(), String> {
     let field = field(state)?;
     result.clear();
     let direction = Vec2::new(field[0], field[1]);
     let crosswind = Vec2::new(-direction.y, direction.x);
     let flutter_dir = direction * 0.4 + crosswind * 0.9165;
-    let mut gust = Vec2::ZERO;
-    let mut flutter = 0.0;
-    let mut release_age = 0.0;
+    let active = field[2] > 0. && weight > 0.;
+    let mut trace = [Vec4::ZERO; PRESSURE_STEPS + 1];
     for part in parts {
         let base = if let Some(parent) = part.parent {
             result[parent as usize] * part.rest
         } else {
             let root = part.rest.w_axis;
-            (gust, release_age) = gust_at(Vec2::new(root.x, root.z), direction, field[3]);
-            flutter = 0.30 * (0.35 + 0.65 * gust.dot(direction).abs());
+            if active {
+                let count = if spring { trace.len() } else { 1 };
+                for (i, sample) in trace[..count].iter_mut().enumerate() {
+                    let phase = field[3] - i as f32 * (PRESSURE_DT * std::f32::consts::TAU / 120.);
+                    *sample = pressure_sample(Vec2::new(root.x, root.z), direction, phase, field[2]);
+                }
+            }
             part.rest
         };
+        if !active || part.max_angle == 0. {
+            result.push(base);
+            continue;
+        }
         let branch_phase = part.phase.rem_euclid(std::f32::consts::TAU);
-        let phase = field[3] * part.harmonic as f32 + branch_phase;
-        let driven = 0.70 * gust + flutter_dir * (flutter * phase.sin());
-        let recoil = if release { 0.55 * twig_recoil(release_age, part.max_angle, branch_phase) } else { 0.0 };
-        // Free vibration oscillates about the driven equilibrium. Cap the
-        // resulting bend by the same authored limit used by culling.
-        let force = driven + direction * recoil;
+        let response = spring_load(&trace, part.max_angle, part.harmonic, branch_phase, !spring);
+        let (sin, cos) = branch_phase.sin_cos();
+        let force = Vec2::new(response.x, response.y) + flutter_dir * (response.z * cos + response.w * sin);
         // The long axis of a growth limb is local +Y. Transverse load
         // bends it around its attachment; a wind-aligned limb feels less.
         let torque = base.y_axis.truncate().normalize().cross(Vec3::new(force.x, 0.0, force.y));
         let magnitude = torque.length();
-        let angle = part.max_angle * field[2] * magnitude.min(1.0);
+        let angle = part.max_angle * field[2] * magnitude.min(1.0) * weight;
         let rotation = if magnitude > 1e-6 {
             Quat::from_axis_angle(torque / magnitude, angle)
         } else {
@@ -922,6 +980,22 @@ mod tests {
     }
 
     #[test]
+    fn fading_a_streamed_joint_preserves_the_phase_of_the_storm() {
+        let rig = PartWindRig::new(vec![PartWind::default(), PartWind {
+            parent: Some(0), max_angle: 0.5, ..Default::default()
+        }]).unwrap();
+        let mut full = Vec::new();
+        let mut faded = Vec::new();
+        for tick in 0..600 {
+            let state = WindState { time_seconds: f64::from(tick) / 30., strength: 1., ..Default::default() };
+            rig.sample_into(&state, &mut full).unwrap();
+            rig.sample_weighted_into(&state, 0.5, &mut faded).unwrap();
+            let full_rotation = Quat::from_mat4(&full[1]);
+            assert!(Quat::from_mat4(&faded[1]).abs_diff_eq(Quat::IDENTITY.slerp(full_rotation, 0.5), 1e-5));
+        }
+    }
+
+    #[test]
     fn a_shared_gust_deflects_flexible_limbs_individually_around_their_pivots() {
         let make_limb = |x, stiffness, phase| PartWind {
             parent: Some(0), rest: Mat4::from_translation(Vec3::new(x, 4.0, 0.0)),
@@ -947,49 +1021,59 @@ mod tests {
     }
 
     #[test]
-    fn flexible_twig_overshoots_its_driven_pose_then_settles_after_the_front() {
-        let twig = PartWind { parent: Some(0), rest: Mat4::from_translation(Vec3::Y * 3.0),
-            max_angle: growth_angle(Some(0), 0.2), phase: 0.0, ..Default::default() };
-        let stiff = PartWind { max_angle: 0.04, ..twig.clone() };
-        let rig = PartWindRig::new(vec![PartWind::default(), twig, stiff]).unwrap();
-        let state = WindState { direction: Vec2::X, strength: 1.0, ..Default::default() };
-        let mut actual = Vec::new();
-        let mut driven = Vec::new();
-        let mut sample = |time_seconds| {
-            let wind = WindState { time_seconds, ..state };
-            rig.sample_into(&wind, &mut actual).unwrap();
-            rig.sample_driven_into(&wind, &mut driven).unwrap();
-            assert_eq!(actual[0], driven[0]);
-            assert_eq!(actual[2], driven[2]);
-            assert_eq!(actual[1].w_axis, driven[1].w_axis);
-            let tip = actual[1].transform_point3(Vec3::Y);
-            let equilibrium = driven[1].transform_point3(Vec3::Y);
-            (tip.x, tip.x - equilibrium.x)
-        };
-        assert_eq!(sample(0.0).1, 0.0);
-        // Release at the origin is t=0. Locate four alternating actual
-        // excursions on a 120 Hz timeline, relative to the driving load.
-        let mut peaks = [0.0_f32; 4];
-        let mut sign = -1.0_f32;
-        let mut interval = 0;
-        let mut crossed_rest = false;
-        for i in 1..240 {
-            let (tip, displacement) = sample(f64::from(i) / 120.0);
-            crossed_rest |= tip < -0.02;
-            if displacement * sign < -1e-5 {
-                interval += 1;
-                sign = -sign;
-                if interval == peaks.len() { break; }
+    fn every_flexible_joint_rings_after_the_same_measured_unloading() {
+        // Both limbs experience the same pressure and the same 0.14 s unloading.
+        // Find zero crossings of the actual flexion, not of an oscillator knob.
+        let interval = |angle: f32, phase: f32| {
+            let mut crossings = Vec::new();
+            let mut previous = 1.;
+            let mut peak = 0.0_f32;
+            for tick in 0..=540 {
+                let t = tick as f32 / 120.;
+                let trace = std::array::from_fn(|i| {
+                    let age = t - i as f32 * PRESSURE_DT;
+                    Vec4::X * (1. - age / 0.14).clamp(0., 1.) * 0.12
+                });
+                let flexion = angle * spring_load(&trace, angle, 13, phase, false).x;
+                if tick > 20 && flexion * previous < 0. && flexion.abs() > 1e-9 { crossings.push(t); }
+                if t > 0.14 { peak = peak.max(flexion.abs()); }
+                if t > 4.2 { assert_eq!(flexion, 0.); }
+                previous = flexion;
             }
-            peaks[interval] = peaks[interval].max(displacement.abs());
+            assert!(crossings.len() >= 3, "angle {angle}, crossings {crossings:?}");
+            let cycles = ((crossings.len() - 1) / 2).min(3);
+            ((crossings[2 * cycles] - crossings[0]) / cycles as f32, peak)
+        };
+        let (bough_period, bough_bend) = interval(0.048, 1.);
+        let (twig_period, twig_bend) = interval(0.28, 1.);
+        let (sibling_period, _) = interval(0.28, 5.);
+        assert!(twig_period < 0.70 * bough_period, "{twig_period}, {bough_period}");
+        assert!((sibling_period - twig_period).abs() > 0.035);
+        assert!(bough_bend > 0.001 && twig_bend > 3. * bough_bend, "{twig_bend}, {bough_bend}");
+    }
+
+    #[test]
+    fn weak_continuous_pressure_moves_soft_tips_before_any_storm() {
+        let limb = |angle| PartWind { parent: Some(0), max_angle: angle,
+            rest: Mat4::from_translation(Vec3::Y * 2.), phase: 1., ..Default::default() };
+        let rig = PartWindRig::new(vec![PartWind::default(), limb(0.048), limb(0.28)]).unwrap();
+        let mut poses = Vec::new();
+        let mut driven = Vec::new();
+        let mut peak = [0.0_f32; 2];
+        let mut spring_travel = [0.0_f32; 2];
+        for tick in 0..360 {
+            let wind = WindState { strength: 0.12, time_seconds: 2. + f64::from(tick) / 120., ..Default::default() };
+            rig.sample_into(&wind, &mut poses).unwrap();
+            rig.sample_driven_into(&wind, &mut driven).unwrap();
+            assert_eq!(poses[0], Mat4::IDENTITY);
+            for j in 0..2 {
+                assert_eq!(poses[j + 1].w_axis, Vec3::Y.extend(0.) * 2. + Vec4::W);
+                peak[j] = peak[j].max((poses[j+1].y_axis - Vec4::Y).length());
+                spring_travel[j] = spring_travel[j].max((poses[j+1].y_axis - driven[j+1].y_axis).length());
+            }
         }
-        assert!(crossed_rest && interval == 4);
-        assert!(peaks.iter().all(|p| *p > 0.01) && peaks.windows(2).all(|w| w[1] < w[0]), "{peaks:?}");
-        assert_eq!(sample(4.1).1, 0.0);
-        assert_eq!(sample(10.0).1, 0.0);
-        let sought = sample(0.17);
-        assert!((sample(120.17).1 - sought.1).abs() < 1e-5);
-        assert_eq!(sample(0.17), sought);
+        assert!(peak[0] > 0.0003 && peak[1] > 4. * peak[0], "{peak:?}");
+        assert!(spring_travel.iter().all(|&x| x > 0.0001), "{spring_travel:?}");
     }
 
     #[test]
