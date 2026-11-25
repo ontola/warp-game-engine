@@ -561,8 +561,9 @@ impl World {
             && !self.any_wizard_alive()
         {
             self.run.state = State::Dead;
-            // The world goes black and two words say it all; then a new run.
-            self.run.end_t = 4.2;
+            // The world goes black and two words say it all, then which run
+            // comes next (Joep: read on the same screen); then a new run.
+            self.run.end_t = 6.4;
             self.ev(Ev::YouDied);
             self.ev(Ev::RunOver { won: false });
         }

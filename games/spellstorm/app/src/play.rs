@@ -1,6 +1,11 @@
 //! The game in a window: local pads and the keyboard drive the human
 //! wizards (pad.gd's buttons), bots fill the other seats, and the view
 //! follows the sim. The same `Spellstorm` renders headless for shots.
+// The web has no std clock, and web_time is only a dependency on the web and Android.
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
+use web_time::Instant;
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+use std::time::Instant;
 use crate::kits::Kits;
 use crate::view::View;
 use app::{Buttons, Controls, Draw, Frame};
@@ -302,22 +307,26 @@ impl app::Game for Spellstorm {
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
         self.live_frame(frame);
         if !self.built || self.view.stale(&self.world) {
-            let t0 = web_time::Instant::now();
+            let t0 = Instant::now();
             if !std::mem::take(&mut self.prebuilt) || self.view.stale(&self.world) {
                 self.renderer_ahead = None;
                 self.view.build(&self.world)?;
             }
-            let t1 = web_time::Instant::now();
+            let t1 = Instant::now();
             match self.renderer_ahead.take() {
                 Some(r) => frame.set_renderer(r),
                 None => frame.set_scene(&self.view.scene, &self.view.light),
             }
-            let t2 = web_time::Instant::now();
+            let t2 = Instant::now();
             let r = frame.renderer().ok_or("no renderer")?;
             self.view.upload(frame.gpu, r)?;
             self.built = true;
-            let ms = |a: web_time::Instant, b: web_time::Instant| (b - a).as_secs_f32() * 1000.0;
-            app::web::log(&format!("spellstorm: scene {:.0} ms, renderer {:.0} ms, upload {:.0} ms", ms(t0, t1), ms(t1, t2), ms(t2, web_time::Instant::now())));
+            let ms = |a: Instant, b: Instant| (b - a).as_secs_f32() * 1000.0;
+            let line = format!("spellstorm: scene {:.0} ms, renderer {:.0} ms, upload {:.0} ms", ms(t0, t1), ms(t1, t2), ms(t2, Instant::now()));
+            #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+            app::web::log(&line);
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            eprintln!("{line}");
         }
         if self.ready_after_build {
             self.ready_after_build = false;

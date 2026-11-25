@@ -34,6 +34,22 @@ const MARGIN: f32 = 18.0;
 const NO_CLIP: [f32; 4] = [-1e5, -1e5, 2e5, 2e5];
 const DEATH_WORDS: [&str; 4] = ["YOU DONE GOOFED", "RIP IN PEACE", "YOU DIED TO DEATH", "MISSION FAILED\nWE'LL GET 'EM NEXT TIME"];
 
+/// Under the death words, two seconds on: which run comes next, and that
+/// the tomes come along (Joep). Runs 2 to 5 have their own line.
+fn next_run_words(n: u32) -> String {
+    match n {
+        2 => "Time for run 2. You keep your upgrades.\nThis time will be easier.".into(),
+        3 => "No worries: on run 3 you're stronger than before.".into(),
+        4 => "Ok, three deaths, that's normal.\nRun 4, with stats more powerful than ever.".into(),
+        5 => "Time for run number five.\nFeeling overpowered already?".into(),
+        _ => match n % 3 {
+            0 => format!("Run {n}. Every tome you found is still yours."),
+            1 => format!("Run {n}. Each death made you stronger."),
+            _ => format!("On to run {n}. They won't know what hit them."),
+        },
+    }
+}
+
 fn lighten(c: C, t: f32) -> C {
     [c[0] + (1.0 - c[0]) * t, c[1] + (1.0 - c[1]) * t, c[2] + (1.0 - c[2]) * t, c[3]]
 }
@@ -89,9 +105,9 @@ pub struct Hud {
     card: String,
     card_t: f32,
     death: Option<(String, f32)>,
-    /// "Run N" after a wipe, and how long it has shown.
-    run_card: (String, f32),
     death_end: Option<f32>,
+    /// The line under the death words about the run to come.
+    next_run: String,
     vignette: Arc<Picture>,
     words: usize,
     /// What each seat had last tick (forms, LB, learned_t), to see unlocks.
@@ -235,8 +251,8 @@ impl Default for Hud {
             card: String::new(),
             card_t: 99.0,
             death: None,
-            run_card: (String::new(), 0.0),
             death_end: None,
+            next_run: String::new(),
             vignette: Arc::new(vignette()),
             words: 0,
             had: Default::default(),
@@ -291,13 +307,11 @@ impl Hud {
                 Ev::YouDied => {
                     self.words += 1;
                     self.death = Some((DEATH_WORDS[(w.tick as usize + self.words) % DEATH_WORDS.len()].to_string(), 0.0));
+                    self.next_run = next_run_words(w.runs_ended + 2);
                     self.death_end = None;
                 }
                 Ev::YouDiedEnd => {
                     self.death_end = Some(0.0);
-                    // Back on your feet: which run this is, a moment over
-                    // the level's name (Joep).
-                    self.run_card = (format!("Run {}", w.runs_ended + 1), 0.0);
                 }
                 Ev::Level { .. } => self.level(w),
                 Ev::Text { at, text, c, size, time } => self.numbers.push((*at, text.clone(), *c, *size, 0.0, time.max(0.6) + 0.3)),
@@ -489,7 +503,6 @@ impl Hud {
         self.numbers.retain(|n| n.4 < n.5);
         self.fade.step(dt);
         self.card_t += dt;
-        self.run_card.1 += dt;
         if let Some(d) = &mut self.death {
             d.1 += dt;
         }
@@ -596,12 +609,6 @@ impl Hud {
             p.shadow_text(&self.card, sw * 0.5, cy - 20.0, title(), 96.0, col);
             p.rect([sw * 0.5 - 380.0 * grow, cy + 44.0 * grow, 760.0 * grow, 2.0], [0.86, 0.8, 0.68, 0.55 * a]);
         }
-        // The run counter after a wipe, over the card, as the card fades.
-        let t = self.run_card.1;
-        if t < 5.1 && !self.run_card.0.is_empty() {
-            let a = if t < 0.9 { 0.0 } else if t < 2.1 { (t - 0.9) / 1.2 } else if t < 3.7 { 1.0 } else { 1.0 - (t - 3.7) / 1.4 };
-            p.shadow_text(&self.run_card.0, sw * 0.5, 400.0, title(), 96.0, [0.86, 0.8, 0.68, a.clamp(0.0, 1.0)]);
-        }
         // Black for portals and for the end of a run, over everything.
         p.d.begin_overlay();
         let f = self.fade.now();
@@ -619,6 +626,12 @@ impl Hud {
             for (k, l) in lines.iter().enumerate() {
                 let y = 540.0 + (k as f32 - (lines.len() as f32 - 1.0) * 0.5) * size * 1.1;
                 p.text(l, sw * 0.5, y, title(), size, [0.62, 0.04, 0.03, a], TextAlign::Center, 0.0);
+            }
+            // Two seconds after the words, on the same black: the next run.
+            let a = ((t - 2.6) / 0.8).clamp(0.0, 1.0) * out;
+            let top = 540.0 + (lines.len() as f32 * 0.5) * size * 1.1 + 70.0;
+            for (k, l) in self.next_run.lines().enumerate() {
+                p.text(l, sw * 0.5, top + k as f32 * 56.0, body(), 40.0, [0.86, 0.8, 0.68, a], TextAlign::Center, 0.0);
             }
         }
     }
