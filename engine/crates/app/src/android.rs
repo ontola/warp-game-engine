@@ -58,6 +58,8 @@ thread_local! {
     static BANNER: RefCell<Option<(String, Option<Instant>)>> = const { RefCell::new(None) };
     /// The banner that stays ([`banner`] without seconds), under the passing ones.
     static NOTICE: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// The passing banner's button glyph ([`banner_glyph`]), drawn before it.
+    static GLYPH: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 // --- The browser shell's API -------------------------------------------
@@ -92,10 +94,18 @@ pub fn progress(fraction: Option<f32>, step: &str) {
 /// and it comes back after). "Title\nsmaller line" shows two lines with a
 /// controller icon, as the browser page's notice. The page shows these as HTML.
 pub fn banner(text: &str, seconds: Option<f32>) {
+    if seconds.is_some() { GLYPH.with(|g| *g.borrow_mut() = None); }
     match seconds {
         Some(s) => BANNER.with(|b| *b.borrow_mut() = Some((text.to_string(), Some(Instant::now() + Duration::from_secs_f32(s))))),
         None => NOTICE.with(|n| *n.borrow_mut() = Some(text.to_string())),
     }
+}
+
+/// A passing [`banner`] led by button `key`'s glyph (DESIGN.md): A, B, X
+/// and Y as their coloured discs, anything else (a key) as a light keycap.
+pub fn banner_glyph(key: &str, text: &str, seconds: f32) {
+    banner(text, Some(seconds));
+    GLYPH.with(|g| *g.borrow_mut() = (!key.is_empty()).then(|| key.to_string()));
 }
 
 /// Take the line [`banner`] shows away, when it is `text` (None: any).
@@ -1131,11 +1141,13 @@ fn pad_icon(d: &mut HudDrawList, at: [f32; 2], size: f32, clip: [f32; 4]) {
 /// The [`banner`] line, top centre, on the browser page's dark rounded
 /// panel; a notice with a second line gets the controller icon.
 fn draw_banner(hud: &mut HudDrawList, size: [u32; 2]) {
-    let line = BANNER.with(|b| {
+    let passing = BANNER.with(|b| {
         let mut b = b.borrow_mut();
         if b.as_ref().is_some_and(|(_, until)| until.is_some_and(|u| Instant::now() > u)) { *b = None; }
         b.as_ref().map(|(t, _)| t.clone())
-    }).or_else(|| NOTICE.with(|n| n.borrow().clone()));
+    });
+    let glyph = if passing.is_some() { GLYPH.with(|g| g.borrow().clone()) } else { None };
+    let line = passing.or_else(|| NOTICE.with(|n| n.borrow().clone()));
     let Some(line) = line else { return };
     let (_, bold, body) = brand_fonts();
     let (w, h) = (size[0] as f32, size[1] as f32);
@@ -1145,8 +1157,12 @@ fn draw_banner(hud: &mut HudDrawList, size: [u32; 2]) {
     let (tf, sf) = (22.0 * s, 16.0 * s);
     let tw = render::hud::measure(&title, bold, tf)[0];
     let sw = sub.as_ref().map_or(0.0, |u| render::hud::measure(u, body, sf)[0]);
-    let icon = if sub.is_some() { 44.0 * s } else { 0.0 };
-    let gap = if sub.is_some() { 18.0 * s } else { 0.0 };
+    // A button's glyph: a disc for A/B/X/Y, a keycap sized to a key's name.
+    let disc = |k: &str| -> Option<[f32; 4]> { Some(match k { "A" => [0.239, 0.863, 0.592, 1.0], "B" => [0.886, 0.341, 0.298, 1.0], "X" => [0.290, 0.561, 0.906, 1.0], "Y" => [0.949, 0.757, 0.306, 1.0], _ => return None }) };
+    let glyph_size = 36.0 * s;
+    let glyph_w = glyph.as_deref().map(|k| if disc(k).is_some() { glyph_size } else { (render::hud::measure(k, bold, 15.0 * s)[0] + 20.0 * s).max(glyph_size) });
+    let icon = glyph_w.unwrap_or(if sub.is_some() { 44.0 * s } else { 0.0 });
+    let gap = if sub.is_some() || glyph_w.is_some() { 16.0 * s } else { 0.0 };
     let (px, py) = (24.0 * s, if sub.is_some() { 16.0 * s } else { 13.0 * s });
     let text_h = if sub.is_some() { tf * 1.3 + sf * 1.4 } else { tf * 1.3 };
     let pw = (icon + gap + tw.max(sw) + 2.0 * px).min(w - 32.0 * s);
@@ -1157,9 +1173,18 @@ fn draw_banner(hud: &mut HudDrawList, size: [u32; 2]) {
     round_rect(hud, [x, y, pw, ph], 20.0 * s, PANEL, clip);
     let tx = x + px + icon + gap;
     let tcw = pw - 2.0 * px - icon - gap;
-    if sub.is_some() { pad_icon(hud, [x + px, y + (ph - icon) * 0.5], icon, clip); }
+    if let Some(k) = glyph.as_deref() {
+        let (gx, gy) = (x + px, y + (ph - glyph_size) * 0.5);
+        let ink = [13, 16, 32, 255];
+        let label_size = if disc(k).is_some() { 20.0 * s } else { 15.0 * s };
+        match disc(k) {
+            Some(color) => hud.circle([gx + glyph_size * 0.5, gy + glyph_size * 0.5], glyph_size * 0.5, color, clip),
+            None => round_rect(hud, [gx, gy, icon, glyph_size], 8.0 * s, [0.949, 0.945, 0.973, 1.0], clip),
+        }
+        hud.text.push(TextRun { id: 0xBA77E4, text: k.to_string(), position: [gx, gy + (glyph_size - label_size * 1.2) * 0.5], bounds: clip, font_size: label_size, color: ink, font: bold, align: TextAlign::Center, width: icon });
+    } else if sub.is_some() { pad_icon(hud, [x + px, y + (ph - icon) * 0.5], icon, clip); }
     let ty = y + (ph - text_h) * 0.5;
-    let align = if sub.is_some() { TextAlign::Left } else { TextAlign::Center };
+    let align = if sub.is_some() || glyph.is_some() { TextAlign::Left } else { TextAlign::Center };
     hud.text.push(TextRun { id: 0xBA77E2, text: title, position: [tx, ty], bounds: clip, font_size: tf, color: [238, 240, 252, 255], font: bold, align, width: tcw });
     if let Some(u) = sub { hud.text.push(TextRun { id: 0xBA77E3, text: u, position: [tx, ty + tf * 1.3], bounds: clip, font_size: sf, color: [168, 173, 196, 255], font: body, align, width: tcw }); }
 }

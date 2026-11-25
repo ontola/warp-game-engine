@@ -664,7 +664,7 @@ pub(crate) mod page {
     fn show_hint(key: &str, text: &str, detail: &str) {
         app::web::log(&format!("hint: {text}"));
         #[cfg(target_os = "android")]
-        { let _ = key; app::web::banner(&if detail.is_empty() { text.to_string() } else { format!("{text}\n{detail}") }, Some(4.0)); }
+        { app::web::banner_glyph(key, &if detail.is_empty() { text.to_string() } else { format!("{text}\n{detail}") }, 4.0); }
         #[cfg(target_arch = "wasm32")]
         {
             let Some(doc) = web_sys::window().and_then(|w| w.document()) else { return };
