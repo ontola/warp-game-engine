@@ -428,7 +428,7 @@ local function menu_controls(top)
 	-- One column per layout in use: players on the same kind of controller
 	-- share one; a keyboard (or each keyboard half) gets its own.
 	local groups, by = {}, {}
-	for _, pl in players.list() do
+	for _, pl in players.by_couch() do
 		if not pl.bot then
 			local sig = ""
 			for _, row in MENU_CONTROLS do sig ..= (hud.key(pl.id, row[1]) or "pad") .. "|" end

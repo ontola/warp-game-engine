@@ -375,7 +375,11 @@ impl LuaGame {
         // A new session numbers its players from 1 again.
         self.next_id = 1;
         let mut roster = Vec::new();
-        let mut order: Vec<&SeatInfo> = seats.iter().filter(|s| !s.bot).take(4).collect();
+        // People left to right on the couch, so `players.list()` starts in
+        // couch order whatever order the host lists its seats in.
+        let mut order: Vec<&SeatInfo> = seats.iter().filter(|s| !s.bot).collect();
+        order.sort_by_key(|s| s.couch.unwrap_or(i64::MAX));
+        order.truncate(4);
         order.extend(seats.iter().filter(|s| s.bot));
         for s in order {
             let mut p = Player::new(self.next_id, s.name.clone(), s.color, s.bot);
@@ -395,13 +399,19 @@ impl LuaGame {
         self.assign_views();
     }
 
-    /// People look through the split-screen views in roster order. Without
-    /// people, the first player's camera fills the screen (a bots-only demo).
+    /// People look through the split-screen views in couch order (who sits
+    /// left gets the left view), also after a move on the couch mid-game.
+    /// Without people, the first player's camera fills the screen (a
+    /// bots-only demo).
     fn assign_views(&mut self) {
         let mut c = self.core();
         let mut k = 0;
         let split = !c.shared_view;
-        for p in &mut c.roster { p.view = (!p.bot && (split || k == 0)).then(|| { k += 1; k - 1 }); }
+        for p in &mut c.roster { p.view = None; }
+        for i in api::couch_order(&c.roster) {
+            let p = &mut c.roster[i];
+            p.view = (!p.bot && (split || k == 0)).then(|| { k += 1; k - 1 });
+        }
         if k == 0 && let Some(p) = c.roster.first_mut() { p.view = Some(0); }
     }
 
@@ -416,9 +426,12 @@ impl LuaGame {
     /// The party's seats changed mid-session: names and colours follow,
     /// a new seat joins (`player_joined(p)`), a gone seat leaves
     /// (`player_left(p)`), and `players_changed()` runs after any change.
+    /// When the people's left-to-right order on the couch changed (a move in
+    /// the lobby, or a join or leave), `couch_changed(order)` runs last.
     fn reseat(&mut self, seats: &[SeatInfo]) {
         let (mut joined, mut left) = (Vec::new(), Vec::new());
         let mut changed = false;
+        let before = api::couch_ids(&self.core().roster);
         {
             let mut c = api::lock(&self.core);
             for p in &mut c.roster {
@@ -458,6 +471,23 @@ impl LuaGame {
             if let Ok(t) = api::player_table(&lua, p) { self.hook("player_joined", || Ok(mlua::MultiValue::from_vec(vec![Value::Table(t.clone())]))); }
         }
         if changed || !joined.is_empty() || !left.is_empty() { self.hook("players_changed", || Ok(mlua::MultiValue::new())); }
+        self.couch_moved(&before);
+    }
+
+    /// `couch_changed(order)` when the people's couch order is no longer
+    /// `before`: `order` is `players.by_couch()`, left to right.
+    pub(crate) fn couch_moved(&mut self, before: &[u32]) {
+        let after = api::couch_ids(&self.core().roster);
+        if after == before { return; }
+        self.say(format!("couch order: {after:?}"));
+        let lua = self.host.lua().clone();
+        let core = self.core.clone();
+        self.hook("couch_changed", || {
+            let c = api::lock(&core);
+            let order = lua.create_table()?;
+            for (n, i) in api::couch_order(&c.roster).into_iter().enumerate() { order.raw_set(n + 1, api::player_table(&lua, &c.roster[i])?)?; }
+            Ok(mlua::MultiValue::from_vec(vec![Value::Table(order)]))
+        });
     }
 
     /// Splitscreen Club's lifecycle. None without a party; Some(None) while the

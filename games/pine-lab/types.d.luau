@@ -16,6 +16,8 @@
 --   player_joined(p)     Splitscreen Club seated someone new mid-game (p: Player)
 --   player_left(p)       a player left mid-game
 --   players_changed()    names, colours or seats changed (after joins and leaves too)
+--   couch_changed(order) the people's left-to-right couch order changed (a move in
+--                        the lobby mid-game, or a join or leave); order = players.by_couch()
 -- Modules run their hooks in path order. `state` is a table per module that
 -- survives reloads; main.luau's `state` is the game's JSON state (`/state`).
 --
@@ -143,7 +145,8 @@ declare fx: {
 }
 
 declare players: {
-	-- Every player: people first, in split-screen order, then bots.
+	-- Every player: people first (in couch order when the game starts; the order stays
+	-- put mid-game, see by_couch), then bots.
 	list: () -> { Player },
 	get: (id: number) -> Player?,
 	count: () -> number,

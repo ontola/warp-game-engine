@@ -742,16 +742,14 @@ end
 -- ---------------------------------------------------------------------------
 -- Rounds and players
 
--- The two players in couch order (left sits left), people before bots.
+-- The two players in couch order (who sits left plays the left half),
+-- people before bots.
 local function seats()
 	local list = {}
-	for i, pl in players.list() do
+	for i, pl in players.by_couch() do
 		if i > MAX_PLAYERS then break end
 		table.insert(list, pl)
 	end
-	table.sort(list, function(a, b)
-		return (a.couch or a.id + 100) < (b.couch or b.id + 100)
-	end)
 	return list
 end
 
@@ -864,6 +862,27 @@ local function player_left(pl)
 	end
 end
 
+-- Someone moved on the couch (in the lobby, mid-round): who sits left
+-- plays the left half from now on. The halves keep their pieces and
+-- stacks; only the people playing them swap.
+local function couch_changed(order)
+	local lanes = {}
+	for _, p in state.players do
+		if not p.bot then table.insert(lanes, p) end
+	end
+	table.sort(lanes, function(a, b) return a.lane < b.lane end)
+	local at = {}
+	for n, pl in order do at[pl.id] = n end
+	local ids = {}
+	for _, p in lanes do table.insert(ids, p.id) end
+	table.sort(ids, function(a, b) return (at[a] or 99) < (at[b] or 99) end)
+	local moved = false
+	for n, p in lanes do
+		if p.id ~= ids[n] then p.id = ids[n]; moved = true end
+	end
+	if moved then build_sides() end
+end
+
 local function players_changed()
 	for _, pl in players.list() do
 		warm_player(pl.color)
@@ -895,7 +914,7 @@ local function menu(top)
 	local w, h = hud.size()
 	local k = h / 720
 	local people = {}
-	for _, pl in players.list() do
+	for _, pl in players.by_couch() do
 		if not pl.bot then table.insert(people, pl) end
 	end
 	if #people == 0 then return end
@@ -925,4 +944,5 @@ return {
 	player_joined = player_joined,
 	player_left = player_left,
 	players_changed = players_changed,
+	couch_changed = couch_changed,
 }

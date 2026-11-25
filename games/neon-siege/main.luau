@@ -2446,7 +2446,8 @@ local function init()
 	arena()
 	-- Soft neon glow, a darker frame and a little film.
 	look()
-	for i, p in players.list() do
+	-- Left to right as they sit on the couch.
+	for i, p in players.by_couch() do
 		table.insert(s.players, new_pilot(p, i))
 	end
 	sync()
