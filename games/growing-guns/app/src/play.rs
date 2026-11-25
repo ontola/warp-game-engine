@@ -219,7 +219,7 @@ impl Gg {
         self.ui.tilt = sample.tilt;
         if new_arena { self.new_arena(); }
         if self.vis.player_capacity() < self.world.players.len() { rebuild_views(self); }
-        self.vis.hide_own_bodies(&self.slots);
+        self.vis.hide_own_bodies(&self.view_slots());
         self.hud.locals.clone_from(&self.slots);
         self.hud.set_names(&self.world, &self.slots, &[]);
         let sky = crate::sky::SkyChoice::parse(&sample.sky)?;
@@ -248,6 +248,19 @@ impl Gg {
 
     /// A fresh match in place (a party's prepare): new world, views and
     /// mods; the renderer, sound and party stay.
+    /// Where each local slot's person sits on the couch (the party's seats,
+    /// 0 leftmost); None without a party.
+    fn couch(&self) -> Vec<Option<i64>> {
+        let mut couch = self.party.as_ref().map(|p| p.couch()).unwrap_or_default();
+        couch.resize(self.slots.len(), None);
+        couch
+    }
+
+    /// The local slots in split-screen view order: left to right as the
+    /// people sit on the couch, also after a move mid-match. Per-view masks
+    /// (own body, first-person gun) and cameras follow this order.
+    pub(crate) fn view_slots(&self) -> Vec<usize> { app::in_view_order(&self.slots, &self.couch()) }
+
     pub fn reset(&mut self, mut world: World, slots: Vec<usize>) {
         self.recorder.barrier();
         self.scripts = crate::scripts::attach(&mut world).map_err(|e| eprintln!("mods: {e}")).ok();
@@ -259,7 +272,9 @@ impl Gg {
         self.vis.stadium.bake_in_background = bake;
         self.vis.stadium.set_sound(crowd);
         self.vis.stadium.sound.kickoff();
-        self.vis.hide_own_bodies(&slots);
+        let mut couch = self.party.as_ref().map(|p| p.couch()).unwrap_or_default();
+        couch.resize(slots.len(), None);
+        self.vis.hide_own_bodies(&app::in_view_order(&slots, &couch));
         self.prev = view::Pose::all(&world);
         self.hud = hud::Hud::new(&world);
         self.ui.open(hud::menus::Screen::Play);
@@ -300,6 +315,10 @@ impl Gg {
                     self.ready_due = true;
                 }
                 crate::party::Ev::Profiles(seats) => {
+                    // A move on the couch: the views swap (draw), and so do
+                    // the per-view masks of own bodies and guns.
+                    let start = matches!(self.ui.screen, hud::menus::Screen::Start | hud::menus::Screen::Settings { from_start: true });
+                    if !start { let v = self.view_slots(); self.vis.hide_own_bodies(&v); }
                     let colors: Vec<_> = seats.iter().map(crate::party::PlayerColors::of).collect();
                     self.names = seats.into_iter().map(|s| s.name).collect();
                     if colors != self.party_colors {
@@ -759,7 +778,8 @@ impl Gg {
         self.vis.stadium.bake_in_background = bake;
         self.vis.stadium.set_sound(crowd);
         let start = matches!(self.ui.screen, hud::menus::Screen::Start | hud::menus::Screen::Settings { from_start: true });
-        self.vis.hide_own_bodies(if start { &[] } else { &self.slots });
+        let v = if start { vec![] } else { self.view_slots() };
+        self.vis.hide_own_bodies(&v);
         self.hud.sync(&self.world);
         self.rebuild = true;
     }
@@ -796,7 +816,7 @@ impl Gg {
                 if self.vis.player_capacity() < needed {
                     rebuild_views(self);
                 } else {
-                    self.vis.hide_own_bodies(&self.slots);
+                    self.vis.hide_own_bodies(&self.view_slots());
                     self.new_arena();
                 }
                 self.hud = hud::Hud::new(&self.world);
@@ -874,7 +894,7 @@ impl Gg {
             Action::Rematch if host => {
                 for s in std::mem::take(&mut self.start_seats) { self.world.set_bot(s, false); }
                 self.world.restart_match();
-                self.vis.hide_own_bodies(&self.slots);
+                self.vis.hide_own_bodies(&self.view_slots());
                 self.new_arena();
                 self.hud = hud::Hud::new(&self.world);
                 self.hud.round_age = 0.0;
@@ -1282,7 +1302,11 @@ impl app::Game for Gg {
             vec![render::Camera { pos: Vec3::new(t.cos() * r, 34.0, t.sin() * r), target: Vec3::new(0.0, 5.5, 0.0), fov_y: 66f32.to_radians(), near: 0.1 }]
         } else {
             let rects = frame.rects(self.slots.len());
-            for (k, (rect, &s)) in rects.iter().zip(&self.slots).enumerate() {
+            // Views left to right as the people sit on the couch (the lobby's
+            // couch position), also after a move mid-match.
+            let views = app::couch_views(&self.couch());
+            for (k, &s) in self.slots.iter().enumerate() {
+                let rect = &rects[views[k]];
                 // Under the HUD (Godot's flare overlay sits below the crosshair).
                 let cam = self.vis.player_camera(&self.world, s, &self.prev, alpha);
                 self.vis.airstrike_flare(&mut list, *rect, &cam, &self.world);
@@ -1300,7 +1324,7 @@ impl app::Game for Gg {
                 if self.can_join() && self.slots.len() < 4 { hud::menus::join_prompt(&mut list); } else if self.hint_visible() { hud::menus::splitscreen_hint(&mut list); }
             }
             if let Some((k, m)) = &self.player_menu && let Some(&s) = self.slots.get(*k) { hud::menus::player_menu(&mut list, self.hud.name(s), m.focus); }
-            self.slots.iter().map(|&s| self.vis.player_camera(&self.world, s, &self.prev, alpha)).collect()
+            self.view_slots().iter().map(|&s| self.vis.player_camera(&self.world, s, &self.prev, alpha)).collect()
         };
         list.begin_overlay();
         let ticket = self.session.ticket().map(str::to_string);
@@ -1707,7 +1731,8 @@ pub fn rebuild_views(gg: &mut Gg) {
     let start = matches!(gg.ui.screen, hud::menus::Screen::Start | hud::menus::Screen::Settings { from_start: true });
     let needed = gg.world.players.len().max(if gg.world.coop { view::COOP_VIEW_PLAYERS } else { 8 });
     if gg.vis.player_capacity() >= needed {
-        gg.vis.hide_own_bodies(if start { &[] } else { &gg.slots });
+        let v = if start { vec![] } else { gg.view_slots() };
+        gg.vis.hide_own_bodies(&v);
         gg.prev = view::Pose::all(&gg.world);
         gg.hud.sync(&gg.world);
         return;
@@ -1716,7 +1741,8 @@ pub fn rebuild_views(gg: &mut Gg) {
     let sound = std::mem::replace(&mut gg.vis.stadium.sound, crate::crowd_sound::CrowdSound::new(None));
     gg.vis = view::Visuals::build_roster(&gg.world, gg.roster_seed, &gg.party_colors);
     gg.vis.stadium.bake_in_background = bake;
-    gg.vis.hide_own_bodies(if start { &[] } else { &gg.slots });
+    let v = if start { vec![] } else { gg.view_slots() };
+    gg.vis.hide_own_bodies(&v);
     gg.vis.stadium.sound = sound;
     gg.prev = view::Pose::all(&gg.world);
     gg.hud.sync(&gg.world);
@@ -1860,6 +1886,59 @@ mod tests {
         g.ui.open(hud::menus::Screen::Play);
         g.hud.fb[0].burned = Some(2.4);
         assert_eq!(g.mouse_capture(), Some(false));
+    }
+
+    /// Two people under a party: the split-screen views run left to right
+    /// as they sit on the couch, and a move in the lobby mid-match swaps
+    /// them (views, cameras and own-body masks) without a new match.
+    #[test]
+    fn views_follow_the_couch_mid_match() {
+        use std::net::TcpListener;
+        use tungstenite::Message;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (go, step) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(std::time::Duration::from_millis(20))).unwrap();
+            let mut ws = tungstenite::accept(stream).unwrap();
+            let send = |ws: &mut tungstenite::WebSocket<std::net::TcpStream>, v: serde_json::Value| ws.send(Message::Text(v.to_string().into())).unwrap();
+            let players = |a: i64, b: i64| serde_json::json!([{"id":"p1","name":"Joep","couch":a},{"id":"p2","name":"Polle","couch":b}]);
+            send(&mut ws, serde_json::json!({"type":"welcome","protocol_version":1,"godot_sdk":6,"party":{}}));
+            send(&mut ws, serde_json::json!({"type":"prepare","game":"growing-guns","session":"s1",
+                "seats":[{"index":0,"controller":"pad-a","occupant":{"kind":"local","player_id":"p1"}},{"index":1,"controller":"pad-b","occupant":{"kind":"local","player_id":"p2"}}],
+                "players":players(1, 0)}));
+            loop {
+                match ws.read() {
+                    Ok(_) => {}
+                    Err(tungstenite::Error::Io(e)) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
+                    Err(_) => return,
+                }
+                if step.try_recv().is_ok() { send(&mut ws, serde_json::json!({"type":"players_updated","session":"s1","players":players(0, 1)})); }
+            }
+        });
+        let client = splitscreen_club::Client::connect(splitscreen_club::Config { url: format!("ws://{address}"), game_id: "growing-guns".into(), token: String::new(), launched_by_daemon: true }).unwrap();
+        let mut game = Gg::new(World::new(5, &[false, true]), Session::Local, vec![0]);
+        game.party = Some(crate::party::Party::new(splitscreen_club::party::Party::new(client)));
+        let until = |game: &mut Gg, what: &str, f: &dyn Fn(&Gg) -> bool| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            while !f(game) {
+                assert!(std::time::Instant::now() < deadline, "{what}: slots {:?}, couch {:?}", game.slots, game.couch());
+                game.tick(&[Controls::default(), Controls::default()]);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+        until(&mut game, "prepare", &|g| g.slots.len() == 2);
+        let names: Vec<&str> = game.view_slots().iter().map(|&s| game.names[s].as_str()).collect();
+        assert_eq!(names, ["Polle", "Joep"], "Polle sits left: the left view is theirs");
+        let world_seed = game.world.arena.seed;
+        go.send(()).unwrap();
+        // The party lists the seats left to right at the start (slot 0 is
+        // Polle); after the move slot 1 (Joep) sits left.
+        until(&mut game, "move", &|g| g.couch() == [Some(1), Some(0)]);
+        let names: Vec<&str> = game.view_slots().iter().map(|&s| game.names[s].as_str()).collect();
+        assert_eq!(names, ["Joep", "Polle"], "after the move Joep has the left view");
+        assert_eq!(game.world.arena.seed, world_seed, "the same match goes on");
     }
 
     /// A cold start built its scene for 32 s after telling the host it was

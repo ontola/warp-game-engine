@@ -343,6 +343,15 @@ impl Racer {
         self.race.balance.refill_rate = self.live_settings.refill;
         self.race.balance.respawn_seconds = self.live_settings.recovery;
     }
+    /// Where each local player sits on the couch (0 leftmost): from the
+    /// party's seats, or from the browser host's seats; None: unknown.
+    /// The split-screen views follow it, also when someone moves mid-race.
+    fn couch(&self) -> Vec<Option<i64>> {
+        match &self.party {
+            Some(p) => (0..self.players).map(|i| p.seats.iter().filter(|s| !s.ai).nth(i).and_then(|s| s.couch)).collect(),
+            None => (0..self.players).map(app::seat_couch).collect(),
+        }
+    }
     fn sync_profiles(&mut self) {
         if let Some(p) = &self.party {
             for (i, seat) in p.seats.iter().enumerate().take(self.race.drivers.len()) {
@@ -791,7 +800,10 @@ impl Game for Racer {
                 }
             })
             .collect();
-        renderer.set_motion_blur(frame.gpu, &blur);
+        // Views left to right as the players sit on the couch.
+        let couch = self.couch();
+        let views = app::couch_views(&couch);
+        renderer.set_motion_blur(frame.gpu, &app::in_view_order(&blur, &couch));
 
         let mut lights = self.visuals.fx.lights(light.time);
         lights.extend_from_slice(&self.visuals.jets.lights);
@@ -836,7 +848,7 @@ impl Game for Racer {
                     Quat::from_mat3(&prev.basis).slerp(Quat::from_mat3(&current.basis), alpha),
                 ),
             };
-            let rect = rects[i].map(|v| v / ui_scale);
+            let rect = rects[views[i]].map(|v| v / ui_scale);
             let dt = if frozen { 0. } else { frame.dt as f64 };
             let aspect=rect[2] as f64/rect[3] as f64;
             if !self.respawn[i].update(&self.race,i,alpha,&mut self.cameras[i],aspect,effect.camera) {
@@ -899,7 +911,7 @@ impl Game for Racer {
                 }
             }
         }
-        renderer.set_camera_up_axes(&ups);
+        renderer.set_camera_up_axes(&app::in_view_order(&ups, &couch));
         if let Some(done) = self.loading_progress() {
             menu_view::loading(&mut hud, frame.size.map(|x| x as f32 / ui_scale), done);
         } else if let Some(row) = self.menu {
@@ -922,7 +934,7 @@ impl Game for Racer {
             for i in 0..self.players {
                 if self.race.pilots[i].emp_time <= 0. {
                     hud.optics.push(render::hud::Optics {
-                        rect: rects[i],
+                        rect: rects[views[i]],
                         curvature: if self.players > 1 { 0.010 } else { 0.035 },
                         glow: 1.,
                         quiet: self.race.pilots[i].finished,
@@ -931,7 +943,7 @@ impl Game for Racer {
             }
         }
         Ok(Draw {
-            cameras: cams,
+            cameras: app::in_view_order(&cams, &couch),
             light,
             hud,
         })
@@ -1168,6 +1180,20 @@ pub fn run() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// In the browser host the host tells each seat's couch place
+    /// (app::set_seat_couch, every tick): the views follow it, so whoever
+    /// sits left races in the left view, also after a move mid-race.
+    #[test]
+    fn views_follow_the_browser_hosts_couch() {
+        let root=PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+        let game=Racer::new(root,2,31,0,0,false).unwrap();
+        assert_eq!(app::couch_views(&game.couch()),[0,1],"no couch places: seat order");
+        app::set_seat_couch(vec![Some(1),Some(0)]);
+        assert_eq!(app::couch_views(&game.couch()),[1,0],"player 1 sits right");
+        app::set_seat_couch(vec![Some(0),Some(1)]);
+        assert_eq!(app::couch_views(&game.couch()),[0,1],"they swapped mid-race");
+        app::set_seat_couch(vec![]);
+    }
     #[test]
     fn new_race_uses_selection_and_applies_same_tick_seed_change() {
         let root=PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");

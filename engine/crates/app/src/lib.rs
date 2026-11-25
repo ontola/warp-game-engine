@@ -62,6 +62,8 @@ pub use android as web;
 mod android_pads;
 pub use frame_rate::FrameRate;
 
+pub mod couch;
+pub use couch::{couch_order, couch_views, in_view_order, seat_couch, set_seat_couch};
 pub use input::{Buttons, Controls, Device, Devices, Pointer, Tuning, key_label, keyboard_split, seat_device, set_seat_devices, split_keyboard};
 pub use text::{FieldEvent, TextEvent, TextField};
 use render::hud::{HudDrawList, HudRenderer};

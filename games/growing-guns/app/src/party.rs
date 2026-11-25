@@ -162,6 +162,9 @@ impl Party {
 
     pub fn running(&self) -> bool { self.host.running() }
 
+    /// Where each seated person (local slot) sits on the couch, 0 leftmost.
+    pub fn couch(&self) -> Vec<Option<i64>> { self.seats.iter().map(|s| s.couch).collect() }
+
     fn humans(seats: &[Seat]) -> Vec<Seat> { seats.iter().filter(|s| !s.ai).take(4).cloned().collect() }
 
     pub fn poll(&mut self) -> Vec<Ev> {
@@ -214,6 +217,8 @@ impl Party {
                                 seat.name.clone_from(&profile.name);
                                 seat.color.clone_from(&profile.color);
                                 seat.skin_color.clone_from(&profile.skin_color);
+                                // A move on the couch in the lobby: the views follow (Gg::draw).
+                                seat.couch = profile.couch;
                             }
                         }
                         out.push(Ev::Profiles(self.seats.clone()));

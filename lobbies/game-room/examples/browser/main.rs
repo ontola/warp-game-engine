@@ -314,6 +314,8 @@ pub(crate) mod page {
         warp::web::set_seats(seats(h));
         // Games draw each player's own buttons (hud.button): pad or keys.
         app::set_seat_devices(h.bound.clone());
+        // Rust games lay out their views by where each seat sits (app::couch).
+        app::set_seat_couch((0..h.bound.len()).map(|i| h.party["players"][i]["couch"].as_i64()).collect());
         for line in warp::web::take_room_log() { let game = h.on_screen.clone(); note(h, "game", &line, game.as_deref()); }
         Some(h.bound.iter().map(|b| b.iter().copied().collect()).collect())
     }

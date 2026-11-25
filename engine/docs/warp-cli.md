@@ -470,6 +470,16 @@ leftmost; it is nil without a lobby (then roster order counts).
 `players.list()` itself keeps its order during a game, so indices a game
 stored stay valid; use `by_couch()` wherever left and right matter.
 
+Rust games on the `app` shell use [`app::couch`](../crates/app/src/couch.rs):
+each local player's couch place comes from the party's seats
+(`splitscreen_club::Seat::couch`, updated by `players_updated`) or, in the
+browser and phone hosts, from `app::seat_couch(seat)`, which the host sets
+every tick. `app::couch_views(&couch)` gives each player's view and
+`app::in_view_order` puts cameras and per-view settings in that order.
+Space Racer and Growing Guns do this (Growing Guns also re-masks own
+bodies and guns per view after a move); Sideways sorts its views by couch
+itself.
+
 ### The start menu
 
 Start on a controller (Enter or Escape on the keyboard) opens the menu
