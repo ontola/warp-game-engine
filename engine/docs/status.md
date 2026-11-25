@@ -250,9 +250,9 @@ Luau entities can follow a parent, and native games can resolve named model sock
   (`render::portable`).
 - Phones and tablets (Android host, Vulkan): three [graphics tiers](graphics-tiers.md).
   The Android host defaults to `KERN_FORWARD=auto`: the low tier (one forward
-  pass, no shadows) for the Game Room, Spellstorm and Space Racer's city and
-  desert; scenes with skinned meshes, foliage or terrain (Warp Theft Auto,
-  Dead Miles, Space Racer's forest) stay on the medium tier. Tab S9+: Game
+  pass, no shadows) for the Game Room, Spellstorm, Dead Miles and Space Racer's
+  city and desert; scenes with crowds, foliage or terrain (Warp Theft Auto,
+  Space Racer's forest) stay on the medium tier. Tab S9+: Game
   Room 60 to ~116 fps
   ([log](log/2026-11-25-low-tier-tablet.md)).
 - The cloud container has no GPU: Mesa lavapipe runs GPU tests in software.

@@ -180,6 +180,6 @@ game's own `Graphics::minimal_forward` keeps its vertex-lit minimum profile.
 Game surfaces (`SURFACE`) run there too, with `SURFACE_LOW_DETAIL` true; a
 surface that does not compile there leaves the scene to the medium tier.
 `KERN_FORWARD=auto` (the Android default) picks the low tier wherever the
-scene has no terrain, grass, foliage, crowds, debris or skinned meshes; the
+scene has no terrain, grass, foliage, crowds or debris; the
 log line `graphics tier: ...` says which tier draws and why. See
 `graphics-tiers.md`.

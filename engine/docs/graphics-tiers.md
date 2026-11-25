@@ -15,7 +15,7 @@ renderpad voor Warp" for the reasoning).
 Today the low tier is chosen with `KERN_FORWARD=1` (on Android:
 `env=KERN_FORWARD:1` in the host's query). The Android host defaults to
 `KERN_FORWARD=auto`: the low tier wherever the scene has no terrain, grass,
-foliage, crowds, debris or skinned meshes, and the game's surface compiles
+foliage, crowds or debris, and the game's surface compiles
 there. `env=KERN_FORWARD:0` turns it off. The renderer logs its choice, for
 example `graphics tier: medium; low tier wanted but skinned meshes`. The
 automatic choice per device comes with the hardware-fit work.
@@ -72,8 +72,8 @@ the cheapest one that gives the look.
 
 What the low tier leaves out: shadows of any kind, highlights of lights
 (roughness only fades the sky's reflection), normal and material maps,
-`TERRAIN` materials, foliage, grass, terrain, crowds, skinned meshes and
-debris, and a game surface that reads more than listed above (Warp Theft
+`TERRAIN` materials, foliage, grass, terrain, crowds and debris (weighted
+characters are skinned by the same compute pass as on the other tiers), and a game surface that reads more than listed above (Warp Theft
 Auto's reads the sky's radiance and GI). Such a scene stays on the medium
 tier until the low tier supports it.
 
