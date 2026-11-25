@@ -762,6 +762,9 @@ pub(crate) mod page {
                 if pad { game_room::live::JoinWith::Pad }
                 else if h.bound.contains(&Some(Device::Keyboard)) { game_room::live::JoinWith::Key("G") }
                 else if h.bound.iter().any(|d| d.is_some_and(|d| d.is_keys())) { game_room::live::JoinWith::Nobody }
+                // A phone or tablet has no keyboard until one types: nothing
+                // to join with yet, so no prompt. (A browser assumes one.)
+                else if cfg!(target_os = "android") && h.last_keys.is_none() { game_room::live::JoinWith::Nobody }
                 else { game_room::live::JoinWith::Key("ENTER") }
             });
             for (game, png) in with(|h| std::mem::take(&mut h.covers)) { self.lobby.set_cover(&game, &png); }
