@@ -2714,7 +2714,10 @@ impl Renderer {
         let bounded_draws=plain_meshes && crate::switches::BOUNDED_DRAWS.var().map_or(adreno && simple_cull,|v|v=="1");
         // The low tier (KERN_FORWARD=1): the forward renderer with per-pixel
         // light; a game's own minimum profile keeps its vertex light.
-        let forward_lit=crate::switches::FORWARD.on() && !scene.graphics.minimal_forward;
+        // `auto` (the phone hosts' default) only where the low tier draws the
+        // scene as it is: no game surfaces or terrain, which it shows as tint.
+        let procedural=scene.materials.iter().any(|m|m.flags&(crate::scene::SURFACE|crate::scene::TERRAIN)!=0);
+        let forward_lit=(crate::switches::FORWARD.on() || (crate::switches::FORWARD.is("auto") && !procedural)) && !scene.graphics.minimal_forward;
         let minimal_forward=((forward_lit || scene.graphics.minimal_forward) && plain_meshes && scene.skinning.actors.is_empty()
             && scene.debris.is_none_or(|d|d.capacity==0)).then(||std::sync::Mutex::new(crate::forward::Forward::new(gpu,scene,&materials,
                 forward_lit.then_some(crate::forward::LitInputs{albedo:&albedo_view,headlights:&headlights.uniform}))));

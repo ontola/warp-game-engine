@@ -453,6 +453,9 @@ pub fn main(app: AndroidApp, start: impl FnOnce() + Send + 'static) {
     if std::env::var_os("KERN_PHONE_GI").is_none() { unsafe { std::env::set_var("KERN_PHONE_GI", "1") } }
     // The compact pass as two smaller kernels (KERN_SPLIT_SHADE).
     if std::env::var_os("KERN_SPLIT_SHADE").is_none() { unsafe { std::env::set_var("KERN_SPLIT_SHADE", "1") } }
+    // The low tier (graphics-tiers.md) wherever it draws the scene as it is:
+    // the Game Room 60 -> ~104 fps at 1172 lines on a Tab S9+ (2026-11-25).
+    if std::env::var_os("KERN_FORWARD").is_none() { unsafe { std::env::set_var("KERN_FORWARD", "auto") } }
     install_panic_hook();
     use android_activity::WindowManagerFlags as F;
     app.set_window_flags(F::KEEP_SCREEN_ON | F::FULLSCREEN | F::LAYOUT_IN_SCREEN, F::empty());

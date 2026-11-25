@@ -13,8 +13,15 @@ renderpad voor Warp" for the reasoning).
 | low | Mobile | Forward renderer with per-pixel light (`forward.rs`, `forward_lit.wgsl`) | Tile GPUs: tablets, phones, Quest, weak laptops |
 
 Today the low tier is chosen with `KERN_FORWARD=1` (on Android:
-`env=KERN_FORWARD:1` in the host's query). The automatic choice comes with
-the hardware-fit work.
+`env=KERN_FORWARD:1` in the host's query). The Android host defaults to
+`KERN_FORWARD=auto`: the low tier wherever the scene has no procedural game
+surfaces (`SURFACE`) or terrain, which it would show as plain tint, and no
+grass, foliage or skinned meshes. `env=KERN_FORWARD:0` turns it off. The
+automatic choice per device comes with the hardware-fit work.
+
+Measured on a Samsung Tab S9+ (Adreno 740, 120 Hz), Game Room, 25 November
+2026: the medium tier 722 lines, GPU 14 ms, 60 fps; the low tier 1172 lines,
+GPU 7.7 ms, about 104 fps.
 
 ## Why the low tier is cheap
 
