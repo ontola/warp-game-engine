@@ -4884,7 +4884,7 @@ impl Renderer {
         let camera_views:Vec<_>=views.iter().enumerate().map(|(vi,v)|camera_view(v.cam,axes.get(vi).copied())).collect();
         let matrices:Vec<_>=views.iter().enumerate().map(|(vi,v)|projections.get(vi).copied().unwrap_or_else(||
             Mat4::perspective_infinite_reverse_rh(v.cam.fov_y,v.w as f32/v.h as f32,v.cam.near))*camera_views[vi]).collect();
-        forward.lock().unwrap().render(gpu,views,&matrices,&camera_views,&self.sprites,&self.fx,light,&self.headlight_state.lock().unwrap(),None,Some(targets))
+        forward.lock().unwrap().render(gpu,views,&matrices,&camera_views,&self.sprites,&self.fx,light,&self.headlight_state.lock().unwrap(),&[],None,Some(targets))
     }
 
     pub fn foliage_page_stats(&self)->Option<crate::foliage_pages::cache::Stats>{self.voxel_forest.as_ref().and_then(|v|v.page_stats())}
@@ -4922,11 +4922,15 @@ impl Renderer {
                 Mat4::perspective_infinite_reverse_rh(v.cam.fov_y,v.w as f32/v.h as f32,v.cam.near))*camera_view(v.cam,axes.get(vi).copied())).collect();
             let mut forward=forward.lock().unwrap();
             if forward.lit() {
-                let spots=if self.debug_options().headlights_enabled {self.headlight_state.lock().unwrap().clone()} else {Vec::new()};
+                // The HDR bloom's strength, on the 8-bit image (tuned by eye on the Game Room).
+                let options=self.debug_options();
+                forward.set_glow(if options.bloom_enabled {options.bloom_strength*4.0} else {0.0},0.5);
+                let spots=if options.headlights_enabled {self.headlight_state.lock().unwrap().clone()} else {Vec::new()};
                 let spot_falloff=self.spot_falloff.lock().unwrap().clone();
                 self.headlights.upload(gpu,&spots,&self.local_light_state.lock().unwrap(),&spot_falloff,*self.spot_softness.lock().unwrap());
             }
-            let stats=forward.render(gpu,views,&matrices,&camera_views,&self.sprites,&self.fx,light,&self.headlight_state.lock().unwrap(),Some(&output),None)?;
+            let beams=if forward.lit() {self.volumetric.scattering()} else {Vec::new()};
+            let stats=forward.render(gpu,views,&matrices,&camera_views,&self.sprites,&self.fx,light,&self.headlight_state.lock().unwrap(),&beams,Some(&output),None)?;
             if let Some(submission)=submitted {(submission.show)(&output)?;}
             let pixels=if readback==Readback::ImageAndMetrics {gpu.read_rgba8(&output)}else{Vec::new()};
             return Ok((output,pixels,stats));

@@ -292,6 +292,13 @@ impl VolumetricSlot {
         state.lights = scattering_lights(lights, weights);
     }
 
+    /// Every light that scatters (lights, then beams), for the low tier's
+    /// per-pixel beams (forward_lit.wgsl).
+    pub fn scattering(&self) -> Vec<GpuLight> {
+        let state = self.0.lock().unwrap();
+        state.lights.iter().chain(&state.beams).copied().collect()
+    }
+
     /// Replace the scatter-only lights (already validated).
     pub fn set_beams(&self, beams: &[LocalLight]) { self.set_beams_shaped(beams, &[]); }
 

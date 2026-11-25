@@ -170,6 +170,10 @@ One render pass, no compute per pixel: the material colour and albedo
 texture, the baked room probes (`set_irradiance_volume`) as one 3D texture
 (three filtered taps), every local light and spot unshadowed, emission,
 then exposure, AgX, contrast and saturation straight into the display
-target. No bloom, fog beams, shadows or TAA yet. Made for tile GPUs
+target. `Lighting::volumetric` beams scatter per pixel along the view ray
+(the analytic integral of `volumetric.wgsl` with three samples, nearest 16
+lights). Glow (`shaders/forward_bloom.wgsl`) works on the finished 8-bit
+image at an eighth of its size: bright pass, separable blur, screened over
+the image, strength from the bloom options. No shadows or TAA. Made for tile GPUs
 (phones, tablets, Quest); see the plan "Mobiel renderpad voor Warp". A
 game's own `Graphics::minimal_forward` keeps its vertex-lit minimum profile.

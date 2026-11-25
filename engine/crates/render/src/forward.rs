@@ -20,13 +20,18 @@ struct Target {size:[u32;2],color:wgpu::Texture,depth:wgpu::Texture,instances:wg
 /// What the low tier (`Lit`) reads from the main renderer.
 pub(crate) struct LitInputs<'a> {pub albedo:&'a wgpu::TextureView,pub headlights:&'a wgpu::Buffer}
 #[repr(C)] #[derive(Clone,Copy,Pod,Zeroable)]
-struct LitUniform {tone:[f32;4],sky:[f32;4],gi_origin:[f32;4],gi_dims:[f32;4]}
+struct LitUniform {tone:[f32;4],sky:[f32;4],gi_origin:[f32;4],gi_dims:[f32;4],medium:[f32;4],tint:[f32;4],ambient:[f32;4],beams:[crate::volumetric::GpuLight;MAX_BEAMS]}
+/// Scattering lights the low tier draws as beams, nearest first.
+const MAX_BEAMS:usize=16;
 /// The low tier: per-pixel light (forward_lit.wgsl) instead of the vertex
 /// light of the minimum profile. Opaque and blended pipelines per format.
 struct Lit {
     opaque:wgpu::RenderPipeline,opaque_srgb:wgpu::RenderPipeline,blend:wgpu::RenderPipeline,blend_srgb:wgpu::RenderPipeline,
     layout:wgpu::BindGroupLayout,uniform:wgpu::Buffer,bind:wgpu::BindGroup,albedo:wgpu::TextureView,samp:wgpu::Sampler,headlights:wgpu::Buffer,
     probe_samp:wgpu::Sampler,probes:wgpu::TextureView,grid:Option<crate::irradiance_volume::Grid>,
+    bloom:Bloom,
+    /// Glow strength (0 off) and display threshold, from the renderer's options each frame.
+    pub(crate) glow:(f32,f32),
 }
 pub(crate) struct Forward {
     lit:Option<Lit>,
@@ -99,6 +104,8 @@ impl Forward {
         if let Some(lit)=&mut self.lit {lit.set_probes(gpu,grid,probes);}
     }
     pub fn lit(&self)->bool {self.lit.is_some()}
+    /// The low tier's glow: strength (0 off) and the display value it starts at.
+    pub fn set_glow(&mut self,strength:f32,threshold:f32) {if let Some(l)=&mut self.lit {l.glow=(strength,threshold);}}
     pub fn update_vertices(&self,gpu:&Gpu,offset:u64,bytes:&[u8]) { if !bytes.is_empty() { gpu.queue.write_buffer(&self.vertices,offset,bytes); } }
     pub fn update(&mut self,first:usize,instances:&[GpuInstance])->Result<(),String>{
         if first.checked_add(instances.len()).is_none_or(|n|n>self.owners.len()){return Err("minimal owner update exceeds scene".into());}
@@ -126,7 +133,7 @@ impl Forward {
         let instances=gpu.device.create_buffer(&wgpu::BufferDescriptor{label:None,size:64,usage:wgpu::BufferUsages::VERTEX|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
         Target{size,color,depth,instances,capacity:1,uniform,bind}
     }
-    pub fn render(&mut self,gpu:&Gpu,views:&[ViewRect],matrices:&[Mat4],camera_views:&[Mat4],sprites:&crate::sprites::SpriteSlot,fx:&crate::fx::FxSlot,light:&Lighting,spots:&[crate::headlights::SpotLight],output:Option<&wgpu::Texture>,external:Option<&[&wgpu::Texture]>)->Result<FrameStats,String> {
+    pub fn render(&mut self,gpu:&Gpu,views:&[ViewRect],matrices:&[Mat4],camera_views:&[Mat4],sprites:&crate::sprites::SpriteSlot,fx:&crate::fx::FxSlot,light:&Lighting,spots:&[crate::headlights::SpotLight],beams:&[crate::volumetric::GpuLight],output:Option<&wgpu::Texture>,external:Option<&[&wgpu::Texture]>)->Result<FrameStats,String> {
         let ticket=if self.profiling {
         let names:Vec<_>=(0..views.len()).flat_map(|_|["minimum_geometry","minimum_fx","minimum_sprites"]).collect();
         let ranges:Vec<_>=(0..views.len()).map(|i|(i as u32,i*3..i*3+3)).collect();
@@ -181,7 +188,7 @@ impl Forward {
             for (out,l) in lamps.iter_mut().zip(spots){*out=Spot{position:l.position.extend(l.range_m).to_array(),direction:l.direction.extend(l.outer_angle_radians.cos()).to_array(),intensity:(l.intensity_cd*exposure).extend(l.inner_angle_radians.cos()).to_array()};}
             let uniform=Uniform{vp:vp.to_cols_array_2d(),camera:view.cam.pos.extend(exposure).to_array(),sun:light.sun_dir.extend(light.sun_lux*exposure).to_array(),sun_color:light.sun_color.extend(light.emissive_scale()).to_array(),ambient:[light.sky_lux*exposure,spots.len().min(4)as f32,light.debug,light.time],fog:[light.fog_start,light.fog_end,0.,if self.stone_detail {1.} else {0.}],spots:lamps};
             gpu.queue.write_buffer(&t.uniform,0,bytemuck::bytes_of(&uniform));
-            if let Some(l)=&self.lit {l.write(gpu,light,exposure);}
+            if let Some(l)=&self.lit {l.write(gpu,light,exposure,beams,view.cam.pos);}
             let target=external.map_or(&t.color,|targets|targets[vi]);
             let color=target.create_view(&Default::default());let depth=t.depth.create_view(&Default::default());
             let sky=(light.sky_lux*exposure*0.25).max(0.0);let sky=(sky/(1.0+sky)).sqrt()as f64;
@@ -209,10 +216,66 @@ impl Forward {
                 sprites.render_output(gpu,&mut enc,vi,target,&depth,view.cam,camera_views[vi],vp,vp,exposure)?;
             }
             if let Some(q)=query {enc.write_timestamp(q,vi as u32*6+5);}
+            if external.is_none() && let Some(l)=&mut self.lit && l.glow.0>0.0 {let (strength,threshold)=l.glow;l.bloom.apply(gpu,&mut enc,vi,&t.color,strength,threshold);}
             if let Some(output)=output {enc.copy_texture_to_texture(t.color.as_image_copy(),wgpu::TexelCopyTextureInfo{texture:output,mip_level:0,origin:wgpu::Origin3d{x:view.x,y:view.y,z:0},aspect:wgpu::TextureAspect::All},t.color.size());}
         }
         if let (Some(ticket),Some((query,resolve)))=(&ticket,&self.query) {enc.resolve_query_set(query,0..ticket.query_count,resolve,0);enc.copy_buffer_to_buffer(resolve,0,&ticket.read,0,ticket.query_count as u64*8);}
         gpu.queue.submit([enc.finish()]);if let Some(ticket)=ticket {ticket.submitted();}Ok(stats)
+    }
+}
+
+#[repr(C)] #[derive(Clone,Copy,Pod,Zeroable)]
+struct BloomParams {texel:[f32;2],direction:[f32;2],strength:f32,threshold:f32,pad:[f32;2]}
+/// Eighth-size images of one view: the bright pass and the two blur halves.
+struct BloomTarget {size:[u32;2],a:wgpu::TextureView,b:wgpu::TextureView,binds:[wgpu::BindGroup;4]}
+/// The low tier's glow (forward_bloom.wgsl): from the finished 8-bit
+/// image at an eighth of its size, screened over it.
+struct Bloom {bright:wgpu::RenderPipeline,blur:wgpu::RenderPipeline,add:wgpu::RenderPipeline,layout:wgpu::BindGroupLayout,samp:wgpu::Sampler,params:[wgpu::Buffer;4],targets:Vec<BloomTarget>}
+impl Bloom {
+    fn new(gpu:&Gpu)->Self {
+        let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{label:Some("forward bloom"),entries:&[
+            wgpu::BindGroupLayoutEntry{binding:0,visibility:wgpu::ShaderStages::FRAGMENT,ty:wgpu::BindingType::Texture{sample_type:wgpu::TextureSampleType::Float{filterable:true},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false},count:None},
+            wgpu::BindGroupLayoutEntry{binding:1,visibility:wgpu::ShaderStages::FRAGMENT,ty:wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),count:None},
+            wgpu::BindGroupLayoutEntry{binding:2,visibility:wgpu::ShaderStages::FRAGMENT,ty:wgpu::BindingType::Buffer{ty:wgpu::BufferBindingType::Uniform,has_dynamic_offset:false,min_binding_size:None},count:None}]});
+        let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor{label:Some("forward bloom"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/forward_bloom.wgsl").into())});
+        let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{label:None,bind_group_layouts:&[Some(&layout)],immediate_size:0});
+        let pipeline=|entry,blend:Option<wgpu::BlendState>|gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{label:Some("forward bloom"),layout:Some(&pl),
+            vertex:wgpu::VertexState{module:&module,entry_point:Some("vs"),compilation_options:Default::default(),buffers:&[]},
+            primitive:Default::default(),depth_stencil:None,multisample:Default::default(),
+            fragment:Some(wgpu::FragmentState{module:&module,entry_point:Some(entry),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState{format:wgpu::TextureFormat::Rgba8Unorm,blend,write_mask:wgpu::ColorWrites::COLOR})]}),multiview_mask:None,cache:gpu.pipeline_cache()});
+        let screen=wgpu::BlendState{color:wgpu::BlendComponent{src_factor:wgpu::BlendFactor::OneMinusDst,dst_factor:wgpu::BlendFactor::One,operation:wgpu::BlendOperation::Add},alpha:wgpu::BlendComponent::REPLACE};
+        let samp=gpu.device.create_sampler(&wgpu::SamplerDescriptor{label:Some("forward bloom"),mag_filter:wgpu::FilterMode::Linear,min_filter:wgpu::FilterMode::Linear,..Default::default()});
+        let params=std::array::from_fn(|_|gpu.device.create_buffer(&wgpu::BufferDescriptor{label:Some("forward bloom"),size:std::mem::size_of::<BloomParams>()as u64,usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false}));
+        Self{bright:pipeline("bright",None),blur:pipeline("blur",None),add:pipeline("add",Some(screen)),layout,samp,params,targets:Vec::new()}
+    }
+    /// Glow `color` (one view's finished image) with `strength`, from what is brighter than `threshold` (display value).
+    fn apply(&mut self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,vi:usize,color:&wgpu::Texture,strength:f32,threshold:f32) {
+        let full=[color.width(),color.height()];let size=[full[0].div_ceil(8).max(1),full[1].div_ceil(8).max(1)];
+        let source=color.create_view(&Default::default());
+        let make=|gpu:&Gpu|{
+            let tex=|label|gpu.device.create_texture(&wgpu::TextureDescriptor{label:Some(label),size:wgpu::Extent3d{width:size[0],height:size[1],depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,
+                format:wgpu::TextureFormat::Rgba8Unorm,usage:wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&[]}).create_view(&Default::default());
+            let (a,b)=(tex("forward bloom a"),tex("forward bloom b"));
+            let bind=|view:&wgpu::TextureView,i:usize|gpu.device.create_bind_group(&wgpu::BindGroupDescriptor{label:None,layout:&self.layout,entries:&[
+                wgpu::BindGroupEntry{binding:0,resource:wgpu::BindingResource::TextureView(view)},wgpu::BindGroupEntry{binding:1,resource:wgpu::BindingResource::Sampler(&self.samp)},wgpu::BindGroupEntry{binding:2,resource:self.params[i].as_entire_binding()}]});
+            let binds=[bind(&source,0),bind(&a,1),bind(&b,2),bind(&a,3)];
+            BloomTarget{size:full,a,b,binds}
+        };
+        while self.targets.len()<=vi {let t=make(gpu);self.targets.push(t);}
+        // The source view is part of the bind group: remake it when the image changes size.
+        if self.targets[vi].size!=full {self.targets[vi]=make(gpu);}
+        let t=&self.targets[vi];
+        let quarter=[1.0/size[0]as f32,1.0/size[1]as f32];
+        let p=|texel,direction|BloomParams{texel,direction,strength,threshold,pad:[0.0;2]};
+        for (i,params) in [p([1.0/full[0]as f32,1.0/full[1]as f32],[0.0,0.0]),p(quarter,[1.0,0.0]),p(quarter,[0.0,1.0]),p(quarter,[0.0,0.0])].iter().enumerate() {
+            gpu.queue.write_buffer(&self.params[i],0,bytemuck::bytes_of(params));
+        }
+        let passes:[(&wgpu::RenderPipeline,usize,&wgpu::TextureView,bool);4]=[(&self.bright,0,&t.a,false),(&self.blur,1,&t.b,false),(&self.blur,2,&t.a,false),(&self.add,3,&source,true)];
+        for (pipeline,bind,out,load) in passes {
+            let mut pass=enc.begin_render_pass(&wgpu::RenderPassDescriptor{label:Some("forward bloom"),color_attachments:&[Some(wgpu::RenderPassColorAttachment{view:out,depth_slice:None,resolve_target:None,
+                ops:wgpu::Operations{load:if load {wgpu::LoadOp::Load} else {wgpu::LoadOp::Clear(wgpu::Color::BLACK)},store:wgpu::StoreOp::Store}})],depth_stencil_attachment:None,timestamp_writes:None,occlusion_query_set:None,multiview_mask:None});
+            pass.set_pipeline(pipeline);pass.set_bind_group(0,&t.binds[bind],&[]);pass.draw(0..3,0..1);
+        }
     }
 }
 
@@ -246,7 +309,7 @@ impl Lit {
         let probes=Self::probe_texture(gpu,[1,1,1],&[0u16;4]);
         let bind=Self::bind(gpu,&layout,&uniform,inputs.headlights,inputs.albedo,&samp,&probes,&probe_samp);
         Self{opaque:pipeline(unorm,"fs",false),opaque_srgb:pipeline(srgb,"fs_srgb",false),blend:pipeline(unorm,"fs",true),blend_srgb:pipeline(srgb,"fs_srgb",true),
-            layout,uniform,bind,albedo:inputs.albedo.clone(),samp,headlights:inputs.headlights.clone(),probe_samp,probes,grid:None}
+            layout,uniform,bind,albedo:inputs.albedo.clone(),samp,headlights:inputs.headlights.clone(),probe_samp,probes,grid:None,bloom:Bloom::new(gpu),glow:(0.0,0.75)}
     }
     #[allow(clippy::too_many_arguments)]
     fn bind(gpu:&Gpu,layout:&wgpu::BindGroupLayout,uniform:&wgpu::Buffer,headlights:&wgpu::Buffer,albedo:&wgpu::TextureView,samp:&wgpu::Sampler,probes:&wgpu::TextureView,probe_samp:&wgpu::Sampler)->wgpu::BindGroup {
@@ -277,13 +340,21 @@ impl Lit {
         self.bind=Self::bind(gpu,&self.layout,&self.uniform,&self.headlights,&self.albedo,&self.samp,&self.probes,&self.probe_samp);
         self.grid=Some(grid);
     }
-    fn write(&self,gpu:&Gpu,light:&Lighting,exposure:f32) {
+    fn write(&self,gpu:&Gpu,light:&Lighting,exposure:f32,beams:&[crate::volumetric::GpuLight],camera:Vec3) {
         let (gi_origin,gi_dims,on)=match self.grid {
             Some(g)=>(g.origin.extend(g.cell).to_array(),[g.dims[0]as f32,g.dims[1]as f32,g.dims[2]as f32,0.0],1.0),
             None=>([0.0,0.0,0.0,1.0],[1.0;4],0.0),
         };
         let sky=light.sky_lux;
-        gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&LitUniform{tone:[exposure,light.emissive_scale(),light.contrast,light.saturation],sky:[sky,sky,sky,on],gi_origin,gi_dims}));
+        let mut list=[crate::volumetric::GpuLight::zeroed();MAX_BEAMS];let mut count=0;
+        let (mut medium,mut tint,mut ambient)=([0.0;4],[0.0;4],[0.0;4]);
+        if let Some(v)=light.volumetric.filter(|v|v.density>0.0&&v.intensity>0.0) {
+            let mut sorted:Vec<_>=beams.iter().filter(|b|Vec3::from_slice(&b.position_range[..3]).distance(camera)<b.position_range[3]+40.0).collect();
+            sorted.sort_by(|a,b|Vec3::from_slice(&a.position_range[..3]).distance(camera).total_cmp(&Vec3::from_slice(&b.position_range[..3]).distance(camera)));
+            for (out,b) in list.iter_mut().zip(sorted) {*out=*b;count+=1;}
+            medium=[v.density,v.anisotropy,v.intensity,count as f32];tint=v.color.extend(v.extinction).to_array();ambient=v.ambient.extend(v.length).to_array();
+        }
+        gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&LitUniform{tone:[exposure,light.emissive_scale(),light.contrast,light.saturation],sky:[sky,sky,sky,on],gi_origin,gi_dims,medium,tint,ambient,beams:list}));
     }
 }
 

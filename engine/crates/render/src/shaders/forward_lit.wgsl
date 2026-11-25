@@ -14,7 +14,10 @@ struct Headlights { lights:array<Headlight,8>, count:vec4<u32>, local:array<Loca
     spot_falloff:array<vec4<f32>,2> };
 // x: exposure, y: emissive scale, z: contrast, w: saturation; sky: rgb irradiance, w: GI on.
 // gi_origin: xyz, cell; gi_dims: xyz probes.
-struct Lit {tone:vec4<f32>,sky:vec4<f32>,gi_origin:vec4<f32>,gi_dims:vec4<f32>};
+// medium: density, anisotropy, intensity, beam count; tint: rgb, extinction;
+// ambient: rgb in-scatter, medium length (0 unbounded). Beams as volumetric.rs GpuLight.
+struct ScatterLight { position_range:vec4<f32>, direction_outer:vec4<f32>, intensity_inner:vec4<f32>, source:vec4<f32> };
+struct Lit {tone:vec4<f32>,sky:vec4<f32>,gi_origin:vec4<f32>,gi_dims:vec4<f32>,medium:vec4<f32>,tint:vec4<f32>,ambient:vec4<f32>,beams:array<ScatterLight,16>};
 @group(0) @binding(0) var<uniform> u:Uniform;
 @group(0) @binding(1) var<storage,read> materials:array<Material>;
 @group(0) @binding(5) var<storage,read> joints:array<vec4<f32>>;
@@ -99,6 +102,76 @@ fn local_irradiance(index:u32,p:vec3<f32>,n:vec3<f32>)->vec3<f32> {
  return lamp.intensity_inner.rgb*(cone*fade*fade*lambert/spread);
 }
 
+
+fn hg_phase(cos_theta:f32,g:f32)->f32 {
+ let g2=g*g;let denom=max(1.0+g2-2.0*g*cos_theta,1e-4);
+ return (1.0-g2)/(4.0*PI*denom*sqrt(denom));
+}
+
+// volumetric.wgsl `clip_cone`: the ray interval inside the outer cone, so
+// the three samples land where the beam is.
+fn clip_cone(o:vec3<f32>,v:vec3<f32>,light:ScatterLight,t0:f32,t1:f32)->vec2<f32> {
+ let axis=light.direction_outer.xyz;let c2=light.direction_outer.w*light.direction_outer.w;
+ let d0=o-light.position_range.xyz;let va=dot(v,axis);let d0a=dot(d0,axis);
+ let qa=va*va-c2;let qb=va*d0a-c2*dot(d0,v);let qc=d0a*d0a-c2*dot(d0,d0);
+ if abs(qa)<1e-4 {return vec2<f32>(t0,t1);}
+ let disc=qb*qb-qa*qc;
+ if disc<0.0 {if qa<0.0 {return vec2<f32>(1.0,0.0);} return vec2<f32>(t0,t1);}
+ let s=sqrt(disc);let r1=(-qb-s)/qa;let r2=(-qb+s)/qa;let lo=min(r1,r2);let hi=max(r1,r2);
+ var span=vec2<f32>(-1e30,1e30);
+ if qa<0.0 {if d0a+va*0.5*(lo+hi)<0.0 {return vec2<f32>(1.0,0.0);} span=vec2<f32>(lo,hi);}
+ else if va>0.0 {span=vec2<f32>(hi,1e30);} else {span=vec2<f32>(-1e30,lo);}
+ return vec2<f32>(max(span.x,t0),min(span.y,t1));
+}
+
+// volumetric.wgsl `light_scatter` with three Gauss-Legendre points instead
+// of six: the light one beam scatters towards the
+// camera along the view ray up to the surface.
+fn beam_scatter(o:vec3<f32>,v:vec3<f32>,tmax:f32,light:ScatterLight,sigma:f32,g:f32)->vec3<f32> {
+ let p=light.position_range.xyz;let range=light.position_range.w;
+ let rel=p-o;let tc=dot(rel,v);
+ let h2=max(dot(rel,rel)-tc*tc,0.0);let r2=range*range;
+ if h2>=r2 {return vec3<f32>(0.0);}
+ let half_chord=sqrt(r2-h2);
+ var span=vec2<f32>(max(tc-half_chord,0.0),min(tc+half_chord,tmax));
+ if light.source.z>0.5 {span=clip_cone(o,v,light,span.x,span.y);}
+ if span.y<=span.x {return vec3<f32>(0.0);}
+ let s2=light.source.x;let falloff=light.source.y;
+ let hp=sqrt(h2+s2);let tangent=falloff>=1.75;
+ let x=(span-tc)/hp;
+ let a=select(vec2<f32>(asinh(x.x),asinh(x.y)),vec2<f32>(atan(x.x),atan(x.y)),tangent);
+ let exponent=select(0.5-0.5*falloff,1.0-0.5*falloff,tangent);
+ let jacobian=select(1.0,1.0/hp,tangent);
+ let centre=0.5*(a.x+a.y);let half_width=0.5*(a.y-a.x);
+ var acc=0.0;
+ for(var k=0u;k<3u;k++) {
+  let node=select(select(0.7745967,-0.7745967,k==0u),0.0,k==1u);
+  let weight=select(0.5555556,0.8888889,k==1u);
+  let ak=centre+half_width*node;
+  let t=tc+hp*select(sinh(ak),tan(ak),tangent);
+  let off=o+v*t-p;let d2=dot(off,off);let dist=sqrt(d2);
+  let outward=off/max(dist,1e-6);
+  let cone=smoothstep(light.direction_outer.w,light.intensity_inner.w,dot(outward,light.direction_outer.xyz));
+  let n=d2/r2;let fade=max(0.0,1.0-n*n);
+  var spread=1.0;if exponent!=0.0 {spread=pow(d2+s2,exponent);}
+  acc+=weight*cone*fade*fade*hg_phase(dot(outward,-v),g)*exp(-sigma*(t+dist))*spread;
+ }
+ return light.intensity_inner.rgb*(acc*half_width*jacobian);
+}
+
+// The medium between the camera and p: the beams' in-scatter plus the
+// ambient, and how much the medium dims p (extinction).
+fn medium(rad:vec3<f32>,p:vec3<f32>)->vec3<f32> {
+ let count=u32(lit.medium.w);
+ if lit.medium.x<=0.0 {return rad;}
+ let o=u.camera.xyz;var tmax=distance(p,o);let v=(p-o)/max(tmax,1e-4);
+ if lit.ambient.w>0.0 {tmax=min(tmax,lit.ambient.w);}
+ var sum=vec3<f32>(0.0);
+ for(var i=0u;i<min(count,16u);i++) {sum+=beam_scatter(o,v,tmax,lit.beams[i],lit.medium.x,lit.medium.y);}
+ let reach=1.0-exp(-lit.medium.x*tmax);
+ return rad*exp(-lit.tint.w*lit.medium.x*tmax)+sum*lit.tint.rgb*(lit.medium.x*lit.medium.z)+lit.ambient.rgb*reach;
+}
+
 fn agx_contrast(x:vec3<f32>)->vec3<f32> {
  let x2=x*x;let x4=x2*x2;
  return 15.5*x4*x2-40.14*x4*x+31.96*x4-6.868*x2*x+0.4298*x2+0.1191*x-0.00232;
@@ -131,7 +204,7 @@ fn shade(in:Out)->vec4<f32> {
  var base=m.tint;var alpha=1.0;
  if m.layer>=0 {let t=textureSample(albedo,samp,in.uv,m.layer);base*=t.rgb;alpha=t.a;}
  if (m.flags&1u)!=0u && alpha<0.5 {discard;}
- if (m.flags&4096u)!=0u {return vec4<f32>(display(base*m.scale*lit.tone.y),alpha);}
+ if (m.flags&4096u)!=0u {return vec4<f32>(display(medium(base*m.scale*lit.tone.y,in.world)),alpha);}
  let p=in.world;
  var n=normalize(in.normal);
  if (m.flags&8u)!=0u && dot(n,u.camera.xyz-p)<0.0 {n=-n;}
@@ -142,7 +215,7 @@ fn shade(in:Out)->vec4<f32> {
  for(var i=0u;i<locals;i++) {irradiance+=local_irradiance(i,p,n);}
  var rad=base*irradiance/PI;
  if (m.flags&1024u)!=0u {rad+=base*abs(m.scale)*lit.tone.y;}
- return vec4<f32>(display(rad),alpha);
+ return vec4<f32>(display(medium(rad,p)),alpha);
 }
 
 @fragment fn fs(in:Out)->@location(0) vec4<f32> {
