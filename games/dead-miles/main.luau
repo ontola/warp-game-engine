@@ -4844,7 +4844,9 @@ local function draw()
 	-- The battery: spares, then the charge of the one in the torch.
 	icon(x + 210 * k, y, k, "battery", s.batteries)
 	bar(x + 252 * k, y + 8 * k, 56 * k, 8 * k, s.battery / 100, if s.battery < 15 then "#ff6a4a" else ITEM_COLORS.battery)
-	hud.text("DAY " .. s.day .. "   " .. math.max(0, math.floor(s.route)) .. " m", W - 260 * k, y, { size = 22 * k, width = 240 * k, align = "right", color = "#f4efe6" })
+	local progress = "DAY " .. s.day .. "   " .. math.max(0, math.floor(s.route)) .. " m"
+	local progress_y = if 350 * k + hud.measure(progress, 22 * k) + 30 * k > W then y + 40 * k else y
+	hud.text(progress, W - 260 * k, progress_y, { size = 22 * k, width = 240 * k, align = "right", color = "#f4efe6" })
 
 	-- Button rows of people standing together stack instead of overlapping.
 	local rows_at = {}

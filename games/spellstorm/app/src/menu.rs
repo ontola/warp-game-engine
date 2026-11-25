@@ -513,6 +513,8 @@ pub enum CardIcon {
     Slots(usize),
 }
 
+pub(crate) const UNLOCK_CARD_WIDTH: f32 = 680.0;
+
 /// Something just learned, in the menu's own look: its framed panel, the
 /// element as on the controls' face buttons or the pad part drawn large,
 /// a soft line saying what it is, the name in gold and how to use it.
@@ -520,7 +522,7 @@ pub enum CardIcon {
 #[allow(clippy::too_many_arguments)]
 pub fn unlock_card(d: &mut HudDrawList, s: f32, cx: f32, y: f32, icon: CardIcon, kicker: &str, name: &str, hint: &str, a: f32) {
     let (v0, t0) = (d.vertices.len(), d.text.len());
-    let (w, h) = (680.0, 128.0);
+    let (w, h) = (UNLOCK_CARD_WIDTH, 128.0);
     let x0 = cx - w * 0.5;
     let mut p = P { d: &mut *d, s };
     p.frame([x0, y, w, h]);

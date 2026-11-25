@@ -217,7 +217,7 @@ fn run() -> Result<(), String> {
                         // Every tick moves the bodies one tick on; a captured
                         // frame poses its own.
                         let r = shot.renderer().ok_or("no renderer")?;
-                        game.view.pose(&gpu, r, &game.world, 1.0 / 60.0)?;
+                        game.view.pose(&gpu, r, &game.world, 1.0 / 60.0, [w, h])?;
                     }
                     continue;
                 }
@@ -226,7 +226,7 @@ fn run() -> Result<(), String> {
                         shot.frame(&mut game)?;
                     } else {
                         let r = shot.renderer().ok_or("no renderer")?;
-                        game.view.pose(&gpu, r, &game.world, 4.0 / 60.0)?;
+                        game.view.pose(&gpu, r, &game.world, 4.0 / 60.0, [w, h])?;
                     }
                 }
             }

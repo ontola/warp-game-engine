@@ -558,12 +558,15 @@ impl Hud {
         enemy_bars(&mut p, w, &vp, size);
         self.draw_numbers(&mut p, &vp, size);
         p.d.begin_overlay();
+        // Opposite corner panels must also fit side by side on a narrow screen.
+        let panel_scale = s.min(size[0] as f32 / (2.0 * PANEL.x + 3.0 * MARGIN));
+        let mut panels = Painter { d: p.d, s: panel_scale };
+        let [pw, ph] = size.map(|px| px as f32 / panel_scale);
         for (i, &id) in w.wizards.iter().enumerate() {
             let right = i % 2 == 1;
-            let top = i >= 2;
-            let x = if right { sw - MARGIN - PANEL.x } else { MARGIN };
-            let y = if top { MARGIN } else { 1080.0 - MARGIN - PANEL.y };
-            panel(&mut p, w, id, Vec2::new(x, y), right);
+            let x = if right { pw - MARGIN - PANEL.x } else { MARGIN };
+            let y = if i >= 2 { MARGIN } else { ph - MARGIN - PANEL.y };
+            panel(&mut panels, w, id, Vec2::new(x, y), right);
         }
         grave_arrows(&mut p, w, &vp, sw);
         // Toasts at the top in the middle.
@@ -594,7 +597,8 @@ impl Hud {
             // The name itself keeps one size: every new size rasterises a whole
             // alphabet into the glyph atlas, and a growing one filled it at 4K.
             p.shadow_text(&self.card, sw * 0.5, cy - 20.0, title(), 96.0, col);
-            p.rect([sw * 0.5 - 380.0 * grow, cy + 44.0 * grow, 760.0 * grow, 2.0], [0.86, 0.8, 0.68, 0.55 * a]);
+            let rule = (760.0 * grow).min((sw - 2.0 * MARGIN).max(1.0));
+            p.rect([(sw - rule) * 0.5, cy + 44.0 * grow, rule, 2.0], [0.86, 0.8, 0.68, 0.55 * a]);
         }
         // The run counter after a wipe, over the card, as the card fades.
         let t = self.run_card.1;
@@ -837,6 +841,8 @@ impl Painter<'_> {
     }
     /// Centred, with a soft shadow below (the level card).
     fn shadow_text(&mut self, text: &str, x: f32, y: f32, font: FontFace, size: f32, c: C) {
+        let available = (2.0 * x - 2.0 * MARGIN).max(1.0);
+        let size = size * (available / self.width(text, font, size)).min(1.0);
         for (k, a) in [(6.0, 0.3), (4.0, 0.5)] {
             self.text(text, x, y + k, font, size, [0.0, 0.0, 0.0, a * c[3]], TextAlign::Center, 12.0);
         }
@@ -954,7 +960,8 @@ fn unlock_card(p: &mut Painter, u: &Unlock, t: f32, sw: f32) {
         }
     };
     let kicker = if u.who.is_empty() { kicker.to_string() } else { format!("{kicker}   ·   {}", u.who.join(", ")) };
-    crate::menu::unlock_card(p.d, p.s, sw * 0.5, 690.0 + rise, icon, &kicker, &name, &hint, a);
+    let fit = (sw / (crate::menu::UNLOCK_CARD_WIDTH + 2.0 * MARGIN)).min(1.0);
+    crate::menu::unlock_card(p.d, p.s * fit, sw * 0.5 / fit, (690.0 + rise) / fit, icon, &kicker, &name, &hint, a);
 }
 
 /// An element as a little ball (ElementBall: its colour, lit from the top

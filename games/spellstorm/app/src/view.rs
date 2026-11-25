@@ -492,7 +492,7 @@ impl View {
     }
 
     /// Pose everything that moves, the camera and the nearest lights.
-    pub fn pose(&mut self, gpu: &Gpu, renderer: &Renderer, w: &World, dt: f32) -> Result<(), String> {
+    pub fn pose(&mut self, gpu: &Gpu, renderer: &Renderer, w: &World, dt: f32, size: [u32; 2]) -> Result<(), String> {
         let mut out: Vec<(usize, Affine3A, bool)> = Vec::new();
         // Bodies that flash white from a hit or are bloodied: (out range, flash, wounds).
         let mut marked: Vec<(std::ops::Range<usize>, f32, f32)> = Vec::new();
@@ -826,7 +826,7 @@ impl View {
             renderer.update_instances(gpu, r.start, &self.scene.instances[r])?;
             self.skins.flush(gpu, renderer)?;
         }
-        self.follow(w, dt);
+        self.follow(w, dt, size);
         self.fx.tips = w.wizards.iter().zip(&gems).filter_map(|(id, g)| g.map(|g| (id.to_bits().get(), g))).collect();
         self.fx.update(w, dt);
         self.marks.update(w, &gems, self.fx.time, dt);
@@ -927,7 +927,7 @@ impl View {
     }
 
     /// main.gd _update_camera: over the wizards, higher as they spread.
-    fn follow(&mut self, w: &World, dt: f32) {
+    fn follow(&mut self, w: &World, dt: f32, size: [u32; 2]) {
         let mut pts: Vec<Vec3> = w.wizards.iter().filter(|&&id| w.alive(id)).map(|&id| w.pos(id)).collect();
         if pts.is_empty() {
             pts = w.wizards.iter().map(|&id| w.pos(id)).collect();
@@ -959,9 +959,23 @@ impl View {
         // SPELLSTORM_ZOOM=0.3: the camera that much as high (a close look,
         // for shots of effects).
         let zoom = std::env::var("SPELLSTORM_ZOOM").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0).clamp(0.05, 4.0);
-        let h = self.cam_height * zoom;
+        // On a narrow screen, allow the same horizontal separation as the simulation.
+        // Fit the wizards against the tilted camera's horizontal field of view.
+        let aspect = size[0].max(1) as f32 / size[1].max(1) as f32;
+        let camera_offset = Vec3::new(0.0, 1.0, 0.55);
+        let mut height = self.cam_height;
+        if aspect < 16.0 / 9.0 {
+            let tan_x = 21f32.to_radians().tan() * aspect;
+            let toward_camera = camera_offset.normalize();
+            for pos in &pts {
+                let offset = *pos - c;
+                let min_distance = (offset.x.abs() + 0.8) / tan_x + offset.dot(toward_camera);
+                height = height.max(min_distance / camera_offset.length());
+            }
+        }
+        let h = height * zoom;
         let c = if zoom < 1.0 { c.lerp(self.cam_center + Vec3::new(0.0, 0.0, -5.0), 1.0 - zoom) } else { c };
-        self.camera = Camera { pos: c + Vec3::new(0.0, h, h * 0.55), target: c, fov_y: 42f32.to_radians(), near: 0.1 };
+        self.camera = Camera { pos: c + camera_offset * h, target: c, fov_y: 42f32.to_radians(), near: 0.1 };
     }
 }
 

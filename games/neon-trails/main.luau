@@ -139,6 +139,17 @@ local function add_score(id, n)
 	state.scores[tostring(id)] = score_of(id) + n
 end
 
+-- Keep both ends of the shared board in view when the window narrows.
+local function fit_camera()
+	local w, h = hud.size()
+	if w <= 0 or h <= 0 then return end
+	local distance = math.max(1, (16 / 9) * h / w)
+	if state.camera_distance == distance then return end
+	state.camera_distance = distance
+	local target = vector.create(0, 0, 1)
+	camera.set(1, { pos = target + vector.create(0, 32, 18) * distance, target = target, fov = 50 })
+end
+
 local function init()
 	-- A glossy dark deck floating in space, a glowing rim with running
 	-- lights, beacons on the corners and a faint grid every 8 cells.
@@ -183,8 +194,8 @@ local function init()
 	state.round = 0
 	state.winner = nil
 	new_round()
-	-- One camera over the whole arena.
-	camera.set(1, { pos = vector.create(0, 32, 19), target = vector.create(0, 0, 1), fov = 50 })
+	state.camera_distance = nil
+	fit_camera()
 end
 
 -- Read a turn from the stick or the d-pad; never straight back.
@@ -296,6 +307,7 @@ local function light_up(dt)
 end
 
 local function tick(dt, input)
+	fit_camera()
 	light_up(dt)
 	if state.winner then
 		-- After a match, any player's A starts a new one.
@@ -334,7 +346,7 @@ end
 
 local function draw()
 	local w, h = hud.size()
-	local s = h / 720
+	local s = math.min(h / 720, w / 640)
 	-- Every player's score along the top, in their colour.
 	local list = players.list()
 	local slot = w / math.max(#list, 1)

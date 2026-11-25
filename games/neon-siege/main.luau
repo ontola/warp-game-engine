@@ -2288,10 +2288,12 @@ local function sync()
 			world.set(g.id, { color = rgb(STAGE_GRID[stage], if g.major then 0.6 else 0.4), emissive = if g.major then GLOW.major else GLOW.grid })
 		end
 	end
-	-- Straight down on the arena; it shakes a little on hits and kills.
+	-- Fit the entire shared arena, including its left and right spawn edges.
+	local w, h = hud.size()
+	local height = CAMERA_HEIGHT * math.max(1, (WIDTH / HEIGHT) * h / math.max(w, 1))
 	local sx, sy = math.sin(s.time * 83) * s.shake * S, math.cos(s.time * 97) * s.shake * 0.6 * S
 	for _, p in players.list() do
-		camera.set(p.id, { pos = vector.create(sx, CAMERA_HEIGHT, sy + 0.05), target = vector.create(sx, 0, sy), fov = CAMERA_FOV })
+		camera.set(p.id, { pos = vector.create(sx, height, sy + 0.05), target = vector.create(sx, 0, sy), fov = CAMERA_FOV })
 		break
 	end
 end
@@ -2566,7 +2568,7 @@ local function draw()
 	s = state.s
 	if not s then return end
 	local w, h = hud.size()
-	local k = h / 720
+	local k = math.min(h / 720, w / 760)
 	local dim = { 0.55, 0.7, 0.85, 0.8 }
 	-- Only the score, the multiplier and the wave, small in the corners.
 	hud.text(tostring(s.teamScore), 20 * k, 12 * k, { size = 26 * k, color = { 0.85, 0.95, 1, 0.95 } })
@@ -2672,7 +2674,7 @@ local CONTROLS = {
 
 local function menu(top)
 	local w, h = hud.size()
-	local k = h / 720
+	local k = math.min(h / 720, w / 760)
 	local rowH = 30 * k
 	local y = top + 36 * k
 	local mid = w / 2
