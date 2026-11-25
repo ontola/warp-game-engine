@@ -145,6 +145,12 @@ html:not([data-pad]) .with-pad,html[data-pad] .no-pad{display:none}
 #join-hint kbd.tick{background:none;box-shadow:none;color:var(--green);font-size:1.3em;padding:0}
 #join-detail{display:block;color:var(--muted);font-size:.85em}
 #join-detail:empty{display:none}
+/* Following another couch's room (online.rs): the way back to being a controller. */
+#as-controller{position:fixed;left:16px;bottom:16px;z-index:2;display:none;align-items:center;gap:10px;padding:10px 16px;border-radius:12px;
+  font:600 clamp(13px,1.4vw,15px) Outfit,system-ui;color:var(--muted);text-decoration:none;background:var(--panel);border:1px solid var(--line);backdrop-filter:blur(8px);opacity:.9}
+#as-controller:hover{color:var(--text);opacity:1}
+html[data-following] #as-controller{display:flex}
+html[data-following][data-calm] #as-controller{opacity:.35}
 /* Not fullscreen yet: a quiet button in the corner (the first click or key goes fullscreen by itself). */
 #fullscreen{position:fixed;right:16px;bottom:16px;z-index:2;display:none;align-items:center;gap:10px;padding:10px 16px;border-radius:12px;cursor:pointer;
   font:800 clamp(14px,1.5vw,16px) Outfit,system-ui;color:#fff;background:var(--panel);border:1px solid var(--line);backdrop-filter:blur(8px);
@@ -206,6 +212,7 @@ body.debug #warp-games{display:flex!important}
 </div>
 <div id="back-hint" role="status"><kbd class="pill">Back</kbd><div>Back to the room <span>· <kbd>Tab</kbd> on a keyboard</span></div></div>
 <div id="join-hint" role="status"><kbd id="join-key">A</kbd><div><div id="join-text">Press A to join this game</div><span id="join-detail"></span></div></div>
+<a id="as-controller" href="/app/">Use this computer as a controller instead</a>
 <div id="kb-nudge" role="status">
   <svg viewBox="0 0 48 48" aria-hidden="true"><rect x="4" y="12" width="40" height="22" rx="10" fill="#ffb454"/><circle cx="12" cy="30" r="9" fill="#ffb454"/><circle cx="36" cy="30" r="9" fill="#ffb454"/>
     <rect x="9" y="21" width="10" height="3.5" rx="1.75" fill="#0d1020"/><rect x="12.25" y="17.75" width="3.5" height="10" rx="1.75" fill="#0d1020"/><circle cx="33" cy="19.5" r="2.6" fill="#0d1020"/><circle cx="38" cy="24.5" r="2.6" fill="#0d1020"/></svg>

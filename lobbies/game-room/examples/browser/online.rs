@@ -39,6 +39,11 @@ pub(crate) fn start() {
                 let link: Shared<dyn FollowLink> = Shared::new(Box::new(c));
                 PAGE.with(|p| *p.borrow_mut() = Page::Follow { link, code: code.clone(), game: None, gone: false });
                 app::web::log(&format!("online: following room {code}"));
+                // The switch back (Joep: by device, with a switch both ways).
+                if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                    if let Some(a) = doc.get_element_by_id("as-controller") { let _ = a.set_attribute("href", &format!("/app/?room={}", code.to_ascii_uppercase())); }
+                    if let Some(root) = doc.document_element() { let _ = root.set_attribute("data-following", ""); }
+                }
             }
             Err(e) => app::web::log(&format!("online: could not follow {code}: {e}")),
         }
