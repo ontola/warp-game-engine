@@ -182,12 +182,15 @@ pub fn draw(hud: &mut HudDrawList, size: [f32; 2], row: usize, r: &super::Racer)
         clip,
         [125, 233, 214, 235],
     );
-    controls(hud, [x + width + 72., 180.], w, clip);
+    // Only the columns for what people here play with (both before anyone joins).
+    let pads = r.devices.iter().any(|d| d.is_pad());
+    let keys = r.devices.iter().any(|d| d.is_keys());
+    controls(hud, [x + width + 72., 180.], w, clip, pads || !keys, keys || !pads);
 }
 
 /// The controls beside the menu, controller and keyboard, when the screen
 /// is wide enough (start menus show the layout: Joep, 2026-11-25).
-fn controls(hud: &mut HudDrawList, at: [f32; 2], w: f32, clip: [f32; 4]) {
+fn controls(hud: &mut HudDrawList, at: [f32; 2], w: f32, clip: [f32; 4], pads: bool, keys: bool) {
     const ROWS: [(&str, &str, &str); 8] = [
         ("Steer", "Left stick", "A / D"),
         ("Throttle", "RT or stick up", "W"),
@@ -199,9 +202,12 @@ fn controls(hud: &mut HudDrawList, at: [f32; 2], w: f32, clip: [f32; 4]) {
         ("Pause", "Start", "Enter"),
     ];
     let [x, y] = at;
-    if w - x < 560. { return; }
+    let both = pads && keys;
+    let pw = if both { 540. } else { 380. };
+    if w - x < pw + 20. { return; }
+    let kx = x + if both { 380. } else { 140. };
     // On the menu's own dark glass, edged like its rows, so it reads over the city.
-    let panel = [x - 20., y - 14., 540., 36. + ROWS.len() as f32 * 34. + 22.];
+    let panel = [x - 20., y - 14., pw, 36. + ROWS.len() as f32 * 34. + 22.];
     hud.rect(panel, [0.015, 0.025, 0.045, 0.82], clip);
     let edge = [1., 1., 1., 0.12];
     let [px, py, pw, ph] = panel;
@@ -210,12 +216,14 @@ fn controls(hud: &mut HudDrawList, at: [f32; 2], w: f32, clip: [f32; 4]) {
     }
     let head = [125, 233, 214, 235];
     super::text(hud, 9120, "CONTROLS", [x, y], 18., clip, head);
-    super::text(hud, 9121, "Controller", [x + 140., y], 18., clip, [145, 175, 190, 230]);
-    super::text(hud, 9122, "Keyboard", [x + 380., y], 18., clip, [145, 175, 190, 230]);
+    if both {
+        super::text(hud, 9121, "Controller", [x + 140., y], 18., clip, [145, 175, 190, 230]);
+        super::text(hud, 9122, "Keyboard", [kx, y], 18., clip, [145, 175, 190, 230]);
+    }
     for (i, (action, pad, key)) in ROWS.iter().enumerate() {
         let ry = y + 36. + i as f32 * 34.;
         super::text(hud, 9130 + i as u64 * 3, action, [x, ry], 20., clip, [145, 175, 190, 230]);
-        super::text(hud, 9131 + i as u64 * 3, pad, [x + 140., ry], 20., clip, [215, 237, 243, 245]);
-        super::text(hud, 9132 + i as u64 * 3, key, [x + 380., ry], 20., clip, [215, 237, 243, 245]);
+        if pads { super::text(hud, 9131 + i as u64 * 3, pad, [x + 140., ry], 20., clip, [215, 237, 243, 245]); }
+        if keys { super::text(hud, 9132 + i as u64 * 3, key, [kx, ry], 20., clip, [215, 237, 243, 245]); }
     }
 }

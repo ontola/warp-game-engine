@@ -516,8 +516,7 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
             let fs = (bh * 0.5).floor();
             c.text(faces.bold, [open[0], band[1] + bh * 0.75], &label, TextAlign::Center, open[2], fs, crate::lobby::AMBER.with_alpha(fade));
             let bar = [r[0] + bh * 0.5, band[1] + bh * 1.15, r[2] - bh, bh * 0.28];
-            c.rect(bar, rgba(1.0, 1.0, 1.0, 0.15 * fade));
-            c.rect([bar[0], bar[1], bar[2] * (percent / 100.0).clamp(0.0, 1.0), bar[3]], crate::lobby::AMBER.with_alpha(fade));
+            crate::paint::progress(c, bar, percent / 100.0, fade);
         }
         let reason = games.get(i).map(|g| Some(lobby.host.shortfall(g)).filter(|r| !r.is_empty()).unwrap_or_else(|| lobby.host.hardware_note(g))).unwrap_or_default();
         if !reason.is_empty() {

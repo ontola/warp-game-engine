@@ -158,7 +158,7 @@ pub fn draw(lobby: &Lobby, size: [u32; 2], _alpha: f32) -> HudDrawList {
         crate::paint::panel(&mut c, r, scale);
         // Its colour as a small dot, not a bar (DESIGN.md "Toast").
         c.circle([r[0] + 24.0 * scale, r[1] + r[3] / 2.0], 4.0 * scale, t.color);
-        text(&mut c, &t.text, [r[0] + 38.0 * scale, r[1] + fs + 4.0], fs, TEXT);
+        text(&mut c, &t.text, [r[0] + 38.0 * scale, r[1] + r[3] / 2.0 + fs * 0.35], fs, TEXT);
         y += if catalog { r[3] + 10.0 } else { -(r[3] + 10.0) };
     }
     if !lobby.host.update_ready().is_empty() {
@@ -168,7 +168,7 @@ pub fn draw(lobby: &Lobby, size: [u32; 2], _alpha: f32) -> HudDrawList {
         let r = [w - bw - 32.0 * scale, 32.0 * scale, bw, fs + 22.0];
         crate::paint::panel(&mut c, r, scale);
         c.circle([r[0] + 22.0 * scale, r[1] + r[3] / 2.0], 4.0 * scale, GREEN);
-        text(&mut c, msg, [r[0] + 36.0 * scale, r[1] + fs + 4.0], fs, TEXT);
+        text(&mut c, msg, [r[0] + 36.0 * scale, r[1] + r[3] / 2.0 + fs * 0.35], fs, TEXT);
     }
     if !lobby.host.demo && !lobby.host.connected {
         let fs = (24.0 * scale).floor();

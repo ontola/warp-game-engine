@@ -238,8 +238,10 @@ smaller (Joep, 2026-11-25: "the playlist looks consistent throughout").
 
 ### Progress
 
-10 px track, white at 8 %, fill amber → violet gradient (HTML) or amber
-(HUD, on cards). Radius full. A step line in `muted` under it.
+One bar everywhere (HTML loader, cards, TV): 10 px track (HUD: about a
+quarter of the label's height), white at 8 %, fill solid amber. Radius
+full. A step line in `muted` under it (Joep, 2026-11-25: the card's bar
+and the loader's differed). HUD: `paint::progress`.
 
 ## Layout zones
 

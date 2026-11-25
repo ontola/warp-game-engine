@@ -327,8 +327,16 @@ fn scanlines(c: &mut Canvas) {
 
 fn loading_bar(c: &mut Canvas, r: [f32; 4], percent: Option<f32>) {
     let Some(p) = percent else { return };
-    c.rect(r, crate::godot::rgba(0.03, 0.03, 0.06, 0.92));
-    c.rect([r[0], r[1], r[2] * p / 100.0, r[3]], AMBER);
+    progress(c, r, p / 100.0, 1.0);
+}
+
+/// The one progress bar (DESIGN.md "Progress"): a round track, white at
+/// 8 %, filled amber; the same in the HTML loader, on cards and on the TV.
+pub fn progress(c: &mut Canvas, r: [f32; 4], fraction: f32, alpha: f32) {
+    let radius = r[3] / 2.0;
+    c.style_box(r, [radius; 4], Color::WHITE.with_alpha(0.08 * alpha), None);
+    let fill = r[2] * fraction.clamp(0.0, 1.0);
+    if fill > 0.5 { c.style_box([r[0], r[1], fill.max(r[3]), r[3]], [radius; 4], AMBER.with_alpha(alpha), None); }
 }
 
 /// main.gd `_draw_tv`.
