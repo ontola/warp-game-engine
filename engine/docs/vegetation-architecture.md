@@ -749,6 +749,14 @@ The plant card baker preserves four area-weighted source normals across each pro
 
 ## G5 — Shared wind and animated shadow caching (NOT COMPLETE)
 
+Growth assemblies count the foliage supported by each fork. Their joint budget is shared
+between main boughs and finer laterals on those boughs. Every generated joint pivots
+at its own fork on the parent limb. Descendants without a separate joint follow their
+nearest selected ancestor. A limb's radius at its attachment determines its stiffness.
+The whole crown and the growth rig sample the same travelling gust at the planting.
+Each limb bends with the component of the gust across its axis and has a smaller,
+independent flutter. Its stem and foliage attachments share that pose.
+
 List reusable whole-tree instance slots in `Scene::tree_wind_ranges` to apply
 root-anchored sway and update their shadows as they move. For articulated
 branches, create a `PartWindRig` when the plant becomes resident and call

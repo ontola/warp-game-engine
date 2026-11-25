@@ -339,49 +339,76 @@ fn runs(plant: &Plant, reach: f32) -> Vec<(u32, Vec3, Vec3, f32, f32, bool)> {
     out
 }
 
-/// Build `plant` from `parts`. Main limbs with the most foliage get bones (up
-/// to `limits.max_branches`); everything else rides the trunk's. Twig runs grow
-/// and tufts thin only as far as `limits.max_instances` demands.
+/// Build `plant` from `parts`. Foliage-bearing forks share the bone budget
+/// between main boughs and finer laterals. Unselected axes follow the nearest
+/// selected ancestor. Twig runs merge and tufts thin to fit the instance budget.
 pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Limits) -> Result<(Assembly, Counts), String> {
     let n = plant.segments.len();
-    // The limb each segment belongs to: the first order-1 segment on its way up.
-    let mut limb = vec![u32::MAX; n];
+    // Each axis starts where a lateral shoot forks from a different growth
+    // order. Count the foliage supported by that fork, including its children.
+    let mut foliage = vec![0u32; n];
+    for tuft in &plant.tufts { foliage[tuft.segment as usize] += 1; }
+    for (i, segment) in plant.segments.iter().enumerate().rev() {
+        if let Some(p) = segment.parent { foliage[p as usize] += foliage[i]; }
+    }
+    let mut forks: Vec<_> = (0..n).filter(|&i| {
+        let s = plant.segments[i];
+        foliage[i] > 0 && s.order > 0
+            && s.parent.is_some_and(|p| plant.segments[p as usize].order < s.order)
+    }).collect();
+    forks.sort_unstable_by_key(|&i| (std::cmp::Reverse(foliage[i]), i));
+    let mut axis = vec![0; n];
     for (i, s) in plant.segments.iter().enumerate() {
-        limb[i] = match s.parent {
-            _ if s.order == 0 => u32::MAX,
-            Some(p) if plant.segments[p as usize].order == 0 => i as u32,
-            Some(p) => limb[p as usize],
-            None => u32::MAX,
-        };
-    }
-    let mut foliage = std::collections::HashMap::<u32, u32>::new();
-    for t in &plant.tufts {
-        let l = limb[t.segment as usize];
-        if l != u32::MAX {
-            *foliage.entry(l).or_default() += 1;
-        }
-    }
-    let mut ranked: Vec<(u32, u32)> = foliage.into_iter().map(|(l, c)| (c, l)).collect();
-    ranked.sort_unstable_by(|a, b| b.cmp(a));
-    ranked.truncate(limits.max_branches.saturating_sub(1));
-    ranked.sort_unstable_by_key(|r| r.1);
-    let mut branches = vec![BranchGroup { id: seed ^ 0x4252_414e_4348, parent: None, rest: Mat4::IDENTITY, stiffness: 1.0 }];
-    let mut bone = std::collections::HashMap::new();
-    for (_, l) in &ranked {
-        let s = plant.segments[*l as usize];
-        bone.insert(*l, branches.len() as u32);
-        branches.push(BranchGroup {
-            id: seed ^ 0x4252_414e_4348 ^ ((*l as u64 + 1) << 20),
-            parent: Some(0),
-            rest: Mat4::from_rotation_translation(along(s.from, s.to), s.from),
-            // Wind sway bounds every voxel level's error by angle x limb length:
-            // at 0.6 a 10 m limb added ~0.9 m, so the camera never left the
-            // source mesh and its splats filled the budget. Stiff, long limbs.
-            stiffness: 0.92,
+        axis[i] = s.parent.map_or(i, |p| {
+            if plant.segments[p as usize].order == s.order { axis[p as usize] } else { i }
         });
     }
-    let inverse: Vec<Mat4> = branches.iter().map(|b| b.rest.inverse()).collect();
-    let bone_of = |segment: u32| limb.get(segment as usize).and_then(|l| bone.get(l)).copied().unwrap_or(0);
+    // Keep the supporting boughs and reserve space for their real laterals.
+    // Ancestors sort before their children at equal supported foliage counts.
+    let budget = limits.max_branches.saturating_sub(1);
+    let mut selected = vec![false; n];
+    let mut count = 0;
+    for &i in forks.iter().filter(|&&i| plant.segments[i].order == 1).take(budget.div_ceil(2)) {
+        selected[i] = true;
+        count += 1;
+    }
+    for &i in &forks {
+        if count == budget { break; }
+        let s = plant.segments[i];
+        if s.order > 1 && s.parent.is_some_and(|p| selected[axis[p as usize]]) {
+            selected[i] = true;
+            count += 1;
+        }
+    }
+    for &i in &forks {
+        if count == budget { break; }
+        if !selected[i] && (plant.segments[i].order == 1 ||
+            plant.segments[i].parent.is_some_and(|p| selected[axis[p as usize]])) {
+            selected[i] = true;
+            count += 1;
+        }
+    }
+    let max_radius = forks.iter().map(|&i| plant.segments[i].radius[0]).fold(1e-5_f32, f32::max);
+    let mut limb = vec![0; n];
+    let mut branches = vec![BranchGroup { id: seed ^ 0x4252_414e_4348, parent: None, rest: Mat4::IDENTITY, stiffness: 1.0 }];
+    let mut inverse = vec![Mat4::IDENTITY];
+    for (i, s) in plant.segments.iter().enumerate() {
+        let parent = s.parent.map_or(0, |p| limb[p as usize]);
+        limb[i] = parent;
+        if !selected[i] { continue; }
+        let world = Mat4::from_rotation_translation(along(s.from, s.to), s.from);
+        let relative_radius = (s.radius[0] / max_radius).clamp(0., 1.);
+        let stiffness = (0.16 + 0.76 * relative_radius.sqrt()).min(branches[parent as usize].stiffness);
+        limb[i] = branches.len() as u32;
+        branches.push(BranchGroup {
+            id: seed ^ 0x4252_414e_4348 ^ ((i as u64 + 1) << 20),
+            parent: Some(parent),
+            rest: affine(inverse[parent as usize] * world),
+            stiffness,
+        });
+        inverse.push(world.inverse());
+    }
+    let bone_of = |segment: u32| limb[segment as usize];
 
     let mut reach = 0.6;
     let stems = loop {
@@ -567,6 +594,31 @@ mod tests {
             assert!(volume > 0.0, "part {:x}: volume {volume}", part.id);
             assert!(edges.values().all(|&e| e == (2, 0)), "part {:x} is not closed", part.id);
         }
+    }
+
+    #[test]
+    fn smaller_forks_bend_from_their_grown_parent() {
+        let plant = grow(&Species::jeffrey_pine(), 42, 23);
+        let parts = Parts::for_look(&Look::jeffrey_pine());
+        let (assembly, _) = assemble(&plant, &parts, Look::jeffrey_pine(), 23, limits()).unwrap();
+        let world = assembly.branch_transforms().unwrap();
+        let by_id: std::collections::HashMap<_, _> = assembly.branches.iter()
+            .enumerate().map(|(i, joint)| (joint.id, i)).collect();
+        let mut owners = vec![0; plant.segments.len()];
+        let mut flexible_forks = 0;
+        for (i, segment) in plant.segments.iter().enumerate() {
+            let support = segment.parent.map_or(0, |p| owners[p as usize]);
+            let limb_id = 23 ^ 0x4252_414e_4348 ^ ((i as u64 + 1) << 20);
+            let joint = by_id.get(&limb_id).copied().unwrap_or(support);
+            owners[i] = joint;
+            if joint == support { continue; }
+            assert_eq!(assembly.branches[joint].parent, Some(support as u32));
+            assert!(world[joint].w_axis.truncate().distance(segment.from) < 1e-4);
+            if support != 0 && assembly.branches[joint].stiffness < assembly.branches[support].stiffness {
+                flexible_forks += 1;
+            }
+        }
+        assert!(flexible_forks > 1);
     }
 
     #[test]
