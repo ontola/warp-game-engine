@@ -17,6 +17,8 @@ error and never falls back silently. `terrain_fly --upscale MODE` takes any
 mode, and F5 cycles native and the temporal modes while flying. Sideways
 offers all of them in its settings (`upscale`).
 
+Native TAA samples geometry at sixteen subpixel positions. The alpha cutoff for masked geometry stays fixed at the configured material threshold (`Lighting::alpha_cut` for ordinary cutouts). Sample positions can therefore smooth a needle against the sky while a magnified leaf keeps the same outline throughout the cycle.
+
 ## The portable upscaler
 
 `render/src/temporal_upscale.rs` with `shaders/temporal_upscale.wgsl`: one

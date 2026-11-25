@@ -656,7 +656,7 @@ pub struct Lighting {
     pub taa_blend: f32,
     /// How far (in sigmas) a still image's history may differ from the frame.
     pub taa_gamma: f32,
-    /// Alpha test threshold for needle cards (Godot's foliage: 0.42).
+    /// Fixed alpha contour for masked surfaces, including needle cards.
     pub alpha_cut: f32,
     /// Developer reference: 0 blended grass, 1 near geometry, 2 far volume.
     pub grass_reference: f32,
@@ -5021,24 +5021,12 @@ impl Renderer {
             if let Some(portable) = &mut up.portable { portable.reset(); }
         }
         let mut upscale_views = Vec::with_capacity(views.len());
-        // TAA: this frame's sub-pixel offset and alpha-test threshold.
+        // Integrate subpixel coverage by shifting sample positions. The opacity
+        // defining a cutout's contour stays fixed, even on a magnified leaf.
         let frame = self.frame.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let taa_on = light.taa > 0.5 && !dlss_on;
         let (jx, jy) = if dlss_on { halton(frame % 32 + 1) } else if taa_on { halton(frame % 16 + 1) } else { (0.0, 0.0) };
-        let cut = if taa_on {
-            // A different threshold every frame: averaged, the needles get
-            // soft partial coverage, like alpha to coverage with many samples.
-            let mut i = frame % 25 + 1;
-            let (mut f, mut r) = (1.0f32, 0.0f32);
-            while i > 0 {
-                f /= 5.0;
-                r += f * (i % 5) as f32;
-                i /= 5;
-            }
-            light.alpha_cut + (r - 0.5) * 0.3
-        } else {
-            light.alpha_cut
-        };
+        let cut = light.alpha_cut;
 
         // Anchor lighting to physical receivers. A look direction changes the
         // visible pixels, never the sun/occlusion field at a fixed world point.
@@ -7844,6 +7832,53 @@ mod raster_split_tests {
                 assert!(image.owners.iter().all(|&owner|owner==0 || owner==1),"the detail receives all uncovered rays");
             }
         }
+    }
+
+    #[test]
+    #[ignore = "exclusive GPU fixture"]
+    fn native_taa_keeps_a_magnified_cutout_contour_at_equal_sample_positions() {
+        let gpu = crate::Gpu::new().unwrap();
+        let mut scene = Scene::default();
+        // Magnify a small mask so a varying alpha threshold moves the leaf edge
+        // by multiple output pixels. Read visibility before the temporal resolve.
+        let image = image::RgbaImage::from_fn(16, 16, |x, y| {
+            let alpha = ((x + y) * 255 / 30) as u8;
+            image::Rgba([38, 120, 64, alpha])
+        });
+        let layer = scene.add_image("leaf with a soft edge", image);
+        let material = scene.add_material(Material {
+            tint: [1.; 3], layer, roughness: 1., flags: ALPHA_TEST, scale: 1., metal: 0.,
+        });
+        let leaf = scene.add_mesh(&crate::primitives::quad(material).mesh());
+        scene.add_instance(leaf, Affine3A::from_scale(Vec3::splat(5.)));
+        let mut light = Lighting {
+            taa: 1., alpha_cut: 0.55, gi: 0., sun_lux: 0., shadow_strength: 0.,
+            ..Default::default()
+        };
+        let renderer = Renderer::new(&gpu, &scene, &light);
+        let cam = Camera { pos: Vec3::new(0., 0., 6.), target: Vec3::ZERO, fov_y: 1., near: 0.05 };
+        let views = [ViewRect { cam, x: 0, y: 0, w: 96, h: 96 }];
+        let mask = |lighting: &Lighting| -> Vec<bool> {
+            let (_, stats) = renderer.capture_visibility(&gpu, &views, lighting, 96, 96).unwrap();
+            stats.visibility[0].ids.chunks_exact(4).map(|id| id != [255; 4]).collect()
+        };
+        let target = Renderer::output_texture(&gpu, 96, 96);
+        let next_phase = |lighting: &Lighting| {
+            for _ in 1..16 {
+                renderer.try_render_into(&gpu, &views, lighting, &target).unwrap();
+            }
+            mask(lighting)
+        };
+        let first = mask(&light);
+        let kept = first.iter().filter(|&&covered| covered).count();
+        assert!(kept > 200 && kept < first.len() / 2);
+        let repeated = next_phase(&light);
+        let changed = first.iter().zip(&repeated).filter(|(a, b)| a != b).count();
+        assert_eq!(changed, 0, "identical sample positions changed the cutout silhouette");
+
+        light.alpha_cut = 0.8;
+        let narrower = next_phase(&light);
+        assert!(narrower.iter().filter(|&&covered| covered).count() < kept / 2);
     }
 
     // Opaque and alpha-tested clusters draw through different pipelines. The

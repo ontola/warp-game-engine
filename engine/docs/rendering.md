@@ -42,7 +42,9 @@ and the measurements and dead ends are in the [development log](log/README.md).
   (`temporal-*` modes) or DLSS (the `dlss` cargo feature), both fed by
   motion vectors that cover skinning and wind
   ([temporal upscaling](temporal-upscaling.md)). Then subtle bloom and AgX
-  tone mapping. A requested mode never falls back silently to another path.
+  tone mapping. Native TAA jitters the subpixel sample position while
+  masked leaves retain their configured alpha contour across frames. A requested
+  mode never falls back silently to another path.
 - **Split screen.** `render::split_rects` lays out up to four views; one
   call renders all of them into one output, sharing work such as skinning
   and wind.
