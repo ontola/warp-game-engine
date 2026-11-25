@@ -448,7 +448,7 @@ pub(crate) mod page {
         {
             // The browser page's notice (index.html #club-notice), without
             // the keyboard: a phone host has none.
-            const EMPTY: &str = "Connect a controller and press A\nor scan the QR code on the wall with your phone";
+            const EMPTY: &str = "Connect a controller and press A\nYou can also scan the QR code and pick Play on this phone, but a controller is the best way to play";
             if empty { app::web::banner(EMPTY, None) } else { app::web::clear_banner(Some(EMPTY)) }
         }
         #[cfg(target_arch = "wasm32")]
