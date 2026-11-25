@@ -2,7 +2,7 @@
 //! follower's people and sends it the world; a follower shows it.
 use super::LuaGame;
 use crate::api::{self, HudItem, Player};
-use crate::online::{self, Down, Follower, OnlineHost, Pad, Remote, Up};
+use crate::online::{self, Down, FollowLink, Follower, Got, HostLink, LinkEvent, OnlineHost, Pad, Remote, Up};
 use app::{Controls, Game};
 use script::mlua::{self, Value};
 
@@ -21,19 +21,32 @@ const MAX_PEOPLE: usize = 8;
 impl LuaGame {
     /// Open this game to other couches; returns the ticket they join with.
     /// `lan` keeps it to direct addresses (a local network, tests).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn host_online(&mut self, lan: bool) -> Result<String, String> {
-        let h = OnlineHost::start(lan)?;
-        let ticket = h.ticket().to_string();
+        Ok(self.host_with(Box::new(online::iroh_link::Host::start(lan)?)))
+    }
+
+    /// Host other couches over this transport; returns its ticket.
+    pub fn host_with(&mut self, link: Box<dyn HostLink>) -> String {
+        let h = OnlineHost::new(link);
+        let ticket = h.ticket();
         self.core().sounds.record = Some(Vec::new());
         self.online = Online::Host(Box::new(h));
-        Ok(ticket)
+        ticket
     }
 
     /// Follow a host: this couch's people play there and this game only shows
     /// what the host sends. The game's own Luau stops running.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn follow_online(&mut self, ticket: &str, lan: bool, screen: [u32; 2]) -> Result<(), String> {
+        self.follow_with(Box::new(online::iroh_link::Client::join(ticket, lan)?), screen);
+        Ok(())
+    }
+
+    /// Follow a host over this transport.
+    pub fn follow_with(&mut self, link: Box<dyn FollowLink>, screen: [u32; 2]) {
         let people = self.core().roster.iter().filter(|p| !p.bot).count().max(1);
-        let f = Follower::join(ticket, lan, people as u8, screen, &self.game_id())?;
+        let f = Follower::new(link, people as u8, screen, &self.game_id());
         {
             let mut c = self.core();
             c.world.clear();
@@ -43,7 +56,6 @@ impl LuaGame {
         }
         self.assign_views();
         self.online = Online::Follow(Box::new(f));
-        Ok(())
     }
 
     pub fn is_following(&self) -> bool { matches!(self.online, Online::Follow(_)) }
@@ -61,43 +73,44 @@ impl LuaGame {
     /// in roster order (this couch's pads first, then each follower's).
     pub(super) fn online_controls(&mut self, local: Vec<Controls>) -> Vec<Controls> {
         let Online::Host(h) = &mut self.online else { return local };
-        let mut joined: Vec<(u64, u8, [u32; 2], String, net::HostSender<Down>)> = Vec::new();
+        let mut joined: Vec<(u64, u8, [u32; 2], String)> = Vec::new();
         let mut left = Vec::new();
         let mut lines = Vec::new();
-        while let Some(ev) = h.net.poll() {
+        while let Some(ev) = h.link.poll() {
             match ev {
-                net::HostEvent::Joined { client, tx } => { h.pending.insert(client, tx); }
-                net::HostEvent::Message { client, msg } => match msg {
+                LinkEvent::Joined(_) => {}
+                LinkEvent::Message(client, msg) => match msg {
                     Up::Hello { people, screen, game } => {
-                        if let Some(tx) = h.pending.remove(&client) { joined.push((client, people, screen, game, tx)); }
+                        if !h.remotes.contains_key(&client) && !joined.iter().any(|j| j.0 == client) { joined.push((client, people, screen, game)); }
                     }
                     Up::Pads(pads) => if let Some(r) = h.remotes.get_mut(&client) {
                         for (i, p) in pads.iter().enumerate() { if let Some(acc) = r.pressed.get_mut(i) { *acc |= p.pressed; } }
                         r.pads = pads;
                     },
                     Up::Screen(s) => if let Some(r) = h.remotes.get_mut(&client) { r.screen = s; },
-                    Up::Ping(t) => if let Some(r) = h.remotes.get(&client) { let _ = r.tx.send(Down::Pong(t)); },
+                    Up::Ping(t) => if h.remotes.contains_key(&client) { h.link.send(client, Down::Pong(t)); },
                 },
-                net::HostEvent::Left { client } => { h.pending.remove(&client); if h.remotes.remove(&client).is_some() { left.push(client); } }
+                LinkEvent::Left(client) => { if h.remotes.remove(&client).is_some() { left.push(client); } }
             }
         }
-        for (client, people, screen, game, tx) in joined {
+        for (client, people, screen, game) in joined {
             let mine = self.game_id();
+            let send = |g: &mut Self, m: Down| if let Online::Host(h) = &mut g.online { h.link.send(client, m); };
             if game != mine {
-                let _ = tx.send(Down::Bye(format!("this host plays {mine}, not {game}")));
+                send(self, Down::Bye(format!("this host plays {mine}, not {game}")));
                 lines.push(format!("online: a couch with {game} was turned away (this is {mine})"));
                 continue;
             }
             let players = self.seat_remote(client, people as usize);
             if players.is_empty() {
-                let _ = tx.send(Down::Bye(format!("full: {MAX_PEOPLE} people at most")));
+                send(self, Down::Bye(format!("full: {MAX_PEOPLE} people at most")));
                 lines.push(format!("online: a couch of {people} was turned away (full)"));
                 continue;
             }
-            let _ = tx.send(Down::Welcome { players: players.clone(), tick_rate: self.cfg.tick_rate });
+            send(self, Down::Welcome { players: players.clone(), tick_rate: self.cfg.tick_rate });
             lines.push(format!("online: a couch joined with {} people (players {players:?})", players.len()));
             let Online::Host(h) = &mut self.online else { unreachable!() };
-            h.remotes.insert(client, Remote { tx, pressed: vec![0; players.len()], pads: vec![Pad::default(); players.len()], players, screen, base: Default::default(), meter: Default::default(), sent: 0, parts: [0; 4] });
+            h.remotes.insert(client, Remote { pressed: vec![0; players.len()], pads: vec![Pad::default(); players.len()], players, screen, base: Default::default(), meter: Default::default(), sent: 0, parts: [0; 4] });
         }
         for client in left { self.unseat_remote(client); lines.push("online: a couch left".into()); }
         for l in lines { self.say(l); }
@@ -169,8 +182,9 @@ impl LuaGame {
         for (client, screen) in clients {
             let hud = self.draw_for(client, screen);
             let c = api::lock(&self.core);
-            let Online::Host(h) = &mut self.online else { return };
-            let Some(r) = h.remotes.get_mut(&client) else { continue };
+            let Online::Host(host) = &mut self.online else { return };
+            let OnlineHost { link, remotes } = &mut **host;
+            let Some(r) = remotes.get_mut(&client) else { continue };
             let shared = c.roster.iter().find(|p| p.view.is_some()).map(|p| p.cam);
             let cams = r.players.iter().filter_map(|id| c.roster.iter().find(|p| p.id == *id))
                 .map(|p| online::cam_out(&if c.shared_view { shared.unwrap_or(p.cam) } else { p.cam })).collect();
@@ -179,13 +193,13 @@ impl LuaGame {
             f.cams = cams;
             f.hud = r.base.hud(hud.iter().map(online::hud_out).collect());
             f.sounds = sounds.clone();
-            let (a, b, h) = (online::wire_size(&f.full) + online::wire_size(&f.looks) + online::wire_size(&f.wires), online::wire_size(&f.poses), online::wire_size(&f.hud));
+            let (a, b, hb) = (online::wire_size(&f.full) + online::wire_size(&f.looks) + online::wire_size(&f.wires), online::wire_size(&f.poses), online::wire_size(&f.hud));
             let msg = Down::Frame(f);
             let n = online::wire_size(&msg);
             r.meter.add(n);
             r.sent += n as u64;
-            r.parts[0] += a as u64; r.parts[1] += b as u64; r.parts[2] += h as u64; r.parts[3] += (n - a - b - h) as u64;
-            if r.tx.send(msg).is_err() { lines.push(format!("online: couch {client} fell behind")); }
+            r.parts[0] += a as u64; r.parts[1] += b as u64; r.parts[2] += hb as u64; r.parts[3] += (n - a - b - hb) as u64;
+            if !link.send(client, msg) { lines.push(format!("online: couch {client} fell behind")); }
             if let Some((kbit, per)) = r.meter.report(5.0) {
                 lines.push(format!("online: to couch {client}: {kbit:.0} kbit/s, {per:.0} bytes a frame, {} entities", self.core().world.entities.len()));
             }
@@ -233,16 +247,18 @@ impl LuaGame {
             let people = c.roster.iter().filter(|p| !p.bot).count();
             let mut pads: Vec<Pad> = controls.iter().map(Pad::from).collect();
             pads.resize(people.max(1), Pad::default());
-            f.net.send(Up::Pads(pads));
+            f.link.send(Up::Pads(pads));
             if f.last_ping.is_none_or(|t| t.elapsed().as_secs_f32() > 1.0) {
-                f.net.send(Up::Ping(f.now_us()));
+                if f.players.is_empty() { let hello = f.hello.clone(); f.link.send(hello); }
+                let now = f.now_us();
+                f.link.send(Up::Ping(now));
                 f.last_ping = Some(web_time::Instant::now());
             }
             loop {
-                let msg = match f.net.poll() {
-                    Ok(m) => m,
-                    Err(net::TryRecvError::Empty) => break,
-                    Err(net::TryRecvError::Disconnected) => { if f.closed.is_none() { f.closed = Some("the host is gone".into()); lines.push("online: the host is gone".into()); } break; }
+                let msg = match f.link.poll() {
+                    Got::Msg(m) => m,
+                    Got::Empty => break,
+                    Got::Closed => { if f.closed.is_none() { f.closed = Some("the host is gone".into()); lines.push("online: the host is gone".into()); } break; }
                 };
                 match msg {
                     Down::Welcome { players, tick_rate } => { lines.push(format!("online: joined as players {players:?} at {tick_rate} Hz")); f.players = players; }
@@ -278,7 +294,7 @@ impl LuaGame {
     /// Follower draw: the HUD the host drew for this screen.
     pub(super) fn follow_hud(&mut self, screen: [u32; 2]) {
         let Online::Follow(f) = &mut self.online else { return };
-        if f.screen != screen { f.screen = screen; f.net.send(Up::Screen(screen)); }
+        if f.screen != screen { f.screen = screen; f.link.send(Up::Screen(screen)); }
         let hud = f.hud.clone();
         self.core().hud = hud;
     }

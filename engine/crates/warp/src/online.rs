@@ -336,70 +336,119 @@ impl Meter {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-pub use transport::*;
+/// What a host's transport reports.
+pub enum LinkEvent { Joined(u64), Message(u64, Up), Left(u64) }
 
+/// A host's side of the connections to follower couches: iroh on native
+/// builds ([`iroh_link`]), WebRTC data channels in a browser (`online_web`).
+pub trait HostLink {
+    fn poll(&mut self) -> Option<LinkEvent>;
+    /// False when that couch can no longer be reached.
+    fn send(&mut self, client: u64, msg: Down) -> bool;
+    /// What another couch joins with.
+    fn ticket(&self) -> String;
+}
+
+pub enum Got { Msg(Down), Empty, Closed }
+
+/// A follower's connection to its host.
+pub trait FollowLink {
+    fn send(&mut self, msg: Up);
+    fn poll(&mut self) -> Got;
+}
+
+/// A follower couch, as the host sees it.
+pub struct Remote {
+    /// Its people's player ids in the host's roster, in its order.
+    pub players: Vec<u32>,
+    pub screen: [u32; 2],
+    /// The newest pads, and the presses since the last host tick.
+    pub pads: Vec<Pad>,
+    pub pressed: Vec<u32>,
+    pub base: Baseline,
+    pub meter: Meter,
+    /// Bytes sent to it so far, and by part: full entities, poses, HUD, the rest.
+    pub sent: u64,
+    pub parts: [u64; 4],
+}
+
+pub struct OnlineHost {
+    pub link: Box<dyn HostLink>,
+    pub remotes: BTreeMap<u64, Remote>,
+}
+
+impl OnlineHost {
+    pub fn new(link: Box<dyn HostLink>) -> Self { OnlineHost { link, remotes: BTreeMap::new() } }
+    pub fn ticket(&self) -> String { self.link.ticket() }
+}
+
+pub struct Follower {
+    pub link: Box<dyn FollowLink>,
+    pub players: Vec<u32>,
+    pub hud: Vec<HudItem>,
+    /// The HUD as sent, which patches apply to.
+    pub wire_hud: Vec<WHud>,
+    pub screen: [u32; 2],
+    pub meter: Meter,
+    pub rtt_ms: Option<f64>,
+    pub last_ping: Option<web_time::Instant>,
+    pub started: web_time::Instant,
+    pub host_tick: u64,
+    pub frames: u64,
+    pub closed: Option<String>,
+    /// Frames received and not shown yet: one is shown per tick, so a
+    /// late packet does not stall the picture (a small jitter buffer).
+    pub queue: std::collections::VecDeque<Frame>,
+    /// The hello, sent again until the host welcomes this couch (a browser
+    /// link opens some time after it is made).
+    pub hello: Up,
+}
+
+impl Follower {
+    pub fn new(mut link: Box<dyn FollowLink>, people: u8, screen: [u32; 2], game: &str) -> Self {
+        let hello = Up::Hello { people, screen, game: game.into() };
+        link.send(hello.clone());
+        Follower { link, players: Vec::new(), hud: Vec::new(), wire_hud: Vec::new(), screen, meter: Meter::default(), rtt_ms: None, last_ping: None, started: web_time::Instant::now(), host_tick: 0, frames: 0, closed: None, queue: Default::default(), hello }
+    }
+    pub fn now_us(&self) -> u64 { self.started.elapsed().as_micros() as u64 }
+}
+
+/// The native transport: the `net` crate (iroh, QUIC with hole punching).
 #[cfg(not(target_arch = "wasm32"))]
-mod transport {
+pub mod iroh_link {
     use super::*;
 
-    /// A follower couch, as the host sees it.
-    pub struct Remote {
-        pub tx: net::HostSender<Down>,
-        /// Its people's player ids in the host's roster, in its order.
-        pub players: Vec<u32>,
-        pub screen: [u32; 2],
-        /// The newest pads, and the presses since the last host tick.
-        pub pads: Vec<Pad>,
-        pub pressed: Vec<u32>,
-        pub base: Baseline,
-        pub meter: Meter,
-        /// Bytes sent to it so far, and by part: full entities, poses, HUD, the rest.
-        pub sent: u64,
-        pub parts: [u64; 4],
-    }
+    pub struct Host { net: net::Host<Up, Down>, txs: BTreeMap<u64, net::HostSender<Down>> }
 
-    pub struct OnlineHost {
-        pub net: net::Host<Up, Down>,
-        pub remotes: BTreeMap<u64, Remote>,
-        /// Connected, before their hello.
-        pub pending: BTreeMap<u64, net::HostSender<Down>>,
-    }
-
-    impl OnlineHost {
+    impl Host {
         pub fn start(lan: bool) -> Result<Self, String> {
             // Frames are deltas: never collapse them.
-            let net = net::Host::start(ALPN, lan, |_| false)?;
-            Ok(OnlineHost { net, remotes: BTreeMap::new(), pending: BTreeMap::new() })
+            Ok(Host { net: net::Host::start(ALPN, lan, |_| false)?, txs: BTreeMap::new() })
         }
-        pub fn ticket(&self) -> &str { &self.net.ticket }
     }
 
-    pub struct Follower {
-        pub net: net::Client<Up, Down>,
-        pub players: Vec<u32>,
-        pub hud: Vec<HudItem>,
-        /// The HUD as sent, which patches apply to.
-        pub wire_hud: Vec<WHud>,
-        pub screen: [u32; 2],
-        pub meter: Meter,
-        pub rtt_ms: Option<f64>,
-        pub last_ping: Option<web_time::Instant>,
-        pub started: web_time::Instant,
-        pub host_tick: u64,
-        pub frames: u64,
-        pub closed: Option<String>,
-        /// Frames received and not shown yet: one is shown per tick, so a
-        /// late packet does not stall the picture (a small jitter buffer).
-        pub queue: std::collections::VecDeque<Frame>,
+    impl HostLink for Host {
+        fn poll(&mut self) -> Option<LinkEvent> {
+            Some(match self.net.poll()? {
+                net::HostEvent::Joined { client, tx } => { self.txs.insert(client, tx); LinkEvent::Joined(client) }
+                net::HostEvent::Message { client, msg } => LinkEvent::Message(client, msg),
+                net::HostEvent::Left { client } => { self.txs.remove(&client); LinkEvent::Left(client) }
+            })
+        }
+        fn send(&mut self, client: u64, msg: Down) -> bool { self.txs.get(&client).is_some_and(|tx| tx.send(msg).is_ok()) }
+        fn ticket(&self) -> String { self.net.ticket.clone() }
     }
 
-    impl Follower {
-        pub fn join(ticket: &str, lan: bool, people: u8, screen: [u32; 2], game: &str) -> Result<Self, String> {
-            let net = net::Client::join(ticket, ALPN, lan)?;
-            net.send(Up::Hello { people, screen, game: game.into() });
-            Ok(Follower { net, players: Vec::new(), hud: Vec::new(), wire_hud: Vec::new(), screen, meter: Meter::default(), rtt_ms: None, last_ping: None, started: web_time::Instant::now(), host_tick: 0, frames: 0, closed: None, queue: Default::default() })
+    pub struct Client(net::Client<Up, Down>);
+
+    impl Client {
+        pub fn join(ticket: &str, lan: bool) -> Result<Self, String> { Ok(Client(net::Client::join(ticket, ALPN, lan)?)) }
+    }
+
+    impl FollowLink for Client {
+        fn send(&mut self, msg: Up) { self.0.send(msg); }
+        fn poll(&mut self) -> Got {
+            match self.0.poll() { Ok(m) => Got::Msg(m), Err(net::TryRecvError::Empty) => Got::Empty, Err(_) => Got::Closed }
         }
-        pub fn now_us(&self) -> u64 { self.started.elapsed().as_micros() as u64 }
     }
 }
