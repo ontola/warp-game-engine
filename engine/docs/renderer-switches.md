@@ -32,6 +32,8 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_SHADE_UNLIT` | Frames without spot or local lights keep the full shade pipelines instead of the ones built without the local light loop. |
 | `KERN_TERRAIN_COARSE` | Turns off the coarse terrain footprint in shading. `KERN_COARSE_FOOTPRINT_M=<m>` sets its size. |
 | `KERN_TILED_POST` | Untiled tone mapping and post (same image). |
+| `KERN_FOOTPRINT_LOD` | The simple and compact shade passes pick the albedo mip from distance alone (mip 0 nearer than 33 m) instead of the pixel's footprint through the triangle's UVs. |
+| `KERN_LIGHT_TILES` | The simple and compact shade passes loop every local light per pixel instead of only those reaching the pixel's 8x8 tile (same image). |
 | `KERN_SKY_VIS_CACHE` | No cached sky transmittance through the canopy. |
 | `KERN_CANOPY_CLUMPING` | Crowns as a uniform fog at the coarse canopy levels again (a forest floor far away then sees a fifth of its sky; `canopy.rs` clumping_on). |
 | `KERN_VOXEL_GAP_MIPS` | Coarse tree voxel levels add their children's leaf area again (a sparse branch cooks into a near-solid ball; `vegetation_aggregate.rs` gap_preserving_area). Part of the cook key, so it recooks. |

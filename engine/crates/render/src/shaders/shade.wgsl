@@ -4002,7 +4002,68 @@ fn bake_sky_visibility(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 // Low-cost material lighting for the shared low graphics profile.
-fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool) {
+// The compact pass's local lights by 8x8 tile (KERN_LIGHT_TILES=0 off):
+// the workgroup bounds its pixels' depth-reconstructed positions, each of
+// the first 32 lanes tests one light's sphere against those bounds, and a
+// pixel then walks only the lights that reach its tile. Without it every
+// pixel in a lit room looped all 32 (5 of 20.6 ns a pixel on an Adreno 740).
+override LIGHT_TILES: bool = true;
+// The simple/compact pass samples albedo with the pixel's real footprint
+// (ray differentials through the triangle's UVs) instead of a LOD from
+// distance alone, which read mip 0 of the 2048 px layers for everything
+// nearer than 33 m: uncached texel reads that cost an Adreno 740 about a
+// third of the pass, and shimmer. KERN_FOOTPRINT_LOD=0: the old LOD.
+override FOOTPRINT_LOD: bool = true;
+// The UV offset of a world offset `v` in a triangle's plane (edges e1, e2
+// carrying UV steps du1, du2).
+fn triangle_uv_delta(v: vec3<f32>, e1: vec3<f32>, e2: vec3<f32>, du1: vec2<f32>, du2: vec2<f32>) -> vec2<f32> {
+    let d11 = dot(e1, e1); let d12 = dot(e1, e2); let d22 = dot(e2, e2);
+    let det = d11 * d22 - d12 * d12;
+    if abs(det) < 1e-12 { return vec2<f32>(0.0); }
+    let r1 = dot(v, e1); let r2 = dot(v, e2);
+    return (du1 * (d22 * r1 - d12 * r2) + du2 * (d11 * r2 - d12 * r1)) / det;
+}
+var<workgroup> light_tile_lo: array<atomic<u32>, 3>;
+var<workgroup> light_tile_hi: array<atomic<u32>, 3>;
+var<workgroup> light_tile_mask: atomic<u32>;
+// f32 to u32 with the same order (atomicMin/Max on positions).
+fn ordered_bits(f: f32) -> u32 { let b = bitcast<u32>(f); return select(b ^ 0x80000000u, ~b, (b & 0x80000000u) != 0u); }
+fn unordered_bits(u: u32) -> f32 { return bitcast<f32>(select(~u, u ^ 0x80000000u, (u & 0x80000000u) != 0u)); }
+// Bit i: local light i can reach a pixel of this workgroup. Called by every
+// lane before any return (barriers).
+fn local_light_tile(gid: vec3<u32>, lane: u32) -> u32 {
+    if !LIGHT_TILES { return 0xffffffffu; }
+    if lane == 0u {
+        for (var k = 0u; k < 3u; k++) { atomicStore(&light_tile_lo[k], 0xffffffffu); atomicStore(&light_tile_hi[k], 0u); }
+        atomicStore(&light_tile_mask, 0u);
+    }
+    workgroupBarrier();
+    let size = vec2<u32>(view.size.xy);
+    let px = vec2<i32>(min(gid.xy, max(size, vec2<u32>(1u)) - 1u));
+    let depth = textureLoad(depth_tex, px, 0);
+    if all(gid.xy < size) && depth > 0.0 && textureLoad(vis_tex, px, 0).r != 0xffffffffu {
+        let ndc = (vec2<f32>(gid.xy) + 0.5) / view.size.xy * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0);
+        let h = view.inv_view_proj * vec4<f32>(ndc, depth, 1.0);
+        let p = h.xyz / h.w;
+        for (var k = 0u; k < 3u; k++) { atomicMin(&light_tile_lo[k], ordered_bits(p[k])); atomicMax(&light_tile_hi[k], ordered_bits(p[k])); }
+    }
+    workgroupBarrier();
+    let count = min(headlights.count.y, 32u);
+    let lo_x = atomicLoad(&light_tile_lo[0]);
+    if lane < count && lo_x <= atomicLoad(&light_tile_hi[0]) {
+        // 10 cm slack: the shade pass intersects the exact (wind-moved)
+        // triangle, the bounds come from the depth buffer.
+        let lo = vec3<f32>(unordered_bits(lo_x), unordered_bits(atomicLoad(&light_tile_lo[1])), unordered_bits(atomicLoad(&light_tile_lo[2]))) - 0.1;
+        let hi = vec3<f32>(unordered_bits(atomicLoad(&light_tile_hi[0])), unordered_bits(atomicLoad(&light_tile_hi[1])), unordered_bits(atomicLoad(&light_tile_hi[2]))) + 0.1;
+        let lamp = headlights.local[lane].position_range;
+        let gap = lamp.xyz - clamp(lamp.xyz, lo, hi);
+        if dot(gap, gap) < lamp.w * lamp.w { atomicOr(&light_tile_mask, 1u << lane); }
+    }
+    workgroupBarrier();
+    return atomicLoad(&light_tile_mask);
+}
+
+fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool, tile_lights:u32) {
     if any(gid.xy>=vec2<u32>(view.size.xy)) {return;}
     let px=vec2<i32>(gid.xy);
     let ndc=(vec2<f32>(gid.xy)+0.5)/view.size.xy*vec2<f32>(2.0,-2.0)+vec2<f32>(-1.0,1.0);
@@ -4064,7 +4125,15 @@ fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool) {
     }
     if SHADE_PROBE == 3u { textureStore(out_hdr,px,vec4<f32>(base*(0.2+sun_vis)+surface_emit,1.0)); return; }
     if m.layer>=0 && !(terrain_lighting && (m.flags&32770u)==32770u) {let uv=uvs[0]*b0+uvs[1]*b1+uvs[2]*b2;
-        base*=textureSampleLevel(albedo,samp,uv,m.layer,max(log2(max(distance(p,view.cam.xyz)*0.03,1.0)),albedo_lod_floor(m.layer))).rgb;}
+        if FOOTPRINT_LOD {
+            set_pixel_footprint(ndc, p, safe_normalize(cross(e1, e2)), distance(p, view.cam.xyz));
+            let du1 = uvs[1] - uvs[0]; let du2 = uvs[2] - uvs[0];
+            let gx = triangle_uv_delta(fp.dx, e1, e2, du1, du2); let gy = triangle_uv_delta(fp.dy, e1, e2, du1, du2);
+            let floor_scale = albedo_grad(m.layer, gx, gy);
+            base*=textureSampleGrad(albedo,samp,uv,m.layer,gx*floor_scale,gy*floor_scale).rgb;
+        } else {
+            base*=textureSampleLevel(albedo,samp,uv,m.layer,max(log2(max(distance(p,view.cam.xyz)*0.03,1.0)),albedo_lod_floor(m.layer))).rgb;
+        }}
     var ambient=sky_irradiance(n);
     if FEATURE_IRRADIANCE && gi.params.w > 0.0 {
         let cached=irradiance_sample(p+n*0.05,n);
@@ -4080,7 +4149,16 @@ fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool) {
     }
     var rad=base*(ambient+light.sun_color.rgb*light.sun_dir.w*sun_vis*max(dot(n,light.sun_dir.xyz),0.0))/3.14159265;
     if SHADE_PROBE == 4u { textureStore(out_hdr,px,vec4<f32>(min(rad,vec3<f32>(65504.0)),1.0)); return; }
-    for(var index=0u;index<incident_light_count(p);index++) {
+    // Shadowed lights first, then the local lights that reach this tile.
+    let shadowed=min(headlights.count.x,8u);
+    let lights=incident_light_count(p);
+    var local_bits=select(0u,tile_lights,lights>shadowed);
+    for(var index=0u;index<lights;index++) {
+        if index>=shadowed {
+            if local_bits==0u {break;}
+            index=shadowed+firstTrailingBit(local_bits);local_bits&=local_bits-1u;
+            if index>=lights {break;}
+        }
         if dot(n,incident_light_position(index)-p)<=0.0 {continue;}
         let sample=incident_light_sample(index,p,n);
         rad+=base*sample.irradiance*max(dot(n,sample.direction),0.0)/PI;
@@ -4102,7 +4180,9 @@ fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool) {
 }
 
 @compute @workgroup_size(8, 8)
-fn shade_simple(@builtin(global_invocation_id) gid:vec3<u32>) { shade_simple_material(gid, false); }
+fn shade_simple(@builtin(global_invocation_id) gid:vec3<u32>) { shade_simple_material(gid, false, 0xffffffffu); }
 
 @compute @workgroup_size(8, 8)
-fn shade_compact(@builtin(global_invocation_id) gid:vec3<u32>) { shade_simple_material(gid, true); }
+fn shade_compact(@builtin(global_invocation_id) gid:vec3<u32>, @builtin(local_invocation_index) lane:u32) {
+    shade_simple_material(gid, true, local_light_tile(gid, lane));
+}
