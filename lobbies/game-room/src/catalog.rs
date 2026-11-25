@@ -494,20 +494,6 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
         c.clip_to(Some(open));
         let k = 0.8;
         let loading = lobby.host.loading_shown(game);
-        if loading.is_some() && !current.as_ref().is_some_and(|(id, _)| id == game) {
-            // Loading: a ring of dots going round, top left.
-            let radius = (26.0 * scale * k).floor();
-            let center = [open[0] + radius * 1.35, r[1] + radius * 1.35];
-            c.circle(center, radius + 3.0 * scale, Color::hex("0b0b12").with_alpha(fade));
-            c.circle(center, radius, crate::lobby::AMBER.with_alpha(fade));
-            let turn = (lobby.time * 1.5).fract();
-            for i in 0..8 {
-                let a = std::f32::consts::TAU * i as f32 / 8.0;
-                let lit = ((i as f32 / 8.0 - turn).rem_euclid(1.0) * 8.0) as usize;
-                let alpha = 1.0 - lit as f32 / 9.0;
-                c.circle([center[0] + a.cos() * radius * 0.55, center[1] + a.sin() * radius * 0.55], radius * 0.14, Color::hex("0b0b12").with_alpha(alpha * fade));
-            }
-        }
         if let Some(percent) = loading {
             let bh = (34.0 * scale * k).floor();
             let band = [r[0], r[1] + r[3] - bh * 1.9, r[2], bh * 1.9];
@@ -525,30 +511,30 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
             c.rect(band, crate::room::PANEL_SOLID.with_alpha(0.85 * fade));
             c.text(faces.bold, [open[0], band[1] + band[3] / 2.0 + fs * 0.36], &reason, TextAlign::Center, open[2], fs, TEXT.with_alpha(fade));
         }
-        // The game on now: a pause sign (it waits paused) or a play sign,
-        // where the queue's numbers go.
-        if current.as_ref().is_some_and(|(id, _)| id == game) {
-            let paused = current.as_ref().is_some_and(|c| c.1);
-            let radius = (26.0 * scale * k).floor();
-            let center = [open[0] + open[2] - radius * 1.35, r[1] + radius * 1.35];
-            let ink = Color::hex("0b0b12").with_alpha(fade);
-            c.circle(center, radius + 3.0 * scale, ink);
-            c.circle(center, radius, crate::lobby::AMBER.with_alpha(fade));
-            let u = radius * 0.42;
-            if paused {
-                c.rect([center[0] - u * 0.85, center[1] - u, u * 0.6, u * 2.0], ink);
-                c.rect([center[0] + u * 0.25, center[1] - u, u * 0.6, u * 2.0], ink);
+        // A quiet tag top right (DESIGN.md "Playlist"): the game on now gets
+        // a pause or play sign, a queued game its place, "02" as in the list.
+        let place = queue.iter().position(|e| &e.game == game);
+        let on_now = current.as_ref().is_some_and(|(id, _)| id == game);
+        if on_now || place.is_some() {
+            let fs = (20.0 * scale).floor();
+            let label = place.map(|p| format!("{:02}", p + 1)).unwrap_or_default();
+            let tw = if on_now { fs * 1.6 } else { render::hud::measure(&label, faces.bold, fs)[0] + fs * 0.9 };
+            let tag = [open[0] + open[2] - tw - 10.0 * scale, r[1] + 10.0 * scale, tw, fs * 1.5];
+            c.style_box(tag, [8.0 * scale; 4], crate::room::PANEL_SOLID.with_alpha(0.78 * fade), None);
+            if on_now {
+                let paused = current.as_ref().is_some_and(|c| c.1);
+                let center = [tag[0] + tag[2] / 2.0, tag[1] + tag[3] / 2.0];
+                let u = fs * 0.3;
+                let ink = crate::lobby::AMBER.with_alpha(fade);
+                if paused {
+                    c.rect([center[0] - u * 0.85, center[1] - u, u * 0.6, u * 2.0], ink);
+                    c.rect([center[0] + u * 0.25, center[1] - u, u * 0.6, u * 2.0], ink);
+                } else {
+                    c.polygon(&[[center[0] - u * 0.7, center[1] - u], [center[0] + u * 1.0, center[1]], [center[0] - u * 0.7, center[1] + u]], ink);
+                }
             } else {
-                c.polygon(&[[center[0] - u * 0.7, center[1] - u], [center[0] + u * 1.0, center[1]], [center[0] - u * 0.7, center[1] + u]], ink);
+                c.text(faces.bold, [tag[0], tag[1] + tag[3] / 2.0 + fs * 0.36], &label, TextAlign::Center, tag[2], fs, TEXT.with_alpha(0.85 * fade));
             }
-        } else if let Some(place) = queue.iter().position(|e| &e.game == game) {
-            let radius = (26.0 * scale * k).floor();
-            // Top right of the part of the card that shows.
-            let center = [open[0] + open[2] - radius * 1.35, r[1] + radius * 1.35];
-            c.circle(center, radius + 3.0 * scale, Color::hex("0b0b12").with_alpha(fade));
-            c.circle(center, radius, crate::lobby::GREEN.with_alpha(fade));
-            let fs = (radius * 1.1).floor();
-            c.text(faces.bold, [center[0] - radius, center[1] + fs * 0.36], &(place + 1).to_string(), TextAlign::Center, radius * 2.0, fs, Color::hex("0b0b12").with_alpha(fade));
         }
     }
     c.clip_to(None);

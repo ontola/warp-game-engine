@@ -185,9 +185,8 @@ What a player must do next. Top centre, one at a time.
 
 ### Toast
 
-A game someone asked to start is not a toast but one loading card in the
-toast spot ("Loading Dead Miles  40%" over the progress bar), until the game
-runs. A newer ask replaces it, so starts never stack.
+Starting a game gives no toast: its progress bar already shows on its card,
+the TV and Up next.
 
 Something happened ("Joep joined", "Update ready"). Bottom centre in the
 room, top centre in the catalog view (so it doesn't cover the buttons),
@@ -216,9 +215,10 @@ view, catalog): the art carries the title; tagline, player count and
 price live on the game page. Without a cover: the game's colour with its
 title. The website's Gameplay view shows screenshots, so it keeps a title.
  Unselected 72 % brightness; hover 90 %; selected 100 % and
-a 5 px `text` frame at radius 12 (catalog). Badges on a cover: 52 px disc,
-3 px `bg` ring, top right: green with the queue number, amber with
-play/pause for the game on now, amber with the dot ring while loading.
+a 5 px `text` frame at radius 12 (catalog). Tag on a cover, top right: a
+quiet dark pill (solid panel 78 %, radius 8) with the queue place as in the
+playlist ("02") in `text`, or an amber play/pause sign for the game on now.
+No loading spinner: the progress bar along the bottom of the cover says it.
 
 ### Playlist (Up next)
 

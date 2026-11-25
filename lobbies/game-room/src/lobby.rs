@@ -66,23 +66,6 @@ impl Lobby {
         if self.toasts.len() > 3 { self.toasts.remove(0); }
     }
 
-    /// Someone asked for `game` to start once it has loaded. One loading card
-    /// stands for it (hud.rs), replacing the card of an earlier ask.
-    pub fn start_when_loaded(&mut self, game: String, title: String) {
-        let title = if title.is_empty() { "The game".to_string() } else { title };
-        self.starting = Some((game, title, self.time));
-    }
-
-    /// Drop the loading card once its game runs, or when it is not loading
-    /// (it started at once, or broke) after a moment.
-    pub(crate) fn update_starting(&mut self) {
-        let Some((game, _, since)) = &self.starting else { return };
-        let loading = self.host.loading_session(game).is_some();
-        let running = !loading && self.host.current_game().is_some_and(|g| get(&g, "id", "") == *game);
-        let idle = !loading && self.time - since > 3.0;
-        if running || idle || self.time - since > 300.0 { self.starting = None; }
-    }
-
     /// Send a host command; a refusal while reconnecting shows as a toast.
     pub fn command(&mut self, message: Value) {
         let Some(client) = &self.client else { if let Some(out) = &mut self.outbox { out.push(message); } return };
@@ -411,10 +394,7 @@ impl Lobby {
             self.press_prompt(&station.id, "Y");
             self.command(json!({"type": "next"}));
             if station.kind == "queue" { self.close_current(); }
-            let first = self.host.cabinet_queue().first().cloned();
-            let title = if station.title.is_empty() { first.as_ref().map(|e| e.title.clone()).unwrap_or_default() } else { station.title.clone() };
-            let game = if station.game.is_empty() { first.map(|e| e.game).unwrap_or_default() } else { station.game.clone() };
-            self.start_when_loaded(game, title);
+            // No toast: its loading bar shows on the TV and its card.
             return;
         }
         if !self.cooldown(format!("{}:{}:{}", station.id, station.action, if queue { "X" } else { "Y" })) { return; }
@@ -430,7 +410,6 @@ impl Lobby {
                     // Play now: on top of the queue, then switch once it has loaded.
                     self.command(json!({"type": "queue_next", "game": station.game}));
                     self.command(json!({"type": "next"}));
-                    self.start_when_loaded(station.game.clone(), station.title.clone());
                 }
             }
             "queue" => {

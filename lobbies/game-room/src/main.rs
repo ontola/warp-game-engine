@@ -102,8 +102,6 @@ fn run() -> Result<(), String> {
             }
             lobby.host.shelf_offset = 1;
             if flag("--catalog") { lobby.open_catalog(); }
-            // `--starting`: Dead Miles asked to start, still loading.
-            if flag("--starting") { lobby.start_when_loaded("dead-miles".into(), "Dead Miles".into()); }
             // `--catalog-menu`: a player's Start menu open over it.
             if flag("--catalog-menu") { if let Some(id) = lobby.world.players.first().map(|p| p.id.clone()) { lobby.open_menu(&id); } }
         }

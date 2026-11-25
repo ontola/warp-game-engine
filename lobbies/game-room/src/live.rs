@@ -160,9 +160,6 @@ pub struct Lobby {
     pub(crate) phones: Vec<String>,
     pub(crate) lost_since: HashMap<String, f32>,
     pub(crate) toasts: Vec<Toast>,
-    /// The game someone asked to start: (game, title, since). Shown as one
-    /// loading card in the HUD until it runs, so the TV need not be in view.
-    pub(crate) starting: Option<(String, String, f32)>,
     pub(crate) unjoined: HashMap<String, (u32, bool)>,
     /// The controllers on the coffee table (connected, not joined).
     pub(crate) table: crate::pads::TablePads,
@@ -306,7 +303,7 @@ impl Lobby {
             next_order: 0, sheets_dirty: true, screen: None, show: Show::default(), prompts: HashMap::new(), prompt_active: HashMap::new(), nudges: Default::default(), started_once: false, prompt_glow: HashMap::new(),
             mood: Mood::default(), animated, time: 0.0, since_paint: 0.0, screens_dirty: true, local: vec![], bots: HashMap::new(), rng: Pcg::new(42), uploaded: false,
             props: props.expect("props"), board: board.expect("board"), events: vec![], controllers: HashMap::new(), held: HashMap::new(), input_blocked: HashSet::new(), menus: HashMap::new(),
-            bench: vec![], phones: vec![], lost_since: HashMap::new(), toasts: vec![], starting: None, unjoined: HashMap::new(), table: Default::default(), jukebox_gone: false, holds: HashMap::new(), station_cooldown: HashMap::new(),
+            bench: vec![], phones: vec![], lost_since: HashMap::new(), toasts: vec![], unjoined: HashMap::new(), table: Default::default(), jukebox_gone: false, holds: HashMap::new(), station_cooldown: HashMap::new(),
             pickup_cooldown: 0.0, item_presses: HashMap::new(), pressed_flash: HashMap::new(), claims: HashMap::new(), pop_box: None, featured_visible: false,
             bumpers_visible: false, display_active: None, display_at: web_time::Instant::now(), quit: false, web_tx, web_rx, links_due: 0.0, last_queue: vec![], featured, bumpers, key_dips: vec![0.0; keyboard.len()], keyboard, key_hop: 99.0, keyboard_shown: false, join_with: JoinWith::Pad, key_activity: 0.0, deeper, catalog: Default::default(), hud_size: [1920, 1080], mouse: Default::default(), outbox: None,
         };
@@ -750,7 +747,6 @@ impl Lobby {
         if animating || !self.holds.is_empty() { self.screens_dirty = true; }
         let time = self.time;
         self.toasts.retain(|t| t.until > time);
-        self.update_starting();
         self.item_presses.retain(|_, p| time - p.2 < 0.2);
     }
 }
