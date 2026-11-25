@@ -182,7 +182,7 @@ RUST_GAMES = {
     'spellstorm': {'root': 'games/spellstorm/app/assets', 'files': ['kits/**/*', 'characters/**/*'],
                    'meta': 'games/spellstorm/store/gamenight.json'},
     'spaceracer': {'root': 'games/spaceracer', 'files': ['rules/*.luau'] + [f'assets/source/assets/{n}.png' for n in ('office-facade', 'corporate-posters', 'city-billboards', 'paint-wear')] + ['assets/source/assets/forest/authored/**/*'],
-                   'id': 'spaceracer', 'title': 'Space Racer', 'players': {'min': 1, 'max': 4},
+                   'id': 'spaceracer', 'title': 'Space Racer', 'players': {'min': 1, 'max': 4, 'keyboard': True},
                    'cover': 'games/spaceracer/assets/source/assets/gamenight/cover.png'},
 }
 

@@ -24,6 +24,8 @@ use std::f32::consts::{PI, TAU};
 
 pub const AMBER: Color = rgb(1.0, 0.705_882_4, 0.329_411_77);
 pub const VIOLET: Color = rgb(0.486_274_5, 0.360_784_32, 1.0);
+/// #5143ae: filled buttons with white text (white on VIOLET is only 4.4:1).
+pub const VIOLET_DEEP: Color = rgb(0.317_647_07, 0.262_745_1, 0.682_352_9);
 pub const NIGHT_LILAC: Color = rgb(0.654_902, 0.545_098_07, 0.980_392_16);
 pub const GREEN: Color = rgb(0.239_215_69, 0.862_745_1, 0.592_156_9);
 pub const PINK: Color = rgb(1.0, 0.309_803_93, 0.545_098_07);

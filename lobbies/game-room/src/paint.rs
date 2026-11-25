@@ -407,6 +407,8 @@ pub fn queue_preview(c: &mut Canvas, show: &Show) {
         vec![words[..half].join(" "), words[half..].join(" ")]
     } else { vec![title.clone()] };
     let size = lines.iter().map(|l| fit(l, 46.0, tw, 26.0)).fold(46.0, f32::min);
+    // Its number, as in the list under it and the catalog (DESIGN.md "Playlist").
+    left(c, &format!("{:02}", show.queue_first + 1), [x, 98.0], 28.0, DIM);
     for (i, line) in lines.iter().enumerate() { left(c, line, [x, 140.0 + i as f32 * size * 1.15], size, TEXT); }
     let below = 140.0 + lines.len() as f32 * size * 1.15;
     if let Some((status, broken)) = &show.queue_status {
@@ -418,17 +420,19 @@ pub fn queue_preview(c: &mut Canvas, show: &Show) {
 /// main.gd `_draw_queue_titles`: the numbered list under the cabinet.
 pub fn queue_titles(c: &mut Canvas, show: &Show) {
     let [w, _] = c.size;
-    c.rect([0.0, 0.0, c.size[0], c.size[1]], Color::hex("100f1b"));
+    c.rect([0.0, 0.0, c.size[0], c.size[1]], BG);
     let rows: Vec<&Game> = show.queue.iter().skip(1).take(crate::room::QUEUE_TITLE_ROWS).collect();
     for (i, game) in rows.iter().enumerate() {
         let y = 53.0 + i as f32 * 55.0;
         left(c, &format!("{:02}", show.queue_first + i + 2), [22.0, y], 32.0, DIM);
+        // A small 3:4 cover, then the title (DESIGN.md "Playlist").
+        art(c, show, game, [88.0, y - 30.0, 27.0, 36.0], 8.0);
         let title = short(&game.title, 32);
-        left(c, &title, [88.0, y], fit(&title, 40.0, w - 108.0, 28.0), TEXT);
-        c.line([88.0, y + 14.0], [w - 24.0, y + 14.0], Color::WHITE.with_alpha(0.08), 1.0);
+        left(c, &title, [130.0, y], fit(&title, 40.0, w - 150.0, 28.0), TEXT);
+        c.line([84.0, y + 14.0], [w - 24.0, y + 14.0], Color::WHITE.with_alpha(0.08), 1.0);
     }
     let more = show.queue.len().saturating_sub(1 + rows.len());
-    if more > 0 { left(c, &format!("+{more} more"), [88.0, 284.0], 30.0, DIM); }
+    if more > 0 { left(c, &format!("+{more} more"), [130.0, 284.0], 30.0, DIM); }
 }
 
 /// main.gd `_draw_jukebox`: dark lettering on the glowing dome.

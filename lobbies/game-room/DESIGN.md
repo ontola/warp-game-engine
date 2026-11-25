@@ -287,8 +287,10 @@ From Joep's decisions, for every game's own UI:
   Resume first, then Restart/New round/Apply, then "Back to lobby" (Back
   alone also goes to the lobby). Controller mapping is in the start menu
   or one item away.
-- Controller glyphs as in [Controller and key glyphs](#controller-and-key-glyphs)
-  (colours of A/B/X/Y), whatever the game's art style.
+- A game's own HUD keeps its own style; it does not need the club look
+  (Joep, 2026-11-25). Glyph colours from
+  [Controller and key glyphs](#controller-and-key-glyphs) are a
+  suggestion there, not a rule.
 - Enemy attacks are always telegraphed.
 - Never freeze on load or on a new player: load in the background.
 - The engine's built-in start menu (Luau games, `warp/src/game.rs`) is
@@ -299,10 +301,11 @@ From Joep's decisions, for every game's own UI:
 Found on 2026-11-25 from the code and Joep's screenshots of the browser
 host. Numbers are referenced from the thread.
 
-**Status (2026-11-25, same day):** fixed 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12,
-13, 15–19, 21 (store grids are cover only), 23, and 22 for the catalog
-and the app (the room TV keeps its big first cover). Open: 11 ("ALL GAMES" stays a white title), 14 (dev tool), 20 (each
-game's own HUD).
+**Status (2026-11-25, same day):** fixed 1–13, 15–19, 21 (store grids
+are cover only), 22 (room TV, list, catalog and app share the Playlist
+component; the TV keeps its big first cover, numbered 01) and 23. Left:
+14 (dev tool). 20 is out of scope: games' own HUDs keep their own style
+(Joep, 2026-11-25).
 
 1. **Panels have six looks.** HTML notices: rounded 18–20, 1 px border,
    blur. Mouse menu: square, 3 px violet border. Toasts, bench, error

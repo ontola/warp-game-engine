@@ -82,9 +82,34 @@ impl Host {
 
     pub fn library(&self) -> &[Value] { arr(&self.party["library"]) }
 
-    /// The games this party can play right now.
+    /// The shelf and the catalog: the games this party can play now, then
+    /// the ones it can't yet (dimmed, can't start: "Needs 2 players"). With
+    /// only the keyboard, games made for controllers are left out
+    /// (Joep, 2026-11-25); [`Self::hidden_for_keyboard`] counts them.
     pub fn shelf_games(&self) -> Vec<&Value> {
-        self.library().iter().filter(|g| get(g, "id", "<null>") != self.lobby_id && self.fits_party(g)).collect()
+        let games: Vec<&Value> = self.library().iter().filter(|g| get(g, "id", "<null>") != self.lobby_id && self.input_fits(g)).collect();
+        let (mut fit, rest): (Vec<&Value>, Vec<&Value>) = games.into_iter().partition(|g| self.fits_party(g));
+        fit.extend(rest);
+        fit
+    }
+
+    /// Whether everyone seated plays on the browser's keyboard.
+    pub fn keyboard_only(&self) -> bool {
+        let seated: Vec<&Value> = arr(&self.party["seats"]).iter().filter(|seat| seat["occupant"].get("player_id").is_some_and(|v| !v.is_null())).collect();
+        !seated.is_empty() && seated.iter().all(|seat| seat["controller"].as_str().is_some_and(|c| c.ends_with(":keyboard")))
+    }
+
+    /// Whether the input at hand plays `game`: anything does, unless only
+    /// the keyboard is here and the game doesn't declare keys
+    /// (`players.keyboard` or `players.mouse` in its catalog entry).
+    fn input_fits(&self, game: &Value) -> bool {
+        !self.keyboard_only() || game["keyboard"] == true || game["mouse"] == true
+    }
+
+    /// Games left off the shelf because only the keyboard is here.
+    pub fn hidden_for_keyboard(&self) -> usize {
+        if !self.keyboard_only() { return 0; }
+        self.library().iter().filter(|g| get(g, "id", "<null>") != self.lobby_id && !self.input_fits(g)).count()
     }
 
     pub fn game_meta(&self, id: &str) -> Option<&Value> { self.library().iter().find(|g| get(g, "id", "<null>") == id) }
@@ -428,14 +453,28 @@ mod tests {
     }
 
     #[test]
-    fn games_that_do_not_fit_the_party_stay_off_the_shelf_and_out_of_the_queue() {
+    fn keyboard_only_leaves_controller_games_off_the_shelf() {
+        let mut seats = seats(1);
+        seats[0]["controller"] = json!("web:keyboard");
+        let h = host(json!({
+            "seats": seats,
+            "library": [{"id": "pads", "title": "Pads"}, {"id": "keys", "title": "Keys", "keyboard": true}, {"id": "mouse", "title": "Mouse", "mouse": true}],
+            "playlist": {"entries": [], "current": null},
+        }));
+        assert!(h.keyboard_only());
+        assert_eq!(h.shelf_games().iter().map(|g| get(g, "id", "")).collect::<Vec<_>>(), ["keys", "mouse"]);
+        assert_eq!(h.hidden_for_keyboard(), 1);
+    }
+
+    #[test]
+    fn games_that_do_not_fit_the_party_go_last_on_the_shelf_and_stay_out_of_the_queue() {
         let h = host(json!({
             "seats": seats(3),
             "library": [{"id": "duo", "title": "Duo", "max_players": 2.0}, {"id": "party", "title": "Party"}, {"id": "game-room", "title": "Room"},
                 {"id": "phones", "title": "Phones", "play_with": "phone"}],
             "playlist": {"entries": [{"game": "duo", "title": "Duo"}, {"game": "party", "title": "Party"}, {"game": "phones"}], "current": null},
         }));
-        assert_eq!(h.shelf_games().iter().map(|g| get(g, "id", "")).collect::<Vec<_>>(), ["party"]);
+        assert_eq!(h.shelf_games().iter().map(|g| get(g, "id", "")).collect::<Vec<_>>(), ["party", "duo", "phones"]);
         assert_eq!(h.upcoming(), vec![Entry { index: 1, game: "party".into(), title: "Party".into() }]);
         assert_eq!(h.shortfall(&h.library()[0]), "Too many players");
         assert_eq!(h.shortfall(&h.library()[3]), "Needs 1 phones");

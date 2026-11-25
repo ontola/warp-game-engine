@@ -246,6 +246,20 @@ impl Lobby {
             return;
         }
         if !inside(layout.area, at) { return; }
+        // Play or Queue on the hovered card: that game, wherever the choice was.
+        let scale = size[1] as f32 / 1080.0;
+        let hit = layout.cards.iter().find_map(|&(i, r)| {
+            if !self.host.shelf_games().get(i).is_some_and(|g| self.host.fits_party(g)) { return None; }
+            let buttons = card_buttons(r, layout.area, scale)?;
+            buttons.iter().find(|(_, b)| inside(*b, at)).map(|(name, _)| (i, *name))
+        });
+        if let Some((i, name)) = hit {
+            let scroll = self.catalog.scroll;
+            self.browse(i as i64 - self.host.shelf_offset as i64);
+            self.catalog.scroll = scroll;
+            self.catalog_use(None, name == "queue");
+            return;
+        }
         match layout.cards.iter().find(|(_, r)| inside(*r, at)) {
             Some(&(i, _)) if i == self.host.shelf_offset => self.catalog_use(None, false),
             Some(&(i, _)) => {
@@ -301,6 +315,17 @@ fn intersect(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
 }
 
 fn inside(r: [f32; 4], p: [f32; 2]) -> bool { p[0] >= r[0] && p[0] <= r[0] + r[2] && p[1] >= r[1] && p[1] <= r[1] + r[3] }
+
+/// The mouse's Play and Queue buttons on a hovered card, at its foot
+/// (Joep, 2026-11-25). None when that foot is scrolled out of the grid.
+pub fn card_buttons(r: [f32; 4], area: [f32; 4], scale: f32) -> Option<[(&'static str, [f32; 4]); 2]> {
+    let (m, gap) = (12.0 * scale, 8.0 * scale);
+    let bh = (44.0 * scale).max(28.0);
+    let bw = (r[2] - 2.0 * m - gap) / 2.0;
+    let y = r[1] + r[3] - m - bh;
+    if y < area[1] || y + bh > area[1] + area[3] { return None; }
+    Some([("play", [r[0] + m, y, bw, bh]), ("queue", [r[0] + m + bw + gap, y, bw, bh])])
+}
 
 /// Where the cards and buttons go on a screen of `size`: the games in a
 /// grid (scrolled by rows), the buttons under it.
@@ -419,13 +444,17 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
         c.rect([0.0, y, w, 2.0], Color { r: mix(base.r, glow.r), g: mix(base.g, glow.g), b: mix(base.b, glow.b), a: fade });
         y += 2.0;
     }
-    c.text(faces.bold, [48.0 * scale, 72.0 * scale], "ALL GAMES", TextAlign::Left, -1.0, (34.0 * scale).floor(), TEXT.with_alpha(fade));
-    let count = format!("{} of {}", middle + 1, shelf.len());
+    // An amber kicker, the size of the count opposite (DESIGN.md "Type").
+    c.text(faces.bold, [48.0 * scale, 72.0 * scale], "ALL GAMES", TextAlign::Left, -1.0, (24.0 * scale).floor(), crate::lobby::AMBER.with_alpha(fade));
+    // Only the keyboard here: say what a controller adds (Joep, 2026-11-25).
+    let hidden = lobby.host.hidden_for_keyboard();
+    let count = if hidden > 0 { format!("{} more with a controller   {} of {}", hidden, middle + 1, shelf.len()) } else { format!("{} of {}", middle + 1, shelf.len()) };
     let cs = (24.0 * scale).floor();
     let cw = render::hud::measure(&count, faces.regular, cs)[0];
     c.text(faces.regular, [w - 48.0 * scale - cw, 72.0 * scale], &count, TextAlign::Left, -1.0, cs, DIM.with_alpha(fade));
 
     let layout = catalog_layout(lobby, size);
+    let games = lobby.host.shelf_games();
     let mouse = lobby.mouse.at;
     let mut opens: Vec<(usize, [f32; 4], [f32; 4])> = vec![];
     let queue = lobby.host.upcoming();
@@ -444,7 +473,9 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
             let b = 5.0 * scale;
             c.style_box([r[0] - b, r[1] - b, r[2] + 2.0 * b, r[3] + 2.0 * b], [12.0 * scale; 4], if mid { TEXT } else { DIM }.with_alpha(fade), None);
         }
-        let k = if mid { 1.0 } else if hover { 0.9 } else { 0.72 };
+        // A game this party can't play yet: dimmed, its reason on it.
+        let fits = games.get(i).is_none_or(|g| lobby.host.fits_party(g));
+        let k = (if mid { 1.0 } else if hover { 0.9 } else { 0.72 }) * if fits { 1.0 } else { 0.4 };
         let open = intersect(r, area);
         opens.push((i, r, open));
         match cover(i) {
@@ -486,6 +517,13 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
             c.rect(bar, rgba(1.0, 1.0, 1.0, 0.15 * fade));
             c.rect([bar[0], bar[1], bar[2] * (percent / 100.0).clamp(0.0, 1.0), bar[3]], crate::lobby::AMBER.with_alpha(fade));
         }
+        let reason = games.get(i).map(|g| lobby.host.shortfall(g)).unwrap_or_default();
+        if !reason.is_empty() {
+            let fs = (22.0 * scale).floor();
+            let band = [r[0], r[1] + r[3] - fs * 2.4, r[2], fs * 2.4];
+            c.rect(band, crate::room::PANEL_SOLID.with_alpha(0.85 * fade));
+            c.text(faces.bold, [open[0], band[1] + band[3] / 2.0 + fs * 0.36], &reason, TextAlign::Center, open[2], fs, TEXT.with_alpha(fade));
+        }
         // The game on now: a pause sign (it waits paused) or a play sign,
         // where the queue's numbers go.
         if current.as_ref().is_some_and(|(id, _)| id == game) {
@@ -513,6 +551,23 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
         }
     }
     c.clip_to(None);
+    // The mouse's Play and Queue on the hovered card (DESIGN.md "Button").
+    if let Some(m) = mouse {
+        if let Some(&(_, r, _)) = opens.iter().find(|(i, r, _)| inside(*r, m) && inside(layout.area, m) && games.get(*i).is_some_and(|g| lobby.host.fits_party(g))) {
+            if let Some(buttons) = card_buttons(r, layout.area, scale) {
+                c.over();
+                for (name, b) in buttons {
+                    let on = inside(b, m);
+                    let fill = if name == "play" { crate::room::VIOLET_DEEP } else { crate::room::PANEL_SOLID };
+                    let fill = if on { fill.lightened(0.15) } else { fill };
+                    c.style_box(b, [12.0 * scale; 4], fill.with_alpha(fade), Some(((1.0 * scale).max(1.0), crate::room::LINE.with_alpha(0.1 * fade))));
+                    let label = if name == "play" { "Play" } else { "Queue" };
+                    let fs = (b[3] * 0.42).floor();
+                    c.text(faces.bold, [b[0], b[1] + b[3] / 2.0 + fs * 0.36], label, TextAlign::Center, b[2], fs, TEXT.with_alpha(fade));
+                }
+            }
+        }
+    }
     // The panel under the grid: see-through at its top edge, so the games
     // further down show; darker towards the buttons.
     c.over();
