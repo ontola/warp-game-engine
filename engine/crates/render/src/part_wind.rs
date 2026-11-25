@@ -10,7 +10,7 @@
 
 use crate::{Gpu, foliage_volume_data::{GpuForest, GpuTree}, scene::{GpuInstance, PART_WIND}, wind::WindState};
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat4, Quat, Vec3, Vec4};
+use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use std::{collections::HashSet, sync::Mutex};
 use wgpu::util::DeviceExt;
 
@@ -23,7 +23,7 @@ pub const MAX_ATTACHMENTS: usize = 65_536;
 pub const HISTORY_EPOCH: u32 = 1 << 7;
 pub const MAX_ANIMATION_VIEWS: usize = 32;
 const ATTACHMENT_PAGE: usize = 256;
-const PERIOD: f64 = 120.0;
+use crate::wind::{gust_at, PERIOD};
 const NONE: u32 = u32::MAX;
 
 #[derive(Clone, Copy, Debug)]
@@ -94,7 +94,7 @@ impl Default for PartWind {
 
 /// Growth-assembly angular response, shared by resident and streamed trees.
 pub fn growth_angle(parent: Option<u32>, stiffness: f32) -> f32 {
-    if parent.is_none() { 0. } else { 0.22 * (1. - stiffness).clamp(0.15, 1.) }
+    if parent.is_none() { 0. } else { 0.6 * (1. - stiffness).clamp(0., 1.) }
 }
 
 /// Stable, periodic oscillator of a particular growth branch in a particular plant.
@@ -435,12 +435,39 @@ pub fn sample_poses(parts: &[PartWind], state: &WindState) -> Result<Vec<Mat4>, 
 fn evaluate_poses(parts: &[PartWind], state: &WindState, result: &mut Vec<Mat4>) -> Result<(), String> {
     let field = field(state)?;
     result.clear();
-    let axis=Vec3::new(-field[1],0.0,field[0]).try_normalize().unwrap_or(Vec3::X);
+    let direction = Vec2::new(field[0], field[1]);
+    let crosswind = Vec2::new(-direction.y, direction.x);
+    let flutter_dir = direction * 0.4 + crosswind * 0.9165;
+    let mut gust = Vec2::ZERO;
+    let mut flutter = 0.0;
     for part in parts {
-        let base=part.parent.map(|p|result[p as usize]).unwrap_or(Mat4::IDENTITY)*part.rest;
-        let angle=part.max_angle*field[2]*(field[3]*part.harmonic as f32+part.phase.rem_euclid(std::f32::consts::TAU)).sin();
-        let rotation=Quat::from_axis_angle(axis,angle);let pivot=base.w_axis.truncate();
-        result.push(Mat4::from_translation(pivot)*Mat4::from_quat(rotation)*Mat4::from_translation(-pivot)*base);
+        let base = if let Some(parent) = part.parent {
+            result[parent as usize] * part.rest
+        } else {
+            let root = part.rest.w_axis;
+            gust = gust_at(Vec2::new(root.x, root.z), direction, field[3]);
+            flutter = 0.30 * (0.35 + 0.65 * gust.dot(direction).abs());
+            part.rest
+        };
+        let phase = field[3] * part.harmonic as f32 + part.phase.rem_euclid(std::f32::consts::TAU);
+        let force = 0.70 * gust + flutter_dir * (flutter * phase.sin());
+        // The long axis of a growth limb is local +Y. Transverse load
+        // bends it around its attachment; a wind-aligned limb feels less.
+        let torque = base.y_axis.truncate().normalize().cross(Vec3::new(force.x, 0.0, force.y));
+        let magnitude = torque.length();
+        let angle = part.max_angle * field[2] * magnitude;
+        let rotation = if magnitude > 1e-6 {
+            Quat::from_axis_angle(torque / magnitude, angle)
+        } else {
+            Quat::IDENTITY
+        };
+        // Rotate the three axes in place to preserve the exact world pivot.
+        result.push(Mat4::from_cols(
+            (rotation * base.x_axis.truncate()).extend(0.0),
+            (rotation * base.y_axis.truncate()).extend(0.0),
+            (rotation * base.z_axis.truncate()).extend(0.0),
+            base.w_axis,
+        ));
     }
     Ok(())
 }
@@ -656,7 +683,7 @@ impl PartWindRenderer {
     }
 }
 
-pub const SHADER:&str=include_str!("shaders/part_wind.wgsl");
+pub const SHADER:&str=concat!(include_str!("shaders/wind_field.wgsl"), "\n", include_str!("shaders/part_wind.wgsl"));
 
 #[cfg(test)]
 mod tests {
@@ -850,7 +877,7 @@ mod tests {
             (part.harmonic, part.phase) = growth_oscillator(47, 731+i as u64);
         }
         assert_eq!(parts[0].max_angle, 0.0);
-        assert_eq!(growth_angle(Some(0), 0.0), 0.22);
+        assert_eq!(growth_angle(Some(0), 0.0), 0.6);
         assert!(growth_angle(Some(0), 0.8) < growth_angle(Some(0), 0.2));
         assert_ne!(growth_oscillator(47, 731), growth_oscillator(48, 731));
         let rig = PartWindRig::new(parts.clone()).unwrap();
@@ -864,6 +891,31 @@ mod tests {
         }
         parts[1].parent = Some(2);
         assert!(PartWindRig::new(parts).is_err());
+    }
+
+    #[test]
+    fn a_shared_gust_deflects_flexible_limbs_individually_around_their_pivots() {
+        let make_limb = |x, stiffness, phase| PartWind {
+            parent: Some(0), rest: Mat4::from_translation(Vec3::new(x, 4.0, 0.0)),
+            max_angle: growth_angle(Some(0), stiffness), harmonic: 17, phase, ..Default::default()
+        };
+        let parts = [PartWind::default(), make_limb(-1.0, 0.3, 0.0),
+            make_limb(1.0, 0.3, std::f32::consts::PI), make_limb(0.0, 0.9, 0.0)];
+        let mut max_separation = 0.0f32;
+        let mut max_soft = 0.0f32;
+        let mut max_stiff = 0.0f32;
+        for i in 0..120 {
+            let state = WindState { time_seconds: i as f64, direction: Vec2::X, strength: 1.0, ..Default::default() };
+            let pose = sample_poses(&parts, &state).unwrap();
+            assert_eq!(pose[0], Mat4::IDENTITY);
+            for j in 1..4 { assert_eq!(pose[j].w_axis, parts[j].rest.w_axis); }
+            let deflection = |j:usize| (pose[j].y_axis.truncate() - Vec3::Y).length();
+            max_soft = max_soft.max(deflection(1));
+            max_stiff = max_stiff.max(deflection(3));
+            max_separation = max_separation.max((pose[1].y_axis - pose[2].y_axis).length());
+        }
+        assert!(max_separation > 0.12, "independent limb displacement {max_separation}");
+        assert!(max_soft > 0.2 && max_soft > 6.0 * max_stiff, "{max_soft}, {max_stiff}");
     }
 
     #[test]

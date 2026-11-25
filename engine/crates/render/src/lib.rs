@@ -252,7 +252,7 @@ mod shader_tests {
             ("cull", cull.as_str()),
             ("raster", raster.as_str()),
             ("shade", shade.as_str()),
-            ("wind", include_str!("shaders/wind.wgsl")),
+            ("wind", crate::wind::SHADER),
             ("tonemap", include_str!("shaders/tonemap.wgsl")),
             ("bloom", include_str!("shaders/bloom.wgsl")),
             ("foliage", include_str!("shaders/foliage.wgsl")),

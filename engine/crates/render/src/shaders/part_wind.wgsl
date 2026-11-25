@@ -140,13 +140,25 @@ fn update_parts(@builtin(global_invocation_id) invocation:vec3<u32>) {
         for(var index=assembly.x;index<assembly.x+assembly.y;index++) {part_poses[index].previous=part_poses[index].current;}
         return;
     }
-    var axis=vec3<f32>(1.0,0.0,0.0);
-    if part_state.field.z>0.0 {axis=normalize(vec3<f32>(-part_state.field.y,0.0,part_state.field.x));}
+    let root = part_descriptors[assembly.x].rest;
+    let direction = part_state.field.xy;
+    let crosswind = vec2<f32>(-direction.y, direction.x);
+    let gust = plant_gust(vec2<f32>(root[0].w, root[2].w), direction, part_state.field.w);
+    let flutter = 0.30 * (0.35 + 0.65 * abs(dot(gust, direction)));
+    let flutter_dir = direction * 0.4 + crosswind * 0.9165;
     for(var index=assembly.x;index<assembly.x+assembly.y;index++) {
         let part=part_descriptors[index];var base=part.rest;
         if part.identity.x!=0xffffffffu {base=part_multiply(part_poses[part.identity.x].current,part.rest);}
-        let angle=part.animation.x*part_state.field.z*sin(part_state.field.w*part.animation.y+part.animation.z)*schedule.animation.x;
-        let current=part_rotate(base,axis,angle);
+        let phase = part_state.field.w * part.animation.y + part.animation.z;
+        let force = 0.70 * gust + flutter_dir * (flutter * sin(phase));
+        let limb = normalize(vec3<f32>(base[0].y, base[1].y, base[2].y));
+        let torque = cross(limb, vec3<f32>(force.x, 0.0, force.y));
+        let magnitude = length(torque);
+        var current = base;
+        if magnitude > 1e-6 {
+            let angle = part.animation.x * part_state.field.z * magnitude * schedule.animation.x;
+            current = part_rotate(base, torque / magnitude, angle);
+        }
         var previous=part_poses[index].current;
         if schedule.state.w!=0u {previous=current;}
         part_poses[index]=PartPose(current,previous);

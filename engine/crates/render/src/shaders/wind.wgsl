@@ -30,17 +30,8 @@ fn field_shear(root: vec2<f32>, grass: bool) -> vec2<f32> {
         still = 1.0 - smoothstep(freeze.params.x, freeze.params.y, nearest);
         if nearest >= freeze.params.y { return vec2<f32>(0.0); }
     }
-    let direction = wind.field.xy;
-    let across_dir = vec2<f32>(-direction.y, direction.x);
-    let along = dot(root,direction);
-    let across = dot(root,across_dir);
-    let phase = wind.field.w;
-    let a = along*0.12 - phase*9.0;
-    let b = along*0.057 + across*0.033 - phase*17.0;
-    let c = along*0.21 + across*0.37 - phase*41.0;
-    let wave = 0.52 + 0.26*sin(a) + 0.09*sin(b);
     let amplitude = select(wind.amplitudes.x,wind.amplitudes.y,grass);
-    return (direction*wave + across_dir*(0.13*sin(c)))*(amplitude*wind.field.z*still);
+    return plant_gust(root, wind.field.xy, wind.field.w) * (amplitude * wind.field.z * still);
 }
 
 @compute @workgroup_size(64)

@@ -11,7 +11,11 @@ use glam::{Vec2, Vec3};
 use std::sync::Mutex;
 use wgpu::util::DeviceExt;
 
-const PERIOD: f64 = 120.0;
+pub(crate) const PERIOD: f64 = 120.0;
+/// The three gust components travel downwind together. Adjacent crowns see
+/// the same front with a delay given by their separation along the wind.
+pub const GUST_SPEED_MPS: f32 = 12.0;
+pub(crate) const SHADER: &str = concat!(include_str!("shaders/wind_field.wgsl"), "\n", include_str!("shaders/wind.wgsl"));
 
 /// Largest shear a tree (and a grass) part can get from any valid wind
 /// state: wind.wgsl scales the amplitude by at most 1. The cull refines by
@@ -48,25 +52,37 @@ impl WindState {
         Ok(Self { direction: self.direction.normalize(), ..*self })
     }
 
-    /// Diagnostic CPU counterpart of the compute field, for independent GPU
-    /// image fixtures. Invalid states/roots return zero; set_wind rejects them.
+    /// Signed horizontal wind loading at a world position, including strength.
+    /// Magnitude is at most one. The spatial field is independent of camera,
+    /// root height, plant type, and how a crown is represented.
+    pub fn sample_gust(&self, position: Vec3) -> Vec2 {
+        let Ok(state) = self.validated() else { return Vec2::ZERO; };
+        if !position.is_finite() || state.strength == 0.0 { return Vec2::ZERO; }
+        let field = Uniform::from_state(state).field;
+        gust_at(Vec2::new(position.x, position.z), state.direction, field[3]) * state.strength
+    }
+
+    /// CPU counterpart of the GPU coefficient before the optional camera fade.
     pub fn sample_shear(&self, root: Vec3, grass: bool) -> Vec2 {
+        // Keep invalid amplitudes (including NaN) out of this multiply.
         let Ok(state) = self.validated() else { return Vec2::ZERO; };
         if !root.is_finite() || state.strength == 0.0 { return Vec2::ZERO; }
-        let p = Uniform::from_state(state);
-        let direction = Vec2::new(p.field[0], p.field[1]);
-        let cross = Vec2::new(-direction.y, direction.x);
-        let root = Vec2::new(root.x, root.z);
-        let along = root.dot(direction);
-        let across = root.dot(cross);
-        let phase = p.field[3];
-        let a = along * 0.12 - phase * 9.0;
-        let b = along * 0.057 + across * 0.033 - phase * 17.0;
-        let c = along * 0.21 + across * 0.37 - phase * 41.0;
-        let wave = 0.52 + 0.26 * a.sin() + 0.09 * b.sin();
-        let amplitude = if grass { p.amplitudes[1] } else { p.amplitudes[0] };
-        (direction * wave + cross * (0.13 * c.sin())) * (amplitude * p.field[2])
+        let field = Uniform::from_state(state).field;
+        let amplitude = if grass { state.grass_shear } else { state.tree_shear };
+        gust_at(Vec2::new(root.x, root.z), state.direction, field[3]) * (state.strength * amplitude)
     }
+}
+
+/// CPU counterpart of plant_gust in wind_field.wgsl, with unit strength.
+pub(crate) fn gust_at(root: Vec2, direction: Vec2, phase: f32) -> Vec2 {
+    let cross = Vec2::new(-direction.y, direction.x);
+    let across = root.dot(cross);
+    let advected = root.dot(direction) * (std::f32::consts::TAU / (PERIOD as f32 * GUST_SPEED_MPS)) - phase;
+    let leading = 9.0 * advected + 0.012 * across;
+    let following = 17.0 * advected - 0.017 * across;
+    let lateral = 11.0 * advected + 0.026 * across;
+    let load = 0.49 + 0.36 * leading.sin() + 0.14 * following.sin();
+    direction * load + cross * (0.09 * lateral.sin())
 }
 
 #[repr(C)]
@@ -270,7 +286,7 @@ impl WindRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("plant wind"), source: wgpu::ShaderSource::Wgsl(include_str!("shaders/wind.wgsl").into()),
+            label: Some("plant wind"), source: wgpu::ShaderSource::Wgsl(SHADER.into()),
         });
         let pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("plant wind"), layout: None, module: &module,
@@ -360,7 +376,7 @@ mod tests {
 
     #[test]
     fn batched_compute_shader_validates_for_webgpu() {
-        let source = include_str!("shaders/wind.wgsl");
+        let source = SHADER;
         let module = naga::front::wgsl::parse_str(source).unwrap_or_else(|error| panic!("{}", error.emit_to_string(source)));
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
             .validate(&module).unwrap_or_else(|error| panic!("{}", error.emit_to_string(source)));
@@ -469,7 +485,7 @@ mod tests {
         let state = WindState { strength: 1.0, tree_shear: MAX_TREE_SHEAR, ..Default::default() };
         // Bound the quarter-second increment from the field's three harmonic
         // derivatives; the storm raises the metre amplitude, not its frequency.
-        let rate = Vec2::new(0.26 * 9. + 0.09 * 17., 0.13 * 41.).length()
+        let rate = Vec2::new(0.36 * 9. + 0.14 * 17., 0.09 * 11.).length()
             * std::f32::consts::TAU / PERIOD as f32;
         let mut previous = Vec2::ZERO;
         for i in 0..480 {
@@ -486,6 +502,33 @@ mod tests {
         let before = WindState { time_seconds: PERIOD - 1e-5, ..state }.sample_shear(root, true);
         let after = WindState { time_seconds: PERIOD + 1e-5, ..state }.sample_shear(root, true);
         assert!((before-after).length() < 1e-4);
+    }
+
+    #[test]
+    fn gusts_cross_neighbouring_crowns_then_arrive_downwind() {
+        let origin = Vec3::new(-270.0, 13.0, 61.0);
+        let direction = Vec2::new(0.8, -0.6);
+        let downwind = Vec3::new(direction.x, 0.0, direction.y);
+        let crosswind = Vec3::new(-direction.y, 0.0, direction.x);
+        let mut zero_lag_dot = [0.0; 3];
+        let mut energy = [0.0; 4];
+        for i in 0..480 {
+            let state = WindState { direction, strength: 1.0, time_seconds: i as f64 * 0.25, ..Default::default() };
+            let at = |p: Vec3| state.sample_gust(p) - direction * 0.49;
+            let reference = at(origin);
+            energy[0] += reference.length_squared();
+            for (j,offset) in [downwind * 6.0, crosswind * 10.0, downwind * 65.0].into_iter().enumerate() {
+                let neighbour = at(origin + offset);
+                zero_lag_dot[j] += reference.dot(neighbour);
+                energy[j+1] += neighbour.length_squared();
+            }
+            let later = WindState { time_seconds: state.time_seconds + 2.0, ..state };
+            assert!((later.sample_gust(origin + downwind * 24.0) - state.sample_gust(origin)).length() < 4e-5);
+        }
+        let correlation = |j:usize| zero_lag_dot[j] / (energy[0] * energy[j+1]).sqrt();
+        assert!(correlation(0) > 0.95, "6 m downwind {}", correlation(0));
+        assert!(correlation(1) > 0.97, "10 m crosswind {}", correlation(1));
+        assert!(correlation(2).abs() < 0.85, "65 m downwind {}", correlation(2));
     }
 
     #[test]
