@@ -305,12 +305,12 @@ fn along(from: Vec3, to: Vec3) -> Quat {
 
 /// Long stem runs from year segments: consecutive shoots of one axis merge
 /// until `reach` metres, so a tree is tens of trunk pieces, not one a year.
-fn runs(plant: &Plant, reach: f32) -> Vec<(u32, Vec3, Vec3, f32, f32, bool)> {
+fn runs(plant: &Plant, reach: f32, leader_joints: &[bool]) -> Vec<(u32, Vec3, Vec3, f32, f32, bool)> {
     let n = plant.segments.len();
     let mut next = vec![None; n];
     for (i, s) in plant.segments.iter().enumerate() {
         if let Some(p) = s.parent {
-            if plant.segments[p as usize].order == s.order {
+            if plant.segments[p as usize].order == s.order && !leader_joints[i] {
                 next[p as usize] = Some(i);
             }
         }
@@ -318,7 +318,7 @@ fn runs(plant: &Plant, reach: f32) -> Vec<(u32, Vec3, Vec3, f32, f32, bool)> {
     let mut out = Vec::new();
     for (i, s) in plant.segments.iter().enumerate() {
         // Start at axis starts only; the walk covers the rest of the axis.
-        if s.parent.is_some_and(|p| plant.segments[p as usize].order == s.order) {
+        if !leader_joints[i] && s.parent.is_some_and(|p| plant.segments[p as usize].order == s.order) {
             continue;
         }
         let (mut start, mut radius, mut last, mut at) = (s.from, s.radius[0], i, i);
@@ -347,13 +347,39 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
     // Each axis starts where a lateral shoot forks from a different growth
     // order. Count the foliage supported by that fork, including its children.
     let mut foliage = vec![0u32; n];
-    for tuft in &plant.tufts { foliage[tuft.segment as usize] += 1; }
+    let mut highest_tuft = vec![f32::NEG_INFINITY; n];
+    for tuft in &plant.tufts {
+        let i = tuft.segment as usize;
+        foliage[i] += 1;
+        highest_tuft[i] = highest_tuft[i].max(tuft.at.y);
+    }
     for (i, segment) in plant.segments.iter().enumerate().rev() {
-        if let Some(p) = segment.parent { foliage[p as usize] += foliage[i]; }
+        if let Some(p) = segment.parent {
+            foliage[p as usize] += foliage[i];
+            highest_tuft[p as usize] = highest_tuft[p as usize].max(highest_tuft[i]);
+        }
+    }
+    let budget = limits.max_branches.saturating_sub(1);
+    let crown_bands = (budget.div_ceil(2) as f32).sqrt().round().max(1.) as usize;
+    let height = plant.height();
+    let crown_base = plant.crown_base();
+    let crown_depth = (height - crown_base).max(1e-5);
+    // The narrowing central leader also carries living needles. Its upper
+    // growth intervals flex about the actual annual joints on the trunk.
+    let mut leader_joints = vec![false; n];
+    for (joint, distance_from_tip) in [2.0, 0.5].into_iter().enumerate() {
+        if joint >= budget / 2 { break; }
+        let fraction = (1.0 - distance_from_tip / crown_bands as f32).max(0.);
+        let y = crown_base + crown_depth * fraction;
+        if let Some((i, _)) = plant.segments.iter().enumerate().filter(|(i,s)|
+            s.order == 0 && s.parent.is_some() && foliage[*i] > 0 && s.from.y <= y)
+            .max_by(|(_,a),(_,b)| a.from.y.total_cmp(&b.from.y)) {
+            leader_joints[i] = true;
+        }
     }
     let mut reach = 0.6;
     let stems = loop {
-        let r = runs(plant, reach);
+        let r = runs(plant, reach, &leader_joints);
         if r.len() * 3 <= limits.max_instances || reach > 64.0 {
             break r;
         }
@@ -364,7 +390,7 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
     let collars_for = |i: usize| {
         let r = stems[i];
         usize::from(r.3 > JOINT_RADIUS && (r.5 && plant.segments[r.0 as usize].order > 0 || !r.5)) + usize::from(!continues(i) && r.4 > JOINT_RADIUS)
-            + usize::from(r.5 && plant.segments[r.0 as usize].order == 0 && r.3 > JOINT_RADIUS)
+            + usize::from(r.5 && plant.segments[r.0 as usize].parent.is_none() && r.3 > JOINT_RADIUS)
     };
     let collars: usize = (0..stems.len()).map(collars_for).sum();
     let mut forks: Vec<_> = (0..n).filter(|&i| {
@@ -373,6 +399,21 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
             && s.parent.is_some_and(|p| plant.segments[p as usize].order < s.order)
     }).collect();
     forks.sort_unstable_by_key(|&i| (std::cmp::Reverse(foliage[i]), i));
+    // Interleave height bands within each branching tier. A short new shoot
+    // near the crown tip can then animate even on a tree with larger low boughs.
+    let mut rank_per_band = vec![[0usize; 2]; crown_bands];
+    let mut priority = vec![0usize; n];
+    for &i in &forks {
+        let s = plant.segments[i];
+        // Upper whorls occupy successively smaller vertical spans. Classify
+        // a limb by the live foliage it reaches, including upturned laterals.
+        let depth = ((height - highest_tuft[i]) / crown_depth).clamp(0., 1.);
+        let band = ((1.0 - depth.sqrt()) * crown_bands as f32) as usize;
+        let rank = &mut rank_per_band[band.min(crown_bands - 1)][usize::from(s.order > 1)];
+        priority[i] = *rank;
+        *rank += 1;
+    }
+    forks.sort_by_key(|&i| priority[i]);
     let mut axis = vec![0; n];
     for (i, s) in plant.segments.iter().enumerate() {
         axis[i] = s.parent.map_or(i, |p| {
@@ -381,10 +422,9 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
     }
     // Keep the supporting boughs and reserve space for their real laterals.
     // Ancestors sort before their children at equal supported foliage counts.
-    let budget = limits.max_branches.saturating_sub(1);
-    let mut selected = vec![false; n];
-    let mut count = 0;
-    for &i in forks.iter().filter(|&&i| plant.segments[i].order == 1).take(budget.div_ceil(2)) {
+    let mut selected = leader_joints;
+    let mut count = selected.iter().filter(|&&yes| yes).count();
+    for &i in forks.iter().filter(|&&i| plant.segments[i].order == 1).take((budget - count).div_ceil(2)) {
         selected[i] = true;
         count += 1;
     }
@@ -440,7 +480,10 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
         limb[i] = parent;
         if !selected[i] { continue; }
         let world = Mat4::from_rotation_translation(along(s.from, s.to), s.from);
-        let relative_radius = (s.radius[0] / max_radius).clamp(0., 1.);
+        // A leader tapers from the trunk base. Comparing it to a lateral
+        // bough would clamp even its slender upper intervals to full stiffness.
+        let support_radius = if s.order == 0 { plant.trunk_radius().max(1e-5) } else { max_radius };
+        let relative_radius = (s.radius[0] / support_radius).clamp(0., 1.);
         let stiffness = (0.16 + 0.76 * relative_radius.sqrt()).min(branches[parent as usize].stiffness);
         limb[i] = branches.len() as u32;
         branches.push(BranchGroup {
@@ -479,7 +522,7 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
             instances.push(PartInstance { id: seed ^ (tag << 40) ^ i as u64, part: 8, branch: b, rest: affine(inverse[b as usize] * world), material: bark });
         };
         let axis = (to - from).normalize_or(Vec3::Y);
-        if first && plant.segments[segment as usize].order == 0 && radius > JOINT_RADIUS {
+        if first && plant.segments[segment as usize].parent.is_none() && radius > JOINT_RADIUS {
             // Root flare: the trunk swells into the ground.
             joint(0x5246, Vec3::new(radius * 1.7, radius * 2.2, radius * 1.7), from);
         }
@@ -643,6 +686,45 @@ mod tests {
             }
         }
         assert!(flexible_forks > 1);
+    }
+
+    #[test]
+    fn crown_tips_keep_their_own_growth_joints() {
+        for (kind, species, look, age, seed) in [
+            ("norway", Species::norway_spruce(), Look::norway_spruce(), 34, 23_u64),
+            ("jeffrey", Species::jeffrey_pine(), Look::jeffrey_pine(), 46, 34),
+        ] {
+            let plant = grow(&species, age, seed);
+            let parts = Parts::for_look(&look);
+            let (assembly, _) = assemble(&plant, &parts, look, seed, limits()).unwrap();
+            let by_id: std::collections::HashMap<_, _> = assembly.branches.iter()
+                .enumerate().map(|(index, branch)| (branch.id, index)).collect();
+            let mut owners = vec![0usize; plant.segments.len()];
+            for (i, segment) in plant.segments.iter().enumerate() {
+                let id = seed ^ 0x4252_414e_4348 ^ ((i as u64 + 1) << 20);
+                owners[i] = by_id.get(&id).copied()
+                    .unwrap_or_else(|| segment.parent.map_or(0, |parent| owners[parent as usize]));
+            }
+            let height = plant.height();
+            let crown: std::collections::BTreeSet<_> = plant.tufts.iter()
+                .filter(|t| t.at.y >= height * 0.85)
+                .map(|t| owners[t.segment as usize]).collect();
+            assert!(crown.len() >= 3 && !crown.contains(&0), "{kind}: {crown:?}");
+            let tip: std::collections::BTreeSet<_> = plant.tufts.iter()
+                .filter(|t| t.at.y >= height * 0.95)
+                .map(|t| owners[t.segment as usize]).collect();
+            assert!(tip.len() >= 3 && !tip.contains(&0), "{kind}: {tip:?}");
+            let uppermost = plant.segments.iter().enumerate().filter(|(_, s)| s.order == 0)
+                .max_by(|a, b| a.1.to.y.total_cmp(&b.1.to.y)).unwrap().0;
+            let leader = owners[uppermost] as usize;
+            let support = assembly.branches[leader].parent.unwrap() as usize;
+            assert!(support > 0 && assembly.branches[leader].stiffness < assembly.branches[support].stiffness,
+                "{kind}: upper leader should flex more than its supporting growth interval");
+            assert!(crown.iter().any(|&b| b as usize != leader &&
+                assembly.branches[b as usize].parent.is_some_and(|p| p > 0)));
+            assert_eq!(owners[0], 0);
+            assert!(assembly.branches.len() <= limits().max_branches);
+        }
     }
 
     #[test]

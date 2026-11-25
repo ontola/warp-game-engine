@@ -60,14 +60,15 @@ impl WindState {
         Ok(Self { direction: self.direction.normalize(), ..*self })
     }
 
-    /// Signed horizontal wind loading at a world position, including strength.
+    /// Signed horizontal canopy sway at a world position, including strength.
     /// Magnitude is at most one. The spatial field is independent of camera,
-    /// root height, plant type, and how a crown is represented.
+    /// root height, plant type, and how a crown is represented. During a
+    /// storm it includes the free motion after an impulse has passed.
     pub fn sample_gust(&self, position: Vec3) -> Vec2 {
         let Ok(state) = self.validated() else { return Vec2::ZERO; };
         if !position.is_finite() || state.strength == 0.0 { return Vec2::ZERO; }
         let field = Uniform::from_state(state).field;
-        gust_at(Vec2::new(position.x, position.z), state.direction, field[3], state.strength).load * state.strength
+        gust_at::<false>(Vec2::new(position.x, position.z), state.direction, field[3], state.strength).load * state.strength
     }
 
     /// CPU counterpart of the GPU coefficient before the optional camera fade.
@@ -77,7 +78,7 @@ impl WindState {
         if !root.is_finite() || state.strength == 0.0 { return Vec2::ZERO; }
         let field = Uniform::from_state(state).field;
         let amplitude = if grass { state.grass_shear } else { state.tree_shear };
-        gust_at(Vec2::new(root.x, root.z), state.direction, field[3], state.strength).load * (state.strength * amplitude)
+        gust_at::<false>(Vec2::new(root.x, root.z), state.direction, field[3], state.strength).load * (state.strength * amplitude)
     }
 }
 
@@ -85,8 +86,6 @@ impl WindState {
 pub(crate) struct Gust {
     pub load: Vec2,
     pub breeze_age: f32,
-    pub storm_age: f32,
-    pub storm_release: Vec2,
     pub storm_mix: f32,
 }
 
@@ -95,10 +94,36 @@ fn smooth(t: f32) -> f32 {
     t * t * (3. - 2. * t)
 }
 
+/// One spatial wind impulse, sampled in closed form from its arrival time.
+/// A compact shove bends a crown into the wind. At maximum displacement its
+/// along-wind velocity is zero; it then rings freely around the local mean.
+/// A smaller sideways component traces an arc instead of stopping at the crest.
+/// The pressure itself has ended when the crown is still swinging.
+fn crown_impulse<const PRESSURE: bool>(base: Vec2, heading: Vec2, peak: f32, age: f32, rise: f32,
+    omega: f32, decay: f32, side_gain: f32, tail: f32) -> Vec2 {
+    if age <= 0. || (PRESSURE && age >= rise) { return base; }
+    let (along, side) = if age < rise {
+        let (sin, cos) = (std::f32::consts::PI * age / rise).sin_cos();
+        if PRESSURE { return base.lerp(heading * peak, sin * sin); }
+        let bend = 0.5 - 0.5 * cos;
+        (bend, sin * bend)
+    } else {
+        let t = age - rise;
+        let (sin, cos) = (omega * t).sin_cos();
+        let envelope = (-decay * t).exp() * tail;
+        (envelope * (cos + decay / omega * sin),
+            -envelope * sin * (std::f32::consts::PI / (rise * omega)))
+    };
+    let offset = heading * along + Vec2::new(-heading.y, heading.x) * (side_gain * side);
+    // Relative to the moving equilibrium. Each new shove can recharge a crown
+    // still ringing from the preceding one, without exceeding its culling bound.
+    base * (1. - offset.length()) + peak * offset
+}
+
 /// CPU counterpart of plant_gust in wind_field.wgsl. The gust timetable is in
 /// advected world coordinates, so a distant stand, branch and shadow all meet the
-/// same front. A stable slot hash varies rise, hold, fall, direction and amplitude.
-pub(crate) fn gust_at(root: Vec2, direction: Vec2, phase: f32, strength: f32) -> Gust {
+/// same front. A stable slot hash varies each impulse and its free decay.
+pub(crate) fn gust_at<const PRESSURE: bool>(root: Vec2, direction: Vec2, phase: f32, strength: f32) -> Gust {
     let cross = Vec2::new(-direction.y, direction.x);
     let across = root.dot(cross);
     let advected = root.dot(direction) * (std::f32::consts::TAU / (PERIOD as f32 * GUST_SPEED_MPS)) - phase;
@@ -131,31 +156,28 @@ pub(crate) fn gust_at(root: Vec2, direction: Vec2, phase: f32, strength: f32) ->
     bits = (bits ^ (bits >> 16)).wrapping_mul(0x85ebca6b);
     bits ^= bits >> 13;
     let unit = |shift: u32| ((bits >> shift) & 15) as f32 / 15.;
-    // Leave time for the spring to decay before the next slot. Wide fronts can
-    // have two distinct crests as the flow gathers again during their plateau.
-    let span = duration - 4.;
-    let start = span * (0.025 + 0.14 * unit(0));
-    let rise = span * (0.13 + 0.12 * unit(4));
-    let crest = start + rise;
-    let double = duration > 16.;
-    let hold = span * (if double { 0.33 } else { 0.06 } + 0.06 * unit(8));
-    let falling = crest + hold;
-    let fall = span * (0.14 + 0.11 * unit(12));
-    let mut pulse = smooth((local - start) / rise) * (1. - smooth((local - falling) / fall));
-    if double {
-        let t = (local - crest) / hold;
-        pulse *= 1. - 0.53 * smooth(t / 0.42) * (1. - smooth((t - 0.51) / 0.49));
-    }
-    let breadth = 0.93 + 0.07 * (0.031 * across + std::f32::consts::TAU * unit(24)).cos();
-    let peak = (0.68 + 0.32 * unit(16)) * breadth;
+    let start = (0.02 + 0.10 * unit(0)) * duration;
+    let rise = 0.97 + 0.52 * unit(4);
+    let omega = (2.56 + 0.56 * unit(8)) / rise;
+    let decay = 0.46 + 0.30 * unit(12);
+    let breadth = 0.94 + 0.06 * (0.031 * across + std::f32::consts::TAU * unit(24)).cos();
+    let peak = (0.79 + 0.20 * unit(16)) * breadth;
     let heading = (direction + cross * (1.30 * unit(20) - 0.65)).normalize();
-    let background = direction * (0.18 + 0.06 * (11. * advected - 0.016 * across).sin())
-        + cross * (0.045 * (15. * advected + 0.022 * across).sin());
-    gust.load = gust.load.lerp(background.lerp(heading * peak, pulse), storm_mix);
-    // Measure the impulse from the unloading edge. It varies with the strength,
-    // heading and fall time of this actual event, then decays during the lull.
-    gust.storm_age = (local - falling - 0.5 * fall).max(0.);
-    gust.storm_release = (heading * peak - direction * 0.18) / fall.sqrt().max(1.);
+    let side = if bits & 0x8000_0000 == 0 { 0.28 } else { -0.28 };
+    let background = direction * (0.14 + 0.046 * (17. * advected - 0.016 * across).sin())
+        + cross * (0.046 * (23. * advected + 0.022 * across).sin());
+    let tail = smooth((duration - local) / 1.3);
+    let first = crown_impulse::<PRESSURE>(background, heading, peak, local - start,
+        rise, omega, decay, side, tail);
+
+    // A narrower eddy inside the same front re-excites the spring from a
+    // slightly different heading. Its arrival, energy and width vary by front.
+    let second = (0.42 + 0.20 * unit(28)) * duration;
+    let side_heading = (heading + cross * (0.92 * unit(8) - 0.46)).normalize();
+    let side_peak = (0.41 + 0.44 * unit(24)) * breadth;
+    let response = crown_impulse::<PRESSURE>(first, side_heading, side_peak, local - second,
+        rise * 0.79, omega * 1.15, decay * 1.12, -side, tail);
+    gust.load = gust.load.lerp(response, storm_mix);
     gust
 }
 
@@ -557,8 +579,7 @@ mod tests {
     fn phase_is_root_stable_bounded_and_continuous_across_wrap() {
         let root = Vec3::new(-386.3, 120.0, 234.6);
         let state = WindState { strength: 1.0, tree_shear: MAX_TREE_SHEAR, ..Default::default() };
-        // Smoothstep peaks at 1.5/time. The shortest rise is 0.13 * 6.5 s;
-        // keep margin for the slow crosswind background between fronts.
+        // Smooth peaks include the oblique velocity of the secondary impulse.
         let rate = 2.;
         let mut previous = Vec2::ZERO;
         for i in 0..480 {
@@ -607,6 +628,71 @@ mod tests {
     }
 
     #[test]
+    fn a_passing_shove_leaves_a_free_decaying_crown_spring() {
+        let position = |age| crown_impulse::<false>(Vec2::ZERO, Vec2::X,
+            0.95, age, 1.25, 2.35, 0.59, 0.28, 1.);
+        let pressure = |age| crown_impulse::<true>(Vec2::ZERO, Vec2::X,
+            0.95, age, 1.25, 2.35, 0.59, 0.28, 1.);
+        assert!(pressure(0.62).x > 0.94);
+        let mut peaks = Vec::new();
+        let mut previous = position(1.25);
+        let mut velocity = 1.0;
+        for i in 1..1000 {
+            let age = 1.25 + i as f32 / 120.;
+            assert_eq!(pressure(age), Vec2::ZERO);
+            let p = position(age);
+            let next_velocity = p.x - previous.x;
+            if next_velocity * velocity < 0. { peaks.push(previous.x); }
+            velocity = next_velocity;
+            previous = p;
+        }
+        assert!(peaks.len() >= 6 && peaks[0] > 0.9 && peaks[1] < -0.35);
+        for pair in peaks.windows(2) {
+            assert!(pair[0] * pair[1] < 0.);
+            let ratio = (pair[1] / pair[0]).abs();
+            assert!((0.4..0.52).contains(&ratio), "successive free amplitudes {pair:?}");
+        }
+        // Along-flow velocity reverses continuously while a small sideways
+        // velocity carries the crown around the turning point.
+        let peak = position(1.25);
+        let before = (peak - position(1.249)) * 1000.;
+        let after = (position(1.251) - peak) * 1000.;
+        assert!((before - after).length() < 0.02 && before.y.abs() > 0.2);
+    }
+
+    #[test]
+    fn storm_keeps_moving_at_high_deflection_and_recovers_between_impulses() {
+        let mut high_frames = 0;
+        let mut stalled = 0;
+        let mut longest_stall = 0;
+        let mut axial_recoils = 0;
+        let mut side_reversals = 0;
+        let mut peak_speed = 0.0_f32;
+        let mut previous = Vec2::ZERO;
+        let mut previous_velocity = Vec2::ZERO;
+        for tick in 0..36000 {
+            let wind = WindState { strength: 1., direction: Vec2::X,
+                time_seconds: f64::from(tick) / 60., ..Default::default() };
+            let p = wind.sample_gust(Vec3::ZERO);
+            assert!(p.length() <= 1.00001);
+            let velocity = (p - previous) * 60.;
+            if p.x > 0.60 {
+                high_frames += 1;
+                if velocity.length() < 0.08 { stalled += 1; } else { stalled = 0; }
+                longest_stall = longest_stall.max(stalled);
+            } else { stalled = 0; }
+            if p.x < -0.1 && previous.x >= -0.1 { axial_recoils += 1; }
+            if velocity.y * previous_velocity.y < 0. && p.length() > 0.35 { side_reversals += 1; }
+            if tick > 0 { peak_speed = peak_speed.max(velocity.length()); }
+            previous = p;
+            previous_velocity = velocity;
+        }
+        assert!(high_frames > 1000 && axial_recoils > 30 && side_reversals > 90);
+        assert!(longest_stall < 8, "high-deflection stall {longest_stall} frames");
+        assert!((1.0..4.0).contains(&peak_speed), "peak speed {peak_speed}");
+    }
+
+    #[test]
     fn gusts_cross_neighbouring_crowns_then_arrive_downwind() {
         let origin = Vec3::new(-270.0, 13.0, 61.0);
         let direction = Vec2::new(0.8, -0.6);
@@ -628,7 +714,9 @@ mod tests {
             assert!((later.sample_gust(origin + downwind * 24.0) - state.sample_gust(origin)).length() < 4e-5);
         }
         let correlation = |j:usize| zero_lag_dot[j] / (energy[0] * energy[j+1]).sqrt();
-        assert!(correlation(0) > 0.95, "6 m downwind {}", correlation(0));
+        // These trees see the same moving front half a second apart. Their
+        // signed motion is correlated even at zero lag and equal at its actual delay.
+        assert!(correlation(0) > 0.78, "6 m downwind {}", correlation(0));
         assert!(correlation(1) > 0.97, "10 m crosswind {}", correlation(1));
         assert!(correlation(2).abs() < 0.85, "65 m downwind {}", correlation(2));
     }
