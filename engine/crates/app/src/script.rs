@@ -79,6 +79,11 @@ pub struct Step {
     pub capture: Option<String>,
     pub bench: Option<u32>,
     pub bench_height: Option<u32>,
+    /// Draw one frame through the measuring path and report the renderer's
+    /// counters: clusters and triangles drawn for the cameras and for each
+    /// sun map (what a shadow pass costs, on any machine).
+    #[serde(default)]
+    pub measure: bool,
     pub state: Option<String>,
     pub expect: Option<String>,
     /// Tick (with this step's controls) until this pointer passes the
@@ -284,6 +289,18 @@ fn run_steps(game: &mut dyn Game, mut headless: Option<&mut Headless>, script: &
                 "present_ms": stat(present_ms), "gpu_wait_ms": stat(wait_ms), "wall_ms": stat(wall_ms), "hud_vertices": vertices.0, "hud_text_runs": vertices.1 });
             // What the GPU forest selected in the last frame (slots, cut scale, limits).
             if let Ok(Some(d)) = headless.forest_diagnostics() { line["bench"]["forest"] = serde_json::to_value(&d).unwrap_or_default(); }
+        }
+        if step.measure {
+            let headless = headless.as_deref_mut().ok_or("measure needs a renderer")?;
+            let s = headless.measure(game)?;
+            line["measure"] = json!({
+                "clusters": s.clusters, "triangles": s.triangles,
+                "shadow_clusters": s.shadow_clusters, "shadow_triangles": s.shadow_triangles,
+                "near_shadow_triangles": s.near_shadow_triangles,
+                "static_sun_triangles": s.static_sun_triangles, "dynamic_sun_triangles": s.dynamic_sun_triangles,
+                "far_sun_triangles": s.far_sun_triangles,
+                "shared_sun_extent_m": s.shared_sun_extent_m, "shared_sun_texel_m": s.shared_sun_texel_m,
+            });
         }
         if let Some(name) = &step.capture {
             let headless = headless.as_deref_mut().ok_or("capture needs a renderer")?;
