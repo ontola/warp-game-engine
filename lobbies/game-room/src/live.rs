@@ -754,6 +754,15 @@ impl Lobby {
 impl Game for Lobby {
     fn local_players(&self) -> usize { self.local.len() }
 
+    /// Phones and tablets: 60 fps at (nearly) full resolution. Chasing 120
+    /// dropped the room to 722 of 1200 lines and read blurry (Joep's Xiaomi,
+    /// 25 November); a lobby gains little from 120 and sharpness shows.
+    fn target_fps(&self) -> Option<f32> {
+        #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+        { if app::web::mobile() { return Some(60.0); } }
+        None
+    }
+
     fn tick(&mut self, controls: &[Controls]) {
         for (id, c) in self.local.clone().iter().zip(controls) {
             let (held, stick) = buttons(c);
