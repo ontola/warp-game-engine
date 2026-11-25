@@ -351,6 +351,22 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
     for (i, segment) in plant.segments.iter().enumerate().rev() {
         if let Some(p) = segment.parent { foliage[p as usize] += foliage[i]; }
     }
+    let mut reach = 0.6;
+    let stems = loop {
+        let r = runs(plant, reach);
+        if r.len() * 3 <= limits.max_instances || reach > 64.0 {
+            break r;
+        }
+        reach *= 1.5;
+    };
+    const JOINT_RADIUS: f32 = 0.025;
+    let continues = |i: usize| stems.get(i + 1).is_some_and(|r| !r.5);
+    let collars_for = |i: usize| {
+        let r = stems[i];
+        usize::from(r.3 > JOINT_RADIUS && (r.5 && plant.segments[r.0 as usize].order > 0 || !r.5)) + usize::from(!continues(i) && r.4 > JOINT_RADIUS)
+            + usize::from(r.5 && plant.segments[r.0 as usize].order == 0 && r.3 > JOINT_RADIUS)
+    };
+    let collars: usize = (0..stems.len()).map(collars_for).sum();
     let mut forks: Vec<_> = (0..n).filter(|&i| {
         let s = plant.segments[i];
         foliage[i] > 0 && s.order > 0
@@ -372,10 +388,37 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
         selected[i] = true;
         count += 1;
     }
+    // Crowded specimens can have thousands of unselected woody runs on the
+    // root alone. Reserve real supporting forks before spending the remaining
+    // slots on finer motion, so each virtual owner still fits its member IDs.
+    if stems.len() + collars > MAX_BRANCH_MEMBERS {
+        let mut wood = vec![0usize; n];
+        for (i, stem) in stems.iter().enumerate() {
+            wood[stem.0 as usize] += 1 + collars_for(i);
+        }
+        let mut support = vec![0; n];
+        let mut loads = vec![0usize; n + 1]; // 0 is the root, i + 1 a selected fork
+        let mut subtree = wood.clone();
+        for (i, seg) in plant.segments.iter().enumerate().rev() {
+            if let Some(p) = seg.parent { subtree[p as usize] += subtree[i]; }
+        }
+        let mut axes: Vec<_> = (0..n).filter(|&i| axis[i] == i && plant.segments[i].order != 0).collect();
+        axes.sort_unstable_by_key(|&i| (std::cmp::Reverse(subtree[i]), i));
+        while count < budget {
+            loads.fill(0);
+            for (i, seg) in plant.segments.iter().enumerate() {
+                support[i] = if selected[i] { i + 1 } else { seg.parent.map_or(0, |p| support[p as usize]) };
+                loads[support[i]] += wood[i];
+            }
+            let Some(&fork) = axes.iter().find(|&&i| !selected[i] && loads[support[i]] > MAX_BRANCH_MEMBERS) else { break; };
+            selected[fork] = true;
+            count += 1;
+        }
+    }
     for &i in &forks {
         if count == budget { break; }
         let s = plant.segments[i];
-        if s.order > 1 && s.parent.is_some_and(|p| selected[axis[p as usize]]) {
+        if !selected[i] && s.order > 1 && s.parent.is_some_and(|p| selected[axis[p as usize]]) {
             selected[i] = true;
             count += 1;
         }
@@ -410,19 +453,6 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
     }
     let bone_of = |segment: u32| limb[segment as usize];
 
-    let mut reach = 0.6;
-    let stems = loop {
-        let r = runs(plant, reach);
-        if r.len() * 3 <= limits.max_instances || reach > 64.0 {
-            break r;
-        }
-        reach *= 1.5;
-    };
-    // Rounded joints: a ball where one run of an axis meets the next and at
-    // the end of a thick stem, a stretched ball where a branch leaves its
-    // parent. Twigs under 2.5 cm get none: their seams are too small to see,
-    // and they are most of the stems.
-    const JOINT_RADIUS: f32 = 0.025;
     // One bark for every stem from 3 cm up (bands where a trunk crossed a
     // size class showed as seams), smooth young twigs below (materials 0 and
     // 2; 1 is the needles).
@@ -432,12 +462,6 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
         let wanted = (end / radius.max(1e-6)).clamp(0.6, 1.0);
         (0..4).min_by(|&a, &c| (TAPERS[a] - wanted).abs().total_cmp(&(TAPERS[c] - wanted).abs())).unwrap_or(0)
     };
-    let continues = |i: usize| stems.get(i + 1).is_some_and(|r| !r.5);
-    let collars: usize = (0..stems.len()).map(|i| {
-        let r = stems[i];
-        usize::from(r.3 > JOINT_RADIUS && (r.5 && plant.segments[r.0 as usize].order > 0 || !r.5)) + usize::from(!continues(i) && r.4 > JOINT_RADIUS)
-            + usize::from(r.5 && plant.segments[r.0 as usize].order == 0 && r.3 > JOINT_RADIUS)
-    }).sum();
     let room = limits.max_instances.saturating_sub(stems.len() + collars);
     let keep = (room as f32 / plant.tufts.len().max(1) as f32).min(1.0);
     let mut instances = Vec::with_capacity(limits.max_instances);
