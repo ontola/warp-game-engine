@@ -574,6 +574,8 @@ pub struct Prompt {
     pub hover: Option<String>,
     /// Whoever stands there plays on the keyboard: keys instead of pad buttons.
     pub keys: bool,
+    /// Which keys: 0 the whole keyboard, 1 or 2 its left or right half.
+    pub half: u8,
 }
 
 impl Prompt {
@@ -599,9 +601,18 @@ impl Prompt {
 
 /// The key a keyboard player presses for a pad button (app::input's keys),
 /// or None where the keyboard has none.
-pub fn key_cap(button: &str) -> Option<&'static str> {
-    Some(match button.to_ascii_uppercase().as_str() {
-        "A" => "Space", "B" => "Backspace", "X" => "R", "Y" => "F", "LB" => "Q", "RB" => "E", "BACK" => "Tab", "START" => "Enter", "R3" => "C",
+pub fn key_cap(button: &str) -> Option<&'static str> { key_cap_on(0, button) }
+
+/// Pad button `button` on keyboard `half`: 0 the whole keyboard, 1 its left
+/// half, 2 its right half when two people share it (app input.rs
+/// `half_button`). None where that half has no key for it.
+pub fn key_cap_on(half: u8, button: &str) -> Option<&'static str> {
+    let b = button.to_ascii_uppercase();
+    Some(match (half, b.as_str()) {
+        (1, "A") => "Space", (1, "B") => "L Shift", (1, "X") => "Q", (1, "Y") => "E", (1, "BACK") => "Tab", (1, "START") => "1",
+        (2, "A") => "R Shift", (2, "B") => "/", (2, "X") => ".", (2, "Y") => "'", (2, "BACK") => "Backspace", (2, "START") => "Enter",
+        (1 | 2, _) => return None,
+        (_, "A") => "Space", (_, "B") => "Backspace", (_, "X") => "R", (_, "Y") => "F", (_, "LB") => "Q", (_, "RB") => "E", (_, "BACK") => "Tab", (_, "START") => "Enter", (_, "R3") => "C",
         _ => return None,
     })
 }
@@ -623,7 +634,7 @@ pub fn prompt(c: &mut Canvas, state: &Prompt) {
     let h = 96.0;
     let mut x = 20.0;
     for (key, label, item_on) in &state.items {
-        let cap = if state.keys && !state.mouse { key_cap(key) } else { None };
+        let cap = if state.keys && !state.mouse { key_cap_on(state.half, key) } else { None };
         let bumper_key = cap.is_none() && (key == "LB" || key == "RB");
         let badge = match cap { Some(cap) => key_cap_width(cap) + 24.0, None if bumper_key => 150.0, None => 96.0 };
         let tw = render::hud::measure(label, bold(), 44.0)[0];
@@ -753,4 +764,19 @@ pub fn paint(c: &mut Canvas, name: &str, show: &Show, prompts: &std::collections
         _ => return false,
     }
     true
+}
+
+#[cfg(test)]
+mod key_cap_tests {
+    use super::key_cap_on;
+
+    #[test]
+    fn each_keyboard_half_shows_its_own_keys() {
+        assert_eq!(key_cap_on(0, "A"), Some("Space"));
+        assert_eq!(key_cap_on(1, "A"), Some("Space"));
+        assert_eq!(key_cap_on(2, "A"), Some("R Shift"));
+        assert_eq!(key_cap_on(1, "b"), Some("L Shift"));
+        assert_eq!(key_cap_on(2, "BACK"), Some("Backspace"));
+        assert_eq!(key_cap_on(2, "LB"), None, "the halves have no bumpers");
+    }
 }

@@ -322,9 +322,16 @@ impl Lobby {
         self.controllers.iter().any(|(token, player)| player == id && token.contains("keyboard"))
     }
 
+    /// Which keys player `id` has: 0 the whole keyboard, 1 or 2 its left or
+    /// right half (`web:keyboard-left` / `-right`); None off the keyboard.
+    pub fn keyboard_half(&self, id: &str) -> Option<u8> {
+        self.controllers.iter().find(|(token, player)| player.as_str() == id && token.contains("keyboard"))
+            .map(|(token, _)| if token.ends_with("-left") { 1 } else if token.ends_with("-right") { 2 } else { 0 })
+    }
+
     /// Pad button `button` as player `id` presses it: its key on a keyboard.
     pub fn button_name(&self, id: &str, button: &str) -> String {
-        if self.on_keyboard(id) { if let Some(cap) = crate::paint::key_cap(button) { return cap.into(); } }
+        if let Some(half) = self.keyboard_half(id) { if let Some(cap) = crate::paint::key_cap_on(half, button) { return cap.into(); } }
         button.into()
     }
 
@@ -768,12 +775,17 @@ impl Lobby {
         let mut occupied: HashMap<String, Station> = HashMap::new();
         // Per prompt: whether everyone standing there plays on the keyboard.
         let mut keys: HashMap<String, bool> = HashMap::new();
+        // And on which keys: one layout, or None when the halves are mixed.
+        let mut halves: HashMap<String, Option<u8>> = HashMap::new();
         let ids: Vec<String> = self.world.players.iter().map(|p| p.id.clone()).collect();
         for id in &ids {
             if self.menus.contains_key(id) { continue; }
             if let Some(station) = self.station_for(id) {
                 let k = keys.entry(crate::mouse::prompt_name(&station).to_string()).or_insert(true);
                 *k = *k && self.on_keyboard(id);
+                let half = self.keyboard_half(id).unwrap_or(0);
+                let h = halves.entry(crate::mouse::prompt_name(&station).to_string()).or_insert(Some(half));
+                if *h != Some(half) { *h = None; }
                 if !occupied.contains_key(&station.id) || station.enabled { occupied.insert(station.id.clone(), station); }
             }
         }
@@ -825,8 +837,11 @@ impl Lobby {
             let mouse = mouse_only.as_deref() == Some(name.as_str());
             let hover = if mouse { self.mouse.hover.as_ref().and_then(|h| h.1.clone()) } else { None };
             if p.mouse != mouse || p.hover != hover { p.mouse = mouse; p.hover = hover; self.screens_dirty = true; }
-            let k = keys.get(name).copied().unwrap_or(false);
-            if p.keys != k { p.keys = k; self.screens_dirty = true; }
+            let half = halves.get(name).copied().flatten();
+            // Left and right halves at one place: neither's keys fit both.
+            let k = keys.get(name).copied().unwrap_or(false) && half.is_some();
+            let half = half.unwrap_or(0);
+            if p.keys != k || p.half != half { p.keys = k; p.half = half; self.screens_dirty = true; }
         }
         let waiting = self.host.pending_profiles().len();
         for i in 0..game_room_sim::layout::PROFILE_DOORS.len() {
