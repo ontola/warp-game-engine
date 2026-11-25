@@ -132,6 +132,7 @@ impl LuaGame {
     /// Seat a follower's people before the bots; returns their player ids.
     fn seat_remote(&mut self, client: u64, people: usize) -> Vec<u32> {
         let mut added = Vec::new();
+        let before = api::couch_ids(&self.core().roster);
         {
             let mut c = api::lock(&self.core);
             let room = MAX_PEOPLE.saturating_sub(c.roster.iter().filter(|p| !p.bot).count());
@@ -152,10 +153,12 @@ impl LuaGame {
             if let Ok(t) = api::player_table(&lua, p) { self.hook("player_joined", || Ok(mlua::MultiValue::from_vec(vec![Value::Table(t.clone())]))); }
         }
         if !added.is_empty() { self.hook("players_changed", || Ok(mlua::MultiValue::new())); }
+        self.couch_moved(&before);
         added.iter().map(|p| p.id).collect()
     }
 
     fn unseat_remote(&mut self, client: u64) {
+        let before = api::couch_ids(&self.core().roster);
         let gone: Vec<Player> = {
             let mut c = self.core();
             let gone = c.roster.iter().filter(|p| p.remote == Some(client)).cloned().collect();
@@ -168,6 +171,7 @@ impl LuaGame {
             if let Ok(t) = api::player_table(&lua, p) { self.hook("player_left", || Ok(mlua::MultiValue::from_vec(vec![Value::Table(t.clone())]))); }
         }
         if !gone.is_empty() { self.hook("players_changed", || Ok(mlua::MultiValue::new())); }
+        self.couch_moved(&before);
     }
 
     /// Host, after a tick: each follower gets the changes, its cameras, the

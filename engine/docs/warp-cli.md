@@ -199,6 +199,7 @@ A module returns a table of hooks. All of them are optional.
 | `player_joined(p)` | A Splitscreen Club seat was added mid-game (`p` is a player table). |
 | `player_left(p)` | A player left mid-game. |
 | `players_changed()` | Names, colours or seats changed, after any join or leave too. |
+| `couch_changed(order)` | The people's left-to-right order on the couch changed: someone moved in the lobby mid-game, joined or left. `order` is `players.by_couch()`. Runs after `players_changed`. See [couch order](#couch-order). |
 
 `input[id]` is the input of the player with that id (see
 [players](#players)); a bot's input is always neutral. It holds `move_x` and `move_y` (left stick or WASD, -1 to 1,
@@ -434,8 +435,8 @@ keyboard mapping is in `app::input`.
 
 ### Players
 
-`players.list()` returns every player, people first in split-screen
-order, then bots: `{id, name, color, bot, human, seat, couch}`. Ids start
+`players.list()` returns every player, people first (in couch order when
+the game starts), then bots: `{id, name, color, bot, human, seat, couch}`. Ids start
 at 1, stay the same for the whole session and are never reused, so a
 player who leaves does not renumber the others. Each person has a camera
 and a view (`camera.set(p.id, ...)`, `hud.view(p.id)`); bots have none
@@ -446,6 +447,28 @@ themselves; the starter shows a simple one that runs to the nearest orb.
 Without a party host the players come from `game.toml` (`players`,
 `bots`, `--players`, `--bots`) and are called "Player 1" and "Bot 1".
 `min_players` adds bots in both cases.
+
+#### Couch order
+
+Players choose where they sit on the couch in the Game Room lobby (Start
+menu, Couch position), also while a game runs. `couch` is that place, 0
+leftmost; it is nil without a lobby (then roster order counts).
+`players.by_couch()` returns the players left to right: people by
+`couch`, then bots. The engine does the rest by itself:
+
+- At the start, `players.list()` already lists the people in couch order.
+- Split-screen views follow the couch: who sits left looks through the
+  left view, also after a move mid-game (a game that does nothing still
+  gets this right).
+- On a shared keyboard the browser host gives who sits left the left half
+  (WASD) and who sits right the arrows, and swaps them after a move.
+- When the order changes mid-game, `couch_changed(order)` runs. A game
+  whose layout depends on where people sit (lanes, halves of a board,
+  sides of an arena, HUD columns) moves them there; Stack Together swaps
+  who plays which half of the well and keeps the stacks.
+
+`players.list()` itself keeps its order during a game, so indices a game
+stored stay valid; use `by_couch()` wherever left and right matter.
 
 ### The start menu
 
@@ -470,7 +493,8 @@ confirms, B or Start closes. Scripts and agents use the console:
   name and colour. The game reports ready and does not tick until `start`.
 - The seats' controllers are `input[id]`. Back belongs to the host. A host
   pause freezes the game; `dispose` clears the world and waits again.
-- Names and colours follow the lobby live (`players_changed`). A seat added
+- Names, colours and couch places follow the lobby live
+  (`players_changed`, and `couch_changed` when the order changed). A seat added
   or removed mid-game joins or leaves without a restart (`player_joined`,
   `player_left`); at most four people play.
 - `game.finish()` tells the host the match is over, `game.log(text)` writes

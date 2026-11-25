@@ -682,6 +682,22 @@ pub fn project(cam: &Cam, view: [f32; 4], at: Vec3) -> Option<[f32; 2]> {
     Some([view[0] + (ndc.x * 0.5 + 0.5) * view[2], view[1] + (0.5 - ndc.y * 0.5) * view[3]])
 }
 
+/// The roster left to right on the couch: people by their lobby couch
+/// position (unknown positions after, in roster order), then bots in roster
+/// order. Split-screen views, `players.by_couch()` and `couch_changed`
+/// follow it (engine/docs/warp-cli.md "Couch order").
+pub fn couch_order(roster: &[Player]) -> Vec<usize> {
+    let mut people: Vec<usize> = (0..roster.len()).filter(|&i| !roster[i].bot).collect();
+    people.sort_by_key(|&i| (roster[i].couch.unwrap_or(i64::MAX), i));
+    people.extend((0..roster.len()).filter(|&i| roster[i].bot));
+    people
+}
+
+/// The ids of the people in couch order ([`couch_order`]).
+pub fn couch_ids(roster: &[Player]) -> Vec<u32> {
+    couch_order(roster).into_iter().filter(|&i| !roster[i].bot).map(|i| roster[i].id).collect()
+}
+
 /// A player as Luau sees it.
 pub fn player_table(lua: &Lua, p: &Player) -> mlua::Result<Table> {
     let t = lua.create_table()?;
@@ -1605,6 +1621,12 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             let c = lock(&core);
             let all = lua.create_table()?;
             for (i, p) in c.roster.iter().enumerate() { all.raw_set(i + 1, player_table(lua, p)?)?; }
+            Ok(all)
+        })),
+        ("by_couch", f!(core, move |lua, ()| {
+            let c = lock(&core);
+            let all = lua.create_table()?;
+            for (n, i) in couch_order(&c.roster).into_iter().enumerate() { all.raw_set(n + 1, player_table(lua, &c.roster[i])?)?; }
             Ok(all)
         })),
         ("get", f!(core, move |lua, id: i64| {

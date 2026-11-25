@@ -1428,7 +1428,8 @@ local function new_run()
 	s = state.s
 	grid = {}
 	stream_land()
-	for i, p in players.list() do table.insert(s.survivors, new_survivor(p, i)) end
+	-- Left to right as they sit on the couch.
+	for i, p in players.by_couch() do table.insert(s.survivors, new_survivor(p, i)) end
 	s.time_now = nil
 	s.ev = nil
 	look_of_hour()

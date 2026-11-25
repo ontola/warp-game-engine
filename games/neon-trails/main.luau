@@ -106,7 +106,7 @@ local function new_round()
 	state.pause = nil
 	state.round += 1
 	local riders = {}
-	for i, p in players.list() do
+	for i, p in players.by_couch() do
 		if i > MAX_RIDERS then break end
 		local r = {
 			id = p.id,
@@ -335,8 +335,9 @@ end
 local function draw()
 	local w, h = hud.size()
 	local s = h / 720
-	-- Every player's score along the top, in their colour.
-	local list = players.list()
+	-- Every player's score along the top, in their colour, left to right
+	-- as they sit on the couch.
+	local list = players.by_couch()
 	local slot = w / math.max(#list, 1)
 	for i, p in list do
 		local x = (i - 1) * slot

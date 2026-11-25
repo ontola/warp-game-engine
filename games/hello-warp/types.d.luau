@@ -16,6 +16,8 @@
 --   player_joined(p)     Splitscreen Club seated someone new mid-game (p: Player)
 --   player_left(p)       a player left mid-game
 --   players_changed()    names, colours or seats changed (after joins and leaves too)
+--   couch_changed(order) the people's left-to-right couch order changed (a move in
+--                        the lobby mid-game, or a join or leave); order = players.by_couch()
 -- Folder games: local lib = require("lib/name") loads lib/name.module.luau at module load time.
 -- libraries("content/cards") lists the libraries in a folder, sorted, for content
 -- collections: `for _, name in libraries("content/cards") do local card = require(name) end`.
@@ -68,6 +70,7 @@ export type EntityOptions = {
 	roughness: number?, -- 0 mirror .. 1 matte (default 0.7)
 	metal: number?, -- 0 .. 1
 	surface: number?, -- a kind (0 .. 255) of the game's own shader, surface.wgsl; false for none
+	coverage: (number | false)?, -- opaque primitive proxy coverage from 0 to 1; false restores the ordinary material
 	points: { Vec }?, -- "wire" only: points in the entity's own space (set them each tick to animate)
 	edges: { { number } }?, -- "wire" only: pairs of 1-based point numbers, or a flat list
 	width: number?, -- "wire" only: edge thickness in metres at size 1 (default 0.05)
@@ -84,13 +87,14 @@ export type Player = {
 	color: Vec, -- sRGB 0..1, the lobby's colour under Splitscreen Club
 	bot: boolean,
 	human: boolean,
+	view: number?, -- assigned zero-based camera index, including shared split-screen views
 	seat: number?, -- the Splitscreen Club seat
 	couch: number?, -- couch position from the lobby, 0 leftmost
 }
 
 export type Entity = {
 	id: number, parent: number?, world_pos: Vec, shape: string, pos: Vec, rot: Vec, size: Vec, color: Vec,
-	emissive: number, roughness: number, metal: number, surface: number?, solid: boolean, visible: boolean, shadow_only: boolean, hide_views: number, tag: string,
+	emissive: number, roughness: number, metal: number, surface: number?, coverage: number?, solid: boolean, visible: boolean, shadow_only: boolean, hide_views: number, tag: string,
 }
 
 export type Query = {
@@ -101,7 +105,20 @@ export type Query = {
 
 export type Hit = { id: number, distance: number, point: Vec, normal: Vec }
 
+-- Triangle indices are 1-based. Supply a unit normal per vertex and UVs
+-- as vector.create(u,v,0). The part's material applies to all its triangles.
+export type MeshPart = {
+    positions: {Vec}, normals: {Vec}, uvs: {Vec}?, indices: {number},
+    color: Color?, surface: number?, metal: number?, roughness: number?,
+}
+
 declare world: {
+    -- One editable-world mesh entity with immutable local geometry. Removing
+    -- the entity releases its mesh. Solid uses its bounding box; use a
+    -- heightfield for a physical terrain. Each mesh can have up to 32 parts,
+    -- 65536 vertices and 196608 indices.
+    -- Returns (id,nil) or (nil,error) without modifying the world on an invalid request.
+    mesh: (parts: {MeshPart}, opts: {pos:Vec?, rot:Vec?, size:(Vec | number)?, tag:string?, solid:boolean?, visible:boolean?}?) -> (number?, string?),
 	-- A new entity; returns its id. Shapes: "cube", "sphere", "capsule",
 	-- "outline<sides>[:<width>]" (a flat hollow polygon, "outline6"), or a
 	-- glTF model in the game folder ("assets/crate.glb"). A new shape and look
@@ -115,7 +132,7 @@ declare world: {
 	-- things that move every tick.
 	place: (id: number, pos: Vec, yaw: number?) -> (),
 	-- Prepare a shape and look in init, so spawning it later never stalls.
-	warm: (shape: string, look: { color: Color?, emissive: number?, roughness: number?, metal: number?, surface: number? }?) -> (),
+	warm: (shape: string, look: { color: Color?, emissive: number?, roughness: number?, metal: number?, surface: number?, coverage: (number | false)? }?) -> (),
 	-- An entity's fields, or nil once removed.
 	get: (id: number) -> Entity?,
 	exists: (id: number) -> boolean,
@@ -134,9 +151,17 @@ declare world: {
 	move: (id: number, vel: Vec, dt: number, opts: Query?) -> (Vec, boolean),
 }
 
--- Effects the engine animates and removes on its own: entities tagged "fx",
--- never solid, skipped when the world is full. Warm their look in init.
+-- Effects advance on the game clock. Bursts and rings use non-solid entities
+-- tagged "fx" and can warm their looks in init.
 declare fx: {
+    -- Growing Guns fire, smoke, embers, heat distortion and local lights in all views.
+    -- Radius is in metres (0 < radius <= 200). This visual effect uses no entity slots.
+    warm_explosions: () -> (),
+    explosion: (pos: Vec, radius: number, lightRange: number?) -> (),
+    gib_mist: (pos: Vec, intensity: number) -> (),
+    -- One upright flame rooted at pos, in metres and seconds, or one rising smoke puff.
+    flame: (pos: Vec, width: number, height: number, life: number) -> (),
+    exhaust_smoke: (pos: Vec, radius: number) -> (),
 	-- Pieces flying out from pos: each at 25-100 % of speed (m/s), living
 	-- 50-100 % of life (s) and shrinking. flat: in the ground plane only;
 	-- stretch: seconds of velocity as length (streaks); gravity: m/s^2 down.
@@ -150,7 +175,8 @@ declare fx: {
 }
 
 declare players: {
-	-- Every player: people first, in split-screen order, then bots.
+	-- Every player: people first (in couch order when the game starts; the order stays
+	-- put mid-game, see by_couch), then bots.
 	list: () -> { Player },
 	get: (id: number) -> Player?,
 	count: () -> number,
@@ -189,6 +215,15 @@ declare sound: {
 declare hud: {
 	-- Text in pixels from the top left, drawn this frame (call from draw).
 	text: (text: any, x: number, y: number, opts: { size: number?, color: Color?, align: ("left" | "center" | "right")?, width: number? }?) -> (),
+	-- Pad button `button` ("A", "B", "X", "Y", "LB", "RB", "Start", "Back", or "move")
+	-- as player `player` (id, table or nil for the first) presses it: a coloured
+	-- disc on a controller, the key's cap on a keyboard or keyboard half (two
+	-- players on one keyboard). Top left at x, y; size in pixels high (default 32);
+	-- alpha 0..1. Returns its width. Call from draw (or menu).
+	button: (player: any, button: string, x: number, y: number, size: number?, alpha: number?) -> number,
+	-- The key that presses `button` for that player ("Space", "R Shift", "WASD"
+	-- for "move"), or nil on a controller.
+	key: (player: any, button: string) -> string?,
 	-- A filled rectangle (default colour black at half alpha).
 	box: (x: number, y: number, w: number, h: number, color: Color?) -> (),
 	-- A person's Splitscreen Club face (their profile art on a head in their skin
@@ -236,12 +271,15 @@ declare lights: {
 
 -- Warp Humans from game.toml's [humans.NAME] pools: spawn returns nil when
 -- the pool is full. Set pos (feet) and yaw each tick; the legs follow.
--- pose: walk, idle, sit, crouch, wave, reach, raise, strike, aim, shove, attack, punch, jab,
+-- pose: walk, idle, sit, crouch, wave, reach, raise, strike, aim, hold, shove, attack, punch, jab,
 -- hit, hit_head, cast, roll, dead, down, feed (crouched, bent over something on the
 -- ground), rise (getting up off the ground over t); t is its progress, 0 to 1.
 -- The shared four-wheel vehicle simulation. Reset snapshots solid boxes once.
 declare vehicles: {
-	reset: (static_tag: string?) -> (),
+	contact_profile: (name: string, bottom: number, sections: {{z:number, width:number, top:number, roofWidth:number?}}) -> (),
+	reset: (static_tag: string?, exclude_ids: {number}?) -> (),
+	set_static_region: (name: string, entity_ids: {number}, boxes: {{pos: vector, size: vector, yaw: number?}}) -> (),
+	relocate: (id: number, feet: vector, yaw: number?) -> boolean,
 	spawn: (ground_pos: Vec, yaw: number?) -> number,
 	remove: (id: number) -> boolean,
 	drive: (id: number, controls: { throttle: number?, brake: number?, steer: number?, handbrake: number? }?) -> (),
@@ -253,13 +291,20 @@ declare vehicles: {
 declare humans: {
 	spawn: (pool: string, opts: { pos: Vec?, yaw: number?, look: number?, resident: number? }?) -> number?,
 	-- tired 0..1: bent over, out of breath, over any pose; coil -1..1: wound up for a heavy blow (1), swung through (< 0)
-	set: (id: number, opts: { pos: Vec?, yaw: number?, pose: string?, t: number?, tired: number?, coil: number?, visible: boolean? }) -> boolean,
+	-- hold: grip = right shoulder to wrist, support = right wrist to left wrist (+Z forward, metres before pitch).
+	-- pitch is in radians, positive up. t blends in the head following that pitch.
+	set: (id: number, opts: { pos: Vec?, yaw: number?, pose: string?, t: number?, tired: number?, coil: number?, visible: boolean?, grip: Vec?, support: Vec?, pitch: number? }) -> boolean,
 	-- A blow along dir (its length the strength, ~1 heavy): the upper body jolts and sways back
 	hit: (id: number, dir: Vec) -> boolean,
+	ragdoll_raycast: (id: number, origin: Vec, dir: Vec, max: number) -> number?,
+	ragdoll_closest: (id: number, point: Vec) -> Vec?,
+	ragdoll_hit: (id: number, point: Vec, velocity: Vec) -> boolean,
+	-- Release with this tick's movement (or an explicit velocity), then kick the limb nearest the world contact.
+	ragdoll_impact: (id: number, point: Vec, kick: Vec, carriedVelocity: Vec?) -> boolean,
 	-- Limp from the pose it stands in, thrown by push (m/s); up again with any pose but dead/down
-	ragdoll: (id: number, push: Vec?) -> boolean,
+	ragdoll: (id: number, push: Vec?, spin: Vec?) -> boolean,
 	-- Replace the shared solid boxes for active ragdolls. Positions are box centers.
-	obstacles: (boxes: {{id:number, pos:Vec, size:Vec, yaw:number?, prevPos:Vec?, prevYaw:number?}}) -> (),
+	obstacles: (boxes: {{id:number, pos:Vec, size:Vec, yaw:number?, prevPos:Vec?, prevYaw:number?, vehicle:number?, profile:string?}}) -> (),
 	-- Once settled, start the rise pose and return landed feet. Advance rise with set(id,{pose="rise",t=...}).
 	recover: (id:number) -> Vec?,
 	remove: (id: number) -> boolean,
@@ -268,6 +313,7 @@ declare humans: {
 	joint: (id: number, name: string) -> Vec?,
 	-- Free slots, total slots, number of fitted bodies and number of complete appearances.
 	room: (pool: string, body: number?) -> (number, number, number, number),
+	hide_distant: (pool: string, resident: number) -> boolean, -- hide immediately until the next crowd snapshot
 	-- One cheap silhouette per array index, except IDs already in fitted. Interpolates
 	-- feet and heading toward nextPos/nextYaw over seconds. Reserve [humans.NAME].distant.
 	distant: (pool: string, rows: { {pos: Vec, yaw: number?, nextPos: Vec?, nextYaw: number?, active: boolean?, look: number?} }, fitted: {[number]: number}, seconds: number) -> (),

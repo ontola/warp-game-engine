@@ -586,6 +586,129 @@ fn stack_together_shares_a_well_with_a_bot() {
     assert_eq!(run()["state"], s["state"]);
 }
 
+/// A fake party host that seats Joep (couch 0) and Polle (couch 1) on
+/// pads a and b, starts, and on "swap" moves them on the couch (the lobby's
+/// `players_updated`).
+fn couch_host(listener: std::net::TcpListener, step: std::sync::mpsc::Receiver<&'static str>, couches: [i64; 2]) {
+    use tungstenite::Message;
+    let (stream, _) = listener.accept().unwrap();
+    stream.set_read_timeout(Some(std::time::Duration::from_millis(20))).unwrap();
+    let mut ws = tungstenite::accept(stream).unwrap();
+    let send = |ws: &mut tungstenite::WebSocket<std::net::TcpStream>, v: Value| ws.send(Message::Text(v.to_string().into())).unwrap();
+    let seats = json!([{"index":0,"controller":"pad-a","occupant":{"kind":"local","player_id":"p1"}},{"index":1,"controller":"pad-b","occupant":{"kind":"local","player_id":"p2"}}]);
+    let players = |a: i64, b: i64| json!([{"id":"p1","name":"Joep","color":"#ff0000","couch":a},{"id":"p2","name":"Polle","color":"#0000ff","couch":b}]);
+    loop {
+        match ws.read() {
+            Ok(Message::Text(t)) => {
+                let v: Value = serde_json::from_str(t.as_str()).unwrap();
+                if v["type"] == "hello" {
+                    send(&mut ws, json!({"type":"welcome","protocol_version":1,"godot_sdk":6,"party":{}}));
+                    send(&mut ws, json!({"type":"prepare","game":v["game"],"session":"s1","seats":seats,"players":players(couches[0], couches[1])}));
+                }
+                if v["type"] == "ready" { send(&mut ws, json!({"type":"start","session":"s1"})); }
+            }
+            Ok(_) => {}
+            Err(tungstenite::Error::Io(e)) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
+            Err(_) => return,
+        }
+        match step.try_recv() {
+            Ok("swap") => send(&mut ws, json!({"type":"players_updated","session":"s1","players":players(couches[1], couches[0])})),
+            Ok(_) => return,
+            Err(_) => {}
+        }
+    }
+}
+
+/// Run `dir` under [`couch_host`] until `until(state)` holds.
+fn tick_until(g: &mut LuaGame, what: &str, until: impl Fn(&Value) -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !until(&state(g)) {
+        g.tick(&[Controls::default(), Controls::default()]);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert!(std::time::Instant::now() < deadline, "{what}: {}\n{:?}", state(g), g.logs());
+    }
+}
+
+/// Moving on the couch in the lobby mid-game reaches every Luau game: the
+/// split-screen views follow the couch by themselves, `players.by_couch()`
+/// is left to right, and `couch_changed(order)` runs once per move with
+/// the new order. The game never restarts.
+#[test]
+fn a_move_on_the_couch_reaches_the_game() {
+    let dir = folder("couch");
+    std::fs::write(dir.join("game.toml"), "title = \"Couch\"\nsplit = true\nplayers = 2\n").unwrap();
+    std::fs::write(dir.join("main.luau"), r#"
+local function names(list) local out = {} for _, p in list do table.insert(out, p.name) end return out end
+local function init()
+    state.runs = (state.runs or 0) + 1
+    state.start = names(players.by_couch())
+    state.moves = {}
+end
+local function couch_changed(order) table.insert(state.moves, names(order)) end
+return { init = init, couch_changed = couch_changed }
+"#).unwrap();
+    // Polle sits left, Joep right, although Joep has seat 0.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (go, step) = std::sync::mpsc::channel::<&'static str>();
+    let host = std::thread::spawn(move || couch_host(listener, step, [1, 0]));
+    let mut g = game(&dir);
+    let client = splitscreen_club::Client::connect(splitscreen_club::Config { url: format!("ws://{address}"), game_id: "couch-test".into(), token: String::new(), launched_by_daemon: true }).unwrap();
+    g.party = Some(warp::party::Party::new(client));
+    tick_until(&mut g, "seated", |s| s["phase"] == "running");
+    let views = |s: &Value| s["players"].as_array().unwrap().iter().map(|p| (p["name"].as_str().unwrap().to_string(), p["view"].as_u64().unwrap())).collect::<Vec<_>>();
+    let s = state(&g);
+    assert_eq!(s["state"]["start"], json!(["Polle", "Joep"]), "by_couch is left to right from the start");
+    let mut v = views(&s);
+    v.sort();
+    assert_eq!(v, vec![("Joep".into(), 1), ("Polle".into(), 0)], "who sits left looks through the left view");
+    go.send("swap").unwrap();
+    tick_until(&mut g, "moved", |s| s["state"]["moves"].as_array().is_some_and(|m| !m.is_empty()));
+    for _ in 0..20 { g.tick(&[Controls::default(), Controls::default()]); }
+    let s = state(&g);
+    assert_eq!(s["state"]["moves"], json!([["Joep", "Polle"]]), "couch_changed once, with the new order");
+    let mut v = views(&s);
+    v.sort();
+    assert_eq!(v, vec![("Joep".into(), 0), ("Polle".into(), 1)], "the views swap with the couch");
+    assert_eq!(s["state"]["runs"], json!(1), "a move never restarts the game");
+    go.send("stop").unwrap();
+    host.join().unwrap();
+}
+
+/// Stack Together under a party: who sits left plays the left half of the
+/// well, and after a move on the couch the two swap halves mid-round while
+/// the stacks stay.
+#[test]
+fn stack_together_follows_the_couch() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (go, step) = std::sync::mpsc::channel::<&'static str>();
+    let host = std::thread::spawn(move || couch_host(listener, step, [0, 1]));
+    let mut g = LuaGame::load(&repo().join("games/stack-together"), &Overrides::default(), None).unwrap();
+    g.echo = false;
+    let client = splitscreen_club::Client::connect(splitscreen_club::Config { url: format!("ws://{address}"), game_id: "stack-together".into(), token: String::new(), launched_by_daemon: true }).unwrap();
+    g.party = Some(warp::party::Party::new(client));
+    tick_until(&mut g, "seated", |s| s["phase"] == "running");
+    let lane_of = |s: &Value, name: &str| {
+        let id = s["players"].as_array().unwrap().iter().find(|p| p["name"] == name).unwrap()["id"].clone();
+        s["state"]["players"].as_array().unwrap().iter().find(|p| p["id"] == id).map(|p| p["lane"].as_u64().unwrap())
+    };
+    let s = state(&g);
+    assert_eq!((lane_of(&s, "Joep"), lane_of(&s, "Polle")), (Some(1), Some(7)), "Joep sits left: {}", s["state"]["players"]);
+    for _ in 0..120 { g.tick(&[Controls::default(), Controls::default()]); }
+    let s = state(&g);
+    let (time, kinds) = (s["state"]["time"].as_f64().unwrap(), s["state"]["players"].as_array().unwrap().iter().map(|p| p["kind"].clone()).collect::<Vec<_>>());
+    go.send("swap").unwrap();
+    tick_until(&mut g, "swapped", |s| lane_of(s, "Joep") == Some(7));
+    let s = state(&g);
+    assert_eq!(lane_of(&s, "Polle"), Some(1), "Polle now plays the left half");
+    assert_eq!(s["errors"], json!([]), "{s}");
+    assert!(s["state"]["time"].as_f64().unwrap() > time, "the round goes on");
+    assert_eq!(s["state"]["players"].as_array().unwrap().iter().map(|p| p["kind"].clone()).collect::<Vec<_>>(), kinds, "each half keeps its falling piece");
+    go.send("stop").unwrap();
+    host.join().unwrap();
+}
+
 #[test]
 fn dead_miles_bot_searches_and_fights() {
     let run = || {
