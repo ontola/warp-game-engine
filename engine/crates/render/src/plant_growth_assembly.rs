@@ -303,6 +303,30 @@ fn along(from: Vec3, to: Vec3) -> Quat {
     Quat::from_rotation_arc(Vec3::Y, (to - from).normalize_or(Vec3::Y))
 }
 
+/// Source tufts for a rest-pose cook, in growth order. A source that fits
+/// keeps every tuft. At a hard limit, living terminal buds take priority,
+/// then a stable seeded choice fills the remaining positions. Changing the
+/// number of wind joints never changes these source instances.
+pub fn rest_tuft_indices(plant: &Plant, seed: u64, budget: usize) -> Vec<usize> {
+    let mut keep: Vec<_> = (0..plant.tufts.len()).collect();
+    if keep.len() <= budget { return keep; }
+    let mut end = vec![true; plant.segments.len()];
+    for s in &plant.segments {
+        if let Some(parent) = s.parent {
+            if s.order == plant.segments[parent as usize].order { end[parent as usize] = false; }
+        }
+    }
+    let terminal = |i: usize| {
+        let t = &plant.tufts[i];
+        let s = &plant.segments[t.segment as usize];
+        end[t.segment as usize] && s.alive && t.at.distance_squared(s.to) < 1e-10
+    };
+    keep.select_nth_unstable_by_key(budget, |&i| (!terminal(i), unit(seed, i as u64, 9).to_bits(), i));
+    keep.truncate(budget);
+    keep.sort_unstable();
+    keep
+}
+
 /// Long stem runs from year segments: consecutive shoots of one axis merge
 /// until `reach` metres, so a tree is tens of trunk pieces, not one a year.
 fn runs(plant: &Plant, reach: f32, leader_joints: &[bool]) -> Vec<(u32, Vec3, Vec3, f32, f32, bool)> {
@@ -686,6 +710,24 @@ mod tests {
             }
         }
         assert!(flexible_forks > 1);
+    }
+
+    #[test]
+    fn a_limited_static_source_keeps_the_live_ends() {
+        let plant = grow(&Species::norway_spruce(), 12, 23);
+        let mut has_continuation = vec![false; plant.segments.len()];
+        for s in &plant.segments {
+            if let Some(p) = s.parent {
+                if plant.segments[p as usize].order == s.order { has_continuation[p as usize] = true; }
+            }
+        }
+        let ends: Vec<_> = plant.tufts.iter().enumerate().filter_map(|(i,t)| {
+            let s = &plant.segments[t.segment as usize];
+            (!has_continuation[t.segment as usize] && s.alive && t.at == s.to).then_some(i)
+        }).collect();
+        assert!(!ends.is_empty() && ends.len() < plant.tufts.len());
+        assert_eq!(rest_tuft_indices(&plant, 23, ends.len()), ends);
+        assert!(rest_tuft_indices(&plant, 23, 0).is_empty());
     }
 
     #[test]

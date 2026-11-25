@@ -756,6 +756,12 @@ shoot. The height bands become narrower near the tip. Each joint pivots at a
 growth point on its moving parent. A limb's radius at its attachment determines
 its stiffness. The upper leader uses its radius relative to the trunk base.
 
+For a static export, `plant_growth_assembly::rest_tuft_indices` selects the
+source sprays from the grown plant, the seed and a placement budget. It returns
+their indices in growth order. Living terminal buds have priority when the
+source exceeds the budget. Exporters can then attach the selected sprays to
+a wind rig without changing their rest coverage.
+
 The crown and its branch rig sample the same front as it travels through the
 planting at 12 m/s. At high wind strengths, successive surges have different
 arrival times, intensities and headings. The crown bends into the gust and
