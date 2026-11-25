@@ -755,7 +755,13 @@ at its own fork on the parent limb. Descendants without a separate joint follow 
 nearest selected ancestor. A limb's radius at its attachment determines its stiffness.
 The whole crown and the growth rig sample the same travelling gust at the planting.
 Each limb bends with the component of the gust across its axis and has a smaller,
-independent flutter. Its stem and foliage attachments share that pose.
+independent flutter. When the trailing edge passes, flexible twigs recoil past their
+driven equilibrium and oscillate with decaying amplitude for up to four seconds.
+Frequency depends on flexibility and the branch ID. The root and stiff limbs have
+no release response. The pose is a function of world position and time, so seeking
+or switching detail levels preserves the phase. `PartWindRig::sample_driven_into`
+samples the equilibrium for comparisons at the same instant. Stem, bark relief
+and foliage follow the same pose with the bark grain anchored in rest space.
 
 List reusable whole-tree instance slots in `Scene::tree_wind_ranges` to apply
 root-anchored sway and update their shadows as they move. For articulated
