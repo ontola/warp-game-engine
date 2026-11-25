@@ -1125,9 +1125,9 @@ fn next_proxy_id() -> u64 {
 // layout changes.
 const COOK_MAGIC: &[u8; 8] = b"WARPCOOK";
 const COOK_FILE_VERSION: u32 = 2;
-const COOK_SOURCES: [&str; 11] = [include_str!("vegetation_asset.rs"), include_str!("vegetation_aggregate.rs"), include_str!("vegetation_geometry.rs"),
+const COOK_SOURCES: [&str; 13] = [include_str!("vegetation_asset.rs"), include_str!("vegetation_aggregate.rs"), include_str!("vegetation_geometry.rs"),
     include_str!("vegetation_clod.rs"), include_str!("foliage_voxel.rs"), include_str!("foliage_assembly.rs"),
-    include_str!("plant_recipe.rs"), include_str!("cluster.rs"), include_str!("aggregate_lod.rs"), include_str!("vegetation_cell.rs"), include_str!("recipe_forest.rs")];
+    include_str!("plant_growth_assembly.rs"), include_str!("part_wind.rs"), include_str!("plant_recipe.rs"), include_str!("cluster.rs"), include_str!("aggregate_lod.rs"), include_str!("vegetation_cell.rs"), include_str!("recipe_forest.rs")];
 
 fn fnv64(hash: u64, bytes: &[u8]) -> u64 {
     bytes.iter().fold(hash, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3))
