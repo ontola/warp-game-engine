@@ -1,0 +1,73 @@
+# Graphics tiers
+
+Warp renders the same scene on three tiers. A game does not choose a
+renderer; it describes its scene, and the host picks the tier from the
+device and the game's frame target (see gamenight-internal
+`docs/strategy/hardware-fit.md` for the choice, and the plan "Mobiel
+renderpad voor Warp" for the reasoning).
+
+| Tier | Name in the catalog | Renderer | Made for |
+| --- | --- | --- | --- |
+| high | Ultra | Visibility buffer, full shade pass, dynamic GI, shadows, TAA, HDR bloom | Desktop GPUs (Mancave, strong Macs) |
+| medium | Standard | The same, with the phone preset (compact and split shade pass) | Mid-range laptops, tablets as fallback |
+| low | Mobile | Forward renderer with per-pixel light (`forward.rs`, `forward_lit.wgsl`) | Tile GPUs: tablets, phones, Quest, weak laptops |
+
+Today the low tier is chosen with `KERN_FORWARD=1` (on Android:
+`env=KERN_FORWARD:1` in the host's query). The automatic choice comes with
+the hardware-fit work.
+
+## Why the low tier is cheap
+
+A phone or tablet GPU draws the frame in small tiles in fast on-chip
+memory. As long as everything happens in one render pass, depth and colour
+never leave the chip. The high tier's compute passes per pixel each write
+and read main memory, and one large shading kernel runs fewer threads at
+once on Adreno (measured on the Tab S9+, 25 November 2026: texture, GI and
+lights were each cheap, together in one kernel slow).
+
+The low tier draws every visible mesh once, in one pass, with a small
+fragment shader:
+
+1. the material's tint times its albedo texture layer,
+2. the room's baked light: the irradiance probes from
+   `Renderer::set_irradiance_volume` as one 3D texture, three filtered taps,
+3. every spot and local light, without shadows,
+4. emission,
+5. light beams of `Lighting::volumetric` (the analytic in-scatter of
+   `volumetric.wgsl`, three samples, nearest 16 lights),
+6. exposure, AgX, contrast and saturation, straight to the display format.
+
+Glow (`forward_bloom.wgsl`) then works on the finished image at an eighth of
+its size. Sprites, text tags and `fx` draw as on the other tiers.
+
+## Material primitives
+
+On the low tier each material falls into one of a few primitives. The flags
+a game already sets decide which; there is nothing extra to declare. Pick
+the cheapest one that gives the look.
+
+| Primitive | How to get it | Cost on the low tier | Notes |
+| --- | --- | --- | --- |
+| Glow | `LAVA` flag: colour times `scale`, no light at all | Cheapest | Neon, screens that light up, signs |
+| Lit colour | Default: tint, `layer: -1` | One probe lookup plus the light loop | Walls, furniture, simple props |
+| Lit texture | `layer` set to an albedo layer | Plus one texture tap | Posters, wood, painted screens (`Screen`) |
+| Lit plus glow | `EMISSIVE` with `scale` | As lit, plus an add | A lamp shade that is lit and glows |
+| Cutout | `ALPHA_TEST` with a texture | As lit texture, plus discard | Leaves, fences. Costs more on tile GPUs; use sparingly |
+| Glass | `BLEND` | As lit, drawn after the opaque meshes without depth write | Keep it to a few large surfaces |
+| Two-sided | `TWO_SIDED` | Same | The normal turns towards the camera |
+
+What the low tier leaves out: shadows of any kind, roughness and metalness
+(everything is diffuse), normal and material maps, procedural `SURFACE` and
+`TERRAIN` materials (they show their tint), foliage, grass, terrain,
+skinned meshes and debris. A scene with grass, terrain, foliage or skinned
+actors stays on the medium tier until the low tier supports them.
+
+## Checking a game on the low tier
+
+- Desktop: `KERN_FORWARD=1` before starting the game, or for the Game Room
+  `KERN_FORWARD=1 game-room shot --out room.png`.
+- Android: `adb shell am start -n club.splitscreen.host/android.app.NativeActivity --es query "cloud=off&env=KERN_FORWARD:1"`
+  (and `fps=120` for 120 Hz).
+
+Compare with the same shot without the switch. What carries gameplay (an
+attack's telegraph, a pickup's glow) must stay visible on every tier.
