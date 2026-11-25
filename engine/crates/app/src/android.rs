@@ -137,6 +137,19 @@ pub async fn sleep(ms: u32) {
     std::future::poll_fn(move |_| if Instant::now() >= until { Poll::Ready(()) } else { Poll::Pending }).await
 }
 
+/// [`off_thread`] at a low priority (nice 10, as are the threads it starts,
+/// such as the renderer's texture workers), so the render thread keeps
+/// its frames while it runs.
+pub async fn off_thread_low<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+    off_thread(move || {
+        unsafe extern "C" { fn setpriority(which: i32, who: u32, prio: i32) -> i32; fn gettid() -> i32; }
+        // SAFETY: PRIO_PROCESS (0) with this thread's id sets this thread's nice.
+        let r = unsafe { setpriority(0, gettid() as u32, 10) };
+        if r != 0 { log("helper thread: could not lower its priority"); }
+        work()
+    }).await
+}
+
 /// The GPU device, for work on a helper thread (a renderer made while
 /// loading, see Frame::set_renderer). None before the window has one.
 pub fn gpu() -> Option<render::Gpu> { GFX.with(|g| g.borrow().as_ref().map(|g| g.gpu.clone())) }
@@ -1080,8 +1093,17 @@ impl Shell {
         };
         let benching = self.bench.as_mut().and_then(|b| b.height(size));
         let height = match benching { Some(h) => Some(h).filter(|h| *h < size[1]), None => height };
+        let t_render = Instant::now();
         live.out.draw(&live.gpu, renderer, &draw, size, split, &view, height)?;
+        let render_ms = ms(t_render);
+        let t_present = Instant::now();
         live.gpu.queue.present(texture);
+        // A frame that stalls (a renderer made on a helper thread froze the
+        // room, round 32): where it waited.
+        let whole = tick_ms + draw_ms + ms(t_out);
+        if whole > 250.0 && self.frames > 0 && self.switched.is_none() {
+            log(&format!("{}: slow frame {whole:.0} ms (tick {tick_ms:.0}, game draw {draw_ms:.0}, surface wait {wait_ms:.0}, render {render_ms:.0}, present {:.0})", self.cfg.title, ms(t_present)));
+        }
         // GPU pass times (timestamps, when the GPU has them), with the frame stats.
         if !self.profiling { self.profiling = renderer.set_async_gpu_profiling(&live.gpu, true).is_ok(); }
         if let Some(sample) = renderer.drain_gpu_profiles(&live.gpu).samples.pop() { self.gpu_passes = sample.gpu_ms; self.gpu_total = sample.covered_union_ms; }

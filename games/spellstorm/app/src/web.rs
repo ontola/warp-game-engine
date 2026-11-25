@@ -64,10 +64,24 @@ mod page {
             app::web::progress(Some(0.85), "Spellstorm: preparing the graphics");
             let t3 = web_time::Instant::now();
             let (scene, light) = (std::mem::take(&mut game.view.scene), game.view.light.clone());
-            let (renderer, scene) = app::android::off_thread(move || (render::Renderer::with_generated_streaming(&gpu, &scene, &light, true), scene)).await;
+            // Low priority: in round 32 the room froze for the 11 s this took.
+            let (renderer, scene) = app::android::off_thread_low(move || {
+                render::startup_profile::force(true);
+                let r = render::Renderer::with_generated_streaming(&gpu, &scene, &light, true);
+                render::startup_profile::force(false);
+                (r, scene)
+            }).await;
+            app::web::log(&format!("spellstorm: renderer made ahead in {:.0} ms", t3.elapsed().as_secs_f32() * 1000.0));
+            // Where those seconds went: the slowest sections and texture arrays.
+            if let Some(p) = renderer.startup_profile() {
+                let mut s: Vec<_> = p.sections.iter().map(|s| (s.name, s.cpu_ms)).collect();
+                s.sort_by(|a, b| b.1.total_cmp(&a.1));
+                let top: Vec<String> = s.iter().take(8).map(|(n, ms)| format!("{n} {ms:.0}")).collect();
+                let tex: Vec<String> = p.textures.iter().map(|t| format!("{} {}x{} build {:.0} upload {:.0}", t.name, t.size, t.layers.len(), t.build_wall_ms, t.upload_cpu_ms)).collect();
+                app::web::log(&format!("spellstorm: renderer sections: {}; textures: {}", top.join(", "), tex.join(", ")));
+            }
             game.view.scene = scene;
             game.set_renderer_ahead(renderer);
-            app::web::log(&format!("spellstorm: renderer made ahead in {:.0} ms", t3.elapsed().as_secs_f32() * 1000.0));
         }
         let cfg = app::Config { title: "Spellstorm".into(), size: [1920, 1080], tick_hz: 60.0, keyboard: true, pointer: false, ..Default::default() };
         Ok((cfg, Box::new(game)))
