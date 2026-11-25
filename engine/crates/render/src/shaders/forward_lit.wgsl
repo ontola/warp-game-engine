@@ -5,19 +5,19 @@
 // the display target. Nothing per pixel goes through main memory but the
 // final colour: depth and colour stay in the GPU's tile memory.
 struct Spot {position:vec4<f32>,direction:vec4<f32>,intensity:vec4<f32>};
-struct Uniform {vp:mat4x4<f32>,camera:vec4<f32>,sun:vec4<f32>,sun_color:vec4<f32>,ambient:vec4<f32>,fog:vec4<f32>,spots:array<Spot,4>};
+struct Uniform {vp:mat4x4<f32>,camera:vec4<f32>,sun:vec4<f32>,sun_color:vec4<f32>,ambient:vec4<f32>,fog:vec4<f32>,spots:array<Spot,4>,inv_vp:mat4x4<f32>};
 struct Material {tint:vec3<f32>,layer:i32,roughness:f32,flags:u32,scale:f32,metal:f32};
 // Same layout as headlights.rs `Uniform` (incident_lights.wgsl).
 struct Headlight { view_proj:mat4x4<f32>, position_range:vec4<f32>, direction_outer:vec4<f32>, intensity_inner:vec4<f32> };
 struct LocalLight { position_range:vec4<f32>, direction_outer:vec4<f32>, intensity_inner:vec4<f32>, source:vec4<f32> };
 struct Headlights { lights:array<Headlight,8>, count:vec4<u32>, local:array<LocalLight,32>, local_min:vec4<f32>, local_max:vec4<f32>,
     spot_falloff:array<vec4<f32>,2> };
-// x: exposure, y: emissive scale, z: contrast, w: saturation; sky: rgb irradiance, w: GI on.
+// x: exposure, y: emissive scale, z: contrast, w: saturation; sky: rgb room fill (lux), w: GI on; sh: the sky as SH.
 // gi_origin: xyz, cell; gi_dims: xyz probes.
 // medium: density, anisotropy, intensity, beam count; tint: rgb, extinction;
 // ambient: rgb in-scatter, medium length (0 unbounded). Beams as volumetric.rs GpuLight.
 struct ScatterLight { position_range:vec4<f32>, direction_outer:vec4<f32>, intensity_inner:vec4<f32>, source:vec4<f32> };
-struct Lit {tone:vec4<f32>,sky:vec4<f32>,gi_origin:vec4<f32>,gi_dims:vec4<f32>,medium:vec4<f32>,tint:vec4<f32>,ambient:vec4<f32>,beams:array<ScatterLight,16>};
+struct Lit {tone:vec4<f32>,sky:vec4<f32>,gi_origin:vec4<f32>,gi_dims:vec4<f32>,medium:vec4<f32>,tint:vec4<f32>,ambient:vec4<f32>,sh:array<vec4<f32>,9>,beams:array<ScatterLight,16>};
 @group(0) @binding(0) var<uniform> u:Uniform;
 @group(0) @binding(1) var<storage,read> materials:array<Material>;
 @group(0) @binding(5) var<storage,read> joints:array<vec4<f32>>;
@@ -28,14 +28,16 @@ struct Lit {tone:vec4<f32>,sky:vec4<f32>,gi_origin:vec4<f32>,gi_dims:vec4<f32>,m
 // The probes' six axes side by side along x: axis a at x in [a*dims.x, (a+1)*dims.x).
 @group(1) @binding(4) var probes:texture_3d<f32>;
 @group(1) @binding(5) var probe_samp:sampler;
+// Per material: blended alpha, additive (Scene::set_material_blend).
+@group(1) @binding(6) var<storage,read> blends:array<vec4<f32>>;
 
 const PI:f32=3.14159265;
 
 struct Out {@builtin(position) pos:vec4<f32>,@location(0) world:vec3<f32>,@location(1) normal:vec3<f32>,@location(2) uv:vec2<f32>,
- @location(3) @interpolate(flat) material:u32};
+ @location(3) @interpolate(flat) material:u32,@location(4) local:vec3<f32>,@location(5) @interpolate(flat) owner:u32};
 
 @vertex fn vs(@location(0) position:vec3<f32>,@location(1) normal:vec3<f32>,@location(2) uv:vec2<f32>,
- @location(3) r0:vec4<f32>,@location(4) r1:vec4<f32>,@location(5) r2:vec4<f32>,@location(6) material:u32,@location(7) flags:u32,@location(8) rigid:u32)->Out {
+ @location(3) r0:vec4<f32>,@location(4) r1:vec4<f32>,@location(5) r2:vec4<f32>,@location(6) material:u32,@location(7) flags:u32,@location(8) rigid:u32,@location(9) owner:u32)->Out {
  var p=vec4<f32>(position,1.0);var bent=normal;var surface_material=material;var tex=uv;
  if rigid>0u {
   let row=rigid-1u+u32(uv.x+0.5)*3u;let a=joints[row];let b=joints[row+1u];let c=joints[row+2u];
@@ -44,7 +46,7 @@ struct Out {@builtin(position) pos:vec4<f32>,@location(0) world:vec3<f32>,@locat
  }
  let world=vec3<f32>(dot(r0,p),dot(r1,p),dot(r2,p));
  var out:Out;out.pos=u.vp*vec4<f32>(world,1.0);out.world=world;
- out.normal=vec3<f32>(dot(r0.xyz,bent),dot(r1.xyz,bent),dot(r2.xyz,bent));out.uv=tex;out.material=surface_material;
+ out.normal=vec3<f32>(dot(r0.xyz,bent),dot(r1.xyz,bent),dot(r2.xyz,bent));out.uv=tex;out.material=surface_material;out.local=position;out.owner=owner;
  return out;
 }
 
@@ -58,7 +60,9 @@ fn probe_axis(f:vec3<f32>,axis:u32)->vec3<f32> {
 }
 
 fn ambient_irradiance(p:vec3<f32>,n:vec3<f32>)->vec3<f32> {
- let sky=lit.sky.rgb;
+ // The sky's irradiance (its nine SH coefficients, as shade.wgsl) plus the
+ // authored room fill (Lighting::indirect_fill_lux), without occlusion.
+ let sky=sky_irradiance(n)+lit.sky.rgb;
  if lit.sky.w<0.5 {return sky;}
  let f=(p-lit.gi_origin.xyz)/lit.gi_origin.w;
  let last=lit.gi_dims.xyz-1.0;
@@ -161,6 +165,14 @@ fn beam_scatter(o:vec3<f32>,v:vec3<f32>,tmax:f32,light:ScatterLight,sigma:f32,g:
 
 // The medium between the camera and p: the beams' in-scatter plus the
 // ambient, and how much the medium dims p (extinction).
+// A blended surface's light through the medium: absorbed only, since the
+// image behind already holds the in-scatter (else the card shows as a box).
+fn absorbed(rad:vec3<f32>,p:vec3<f32>)->vec3<f32> {
+ if lit.medium.x<=0.0 {return rad;}
+ var tmax=distance(p,u.camera.xyz);
+ if lit.ambient.w>0.0 {tmax=min(tmax,lit.ambient.w);}
+ return rad*exp(-lit.tint.w*lit.medium.x*tmax);
+}
 fn medium(rad:vec3<f32>,p:vec3<f32>)->vec3<f32> {
  let count=u32(lit.medium.w);
  if lit.medium.x<=0.0 {return rad;}
@@ -204,19 +216,76 @@ fn shade(in:Out)->vec4<f32> {
  var base=m.tint;var alpha=1.0;
  if m.layer>=0 {let t=textureSample(albedo,samp,in.uv,m.layer);base*=t.rgb;alpha=t.a;}
  if (m.flags&1u)!=0u && alpha<0.5 {discard;}
- if (m.flags&4096u)!=0u {return vec4<f32>(display(medium(base*m.scale*lit.tone.y,in.world)),alpha);}
+ // Blended (BLEND): the material's alpha, premultiplied; additive keeps
+ // what is behind whole. Emissive blends glow unlit (transparency.wgsl).
+ let blended=(m.flags&256u)!=0u;
+ var cover=alpha;
+ if blended {
+  let b=blends[in.material];alpha*=b.x;
+  if alpha<=0.0 {discard;}
+  cover=select(alpha,0.0,b.y>0.5);
+  if (m.flags&1024u)!=0u {return vec4<f32>(display(absorbed(base*abs(m.scale)*lit.tone.y,in.world))*alpha,cover);}
+ }
+ if (m.flags&4096u)!=0u {if blended {return vec4<f32>(display(absorbed(base*m.scale*lit.tone.y,in.world))*alpha,cover);} return vec4<f32>(display(medium(base*m.scale*lit.tone.y,in.world)),alpha);}
  let p=in.world;
  var n=normalize(in.normal);
  if (m.flags&8u)!=0u && dot(n,u.camera.xyz-p)<0.0 {n=-n;}
+ var emit=vec3<f32>(0.0);
+ var rough=m.roughness;var metal=m.metal;var coat=0.0;
+ // A game's own surface (SURFACE): its game_surface sees the pixel as the
+ // shade pass shows it; the interpolated uv stands in for the three corners.
+ if (m.flags&32768u)!=0u {
+  var si:SurfaceIn;
+  si.kind=u32(-2-m.layer);si.instance=in.owner;si.p=p;si.local=in.local;si.n=n;si.dir=normalize(p-u.camera.xyz);
+  si.bary=vec3<f32>(1.0,0.0,0.0);si.uv0=in.uv;si.uv1=in.uv;si.uv2=in.uv;si.dx=dpdx(p);si.dy=dpdy(p);
+  si.tint=m.tint;si.rough=m.roughness;si.metal=m.metal;si.scale=m.scale;si.time=light.anim.x;
+  let so=game_surface(si);
+  base=so.albedo;n=so.normal;emit=so.emission;rough=so.rough;metal=so.metal;
+ }
+ // Car parts (car_material.wgsl): the part's colour, metalness and clear
+ // coat, without the procedural wear.
+ let car=(m.flags>>16u)&0x3fffu;
+ if car>0u && (m.flags&0xc0000000u)==0u {
+  let at=scene_tables[0].y+9u*(car-1u);
+  let colour=bitcast<vec4<f32>>(scene_tables[at]);let surface=bitcast<vec4<f32>>(scene_tables[at+2u]);
+  if u32(colour.w)!=6u {base=colour.rgb;}
+  rough=surface.x;metal=surface.y;coat=surface.z;
+ }
  var irradiance=ambient_irradiance(p,n);
  let spots=min(headlights.count.x,8u);
  for(var i=0u;i<spots;i++) {irradiance+=spot_irradiance(i,p,n);}
  let locals=select(min(headlights.count.y,32u),0u,any(p<headlights.local_min.xyz)||any(p>headlights.local_max.xyz));
  for(var i=0u;i<locals;i++) {irradiance+=local_irradiance(i,p,n);}
- var rad=base*irradiance/PI;
+ irradiance+=light.sun_color.rgb*light.sun_dir.w*max(dot(n,light.sun_dir.xyz),0.0);
+ // The sky in what is glossy: its SH at the mirror direction (a blurred
+ // reflection), by Schlick's Fresnel, fading out with roughness.
+ let v=normalize(u.camera.xyz-p);let r=reflect(-v,n);
+ let f0=mix(vec3<f32>(0.04),base,metal);let k=pow(1.0-clamp(dot(n,v),0.0,1.0),5.0);
+ let gloss=(1.0-rough)*(1.0-rough);
+ let env=sky_irradiance(r)/PI;
+ let specular=(f0+(1.0-f0)*k)*gloss*env+coat*(0.04+0.96*k)*env;
+ // Metal keeps a quarter of its diffuse: without the local lights' highlights
+ // (none here) a metal would only show the sky.
+ var rad=base*(1.0-0.75*metal)*irradiance/PI+specular+emit*lit.tone.y;
  if (m.flags&1024u)!=0u {rad+=base*abs(m.scale)*lit.tone.y;}
+ let glow=game_glow(p,in.owner,in.material);rad=rad*(1.0-glow.a)+glow.rgb;
+ if blended {return vec4<f32>(display(absorbed(rad,p))*alpha,cover);}
  return vec4<f32>(display(medium(rad,p)),alpha);
 }
+
+// The sky where no mesh is: its SH at each view ray (a soft gradient).
+struct SkyOut {@builtin(position) pos:vec4<f32>,@location(0) ndc:vec2<f32>};
+@vertex fn vs_sky(@builtin(vertex_index) i:u32)->SkyOut {
+ let q=vec2<f32>(f32((i<<1u)&2u),f32(i&2u))*2.0-1.0;
+ var out:SkyOut;out.pos=vec4<f32>(q,0.0,1.0);out.ndc=q;return out;
+}
+fn sky_colour(ndc:vec2<f32>)->vec3<f32> {
+ let far=u.inv_vp*vec4<f32>(ndc,1e-6,1.0);
+ let d=normalize(far.xyz/far.w-u.camera.xyz);
+ return display(sky_irradiance(d)/PI);
+}
+@fragment fn fs_sky(in:SkyOut)->@location(0) vec4<f32> {return vec4<f32>(encode_srgb(sky_colour(in.ndc)),1.0);}
+@fragment fn fs_sky_srgb(in:SkyOut)->@location(0) vec4<f32> {return vec4<f32>(sky_colour(in.ndc),1.0);}
 
 @fragment fn fs(in:Out)->@location(0) vec4<f32> {
  let c=shade(in);return vec4<f32>(encode_srgb(c.rgb),c.a);

@@ -131,6 +131,26 @@ pub fn set_game_surface(source: &str) {
     *GAME_SURFACE.lock().unwrap() = Some(source.to_owned());
 }
 
+/// The game's surface source as the shade pass gets it (with `game_glow`),
+/// for the low tier (forward.rs).
+pub(crate) fn game_surface_source() -> String {
+    with_glow(GAME_SURFACE.lock().unwrap().clone().unwrap_or_else(|| include_str!("shaders/game_surface.wgsl").to_owned()))
+}
+
+/// The low tier's shader: the surface bindings, the game's surface, then
+/// forward_lit.wgsl. Checked with naga, so a game surface that reads more
+/// than the low tier offers leaves the scene to the medium tier.
+pub(crate) fn forward_lit_source() -> Result<String, String> {
+    forward_lit_with(game_surface_source())
+}
+
+fn forward_lit_with(surface: String) -> Result<String, String> {
+    let source = format!("{}\n{}\n{}", include_str!("shaders/forward_surface.wgsl"), surface, include_str!("shaders/forward_lit.wgsl"));
+    let module = naga::front::wgsl::parse_str(&source).map_err(|e| e.emit_to_string(&source))?;
+    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module).map_err(|e| format!("{e:?}"))?;
+    Ok(source)
+}
+
 /// A game surface without its own `game_glow` gets the one that adds none.
 fn with_glow(mut source: String) -> String {
     if !source.contains("fn game_glow(") {
@@ -185,6 +205,27 @@ pub fn checked<T>(gpu: &crate::Gpu, build: impl FnOnce() -> T) -> Result<T, Stri
 pub fn stamp() -> Option<std::time::SystemTime> {
     let d = dir()?;
     BUILT_IN.iter().filter_map(|(n, _)| std::fs::metadata(d.join(n)).and_then(|m| m.modified()).ok()).max()
+}
+
+#[cfg(test)]
+mod forward_surfaces {
+    /// The game surfaces that ship today compile on the low tier. Warp Theft
+    /// Auto's reads the sky's radiance and GI, which the low tier does not
+    /// have; its city has skinned crowds and stays on the medium tier anyway.
+    #[test]
+    fn game_surfaces_compile_on_the_low_tier() {
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../games/");
+        let read = |p: &str| std::fs::read_to_string(format!("{root}{p}")).unwrap_or_else(|e| panic!("{p}: {e}"));
+        let cases = [
+            ("built-in", include_str!("shaders/game_surface.wgsl").to_owned()),
+            ("spaceracer", format!("{}\n{}", read("spaceracer/app/shaders/vehicle_data.wgsl"), read("spaceracer/app/shaders/surfaces.wgsl"))),
+            ("spellstorm", format!("{}\n{}\n{}", read("spellstorm/app/src/surface.wgsl"), read("spellstorm/app/src/making.wgsl"), read("spellstorm/app/src/making_glow.wgsl"))),
+            ("dead-miles", read("dead-miles/surface.wgsl")),
+            ("neon-siege", read("neon-siege/surface.wgsl")),
+        ];
+        let failed: Vec<_> = cases.into_iter().filter_map(|(name, s)| super::forward_lit_with(super::with_glow(s)).err().map(|e| format!("{name}: {e}"))).collect();
+        assert!(failed.is_empty(), "{}", failed.join("\n\n"));
+    }
 }
 
 #[cfg(test)]

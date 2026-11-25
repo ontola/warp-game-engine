@@ -2717,11 +2717,20 @@ impl Renderer {
         // light; a game's own minimum profile keeps its vertex light.
         // `auto` (the phone hosts' default) only where the low tier draws the
         // scene as it is: no game surfaces or terrain, which it shows as tint.
-        let procedural=scene.materials.iter().any(|m|m.flags&(crate::scene::SURFACE|crate::scene::TERRAIN)!=0);
-        let forward_lit=(crate::switches::FORWARD.on() || (crate::switches::FORWARD.is("auto") && !procedural)) && !scene.graphics.minimal_forward;
+        let procedural=scene.materials.iter().any(|m|m.flags&crate::scene::TERRAIN!=0);
+        let wanted=(crate::switches::FORWARD.on() || (crate::switches::FORWARD.is("auto") && !procedural)) && !scene.graphics.minimal_forward;
+        let forward_source=if wanted {crate::shaders::forward_lit_source().map_err(|e|eprintln!("low tier off: the game surface does not compile there: {e}")).ok()} else {None};
+        let forward_lit=forward_source.is_some();
         let minimal_forward=((forward_lit || scene.graphics.minimal_forward) && plain_meshes && scene.skinning.actors.is_empty()
             && scene.debris.is_none_or(|d|d.capacity==0)).then(||std::sync::Mutex::new(crate::forward::Forward::new(gpu,scene,&materials,
-                forward_lit.then_some(crate::forward::LitInputs{albedo:&albedo_view,headlights:&headlights.uniform}))));
+                forward_source.map(|source|crate::forward::LitInputs{albedo:&albedo_view,headlights:&headlights.uniform,scene_tables:&scene_tables.buffer,instances:&instances,source}))));
+        if wanted {
+            // Which tier draws, and why not the low one (logcat on the phone hosts).
+            let skinned=!scene.skinning.actors.is_empty();let debris=scene.debris.is_some_and(|d|d.capacity>0);
+            if minimal_forward.is_some() {eprintln!("graphics tier: low (forward_lit)");}
+            else {eprintln!("graphics tier: medium; low tier wanted but {}",[(!forward_lit,"game surface"),(!plain_meshes,"foliage/grass/terrain/crowd/wind"),(skinned,"skinned meshes"),(debris,"debris")]
+                .iter().filter(|(on,_)|*on).map(|(_,why)|*why).collect::<Vec<_>>().join(", "));}
+        }
         let portable=scene.procedural_terrain.as_ref().filter(|_|crate::portable::wanted(gpu)).map(|spec|std::sync::Mutex::new(
             crate::portable::Portable::new(gpu,scene,spec,&topology,&instances,&materials,&albedo,&samp)));
         let direct_bounds=bounded_draws.then(||std::sync::Mutex::new(crate::direct_draw::Bounds::new(scene,small_cluster_triangles)));
@@ -4936,10 +4945,23 @@ impl Renderer {
             if forward.lit() {
                 // The HDR bloom's strength, on the 8-bit image (tuned by eye on the Game Room).
                 let options=self.debug_options();
+                forward.set_sky_sh(self.sky_sh);
                 forward.set_glow(if options.bloom_enabled {options.bloom_strength*4.0} else {0.0},0.5);
                 let spots=if options.headlights_enabled {self.headlight_state.lock().unwrap().clone()} else {Vec::new()};
                 let spot_falloff=self.spot_falloff.lock().unwrap().clone();
-                self.headlights.upload(gpu,&spots,&self.local_light_state.lock().unwrap(),&spot_falloff,*self.spot_softness.lock().unwrap());
+                // The low tier has no light clusters: it takes the local lights
+                // and the clustered ones nearest the cameras, unshadowed, up to
+                // the headlights' 32 (the lamps of Spellstorm's levels).
+                let mut locals=self.local_light_state.lock().unwrap().clone();
+                let clustered=self.clustered.lights.lock().unwrap();
+                if locals.len()<crate::headlights::MAX_LOCAL_LIGHTS && !clustered.is_empty() {
+                    let gap=|l:&crate::headlights::LocalLight|views.iter().map(|v|v.cam.pos.distance(l.position)-l.range_m).fold(f32::MAX,f32::min);
+                    let mut near:Vec<_>=clustered.iter().map(|c|c.light).collect();
+                    near.sort_by(|a,b|gap(a).total_cmp(&gap(b)));
+                    locals.extend(near.into_iter().take(crate::headlights::MAX_LOCAL_LIGHTS-locals.len()));
+                }
+                drop(clustered);
+                self.headlights.upload(gpu,&spots,&locals,&spot_falloff,*self.spot_softness.lock().unwrap());
             }
             let beams=if forward.lit() {self.volumetric.scattering()} else {Vec::new()};
             let stats=forward.render(gpu,views,&matrices,&camera_views,&self.sprites,&self.fx,light,&self.headlight_state.lock().unwrap(),&beams,Some(&output),None)?;
