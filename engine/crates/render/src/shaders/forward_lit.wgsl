@@ -273,6 +273,9 @@ fn shade(in:Out)->vec4<f32> {
  return vec4<f32>(display(medium(rad,p)),alpha);
 }
 
+// The depth prepass: colour is masked off.
+@fragment fn fs_depth()->@location(0) vec4<f32> {return vec4<f32>(0.0);}
+
 // The sky where no mesh is: its SH at each view ray (a soft gradient).
 struct SkyOut {@builtin(position) pos:vec4<f32>,@location(0) ndc:vec2<f32>};
 @vertex fn vs_sky(@builtin(vertex_index) i:u32)->SkyOut {

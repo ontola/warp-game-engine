@@ -13,14 +13,18 @@ struct Spot {position:[f32;4],direction:[f32;4],intensity:[f32;4]}
 struct Uniform {vp:[[f32;4];4],camera:[f32;4],sun:[f32;4],sun_color:[f32;4],ambient:[f32;4],fog:[f32;4],spots:[Spot;4],
     /// The low tier's sky pass: view rays from screen positions.
     inv_vp:[[f32;4];4]}
-struct Part {indices:Range<u32>,material:u32,lava:bool,blend:bool}
+struct Part {indices:Range<u32>,material:u32,lava:bool,blend:bool,
+    /// Opaque without cutout: drawn in the low tier's depth prepass.
+    solid:bool}
 struct RigidDraw {model:usize,rows:[[f32;4];3],base:u32,hidden_views:u8,centre:Vec3}
 /// Joint rows the palette buffer holds: 16 characters of 64 joints.
 const PALETTE_ROWS:usize=16*64*3;
 struct Mesh {parts:Vec<Part>}
 struct Target {size:[u32;2],color:wgpu::Texture,depth:wgpu::Texture,instances:wgpu::Buffer,capacity:usize,uniform:wgpu::Buffer,bind:wgpu::BindGroup}
 /// What the low tier (`Lit`) reads from the main renderer.
-pub(crate) struct LitInputs<'a> {pub albedo:&'a wgpu::TextureView,pub headlights:&'a wgpu::Buffer,pub scene_tables:&'a wgpu::Buffer,pub instances:&'a wgpu::Buffer,pub source:String}
+pub(crate) struct LitInputs<'a> {pub albedo:&'a wgpu::TextureView,pub headlights:&'a wgpu::Buffer,pub scene_tables:&'a wgpu::Buffer,pub instances:&'a wgpu::Buffer,pub source:String,
+    /// A depth prepass before shading (scenes with game surfaces).
+    pub prepass:bool}
 /// forward_surface.wgsl `View` and `Light`: what game surfaces read.
 #[repr(C)] #[derive(Clone,Copy,Pod,Zeroable)]
 struct SurfaceUniform {cam:[f32;4],sun_dir:[f32;4],sun_color:[f32;4],anim:[f32;4]}
@@ -34,6 +38,8 @@ struct Lit {
     opaque:wgpu::RenderPipeline,opaque_srgb:wgpu::RenderPipeline,blend:wgpu::RenderPipeline,blend_srgb:wgpu::RenderPipeline,
     /// The sky where nothing was drawn (forward_lit.wgsl `fs_sky`).
     sky:wgpu::RenderPipeline,sky_srgb:wgpu::RenderPipeline,
+    /// Depth only, for scenes with game surfaces (forward_lit.wgsl `vs`, no fragment).
+    prepass:Option<(wgpu::RenderPipeline,wgpu::RenderPipeline)>,
     layout:wgpu::BindGroupLayout,uniform:wgpu::Buffer,bind:wgpu::BindGroup,albedo:wgpu::TextureView,samp:wgpu::Sampler,headlights:wgpu::Buffer,
     probe_samp:wgpu::Sampler,probes:wgpu::TextureView,blends:wgpu::Buffer,grid:Option<crate::irradiance_volume::Grid>,
     bloom:Bloom,
@@ -69,7 +75,7 @@ impl Forward {
                 }
             }
             let mut parts=Vec::new();
-            for (material,list) in by_material {let start=indices.len()as u32;indices.extend(list);let flags=scene.materials[material as usize].flags;parts.push(Part{indices:start..indices.len()as u32,material,lava:flags&crate::scene::LAVA!=0,blend:flags&crate::scene::BLEND!=0});}
+            for (material,list) in by_material {let start=indices.len()as u32;indices.extend(list);let flags=scene.materials[material as usize].flags;parts.push(Part{indices:start..indices.len()as u32,material,lava:flags&crate::scene::LAVA!=0,blend:flags&crate::scene::BLEND!=0,solid:flags&(crate::scene::BLEND|crate::scene::ALPHA_TEST)==0});}
             ranges.insert((mesh.first_cluster,mesh.cluster_count),meshes.len());meshes.push(Mesh{parts});
         }
         // Characters go after the scene's vertices, outside the cluster data.
@@ -185,7 +191,7 @@ impl Forward {
                 for part in &mesh.parts {let start=packed.len()as u32;
                     for &owner in &owners {let i=self.owners[owner];packed.push(Instance{rows:i.rows,material:part.material,flags:i.flags,pad:[0,owner as u32]});}
                     let end=packed.len()as u32;stats.triangles+=(part.indices.len()/3)as u32*(end-start);stats.submitted_vertices+=part.indices.len()as u64*(end-start)as u64;
-                    draws.push((part.lava,part.blend,part.indices.clone(),start..end));
+                    draws.push((part.lava,part.blend,part.indices.clone(),start..end,part.solid));
                 }
             }
             for actor in &self.rigid_actors {
@@ -194,7 +200,7 @@ impl Forward {
                 packed.push(Instance{rows:actor.rows,material:0,flags:0,pad:[actor.base+1,0]});
                 let indices=self.rigid_models[actor.model].clone();
                 stats.triangles+=(indices.len()/3)as u32;
-                draws.push((false,false,indices,start..start+1));
+                draws.push((false,false,indices,start..start+1,false));
             }
             // Fill depth with solid blocks first; hidden lava needs no texture reads.
             draws.sort_by_key(|draw|(draw.1,draw.0));
@@ -224,7 +230,14 @@ impl Forward {
                 // The sky goes after the opaque meshes (only where they left the
                 // far depth) and before the blended ones.
                 let sky=|pass:&mut wgpu::RenderPass,l:&Lit|{pass.set_pipeline(if srgb {&l.sky_srgb} else {&l.sky});pass.draw(0..3,0..1);};
-                for (_,blend,indices,instances) in draws {
+                // Depth first where shading is dear (game surfaces): each pixel
+                // then runs its surface once, not once per layer drawn over it.
+                if let Some(l)=self.lit.as_ref().filter(|l|l.prepass.is_some()) {
+                    let (unorm,srgb_depth)=l.prepass.as_ref().unwrap();pass.set_pipeline(if srgb {srgb_depth} else {unorm});
+                    for (_,_,indices,instances,solid) in &draws {if *solid {pass.draw_indexed(indices.clone(),0,instances.clone());}}
+                    pass.set_pipeline(if srgb {&l.opaque_srgb} else {&l.opaque});
+                }
+                for (_,blend,indices,instances,_) in draws {
                     if blend && !blending && let Some(l)=&self.lit {blending=true;sky(&mut pass,l);pass.set_pipeline(if srgb {&l.blend_srgb} else {&l.blend});}
                     pass.draw_indexed(indices,0,instances);
                 }
@@ -328,6 +341,14 @@ impl Lit {
             depth_stencil:Some(wgpu::DepthStencilState{format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:Some(!blend),depth_compare:Some(wgpu::CompareFunction::GreaterEqual),stencil:Default::default(),bias:Default::default()}),
             multisample:Default::default(),fragment:Some(wgpu::FragmentState{module:&module,entry_point:Some(entry),compilation_options:Default::default(),
                 targets:&[Some(wgpu::ColorTargetState{format,blend:blend.then_some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),write_mask:wgpu::ColorWrites::ALL})]}),multiview_mask:None,cache:gpu.pipeline_cache()});
+        let depth_only=|format|gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{label:Some("forward lit depth"),layout:Some(&pl),
+            vertex:wgpu::VertexState{module:&module,entry_point:Some("vs"),compilation_options:Default::default(),buffers:&[
+                Some(wgpu::VertexBufferLayout{array_stride:32,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x2]}),
+                Some(wgpu::VertexBufferLayout{array_stride:64,step_mode:wgpu::VertexStepMode::Instance,attributes:&wgpu::vertex_attr_array![3=>Float32x4,4=>Float32x4,5=>Float32x4,6=>Uint32,7=>Uint32,8=>Uint32,9=>Uint32]})]},
+            primitive:wgpu::PrimitiveState{cull_mode:None,..Default::default()},
+            depth_stencil:Some(wgpu::DepthStencilState{format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:Some(true),depth_compare:Some(wgpu::CompareFunction::Greater),stencil:Default::default(),bias:Default::default()}),
+            multisample:Default::default(),fragment:Some(wgpu::FragmentState{module:&module,entry_point:Some("fs_depth"),compilation_options:Default::default(),
+                targets:&[Some(wgpu::ColorTargetState{format,blend:None,write_mask:wgpu::ColorWrites::empty()})]}),multiview_mask:None,cache:gpu.pipeline_cache()});
         let sky_pipeline=|format,entry|gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{label:Some("forward lit sky"),layout:Some(&pl),
             vertex:wgpu::VertexState{module:&module,entry_point:Some("vs_sky"),compilation_options:Default::default(),buffers:&[]},
             primitive:Default::default(),
@@ -335,6 +356,7 @@ impl Lit {
             multisample:Default::default(),fragment:Some(wgpu::FragmentState{module:&module,entry_point:Some(entry),compilation_options:Default::default(),
                 targets:&[Some(wgpu::ColorTargetState{format,blend:None,write_mask:wgpu::ColorWrites::ALL})]}),multiview_mask:None,cache:gpu.pipeline_cache()});
         let (unorm,srgb)=(wgpu::TextureFormat::Rgba8Unorm,wgpu::TextureFormat::Rgba8UnormSrgb);
+        let prepass=inputs.prepass.then(||(depth_only(unorm),depth_only(srgb)));
         // No anisotropy: on an Adreno 740 anisotropic taps cost the shade
         // pass 3.4x (2026-11-25).
         let samp=gpu.device.create_sampler(&wgpu::SamplerDescriptor{label:Some("forward lit albedo"),address_mode_u:wgpu::AddressMode::Repeat,address_mode_v:wgpu::AddressMode::Repeat,
@@ -348,7 +370,7 @@ impl Lit {
             wgpu::BindGroupEntry{binding:0,resource:wgpu::BindingResource::Buffer(wgpu::BufferBinding{buffer:&surface,offset:0,size:wgpu::BufferSize::new(16)})},
             wgpu::BindGroupEntry{binding:1,resource:wgpu::BindingResource::Buffer(wgpu::BufferBinding{buffer:&surface,offset:0,size:wgpu::BufferSize::new(64)})},
             wgpu::BindGroupEntry{binding:2,resource:inputs.scene_tables.as_entire_binding()},wgpu::BindGroupEntry{binding:3,resource:inputs.instances.as_entire_binding()}]});
-        Self{opaque:pipeline(unorm,"fs",false),opaque_srgb:pipeline(srgb,"fs_srgb",false),blend:pipeline(unorm,"fs",true),blend_srgb:pipeline(srgb,"fs_srgb",true),sky:sky_pipeline(unorm,"fs_sky"),sky_srgb:sky_pipeline(srgb,"fs_sky_srgb"),
+        Self{opaque:pipeline(unorm,"fs",false),opaque_srgb:pipeline(srgb,"fs_srgb",false),blend:pipeline(unorm,"fs",true),blend_srgb:pipeline(srgb,"fs_srgb",true),prepass,sky:sky_pipeline(unorm,"fs_sky"),sky_srgb:sky_pipeline(srgb,"fs_sky_srgb"),
             layout,uniform,bind,albedo:inputs.albedo.clone(),samp,headlights:inputs.headlights.clone(),probe_samp,probes,blends,grid:None,bloom:Bloom::new(gpu),glow:(0.0,0.75),sky_sh:[[0.0;4];9],surface,surface_bind}
     }
     #[allow(clippy::too_many_arguments)]

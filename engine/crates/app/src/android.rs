@@ -1104,7 +1104,9 @@ impl Shell {
                 Some((m, s)) => format!(" ({} from {} lines)", m.as_str(), (lines as f32 * s).round() as u32),
                 None => String::new(),
             };
-            log(&format!("{}: GPU {:.1} ms at {}x{} out, 3D {lines} lines{upscale}: {}", self.cfg.title, self.gpu_total, size[0], size[1], top.join(", ")));
+            let tier = render::graphics_tier();
+            let tier = if tier.is_empty() { String::new() } else { format!(" [tier {tier}]") };
+            log(&format!("{}: GPU {:.1} ms at {}x{} out, 3D {lines} lines{upscale}{tier}: {}", self.cfg.title, self.gpu_total, size[0], size[1], top.join(", ")));
         }
         if self.frames == 1 { log(&format!("first frame {:.1} s after start", self.started.elapsed().as_secs_f32())); QUIET.with(|q| q.set((q.get().0, q.get().0))); }
         if let Some(at) = self.switched.take() { log(&format!("{}: first frame {:.0} ms after the switch (game draw {draw_ms:.0} ms, renderer draw {:.0} ms)", self.cfg.title, at.elapsed().as_secs_f32() * 1000.0, ms(t_out))); }

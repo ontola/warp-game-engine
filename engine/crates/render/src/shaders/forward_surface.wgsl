@@ -5,7 +5,8 @@
 // compile here; the low tier then leaves that scene to the medium tier
 // (frame.rs `forward_lit`).
 struct View { cam:vec4<f32> };
-struct Light { sun_dir:vec4<f32>, sun_color:vec4<f32>, anim:vec4<f32> };
+// One buffer for both bindings (forward.rs SurfaceUniform): cam comes first.
+struct Light { view_cam:vec4<f32>, sun_dir:vec4<f32>, sun_color:vec4<f32>, anim:vec4<f32> };
 struct Instance { r0:vec4<f32>, r1:vec4<f32>, r2:vec4<f32>, sphere:vec4<f32>, first_cluster:u32, cluster_count:u32, scale:f32, flags:u32 };
 @group(2) @binding(0) var<uniform> view:View;
 @group(2) @binding(1) var<uniform> light:Light;

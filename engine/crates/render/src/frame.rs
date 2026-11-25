@@ -425,6 +425,12 @@ struct ViewUniform {
     lod: [f32; 4],
 }
 
+/// The last renderer's tier and why (graphics-tiers.md), for hosts to log.
+static GRAPHICS_TIER: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+/// The tier the last renderer made draws with: "low (forward_lit)", or
+/// "medium; low tier wanted but ...", or empty when the low tier was not asked for.
+pub fn graphics_tier() -> String { GRAPHICS_TIER.lock().unwrap().clone() }
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct LightUniform {
@@ -2723,14 +2729,16 @@ impl Renderer {
         let forward_lit=forward_source.is_some();
         let minimal_forward=((forward_lit || scene.graphics.minimal_forward) && plain_meshes && (forward_lit || scene.skinning.actors.is_empty())
             && scene.debris.is_none_or(|d|d.capacity==0)).then(||std::sync::Mutex::new(crate::forward::Forward::new(gpu,scene,&materials,
-                forward_source.map(|source|crate::forward::LitInputs{albedo:&albedo_view,headlights:&headlights.uniform,scene_tables:&scene_tables.buffer,instances:&instances,source}))));
+                forward_source.map(|source|crate::forward::LitInputs{albedo:&albedo_view,headlights:&headlights.uniform,scene_tables:&scene_tables.buffer,instances:&instances,source,prepass:scene.materials.iter().any(|m|m.flags&crate::scene::SURFACE!=0)}))));
         if wanted {
             // Which tier draws, and why not the low one (logcat on the phone hosts).
             let skinned=!forward_lit && !scene.skinning.actors.is_empty();let debris=scene.debris.is_some_and(|d|d.capacity>0);
-            if minimal_forward.is_some() {eprintln!("graphics tier: low (forward_lit)");}
-            else {eprintln!("graphics tier: medium; low tier wanted but {}",[(!forward_lit,"game surface"),(!plain_meshes,"foliage/grass/terrain/crowd/wind"),(skinned,"skinned meshes"),(debris,"debris")]
-                .iter().filter(|(on,_)|*on).map(|(_,why)|*why).collect::<Vec<_>>().join(", "));}
-        }
+            let tier=if minimal_forward.is_some() {"low (forward_lit)".to_string()}
+            else {format!("medium; low tier wanted but {}",[(!forward_lit,"game surface"),(!plain_meshes,"foliage/grass/terrain/crowd/wind"),(skinned,"skinned meshes"),(debris,"debris")]
+                .iter().filter(|(on,_)|*on).map(|(_,why)|*why).collect::<Vec<_>>().join(", "))};
+            eprintln!("graphics tier: {tier}");
+            *GRAPHICS_TIER.lock().unwrap()=tier;
+        } else {GRAPHICS_TIER.lock().unwrap().clear();}
         let portable=scene.procedural_terrain.as_ref().filter(|_|crate::portable::wanted(gpu)).map(|spec|std::sync::Mutex::new(
             crate::portable::Portable::new(gpu,scene,spec,&topology,&instances,&materials,&albedo,&samp)));
         let direct_bounds=bounded_draws.then(||std::sync::Mutex::new(crate::direct_draw::Bounds::new(scene,small_cluster_triangles)));
