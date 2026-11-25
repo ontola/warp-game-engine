@@ -398,6 +398,8 @@ pub(crate) mod page {
     thread_local! {
         /// What the room last drew on, for [`smooth_here`].
         static DEVICE: std::cell::RefCell<Option<game_room::host::HostDevice>> = const { std::cell::RefCell::new(None) };
+        /// The shelf size the hardware notes were last logged for.
+        static NOTED: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
     }
 
     /// The first game in the queue these players can play; the ones before
@@ -786,7 +788,15 @@ pub(crate) mod page {
             }
             // The screen and GPU, for the catalog's "May stutter here".
             let device = game_room::host::HostDevice { gpu: frame.gpu.info.name.clone(), size: frame.size, phone: app::web::mobile() };
-            if self.lobby.host.device.as_ref() != Some(&device) { DEVICE.with(|d| *d.borrow_mut() = Some(device.clone())); self.lobby.host.device = Some(device); }
+            // Logged again once the shelf arrives (the first frames come before it).
+            let total = self.lobby.host.library().len();
+            if self.lobby.host.device.as_ref() != Some(&device) || NOTED.with(|n| n.replace(total)) != total {
+                let measured = self.lobby.host.library().iter().filter(|g| g["bench"][device.gpu.as_str()].is_object()).count();
+                DEVICE.with(|d| *d.borrow_mut() = Some(device.clone()));
+                self.lobby.host.device = Some(device.clone());
+                let stutter: Vec<String> = self.lobby.host.library().iter().filter(|g| !self.lobby.host.runs_smoothly(g)).map(|g| g["id"].as_str().unwrap_or("?").to_string()).collect();
+                app::web::log(&format!("hardware notes: GPU '{}' {}x{}, {measured} of {total} games measured on it, may stutter: {}", device.gpu, device.size[0], device.size[1], if stutter.is_empty() { "none".into() } else { stutter.join(", ") }));
+            }
             self.lobby.draw(frame)
         }
         fn title(&self) -> Option<String> { self.lobby.title() }
