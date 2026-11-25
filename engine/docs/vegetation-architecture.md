@@ -745,6 +745,8 @@ G3.2 upstream visibility is unchanged.
 - [ ] G4.4 — Verify no holes, stale generations or full renderer rebuilds across
   eviction, removal/reinsertion, empty world and heavy oversubscription.
 
+The plant card baker preserves four area-weighted source normals across each projected procedural needle spray. Relative depths in the source spray darken sheltered texels, while the existing coverage mask keeps gaps and exposed tips. Both the shading and the mask are baked once from the growth geometry.
+
 ## G5 — Shared wind and animated shadow caching (NOT COMPLETE)
 
 List reusable whole-tree instance slots in `Scene::tree_wind_ranges` to apply

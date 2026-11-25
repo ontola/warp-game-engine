@@ -128,7 +128,7 @@ fn planes(vertices: &[Vertex], indices: &[u32], allow_side: bool) -> Vec<Plane> 
 }
 
 #[derive(Clone, Copy)]
-struct Card { plane: Plane, lo: Vec2, hi: Vec2, depth: f32, uv0: Vec2, uv1: Vec2 }
+struct Card { source_normals: Option<[Vec3; 4]>, plane: Plane, lo: Vec2, hi: Vec2, depth: f32, uv0: Vec2, uv1: Vec2 }
 
 /// Bake one orthographic silhouette and its local-space depth.
 fn bake_card(vertices: &[Vertex], indices: &[u32], atlas: &mut image::RgbaImage, cell: (u32, u32, u32), plane: Plane) -> Card {
@@ -147,6 +147,12 @@ fn bake_card(vertices: &[Vertex], indices: &[u32], atlas: &mut image::RgbaImage,
         edge2 += (p[1] - p[0]).length_squared().max((p[2] - p[1]).length_squared()).max((p[0] - p[2]).length_squared());
     }
     let needles = area < NEEDLE_THINNESS * edge2;
+    let needle_spray = vertices.iter().any(|v| v.uv[1] < -2.5);
+    let mut front_depth = needle_spray.then(|| vec![f32::NEG_INFINITY; (w * h) as usize]);
+    // Integrate the actual spray's normals, weighted by triangle area and
+    // screen quadrant. Four samples can travel in the existing card vertices.
+    let mut normals = [Vec3::ZERO; 4];
+    let corners = [Vec2::ZERO, Vec2::X, Vec2::ONE, Vec2::Y];
     let mut cover = vec![0u16; (w * h) as usize];
     for t in indices.chunks_exact(3) {
         let p: [Vec2; 3] = std::array::from_fn(|k| (plane.project(Vec3::from(vertices[t[k] as usize].pos)) - lo) / size * Vec2::new(w as f32, h as f32) * SS as f32);
@@ -154,13 +160,30 @@ fn bake_card(vertices: &[Vertex], indices: &[u32], atlas: &mut image::RgbaImage,
         let edge = |a: Vec2, b: Vec2, q: Vec2| (b - a).perp_dot(q - a);
         let area = edge(p[0], p[1], p[2]);
         if area.abs() < 1e-9 { continue; }
+        let xyz = [0, 1, 2].map(|k| Vec3::from_array(vertices[t[k] as usize].pos));
+        let depths = xyz.map(|v| v.dot(plane.normal()));
+        if needle_spray {
+            let mid = ((plane.project((xyz[0] + xyz[1] + xyz[2]) / 3.0) - lo) / size).clamp(Vec2::ZERO, Vec2::ONE);
+            let n = t.iter().map(|&i| Vec3::from_array(vertices[i as usize].normal)).sum::<Vec3>();
+            let surface = (xyz[1] - xyz[0]).cross(xyz[2] - xyz[0]).length();
+            for (sum, corner) in normals.iter_mut().zip(corners) {
+                let weight = Vec2::ONE - (mid - corner).abs();
+                *sum += n * surface * (weight.x * weight.y).powi(2);
+            }
+        }
         // Thin needles cover few samples: count each sample once per pixel.
         let mut hit = std::collections::HashSet::new();
         for sy in bmin.y as u32..bmax.y as u32 {
             for sx in bmin.x as u32..bmax.x as u32 {
                 let q = Vec2::new(sx as f32 + 0.5, sy as f32 + 0.5);
                 let (e0, e1, e2) = (edge(p[1], p[2], q) / area, edge(p[2], p[0], q) / area, edge(p[0], p[1], q) / area);
-                if e0 >= 0.0 && e1 >= 0.0 && e2 >= 0.0 { hit.insert((sx, sy)); }
+                if e0 >= 0.0 && e1 >= 0.0 && e2 >= 0.0 {
+                    hit.insert((sx, sy));
+                    if let Some(front) = &mut front_depth {
+                        let i = ((sy / SS) * w + sx / SS) as usize;
+                        front[i] = front[i].max(e0 * depths[0] + e1 * depths[1] + e2 * depths[2]);
+                    }
+                }
             }
         }
         for (sx, sy) in hit { cover[((sy / SS) * w + sx / SS) as usize] += 1; }
@@ -173,7 +196,25 @@ fn bake_card(vertices: &[Vertex], indices: &[u32], atlas: &mut image::RgbaImage,
             let c = (raw * 1.6).min(1.0);
             // Where the part's own triangles stack, the source shades its
             // inner layers in their own shadow; a flat card would not.
-            let shade = if needles { 1.0 / (1.0 + OVERLAP_SHADE * (raw - 1.0).max(0.0)) } else { 1.0 };
+            let mut shade = if needles { 1.0 / (1.0 + OVERLAP_SHADE * (raw - 1.0).max(0.0)) } else { 1.0 };
+            if let Some(front) = &front_depth {
+                // A neighbouring shoot above this surface blocks a fraction of
+                // the local sky. Empty texels leave tips exposed. Directional
+                // light and cast shadows are still evaluated at draw time.
+                let depth = front[(py * w + px) as usize];
+                if depth.is_finite() {
+                    let radius = (w.min(h) / 12).max(1) as i32;
+                    let mut blocked = 0.0;
+                    for (dx, dy) in [(1,0),(-1,0),(0,1),(0,-1),(1,1),(-1,1),(-1,-1),(1,-1)] {
+                        let (x, y) = (px as i32 + dx * radius, py as i32 + dy * radius);
+                        if x < 0 || y < 0 || x >= w as i32 || y >= h as i32 { continue; }
+                        let rise = (front[(y as u32 * w + x as u32) as usize] - depth).max(0.0);
+                        let run = (Vec2::new(dx as f32, dy as f32) * radius as f32 / fit).length();
+                        blocked += rise / (rise + run);
+                    }
+                    shade *= 1.0 - 0.50 * blocked / 8.0;
+                }
+            }
             let v = (shade.powf(1.0 / 2.2) * 255.0) as u8;
             // Image rows run top down; the card's +y runs up.
             atlas.put_pixel(cx + px, cy + (h - 1 - py), image::Rgba([v, v, v, (c * 255.0) as u8]));
@@ -181,7 +222,7 @@ fn bake_card(vertices: &[Vertex], indices: &[u32], atlas: &mut image::RgbaImage,
     }
     let depth = vertices.iter().map(|v| Vec3::from(v.pos).dot(plane.normal())).sum::<f32>() / vertices.len().max(1) as f32;
     let at = atlas.width() as f32;
-    Card { plane, lo, hi, depth, uv0: Vec2::new(cx as f32, cy as f32) / at, uv1: Vec2::new((cx + w) as f32, (cy + h) as f32) / at }
+    Card { source_normals: needle_spray.then(|| normals.map(|n| n.normalize_or(plane.normal()))), plane, lo, hi, depth, uv0: Vec2::new(cx as f32, cy as f32) / at, uv1: Vec2::new((cx + w) as f32, (cy + h) as f32) / at }
 }
 
 fn part_mesh(vertices: &[Vertex], indices: &[u32]) -> ClusterMesh {
@@ -255,9 +296,10 @@ impl PlantCards {
                 for card in projections {
                     let base = vertices.len() as u32;
                     let normal = (normals * card.plane.normal()).normalize_or_zero();
-                    for (cx, cy, u, v) in [(card.lo.x, card.lo.y, card.uv0.x, card.uv1.y), (card.hi.x, card.lo.y, card.uv1.x, card.uv1.y),
-                        (card.hi.x, card.hi.y, card.uv1.x, card.uv0.y), (card.lo.x, card.hi.y, card.uv0.x, card.uv0.y)] {
+                    for (corner, (cx, cy, u, v)) in [(card.lo.x, card.lo.y, card.uv0.x, card.uv1.y), (card.hi.x, card.lo.y, card.uv1.x, card.uv1.y),
+                        (card.hi.x, card.hi.y, card.uv1.x, card.uv0.y), (card.lo.x, card.hi.y, card.uv0.x, card.uv0.y)].into_iter().enumerate() {
                         let local = card.plane.x * cx + card.plane.y * cy + card.plane.normal() * card.depth;
+                        let normal = card.source_normals.map_or(normal, |n| (normals * n[corner]).normalize_or(normal));
                         vertices.push(Vertex { pos: transform.transform_point3(local).to_array(), normal: normal.to_array(), uv: [u, v] });
                     }
                     indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
@@ -357,6 +399,21 @@ mod tests {
         sprays_per_branch: 84, spray_scale: 1.15, spray_axial_bias: 0.40, foliage_colour: [0.065, 0.135, 0.045], wood_colour: [0.16, 0.105, 0.062],
         protected_trunk_height: 5.5,
     };
+
+    #[test]
+    fn spruce_card_retains_source_normal_variation_and_shaded_inner_needles() {
+        use crate::plant_growth_assembly::Parts;
+        let look = crate::plant_growth_assembly::Look::norway_spruce();
+        let brush = &Parts::for_look(&look).tufts[0];
+        let plane = planes(&brush.vertices, &brush.indices, true)[0];
+        let mut atlas = image::RgbaImage::new(128, 128);
+        let card = bake_card(&brush.vertices, &brush.indices, &mut atlas, (0, 0, 128), plane);
+        let normals = card.source_normals.unwrap();
+        assert!(normals.iter().all(|n| n.is_normalized()));
+        assert!(normals.iter().any(|n| n.dot(normals[0]) < 0.9));
+        assert!(atlas.pixels().any(|p| p[3] >= 128 && p[0] < 195));
+        assert!(atlas.pixels().any(|p| p[3] >= 128 && p[0] > 245));
+    }
 
     #[test]
     fn fitted_planes_follow_the_surface_after_rotation_and_translation() {
