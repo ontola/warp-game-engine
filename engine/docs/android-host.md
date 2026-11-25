@@ -116,7 +116,7 @@ Measured on a Galaxy Tab S9+ (Adreno 740) and a Xiaomi 13 class phone
   for the hardware-fit table (gamenight-internal
   docs/strategy/hardware-fit.md, `app::bench`): 10 s warm-up, 20 s at 540
   lines, 20 s at 1080 (capped to the screen), adaptive quality held still,
-  then one `BENCH {json}` line in logcat with frame, CPU, swapchain-wait and
+  then one `BENCH {json}` line in logcat with frame, CPU (the render thread's own CPU time, not wall clock: that includes driver waits for the GPU), swapchain-wait and
   GPU medians per height and a fit of GPU time into a fixed part
   (`gpu_fixed_ms`) and a part per 3D pixel (`gpu_ns_per_px`). Each game
   switch starts it again, so `bench=1&game=spellstorm&players=2&cloud=off`

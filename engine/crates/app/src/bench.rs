@@ -164,6 +164,24 @@ impl Bench {
     }
 }
 
+/// This thread's CPU time in ms (Linux and Android): what the CPU really
+/// worked, without the time the thread slept in the driver waiting for the
+/// GPU. Wall-clock encode times on Android include that wait (bench round
+/// of 25 November: "CPU" equalled the GPU time on the Tab S9+).
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub fn thread_cpu_ms() -> Option<f64> {
+    #[repr(C)]
+    struct Timespec { sec: i64, nsec: i64 }
+    unsafe extern "C" { fn clock_gettime(clock: i32, t: *mut Timespec) -> i32; }
+    const CLOCK_THREAD_CPUTIME_ID: i32 = 3;
+    let mut t = Timespec { sec: 0, nsec: 0 };
+    // SAFETY: clock_gettime writes one timespec (two i64 on 64-bit Linux
+    // and Android) into the pointer it is given, which lives on this stack.
+    (unsafe { clock_gettime(CLOCK_THREAD_CPUTIME_ID, &mut t) } == 0).then(|| t.sec as f64 * 1000.0 + t.nsec as f64 / 1e6)
+}
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+pub fn thread_cpu_ms() -> Option<f64> { None }
+
 /// The line through (px1, ms1) and (px2, ms2): (ms at 0 pixels, ns per
 /// pixel), both at least 0 (noise can tilt a flat line below).
 pub fn fit(px1: u64, ms1: f32, px2: u64, ms2: f32) -> (f32, f32) {
@@ -190,6 +208,19 @@ pub struct About {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn thread_time_counts_work_not_sleep() {
+        let a = thread_cpu_ms().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let b = thread_cpu_ms().unwrap();
+        assert!(b - a < 10.0, "slept, not worked: {}", b - a);
+        let mut x = 0u64;
+        let t = std::time::Instant::now();
+        while t.elapsed().as_millis() < 30 { x = x.wrapping_add(std::hint::black_box(1)); }
+        assert!(thread_cpu_ms().unwrap() - b > 15.0 && x > 0);
+    }
 
     #[test]
     fn query() {

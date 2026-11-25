@@ -954,6 +954,7 @@ impl Shell {
 
     #[allow(clippy::too_many_arguments)]
     fn frame_with(&mut self, live: &mut Gfx, next: Option<(Parked, Option<Keep>)>, dt: f32, step: f32, steps: &mut i32, ms: impl Fn(Instant) -> f32) -> Result<(), String> {
+        let cpu_start = if self.bench.is_some() { crate::bench::thread_cpu_ms() } else { None };
         if let Some((next, keep)) = next {
             let old = Parked { cfg: std::mem::replace(&mut self.cfg, next.cfg), game: std::mem::replace(&mut self.game, next.game), renderer: std::mem::replace(&mut live.renderer, next.renderer) };
             if let Some(keep) = keep { keep(old); }
@@ -1064,7 +1065,7 @@ impl Shell {
             log(&format!("{}: 3D view now {} lines high (chasing {:.0} fps)", self.cfg.title, next.min(size[1]), quality.target_fps()));
         }
         if self.switched.is_none() && let Some(b) = &mut self.bench {
-            let sample = crate::bench::Sample { frame_ms: dt * 1000.0, cpu_ms: tick_ms + draw_ms + (ms(t_out) - wait_ms).max(0.0), wait_ms, gpu_ms: (self.profiling && self.gpu_total > 0.0).then_some(self.gpu_total as f32) };
+            let sample = crate::bench::Sample { frame_ms: dt * 1000.0, cpu_ms: match (cpu_start, crate::bench::thread_cpu_ms()) { (Some(a), Some(b)) => (b - a) as f32, _ => tick_ms + draw_ms + (ms(t_out) - wait_ms).max(0.0) }, wait_ms, gpu_ms: (self.profiling && self.gpu_total > 0.0).then_some(self.gpu_total as f32) };
             let about = crate::bench::About { game: self.cfg.title.clone(), gpu: live.gpu.info.name.clone(), platform: "android", tier: query_param("tier").unwrap_or_else(|| if self.mobile { "medium" } else { "high" }.into()), players: self.game.local_players(), memory_mb: memory_mb() };
             if let Some(line) = b.frame(sample, size, &about) { log(&line); }
         }
