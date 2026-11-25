@@ -792,9 +792,13 @@ impl World {
                 let q = Vec2::new(p.x, p.z);
                 let (d, within) = wd.past(q);
                 // (Where the path loops back near the wall, its earlier
-                // stretch is no part of it: the path tells which side.)
+                // stretch is no part of it: the path tells which side. In a
+                // sharp bend that stretch can lie just past the wall's line,
+                // and holding it there was an invisible wall (Joep, 25 Nov).)
                 let prog = self.level.progress_of(q);
-                if within && d > -0.5 && d < 2.0 && (prog - wd.at).abs() < 12.0 {
+                let s = if wd.back { -1.0 } else { 1.0 };
+                let ahead = (prog - wd.at) * s;
+                if within && d > -0.5 && d < 2.0 && ahead > -3.0 && ahead < 12.0 {
                     p.x -= wd.n.x * (d + 0.5);
                     p.z -= wd.n.y * (d + 0.5);
                     continue;
@@ -806,10 +810,8 @@ impl World {
                 // between there and the wall threw them through it (Joep:
                 // "teleporting through the mist wall"). And only a hold, never a
                 // jump: a wizard found further past (a shove, a join) stays.
-                let s = if wd.back { -1.0 } else { 1.0 };
-                let ahead = (prog - wd.at) * s;
                 let t = (q - wd.c).dot(wd.across());
-                if ahead > -0.5 && ahead < 25.0 && d > -0.5 && d < 2.0 && t > wd.lo - 6.0 && t < wd.hi + 6.0 {
+                if ahead > -0.5 && ahead < 25.0 && d > -0.5 && d < 2.0 && t > wd.lo - 2.5 && t < wd.hi + 2.5 {
                     p.x -= wd.n.x * (d + 0.5);
                     p.z -= wd.n.y * (d + 0.5);
                 }
@@ -1223,5 +1225,81 @@ pub fn move_toward(from: Vec3, to: Vec3, delta: f32) -> Vec3 {
         to
     } else {
         from + d / l * delta
+    }
+}
+
+#[cfg(test)]
+mod ward_tests {
+    use super::*;
+
+    /// Walks up to every shut wall of mist along the path, in many levels,
+    /// and reports where the hold moves a wizard who is still on this side.
+    #[test]
+    fn walls_hold_only_past_them() {
+        let mut bad = vec![];
+        for seed in 1..40u64 {
+            for b in 0..crate::biome::biomes().len() {
+                let mut w = World::new(&[Seat::player(0, "Joep")], seed, Settings::default());
+                w.run.biome_index = b;
+                w.enter_level();
+                let id = w.wizards[0];
+                for wd in w.run.wards.clone() {
+                    if !wd.holds || wd.back {
+                        continue;
+                    }
+                    // Open ground round the wall: whatever the path calls
+                    // earlier than the wall must stay where it is.
+                    for gx in -40..=40 {
+                        for gz in -40..=40 {
+                            let q = wd.c + Vec2::new(gx as f32, gz as f32) * 0.3;
+                            if w.level.bound(q) > -0.5 || w.level.progress_of(q) > wd.at - 1.5 {
+                                continue;
+                            }
+                            let p = Vec3::new(q.x, 0.0, q.y);
+                            let out = w.keep_inside(id, p);
+                            let (d, _) = wd.past(q);
+                            if d < -0.6 && out.distance(p) > 0.05 || d >= -0.6 && w.level.progress_of(q) < wd.at - 3.0 && out.distance(p) > 0.05 {
+                                bad.push(format!("seed {seed} biome {b} wall at {:.1}: ground prog {:.1} d {d:.2} moved {:.2} m", wd.at, w.level.progress_of(q), out.distance(p)));
+                            }
+                        }
+                    }
+                    // Just past it on the path: held back to this side.
+                    for k in 1..4 {
+                        let q = w.level.point_at(wd.at + 0.3 * k as f32);
+                        let (d0, within) = wd.past(q);
+                        if !within || d0 < -0.4 {
+                            continue;
+                        }
+                        let out = w.keep_inside(id, Vec3::new(q.x, 0.0, q.y));
+                        let (d1, _) = wd.past(Vec2::new(out.x, out.z));
+                        if d1 > -0.4 {
+                            bad.push(format!("seed {seed} biome {b} wall at {:.1}: not held at d {d0:.2}", wd.at));
+                        }
+                    }
+                    let mut s = wd.at - 25.0;
+                    while s < wd.at - 1.0 {
+                        let c = w.level.point_at(s);
+                        let n = (w.level.point_at(s + 0.5) - w.level.point_at(s - 0.5)).normalize_or(Vec2::Y);
+                        let across = Vec2::new(-n.y, n.x);
+                        for off in [-1.5f32, 0.0, 1.5] {
+                            let q = c + across * off;
+                            if w.level.corridor && w.level.bound(q) > -0.5 {
+                                continue;
+                            }
+                            let p = Vec3::new(q.x, 0.0, q.y);
+                            let out = w.keep_inside(id, p);
+                            if out.distance(p) > 0.05 {
+                                bad.push(format!("seed {seed} biome {b} wall at {:.1}: path {:.1} off {off} moved {:.2} m", wd.at, s, out.distance(p)));
+                            }
+                        }
+                        s += 0.5;
+                    }
+                }
+            }
+        }
+        for l in bad.iter().take(30) {
+            eprintln!("{l}");
+        }
+        assert!(bad.is_empty(), "{} spots on this side of a wall were moved", bad.len());
     }
 }

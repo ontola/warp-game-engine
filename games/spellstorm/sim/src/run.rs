@@ -600,7 +600,9 @@ impl World {
         // Out to the walls, or, in open ground, as far as this stretch of
         // the path is the nearest: a wall that ran on over the whole level
         // crossed the path again where it winds back (Joep saw two).
-        let ours = |p: Vec2| l.bound(p) < 0.0 && (l.progress_of(p) - at).abs() < 10.0;
+        // Nor over the stretch before it where the path bends back close
+        // (Joep: the wall went wrong in sharp bends).
+        let ours = |p: Vec2| l.bound(p) < 0.0 && (-3.0..10.0).contains(&(l.progress_of(p) - at));
         let (mut lo, mut hi) = (0.0f32, 0.0f32);
         while lo > -reach && ours(c + across * (lo - 0.5)) {
             lo -= 0.5;
