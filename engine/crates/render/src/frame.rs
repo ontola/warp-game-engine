@@ -24,12 +24,16 @@ struct SplitShade {
     light: wgpu::ComputePipeline,
     write_layout: wgpu::BindGroupLayout,
     read_layout: wgpu::BindGroupLayout,
+    /// KERN_SPLIT_SHADE=2: the light half as an ambient kernel (sky, GI,
+    /// sun into an Rgba16Float target) and a lamps kernel, with their layouts.
+    ambient: Option<(wgpu::ComputePipeline, wgpu::ComputePipeline, wgpu::BindGroupLayout, wgpu::BindGroupLayout)>,
 }
 
 #[derive(Default)]
 struct FrameResources {
     split_target: Option<(wgpu::Texture, wgpu::TextureView)>,
-    split_bind: resource_cache::BindGroups<2>,
+    split_ambient: Option<(wgpu::Texture, wgpu::TextureView)>,
+    split_bind: resource_cache::BindGroups<4>,
     style_input: Option<(wgpu::Texture, wgpu::TextureView)>,
     style_bind: resource_cache::BindGroups<1>,
     targets: [resource_cache::TextureViews<1>; 3],
@@ -2870,7 +2874,7 @@ impl Renderer {
             label:Some("shade"),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some(if compact_shade {"shade_compact"} else if simple_lighting {"shade_simple"} else {"shade"}),
             compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
         });
-        let split_shade = (compact_shade && crate::switches::SPLIT_SHADE.on()).then(|| {
+        let split_shade = (compact_shade && (crate::switches::SPLIT_SHADE.on() || crate::switches::SPLIT_SHADE.is("2"))).then(|| {
             let write_layout = layout(gpu, "shade surface out", &[(33, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba32Uint, view_dimension: wgpu::TextureViewDimension::D2 })]);
             let read_layout = layout(gpu, "shade surface in", &[(34, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false })]);
             // The surface half has no lights: no tile list (its barriers).
@@ -2879,8 +2883,14 @@ impl Renderer {
                 label: Some(label), layout: Some(&pl(&[lighting_scene_layout, &shade_layout, &clustered.layout, group3])), module: &shade_mod, entry_point: Some(entry),
                 compilation_options: wgpu::PipelineCompilationOptions { constants, ..Default::default() }, cache: gpu.pipeline_cache(),
             });
+            let surface_in = (34, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false });
+            let ambient = crate::switches::SPLIT_SHADE.is("2").then(|| {
+                let out = layout(gpu, "shade ambient out", &[surface_in.clone(), (36, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D2 })]);
+                let input = layout(gpu, "shade ambient in", &[surface_in.clone(), (35, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false })]);
+                (make("shade ambient", "shade_compact_ambient", &out, &surface_constants), make("shade", "shade_compact_lamps", &input, &shade_constants), out, input)
+            });
             SplitShade { surface: make("shade surface", "shade_compact_surface", &write_layout, &surface_constants),
-                light: make("shade", "shade_compact_light", &read_layout, &shade_constants), write_layout, read_layout }
+                light: make("shade", "shade_compact_light", &read_layout, &shade_constants), write_layout, read_layout, ambient }
         });
         // The live bounce of clustered lights (rsm.wgsl), before shade.
         let rsm_pipe = |entry: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -6255,12 +6265,29 @@ impl Renderer {
                 let view = &resources.split_target.as_ref().unwrap().1;
                 let write = resources.split_bind.get(gpu, &split.write_layout, "shade surface out", &[(33, wgpu::BindingResource::TextureView(view))]);
                 let read = resources.split_bind.get(gpu, &split.read_layout, "shade surface in", &[(34, wgpu::BindingResource::TextureView(view))]);
-                (split, write, read)
+                let ambient = split.ambient.as_ref().map(|(ambient_pipe, lamps_pipe, out_layout, in_layout)| {
+                    if resources.split_ambient.as_ref().is_none_or(|(t, _)| t.width() != w || t.height() != h) {
+                        let tex = tex2d("shade ambient", w, h, wgpu::TextureFormat::Rgba16Float, wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING);
+                        let view = tex.create_view(&Default::default());
+                        resources.split_ambient = Some((tex, view));
+                    }
+                    let (surface_v, ambient_v) = (&resources.split_target.as_ref().unwrap().1, &resources.split_ambient.as_ref().unwrap().1);
+                    let out = resources.split_bind.get(gpu, out_layout, "shade ambient out", &[(34, wgpu::BindingResource::TextureView(surface_v)), (36, wgpu::BindingResource::TextureView(ambient_v))]);
+                    let input = resources.split_bind.get(gpu, in_layout, "shade ambient in", &[(34, wgpu::BindingResource::TextureView(surface_v)), (35, wgpu::BindingResource::TextureView(ambient_v))]);
+                    (ambient_pipe, lamps_pipe, out, input)
+                });
+                (split, write, read, ambient)
             });
             let shade_scene = self.compact_shade_scene.as_ref().unwrap_or(&self.scene_bind);
-            if let Some((split, write, read)) = &split {
+            if let Some((split, write, read, ambient)) = &split {
                 passes.push(("shade surface", &split.surface, vec![shade_scene, &shade_bind, &self.clustered.bind, write]));
-                passes.push(("shade", &split.light, vec![shade_scene, &shade_bind, &self.clustered.bind, read]));
+                match ambient {
+                    Some((ambient_pipe, lamps_pipe, out, input)) => {
+                        passes.push(("shade ambient", ambient_pipe, vec![shade_scene, &shade_bind, &self.clustered.bind, out]));
+                        passes.push(("shade", lamps_pipe, vec![shade_scene, &shade_bind, &self.clustered.bind, input]));
+                    }
+                    None => passes.push(("shade", &split.light, vec![shade_scene, &shade_bind, &self.clustered.bind, read])),
+                }
             } else {
                 passes.push(("shade", diagnostic.map(|d| &d.0).or(unlit.map(|u| &u.0)).unwrap_or(&self.shade), vec![shade_scene, &shade_bind, &self.clustered.bind]));
             }

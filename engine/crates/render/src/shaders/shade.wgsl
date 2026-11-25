@@ -4176,6 +4176,11 @@ fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool, tile_lights:u32, 
 // (albedo, normal, sun visibility, emission) is known.
 fn light_simple_surface(px:vec2<i32>, p:vec3<f32>, n:vec3<f32>, dir:vec3<f32>, base:vec3<f32>, sun_vis:f32, surface_emit:vec3<f32>,
         m:Material, inst_flags:u32, instance:u32, material_index:u32, tile_lights:u32) {
+    light_simple_rest(px, p, n, dir, base, surface_emit, m, inst_flags, instance, material_index, tile_lights, simple_ambient_radiance(p, n, base, sun_vis));
+}
+
+// Sky, GI and sun on the surface (the ambient half of KERN_SPLIT_SHADE=2).
+fn simple_ambient_radiance(p:vec3<f32>, n:vec3<f32>, base:vec3<f32>, sun_vis:f32) -> vec3<f32> {
     var ambient=sky_irradiance(n);
     if FEATURE_IRRADIANCE && gi.params.w > 0.0 {
         let cached=irradiance_sample(p+n*0.05,n);
@@ -4189,7 +4194,13 @@ fn light_simple_surface(px:vec2<i32>, p:vec3<f32>, n:vec3<f32>, dir:vec3<f32>, b
             ambient=mix(ambient,corrected,room.w);
         }
     }
-    var rad=base*(ambient+light.sun_color.rgb*light.sun_dir.w*sun_vis*max(dot(n,light.sun_dir.xyz),0.0))/3.14159265;
+    return base*(ambient+light.sun_color.rgb*light.sun_dir.w*sun_vis*max(dot(n,light.sun_dir.xyz),0.0))/3.14159265;
+}
+
+// Lamps, emission, styling, flash, glow and fog on top of `ambient_rad`.
+fn light_simple_rest(px:vec2<i32>, p:vec3<f32>, n:vec3<f32>, dir:vec3<f32>, base:vec3<f32>, surface_emit:vec3<f32>,
+        m:Material, inst_flags:u32, instance:u32, material_index:u32, tile_lights:u32, ambient_rad:vec3<f32>) {
+    var rad=ambient_rad;
     if SHADE_PROBE == 4u { textureStore(out_hdr,px,vec4<f32>(min(rad,vec3<f32>(65504.0)),1.0)); return; }
     // Shadowed lights first, then the local lights that reach this tile.
     let shadowed=min(headlights.count.x,8u);
@@ -4238,23 +4249,53 @@ fn shade_compact_surface(@builtin(global_invocation_id) gid:vec3<u32>) {
 
 // The light half of the split compact pass (KERN_SPLIT_SHADE): the surface
 // pass wrote the background itself and `surface_in` for the rest.
-@compute @workgroup_size(8, 8)
-fn shade_compact_light(@builtin(global_invocation_id) gid:vec3<u32>, @builtin(local_invocation_index) lane:u32) {
-    let tile_lights = local_light_tile(gid, lane);
-    if any(gid.xy>=vec2<u32>(view.size.xy)) {return;}
+// One pixel of the split compact pass after the surface half: false for
+// the background (the surface half wrote it) and outside the view.
+struct SplitPixel { ok: bool, px: vec2<i32>, p: vec3<f32>, n: vec3<f32>, dir: vec3<f32>, base: vec3<f32>, sun_vis: f32, emit: vec3<f32>,
+    material_index: u32, inst_flags: u32, instance: u32 };
+fn split_pixel(gid: vec3<u32>) -> SplitPixel {
+    var out: SplitPixel;
+    if any(gid.xy>=vec2<u32>(view.size.xy)) {return out;}
     let px=vec2<i32>(gid.xy);
     let id=textureLoad(vis_tex,px,0).r;
     let depth=textureLoad(depth_tex,px,0);
-    if depth<=0.0 || id==0xffffffffu {return;}
+    if depth<=0.0 || id==0xffffffffu {return out;}
     let ndc=(vec2<f32>(gid.xy)+0.5)/view.size.xy*vec2<f32>(2.0,-2.0)+vec2<f32>(-1.0,1.0);
     let far=view.inv_view_proj*vec4<f32>(ndc,1e-4,1.0);
-    let dir=normalize(far.xyz/far.w-view.cam.xyz);
     let h=view.inv_view_proj*vec4<f32>(ndc,depth,1.0);
-    let p=h.xyz/h.w;
     let vis=visible[id>>7u];let cl=clusters[vis.y];let inst=instance_at(vis.x);
     irradiance_receiver_radius = select(0.0, 0.5, (inst.flags & 64u) != 0u);
     let w=textureLoad(surface_in,px,0);
     let rg=unpack2x16float(w.x);let bs=unpack2x16float(w.y);
-    light_simple_surface(px, p, oct_decode(unpack2x16snorm(w.z)), dir, vec3<f32>(rg, bs.x), bs.y, unpack_rgbe(w.w),
-        material(cl.material), inst.flags, vis.x, cl.material, tile_lights);
+    return SplitPixel(true, px, h.xyz/h.w, oct_decode(unpack2x16snorm(w.z)), normalize(far.xyz/far.w-view.cam.xyz), vec3<f32>(rg, bs.x), bs.y,
+        unpack_rgbe(w.w), cl.material, inst.flags, vis.x);
+}
+
+// The light half of the split compact pass (KERN_SPLIT_SHADE=1): the surface
+// pass wrote the background itself and `surface_in` for the rest.
+@compute @workgroup_size(8, 8)
+fn shade_compact_light(@builtin(global_invocation_id) gid:vec3<u32>, @builtin(local_invocation_index) lane:u32) {
+    let tile_lights = local_light_tile(gid, lane);
+    let s = split_pixel(gid);
+    if !s.ok {return;}
+    light_simple_surface(s.px, s.p, s.n, s.dir, s.base, s.sun_vis, s.emit, material(s.material_index), s.inst_flags, s.instance, s.material_index, tile_lights);
+}
+
+// KERN_SPLIT_SHADE=2: the light half as two kernels, sky/GI/sun into
+// `ambient_out`, then the lamps and the rest on top of it.
+@group(3) @binding(35) var ambient_in: texture_2d<f32>;
+@group(3) @binding(36) var ambient_out: texture_storage_2d<rgba16float, write>;
+@compute @workgroup_size(8, 8)
+fn shade_compact_ambient(@builtin(global_invocation_id) gid:vec3<u32>) {
+    let s = split_pixel(gid);
+    if !s.ok {return;}
+    textureStore(ambient_out, s.px, vec4<f32>(min(simple_ambient_radiance(s.p, s.n, s.base, s.sun_vis), vec3<f32>(65504.0)), 1.0));
+}
+@compute @workgroup_size(8, 8)
+fn shade_compact_lamps(@builtin(global_invocation_id) gid:vec3<u32>, @builtin(local_invocation_index) lane:u32) {
+    let tile_lights = local_light_tile(gid, lane);
+    let s = split_pixel(gid);
+    if !s.ok {return;}
+    light_simple_rest(s.px, s.p, s.n, s.dir, s.base, s.emit, material(s.material_index), s.inst_flags, s.instance, s.material_index, tile_lights,
+        textureLoad(ambient_in, s.px, 0).rgb);
 }
