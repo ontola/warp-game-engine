@@ -939,12 +939,16 @@ impl LuaGame {
         if let Some(sel) = self.menu {
             let w = size[0] as f32;
             let items = self.menu_items();
-            let (top, bottom) = self.menu_layout(size);
+            let (top, _) = self.menu_layout(size);
             let (title_face, item_face) = menu_faces();
             let title_size = 48.0 * s;
             let title_w = render::hud::measure(&self.cfg.title, title_face, title_size)[0];
             let pw = (380.0 * s).max(title_w + 64.0 * s).min(w - 32.0 * s);
-            let panel = [w * 0.5 - pw * 0.5, top - 28.0 * s, pw, bottom - top + 36.0 * s];
+            // 16 under the last row's highlight, as at its sides.
+            let panel = [w * 0.5 - pw * 0.5, top - 28.0 * s, pw, (122.0 + 56.0 * items.len() as f32) * s];
+            let item_size = 26.0 * s;
+            // Caps centred in the 46 px row (Outfit's cap height is 0.7 em).
+            let item_dy = 15.0 * s - render::hud::baseline(item_face, item_size) + 0.35 * item_size;
             rounded(&mut list, [panel[0], panel[1] + 6.0 * s, panel[2], panel[3]], 18.0 * s, [0.0, 0.0, 0.0, 0.3], full);
             rounded(&mut list, [panel[0] - 1.0, panel[1] - 1.0, panel[2] + 2.0, panel[3] + 2.0], 18.0 * s + 1.0, [1.0, 1.0, 1.0, 0.10], full);
             rounded(&mut list, panel, 18.0 * s, [0.051, 0.063, 0.125, 1.0], full);
@@ -954,7 +958,7 @@ impl LuaGame {
                 let y = top + (96.0 + 56.0 * i as f32) * s;
                 let on = i == sel;
                 if on { rounded(&mut list, [panel[0] + 16.0 * s, y - 8.0 * s, pw - 32.0 * s, 46.0 * s], 12.0 * s, [0.486, 0.361, 1.0, 0.35], full); }
-                list.text.push(TextRun { id: 20_001 + i as u64, text: item.label().into(), position: [0.0, y], bounds: full, font_size: 26.0 * s,
+                list.text.push(TextRun { id: 20_001 + i as u64, text: item.label().into(), position: [0.0, y + item_dy], bounds: full, font_size: item_size,
                     color: if on { [0xee, 0xf0, 0xfc, 255] } else { [0xa8, 0xad, 0xc4, 255] }, font: item_face, align: render::hud::TextAlign::Center, width: w });
             }
         }

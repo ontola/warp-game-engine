@@ -251,7 +251,8 @@ fn menu_layout(lobby: &Lobby, id: &str, at: [f32; 2], fs: f32, size: [u32; 2]) -
     mw += 80.0;
     // The keyboard and mouse menu says what it is and how to leave it.
     if id == crate::mouse::MOUSE { mw = mw.max(width(MOUSE_HEADING, (fs * 0.7).floor()) + 48.0); }
-    let mh = line * items.len() as f32 + extra + menu_head(fs) + 20.0;
+    // 12 under the last row, as at its sides (rows are `line - 4` tall).
+    let mh = line * items.len() as f32 + extra + menu_head(fs) + 8.0;
     let x = (at[0] - mw / 2.0).clamp(16.0, (size[0] as f32 - mw - 16.0).max(16.0));
     let y0 = (at[1] - mh).max(16.0);
     let mut rows = vec![];
@@ -358,7 +359,8 @@ fn menu(lobby: &Lobby, c: &mut Canvas, id: &str, at: [f32; 2], fs: f32) {
         if item.action == "quit" && state.confirm && selected { label = if mouse { "Click again to quit".into() } else { format!("Press {a} again to quit") }; }
         if item.action == "remove" && state.confirm && selected { label = if mouse { format!("Click again to remove {}", short(&item.name, 14)) } else { format!("Press {a} again to remove {}", short(&item.name, 14)) }; }
         if selected { c.style_box([x + 12.0, y, mw - 24.0, line - 4.0 + if couch { row } else { 0.0 }], [12.0 * k; 4], VIOLET.with_alpha(0.35), None); }
-        text(c, &label, [x + 32.0, y + fs], fs, if selected { TEXT } else { DIM });
+        // Caps centred in the row's `line - 4` (Outfit's cap height is 0.7 em).
+        text(c, &label, [x + 32.0, y + (line - 4.0 + fs * 0.7) / 2.0], fs, if selected { TEXT } else { DIM });
         if couch {
             // Yours is filled.
             let mine = lobby.couch_place(id);
