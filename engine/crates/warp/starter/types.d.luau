@@ -212,6 +212,15 @@ declare sound: {
 declare hud: {
 	-- Text in pixels from the top left, drawn this frame (call from draw).
 	text: (text: any, x: number, y: number, opts: { size: number?, color: Color?, align: ("left" | "center" | "right")?, width: number? }?) -> (),
+	-- Pad button `button` ("A", "B", "X", "Y", "LB", "RB", "Start", "Back", or "move")
+	-- as player `player` (id, table or nil for the first) presses it: a coloured
+	-- disc on a controller, the key's cap on a keyboard or keyboard half (two
+	-- players on one keyboard). Top left at x, y; size in pixels high (default 32);
+	-- alpha 0..1. Returns its width. Call from draw (or menu).
+	button: (player: any, button: string, x: number, y: number, size: number?, alpha: number?) -> number,
+	-- The key that presses `button` for that player ("Space", "R Shift", "WASD"
+	-- for "move"), or nil on a controller.
+	key: (player: any, button: string) -> string?,
 	-- A filled rectangle (default colour black at half alpha).
 	box: (x: number, y: number, w: number, h: number, color: Color?) -> (),
 	-- A person's Splitscreen Club face (their profile art on a head in their skin

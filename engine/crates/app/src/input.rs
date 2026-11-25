@@ -158,6 +158,37 @@ pub fn split_keyboard(on: bool) { SPLIT.store(on, std::sync::atomic::Ordering::R
 /// Whether the keyboard is split ([`split_keyboard`]).
 pub fn keyboard_split() -> bool { SPLIT.load(std::sync::atomic::Ordering::Relaxed) }
 
+static SEAT_DEVICES: std::sync::Mutex<Vec<Option<Device>>> = std::sync::Mutex::new(Vec::new());
+
+/// The device on each host seat (the browser and phone hosts set it every
+/// tick), so a game can draw each player's own buttons ([`key_label`]).
+pub fn set_seat_devices(devices: Vec<Option<Device>>) {
+    if let Ok(mut d) = SEAT_DEVICES.lock() && *d != devices { *d = devices; }
+}
+
+/// The device on host seat `seat` ([`set_seat_devices`]); None: unknown or a pad-less seat.
+pub fn seat_device(seat: usize) -> Option<Device> { SEAT_DEVICES.lock().ok()?.get(seat).copied().flatten() }
+
+/// The key that presses pad button `button` on keyboard `device` (whole or
+/// a half), as a keycap names it: "Space", "R Shift", "/"... None on a pad
+/// (draw the pad glyph) or for a button that keyboard doesn't have.
+/// `button`: A B X Y LB RB LT RT Start Back, or the Luau names (south,
+/// east, west, north, left_shoulder, right_shoulder, start, select, jump);
+/// `move` names the stick (WASD or arrows).
+pub fn key_label(device: Device, button: &str) -> Option<&'static str> {
+    let b = match button.to_ascii_lowercase().as_str() {
+        "a" | "south" | "jump" => "a", "b" | "east" => "b", "x" | "west" => "x", "y" | "north" => "y",
+        "lb" | "left_shoulder" => "lb", "rb" | "right_shoulder" => "rb", "lt" | "left_trigger" | "aim" => "lt", "rt" | "right_trigger" | "fire" => "rt",
+        "start" => "start", "back" | "select" => "back", "move" => "move", _ => return None,
+    };
+    Some(match (device, b) {
+        (Device::Pad(_), _) => return None,
+        (Device::KeyHalf(0), b) => match b { "a" => "Space", "b" => "L Shift", "x" => "Q", "y" => "E", "back" => "Tab", "start" => "1", "move" => "WASD", _ => return None },
+        (Device::KeyHalf(_), b) => match b { "a" => "R Shift", "b" => "/", "x" => ".", "y" => "'", "back" => "Backspace", "start" => "Enter", "move" => "Arrows", _ => return None },
+        (Device::Keyboard, b) => match b { "a" => "Space", "b" => "Backspace", "x" => "R", "y" => "F", "lb" => "Q", "rb" => "E", "lt" => "RMB", "rt" => "LMB", "back" => "Tab", "start" => "Enter", "move" => "WASD", _ => return None },
+    })
+}
+
 #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 fn pad_button(b: PadButton) -> u32 {
     match b {

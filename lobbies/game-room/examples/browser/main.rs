@@ -307,6 +307,8 @@ pub(crate) mod page {
         h.idle_pads = devices.iter().filter(|(d, _)| matches!(d, Device::Pad(_)) && !h.bound.contains(&Some(*d))).count();
         back_chords(h, devices);
         warp::web::set_seats(seats(h));
+        // Games draw each player's own buttons (hud.button): pad or keys.
+        app::set_seat_devices(h.bound.clone());
         for line in warp::web::take_room_log() { let game = h.on_screen.clone(); note(h, "game", &line, game.as_deref()); }
         Some(h.bound.iter().map(|b| b.iter().copied().collect()).collect())
     }

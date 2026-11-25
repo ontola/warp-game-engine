@@ -479,9 +479,9 @@ local function build_side(p)
 	for _ = 1, 4 do
 		table.insert(v.hold, world.spawn("cube", { pos = vector.create(sx, HOLD_Y, 0), size = 0.7, color = BLOCKS[1], emissive = KNOBS.block_glow, roughness = 0.35, metal = 0.1, solid = false, visible = false, tag = "side" }))
 	end
-	local bx, by = sx + 2, HOLD_Y + 1.6
-	v.badge = world.spawn("sphere", { pos = vector.create(bx, by, 0.1), size = vector.create(0.95, 0.95, 0.35), color = GOLD, emissive = 0.012, roughness = 0.4, solid = false, tag = "side" })
-	v.y = world.spawn("wire", { points = { vector.create(-0.17, 0.2, 0), vector.create(0, 0, 0), vector.create(0.17, 0.2, 0), vector.create(0, -0.22, 0) }, edges = { 1, 2, 3, 2, 2, 4 }, pos = vector.create(bx, by, 0.3), width = 0.08, color = "#1f170a", solid = false, tag = "side" })
+	-- The Y button itself is drawn over it (draw: hud.button), so a
+	-- keyboard player sees their key there instead.
+	v.badge_at = vector.create(sx + 2, HOLD_Y + 1.6, 0.3)
 	-- The half of the well this player owns, tinted in their colour.
 	v.tint = world.spawn("cube", { pos = vector.create((p.lane - 1 + LANE / 2) - W / 2, H / 2, -0.59), size = vector.create(LANE, H, 0.01), color = c * 0.3, emissive = 0.006, roughness = 0.8, solid = false, tag = "side" })
 	-- The falling piece and where it will land.
@@ -636,6 +636,7 @@ local function show_side(p, v)
 		show_cubes(v.next, p.next, 0, side_x(p), NEXT_Y, 0.78, false, true)
 	end
 	local dim = p.held or state.phase ~= "play"
+	v.badge_dim = dim
 	if v.hold_kind ~= state.hold or v.dim ~= dim or v.hold_by ~= state.hold_by then
 		v.hold_kind, v.dim, v.hold_by = state.hold, dim, state.hold_by
 		if state.hold ~= 0 then
@@ -649,7 +650,6 @@ local function show_side(p, v)
 		-- again after it lands.
 		local oc = owner_color()
 		world.set(v.rim, { color = oc, emissive = if dim then 0.008 else 0.02 })
-		world.set(v.badge, { color = if dim then hexrgb(GOLD) * 0.35 else GOLD })
 	end
 end
 
@@ -871,8 +871,55 @@ local function players_changed()
 	build_sides()
 end
 
+-- Each player's hold button on their corner: Y on a controller, the key
+-- on a keyboard (E on the left half, ' on the right).
+local function draw()
+	for _, p in state.players do
+		local v = state.vis[tostring(p.id)]
+		if v and v.badge_at and not p.bot then
+			local x, y = hud.project(v.badge_at)
+			local ex = hud.project(v.badge_at + vector.create(0.5, 0, 0))
+			if x and ex then
+				local size = math.max(16, (ex - x) * 2)
+				local key = hud.key(p.id, "Y")
+				local w = if key then math.max(size, hud.measure(key, size * 0.56) + size * 0.6) else size
+				hud.button(p.id, "Y", x - w / 2, y - size / 2, size, if v.badge_dim then 0.4 else 1)
+			end
+		end
+	end
+end
+
+-- The start menu shows each player's controls, on their own buttons.
+local CONTROLS = { { "move", "Move" }, { "A", "Rotate" }, { "B", "Drop" }, { "Y", "Hold" } }
+local function menu(top)
+	local w, h = hud.size()
+	local k = h / 720
+	local people = {}
+	for _, pl in players.list() do
+		if not pl.bot then table.insert(people, pl) end
+	end
+	if #people == 0 then return end
+	local y0 = top + 30 * k
+	hud.text("CONTROLS", 0, y0, { size = 16 * k, align = "center", width = w, color = { 1, 0.706, 0.329, 1 } })
+	local colw = 260 * k
+	local left = w / 2 - colw * #people / 2
+	for n, pl in people do
+		local x = left + (n - 1) * colw + 30 * k
+		local y = y0 + 34 * k
+		hud.text(pl.name, x, y, { size = 20 * k, color = { pl.color.x, pl.color.y, pl.color.z, 1 } })
+		y += 36 * k
+		for _, row in CONTROLS do
+			local bw = hud.button(pl.id, row[1], x, y, 30 * k)
+			hud.text(row[2], x + bw + 12 * k, y + 4 * k, { size = 19 * k, color = { 0.933, 0.941, 0.988, 1 } })
+			y += 40 * k
+		end
+	end
+end
+
 return {
 	init = init,
+	draw = draw,
+	menu = menu,
 	reload = reload,
 	tick = tick,
 	player_joined = player_joined,

@@ -61,7 +61,7 @@ pub use android as web;
 mod android_pads;
 pub use frame_rate::FrameRate;
 
-pub use input::{Buttons, Controls, Device, Devices, Pointer, Tuning, keyboard_split, split_keyboard};
+pub use input::{Buttons, Controls, Device, Devices, Pointer, Tuning, key_label, keyboard_split, seat_device, set_seat_devices, split_keyboard};
 pub use text::{FieldEvent, TextEvent, TextField};
 use render::hud::{HudDrawList, HudRenderer};
 use render::present::Presenter;

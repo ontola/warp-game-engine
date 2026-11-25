@@ -322,6 +322,10 @@ keyboard mapping is in `app::input`.
   `hud.project(pos, player?)` is where a world point shows (in that
   player's view, by default the first), for labels over things; nil when
   it is behind the camera.
+  `hud.button(p, "Y", x, y, size)` draws a button as player `p` presses
+  it: the coloured A/B/X/Y disc on a controller, the key's cap ("E", "'")
+  on a keyboard or a keyboard half, so prompts and control lists are right
+  for everyone; `hud.key(p, "Y")` is that key's name, or nil on a pad.
   Script and patch errors show in red at the bottom of the screen until
   they are fixed.
 - **Sky and light**: `sky.set("sunset:haze")` bakes a procedural sky

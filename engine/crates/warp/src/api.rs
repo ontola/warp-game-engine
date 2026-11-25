@@ -39,6 +39,74 @@ impl Default for Cam {
 pub enum HudItem {
     Text { text: String, pos: [f32; 2], size: f32, color: [f32; 4], align: TextAlign, width: f32 },
     Box { rect: [f32; 4], color: [f32; 4] },
+    Circle { center: [f32; 2], radius: f32, color: [f32; 4] },
+}
+
+/// The device player `i` plays on, when a host seated them on one
+/// ([`app::seat_device`]); None: a pad, or unknown (draw pad glyphs).
+fn player_device(c: &Core, i: usize) -> Option<app::Device> { c.roster.get(i)?.seat.and_then(app::seat_device) }
+
+/// A player argument: an id, a player table, or nil (the first player).
+fn player_arg(c: &Core, p: &Value) -> mlua::Result<usize> {
+    match p {
+        Value::Nil => player(c, None),
+        Value::Table(t) => player(c, Some(t.raw_get::<i64>("id")?)),
+        v => player(c, Some(number(v, "player")? as i64)),
+    }
+}
+
+/// Pad glyph colours (lobbies/game-room/DESIGN.md "Controller and key glyphs").
+fn glyph_fill(button: &str) -> Option<[f32; 4]> {
+    let hex = |h: u32| [((h >> 16) & 255) as f32 / 255.0, ((h >> 8) & 255) as f32 / 255.0, (h & 255) as f32 / 255.0, 1.0];
+    Some(match button.to_ascii_lowercase().as_str() {
+        "a" | "south" | "jump" => hex(0x3ddc97), "b" | "east" => hex(0xe2574c), "x" | "west" => hex(0x4a8fe7), "y" | "north" => hex(0xf2c14e),
+        _ => return None,
+    })
+}
+
+/// The letter on a pad glyph.
+fn pad_letter(button: &str) -> String {
+    match button.to_ascii_lowercase().as_str() {
+        "south" | "jump" => "A".into(), "east" => "B".into(), "west" => "X".into(), "north" => "Y".into(),
+        "left_shoulder" => "LB".into(), "right_shoulder" => "RB".into(), "left_trigger" | "aim" => "LT".into(), "right_trigger" | "fire" => "RT".into(),
+        "select" => "Back".into(), "move" => "Stick".into(), other => other.to_ascii_uppercase(),
+    }
+}
+
+/// A rounded box from rects and corner circles.
+fn rounded(hud: &mut Vec<HudItem>, r: [f32; 4], radius: f32, color: [f32; 4]) {
+    let rad = radius.min(r[2] / 2.0).min(r[3] / 2.0);
+    hud.push(HudItem::Box { rect: [r[0] + rad, r[1], r[2] - 2.0 * rad, r[3]], color });
+    hud.push(HudItem::Box { rect: [r[0], r[1] + rad, r[2], r[3] - 2.0 * rad], color });
+    for (x, y) in [(r[0] + rad, r[1] + rad), (r[0] + r[2] - rad, r[1] + rad), (r[0] + rad, r[1] + r[3] - rad), (r[0] + r[2] - rad, r[1] + r[3] - rad)] {
+        hud.push(HudItem::Circle { center: [x, y], radius: rad, color });
+    }
+}
+
+/// Pad button `button` as player `i` presses it, `size` pixels high with
+/// its top left at `x, y`: a coloured disc (A B X Y), a grey pill, or on a
+/// keyboard the key's light cap. Returns its width.
+fn draw_button(c: &mut Core, i: usize, button: &str, x: f32, y: f32, size: f32, alpha: f32) -> f32 {
+    const INK: [f32; 4] = [0.051, 0.063, 0.125, 1.0];
+    let key = player_device(c, i).and_then(|d| app::key_label(d, button));
+    let (label, fill, round) = match key {
+        Some(k) => (k.to_string(), [0.949, 0.945, 0.973, 1.0], size * 0.22),
+        None => match glyph_fill(button) {
+            Some(f) => (pad_letter(button), f, size / 2.0),
+            None => (pad_letter(button), [0.188, 0.188, 0.247, 1.0], size / 2.0),
+        },
+    };
+    let fs = (size * if label.chars().count() > 2 { 0.42 } else { 0.56 }).max(4.0);
+    let text_w = render::hud::measure(&label, render::hud::FontFace::Body, fs)[0];
+    let w = if key.is_none() && glyph_fill(button).is_some() { size } else { (text_w + size * 0.6).max(size) };
+    let ink = if key.is_some() || glyph_fill(button).is_some() { INK } else { [0.933, 0.941, 0.988, 1.0] };
+    let a = |mut col: [f32; 4]| { col[3] *= alpha; col };
+    let (fill, ink) = (a(fill), a(ink));
+    if key.is_some() { rounded(&mut c.hud, [x, y + size * 0.1, w, size], round, a([0.0, 0.0, 0.0, 0.55])); }
+    if w <= size + 0.5 && round >= size / 2.0 - 0.01 { c.hud.push(HudItem::Circle { center: [x + w / 2.0, y + size / 2.0], radius: size / 2.0, color: fill }); }
+    else { rounded(&mut c.hud, [x, y, w, size], round, fill); }
+    c.hud.push(HudItem::Text { text: label, pos: [x, y + (size - fs * 1.25) / 2.0], size: fs, color: ink, align: TextAlign::Center, width: w });
+    w
 }
 
 /// Colours for players without one (Splitscreen Club gives its own).
@@ -1086,6 +1154,21 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             }
             lock(&core).hud.push(HudItem::Text { text, pos: [x, y], size, color: col, align, width });
             Ok(())
+        })),
+        // Pad button `button` as player `p` presses it (`p` nil: the first
+        // player): a coloured disc or pill on a pad, the key's cap on a
+        // keyboard (or keyboard half). Returns its width.
+        ("button", f!(core, move |_, (p, button, x, y, size, alpha): (Value, String, f32, f32, Option<f32>, Option<f32>)| {
+            let mut c = lock(&core);
+            let i = player_arg(&c, &p)?;
+            Ok(draw_button(&mut c, i, &button, x, y, size.unwrap_or(32.0).clamp(4.0, 400.0), alpha.unwrap_or(1.0).clamp(0.0, 1.0)))
+        })),
+        // The key that presses `button` for player `p` ("Space", "R Shift",
+        // "WASD" for `move`), or nil on a pad.
+        ("key", f!(core, move |_, (p, button): (Value, String)| {
+            let c = lock(&core);
+            let i = player_arg(&c, &p)?;
+            Ok(player_device(&c, i).and_then(|d| app::key_label(d, &button)).map(String::from))
         })),
         ("box", f!(core, move |_, (x, y, w, h, col): (f32, f32, f32, f32, Option<Value>)| {
             let col = match col { Some(v) => color(&v, "hud.box colour")?, None => [0.0, 0.0, 0.0, 0.5] };

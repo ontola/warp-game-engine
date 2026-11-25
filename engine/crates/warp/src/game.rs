@@ -927,6 +927,7 @@ impl LuaGame {
         for (k, item) in items.iter().enumerate() {
             match item {
                 HudItem::Box { rect, color } => list.rect(*rect, *color, full),
+                HudItem::Circle { center, radius, color } => list.circle(*center, *radius, *color, full),
                 HudItem::Text { text, pos, size: fs, color, align, width } => list.text.push(TextRun {
                     id: k as u64 + 1, text: text.clone(), position: *pos, bounds: full, font_size: *fs, color: rgba(*color), font: FontFace::Body, align: *align,
                     width: if *width > 0.0 { *width } else { (size[0] as f32 - pos[0]).max(fs * 4.0) },
