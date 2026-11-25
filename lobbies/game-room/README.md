@@ -4,6 +4,8 @@ The Splitscreen Club Game Room lobby (gamenight `lobbies/game-room`), rebuilt on
 Warp: the same room, props, doors, shelf and lobby logic, talking to the
 Splitscreen Club host over the lobby protocol.
 
+UI colours, type, panels, glyphs, layout zones and motion: [DESIGN.md](DESIGN.md).
+
 ```
 cargo build --release -p game-room
 game-room play                 # demo party with bots, in a window
