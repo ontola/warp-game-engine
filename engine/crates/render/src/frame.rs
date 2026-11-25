@@ -2261,7 +2261,7 @@ impl Renderer {
         crate::foliage_representation::validate_bindings(scene).expect("invalid foliage representation bindings");
         let replacement_words = crate::voxel_forest::replacement_materials(scene);
         let voxel_replacement = buffer(gpu, "voxel crown replacement", bytemuck::cast_slice(&replacement_words), u | wgpu::BufferUsages::COPY_SRC);
-        let wind = crate::wind::WindRenderer::new(gpu, &instances, &voxel_replacement, scene.instances.len())
+        let wind = crate::wind::WindRenderer::with_tree_slots(gpu, &instances, &voxel_replacement, scene.instances.len(), &scene.tree_wind_ranges)
             .expect("scene exceeds bounded wind storage");
         startup.mark("foliage_validation_wind_resources");
         let albedo_src: Vec<Option<&image::RgbaImage>> = scene.textures.iter().map(|t| Some(&t.rgba)).collect();
@@ -2411,7 +2411,7 @@ impl Renderer {
             .transpose().expect("invalid GPU forest runtime");
         let shadow_damage=scene.gpu_forest.as_ref().map(|spec|crate::shadow_damage::Damage::new(gpu,&instances,voxel_forest.as_ref().unwrap().tree_buffer(),&gpu_forest.as_ref().unwrap().0.choices,
             [scene.instances.len()as u32,(voxel_forest.as_ref().unwrap().tree_buffer().size()/96)as u32,spec.slots,spec.first_owner])).transpose().expect("invalid forest shadow damage cache");
-        let legacy_shadow_wind=scene.instances.iter().any(|i|i.sphere[3]>=0. && (i.first_cluster!=0 || i.cluster_count!=0) && i.flags&crate::scene::PART_WIND==0 && i.flags&(crate::scene::FOLIAGE|crate::scene::WIND_GRASS)!=0);
+        let legacy_shadow_wind=!scene.tree_wind_ranges.is_empty() || scene.instances.iter().any(|i|i.sphere[3]>=0. && (i.first_cluster!=0 || i.cluster_count!=0) && i.flags&crate::scene::PART_WIND==0 && i.flags&(crate::scene::FOLIAGE|crate::scene::WIND_GRASS)!=0);
         if let (Some(voxels),Some((forest,_)))=(&voxel_forest,&gpu_forest){voxels.initialize_pages(gpu,forest).expect("invalid voxel cache publication");}
         let foliage_world=scene.foliage_world.as_ref().map(|field|
             crate::foliage_world_render::WorldRenderer::new(gpu,field,scene.instances.len()as u32,

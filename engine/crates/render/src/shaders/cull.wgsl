@@ -303,7 +303,9 @@ fn instance_policy(id: u32, inst: Instance) -> u32 {
         // Foliage seed (OCCLUDERS_ONLY): only rigid geometry may hide forest.
         // Wind, skinning and debris deform away from these bounds, and a body
         // hidden from some camera must not hide what that camera sees.
-        if (u32(view.fog_cull.w)&OCCLUDERS_ONLY)!=0u && (inst.flags&(DEFORMING|0xff00u))!=0u {return 0u;}
+        if (u32(view.fog_cull.w)&OCCLUDERS_ONLY)!=0u {
+            if (inst.flags&(DEFORMING|0xff00u))!=0u || cull_wind[member_slot(id)].z>0.0 {return 0u;}
+        }
     }
     // Runtime groups replace this entire branch in the colour view only.
     // Do not spend cluster/raster work on the hidden source. Both sun and

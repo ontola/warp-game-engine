@@ -13,6 +13,7 @@ struct WindInstance {
 // beyond, camera count, enabled); cameras[k].xz is a camera's position.
 struct WindFreeze { params: vec4<f32>, cameras: array<vec4<f32>, 4> };
 @group(0) @binding(4) var<uniform> freeze: WindFreeze;
+@group(0) @binding(5) var<storage,read> tree_slots: array<u32>;
 
 @compute @workgroup_size(64)
 fn update_wind(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -22,9 +23,14 @@ fn update_wind(@builtin(global_invocation_id) id: vec3<u32>) {
     output[owner] = vec4<f32>(0.0);
     // FOLIAGE=1, LIVE_GRASS=8, WIND_GRASS=16. A volume crown and its source
     // trunk/shadows remain at rest together until volume deformation is ready.
-    if inst.cluster_count == 0u || (inst.flags & 25u) == 0u || (inst.flags & 32u) != 0u
-        || (wind_voxel_replacement[owner] != 0u && (wind_voxel_replacement[owner] & 0xc0000000u) != 0x40000000u)
-        || wind.field.z == 0.0 { return; }
+    if inst.cluster_count == 0u || wind.field.z == 0.0 || (inst.flags & 32u) != 0u { return; }
+    if (inst.flags & 25u) == 0u {
+        let word = owner >> 5u;
+        if word >= arrayLength(&tree_slots) { return; }
+        if (tree_slots[word] & (1u << (owner & 31u))) == 0u { return; }
+    }
+    if wind_voxel_replacement[owner] != 0u
+        && (wind_voxel_replacement[owner] & 0xc0000000u) != 0x40000000u { return; }
     let direction = wind.field.xy;
     let across_dir = vec2<f32>(-direction.y, direction.x);
     let root = vec2<f32>(inst.r0.w, inst.r2.w);

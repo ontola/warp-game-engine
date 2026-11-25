@@ -55,7 +55,7 @@ fn eligible_anchored(i:&GpuInstance)->bool {
 }
 fn owners(scene:&Scene,stage:bool,anchored:bool)->Vec<bool> {
     let mut result:Vec<_>=scene.instances.iter().map(|i|if anchored {eligible_anchored(i)} else {eligible(i,stage)}).collect();
-    for range in &scene.dynamic_instances {for owner in range.clone(){if let Some(v)=result.get_mut(owner){*v=false;}}}
+    for range in scene.dynamic_instances.iter().chain(&scene.tree_wind_ranges) {for owner in range.clone(){if let Some(v)=result.get_mut(owner){*v=false;}}}
     for part in &scene.part_wind {if let Some(owner)=part.owner {result[owner as usize]=false;}}
     for part in &scene.part_attachments {result[part.owner as usize]=false;}
     if let Some(a)=&scene.baked_animations {for p in &a.parts{result[p.owner as usize]=false;}}

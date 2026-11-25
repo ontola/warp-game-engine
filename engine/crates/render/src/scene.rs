@@ -627,6 +627,9 @@ pub struct Scene {
     /// Live transform pools excluded from stage-static shadow ownership.
     /// Slots::reserve registers these, including currently empty slots.
     pub dynamic_instances: Vec<std::ops::Range<usize>>,
+    /// Pooled roots for whole-tree wind without static canopy GI. These ranges
+    /// also count as dynamic shadow casters, including temporarily empty slots.
+    pub tree_wind_ranges: Vec<std::ops::Range<usize>>,
     pub materials: Vec<Material>,
     /// Procedural car surfaces, referenced through `CAR_SHIFT` flag bits.
     /// `Renderer::set_car_materials` replaces them without a rebuild.
@@ -778,6 +781,7 @@ impl Scene {
     pub fn same_reserved_geometry(&self, other: &Self) -> bool {
         self.graphics.sharp_sprites == other.graphics.sharp_sprites && self.graphics.instance_groups == other.graphics.instance_groups
             && self.stage_sun == other.stage_sun && self.dynamic_instances == other.dynamic_instances
+            && self.tree_wind_ranges == other.tree_wind_ranges
             && self.instances.len() == other.instances.len() && self.materials.len() == other.materials.len()
             && self.aux.len() == other.aux.len() && self.meshes.len() == other.meshes.len()
             && self.skinning.actors.len() == other.skinning.actors.len()

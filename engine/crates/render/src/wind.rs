@@ -170,6 +170,19 @@ impl Cache {
     }
 }
 
+/// Store only the words up to the last opted-in root. Other scenes need one zero word.
+fn tree_slot_mask(count: usize, ranges: &[std::ops::Range<usize>]) -> Result<Vec<u32>, String> {
+    if ranges.iter().any(|r| r.start > r.end || r.end > count) {
+        return Err("tree wind range outside scene instance pool".into());
+    }
+    let end = ranges.iter().filter(|r| !r.is_empty()).map(|r| r.end).max().unwrap_or(0);
+    let mut mask = vec![0; end.div_ceil(32).max(1)];
+    for slot in ranges.iter().cloned().flatten() {
+        mask[slot / 32] |= 1u32 << (slot % 32);
+    }
+    Ok(mask)
+}
+
 pub struct WindRenderer {
     pipeline: wgpu::ComputePipeline,
     bind: wgpu::BindGroup,
@@ -185,12 +198,22 @@ impl WindRenderer {
     /// are vec4(shear_x, shear_z, conservative world displacement, reserved).
     pub fn new(gpu: &Gpu, instances: &wgpu::Buffer, replacements: &wgpu::Buffer,
         instance_count: usize) -> Result<Self, String> {
+        Self::with_tree_slots(gpu, instances, replacements, instance_count, &[])
+    }
+
+    pub(crate) fn with_tree_slots(gpu: &Gpu, instances: &wgpu::Buffer, replacements: &wgpu::Buffer,
+        instance_count: usize, ranges: &[std::ops::Range<usize>]) -> Result<Self, String> {
         let count = u32::try_from(instance_count).map_err(|_| "wind instance count exceeds u32")?;
         let bytes = u64::from(count.max(1)) * 16;
         if bytes > u64::from(gpu.limits.max_storage_buffer_binding_size)
             || count.div_ceil(64) > gpu.limits.max_compute_workgroups_per_dimension {
             return Err("wind coefficient buffer/workgroup count exceeds this GPU's limits".into());
         }
+        let mask = tree_slot_mask(instance_count, ranges)?;
+        let tree_slots = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("tree wind slot mask"), contents: bytemuck::cast_slice(&mask),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
         let initial = Uniform::zeroed();
         let uniform = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("wind state"), contents: bytemuck::bytes_of(&initial),
@@ -220,6 +243,7 @@ impl WindRenderer {
                 wgpu::BindGroupEntry { binding: 2, resource: replacements.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: coefficients.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 4, resource: freeze.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: tree_slots.as_entire_binding() },
             ],
         });
         Ok(Self { pipeline, bind, uniform, coefficients, freeze, count,
@@ -291,6 +315,14 @@ pub(crate) fn shade_source_with(lighting: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streamed_roots_share_one_wind_bit_per_slot() {
+        assert_eq!(tree_slot_mask(10_000, &[]).unwrap(), [0]);
+        assert_eq!(tree_slot_mask(120, &[30..34, 32..35, 68..69, 119..119]).unwrap(),
+            [0xc0000000, 7, 16]);
+        assert!(tree_slot_mask(12, &[9..13]).is_err());
+    }
 
     #[test]
     fn freeze_is_on_by_default_and_can_be_turned_off_or_set() {
