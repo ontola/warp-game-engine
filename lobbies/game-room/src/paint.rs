@@ -630,15 +630,17 @@ pub fn key_cap_on(half: u8, button: &str) -> Option<&'static str> {
 }
 
 /// How wide a keyboard key's cap is at prompt size (44 px labels).
-pub fn key_cap_width(cap: &str) -> f32 { (render::hud::measure(cap, bold(), 38.0)[0] + 36.0).max(72.0) }
+pub fn key_cap_width(cap: &str) -> f32 { (render::hud::measure(cap, bold(), 44.0)[0] + 40.0).max(84.0) }
 
 /// A keyboard key: a light cap with the key's name, `r` its rectangle.
 pub fn keycap(c: &mut Canvas, r: [f32; 4], cap: &str, pressed: f32, on: bool) {
     let r = [r[0], r[1] + pressed * 6.0, r[2], r[3]];
     let radius = r[3] * 0.22;
     c.style_box([r[0], r[1] + r[3] * 0.1, r[2], r[3]], [radius; 4], Color::hex("0b0b12"), None);
-    c.style_box(r, [radius; 4], if on { Color::hex("f2f1f8") } else { Color::hex("8d8aa0") }, Some(((r[3] * 0.05).max(1.5), Color::hex("0b0b12"))));
-    let size = (r[3] * 0.5).floor();
+    // A touch under white: in the room the glowing prompt blooms, and a
+    // pure white cap bled into its letter.
+    c.style_box(r, [radius; 4], if on { Color::hex("d6d4e2") } else { Color::hex("8d8aa0") }, Some(((r[3] * 0.05).max(1.5), Color::hex("0b0b12"))));
+    let size = (r[3] * 0.66).floor();
     c.text(bold(), [r[0], r[1] + r[3] / 2.0 + size * 0.36], cap, TextAlign::Center, r[2], size, Color::hex("0b0b12"));
 }
 
@@ -661,7 +663,8 @@ pub fn prompt(c: &mut Canvas, state: &Prompt) {
         let color = if on { pad_color(key).unwrap_or(TEXT) } else { Color::hex("55516a") };
         let pressed = state.pressed.as_ref().filter(|p| &p.0 == key).map_or(0.0, |p| p.1);
         if let Some(cap) = cap {
-            keycap(c, [x + 12.0, 20.0, badge - 24.0, 56.0], cap, pressed, on);
+            // As tall as the pill allows: the key's letter reads at a distance.
+            keycap(c, [x + 12.0, 12.0, badge - 24.0, 70.0], cap, pressed, on);
         } else if state.mouse {
             // A mouse with its left button lit (the wheel for LB/RB), and an
             // arrow for the way a bumper browses.
@@ -698,12 +701,17 @@ pub fn prompt(c: &mut Canvas, state: &Prompt) {
     }
 }
 
-/// Where a prompt's row starts on its screen: centred, except at the exit,
+/// Where a prompt's row starts on its screen: centred, except at the exit and the shelf,
 /// which sits by the screen's left edge, so its row starts over the door
 /// and reads to the right.
 pub fn prompt_left(name: &str, width: f32, need: f32) -> f32 {
     let centred = ((width - need) / 2.0).max(0.0).floor();
-    if name == "exit" { centred.max((width / 2.0 - 64.0).floor()) } else { centred }
+    match name {
+        "exit" => centred.max((width / 2.0 - 64.0).floor()),
+        // The shelf is by the screen's left edge: its row leans right.
+        "shelf" => (centred + 110.0).min((width - need).max(0.0)).floor(),
+        _ => centred,
+    }
 }
 
 /// A mouse seen from above, centred at `at`: the left button (or the

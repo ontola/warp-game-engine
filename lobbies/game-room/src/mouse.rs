@@ -17,7 +17,7 @@ pub const MOUSE: &str = "mouse";
 /// Seconds without movement after which the mouse lets go of what it points at.
 const IDLE: f32 = 5.0;
 /// World metres per prompt texture pixel (room.rs `prompt`).
-const PROMPT_PX: f32 = 0.0042;
+const PROMPT_PX: f32 = 0.0042 * crate::live::PROMPT_SCALE;
 /// Stations the mouse can work. The doors are somebody's: picking up a
 /// profile needs a controller. The exit quits Splitscreen Club for the mouse.
 const STATIONS: [&str; 5] = ["tv", "shelf", "queue", "music", "exit"];

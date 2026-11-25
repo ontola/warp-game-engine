@@ -209,6 +209,9 @@ pub struct Lobby {
 
 /// Width of every prompt screen in the live lobby.
 pub(crate) const PROMPT_WIDTH: u32 = 1024;
+/// The room's button prompts drawn this much bigger than built (they read
+/// small on a laptop).
+pub(crate) const PROMPT_SCALE: f32 = 1.3;
 
 const NAMES: [&str; 6] = ["Joep", "Mango", "Disco", "Waffle", "Pickle", "Rocket"];
 /// The host's guest colours and skins (demo.gd).
@@ -649,7 +652,7 @@ impl Lobby {
             let screen = self.build.screens.iter().find(|s| s.name == format!("prompt_{}", p.name));
             let stretch = screen.map_or(1.0, |s| PROMPT_WIDTH as f32 / s.size[0] as f32);
             let bob = Vec3::new(0.0, self.prompt_bob(&p.name, p.pos.x), 0.0);
-            let at = Affine3A::from_scale_rotation_translation(Vec3::new(stretch, 1.0, 1.0), Quat::IDENTITY, p.pos + bob);
+            let at = Affine3A::from_scale_rotation_translation(Vec3::new(stretch * PROMPT_SCALE, PROMPT_SCALE, 1.0), Quat::IDENTITY, p.pos + bob);
             self.stage.room.dump.instances[p.instance].transform = glam::Mat4::from(at).to_cols_array();
             changed.push((p.instance, active));
             let glow = self.prompt_glow.entry(p.name.clone()).or_insert(0.85);

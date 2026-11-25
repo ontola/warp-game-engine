@@ -241,7 +241,7 @@ fn badge(c: &mut Canvas, at: [f32; 2], k: f32, key: &str, cap: Option<&str>, lab
     let x = x0 + 20.0 * k;
     c.style_box([x, y0 + 6.0 * k, glyph + tw + 16.0 * k, h - 12.0 * k], [h / 2.0 - 6.0 * k; 4], crate::room::PANEL, None);
     if let Some(cap) = cap {
-        crate::paint::keycap(c, [x + 12.0 * k, y0 + 20.0 * k, glyph - 24.0 * k, 56.0 * k], cap, pressed, true);
+        crate::paint::keycap(c, [x + 12.0 * k, y0 + 12.0 * k, glyph - 24.0 * k, 70.0 * k], cap, pressed, true);
         c.text(bold(), [x + glyph - 6.0 * k, y0 + h / 2.0 + 16.0 * k], label, TextAlign::Left, -1.0, 44.0 * k, TEXT);
         return;
     }
