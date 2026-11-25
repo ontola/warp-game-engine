@@ -4011,8 +4011,12 @@ override LIGHT_TILES: bool = true;
 // The simple/compact pass samples albedo with the pixel's real footprint
 // (ray differentials through the triangle's UVs) instead of a LOD from
 // distance alone, which read mip 0 of the 2048 px layers for everything
-// nearer than 33 m (shimmer, uncached reads). KERN_FOOTPRINT_LOD=0: the old LOD.
-override FOOTPRINT_LOD: bool = true;
+// nearer than 33 m (shimmer, uncached reads). KERN_FOOTPRINT_LOD=1 opts in:
+// on an Adreno 740 it made the pass 3.4x slower (2026-11-25, cause open).
+override FOOTPRINT_LOD: bool = false;
+// KERN_ALBEDO_LOD_BIAS=<mips>: added to the distance LOD of the simple and
+// compact passes (an experiment: does the 2048 px mip 0 cost bandwidth?).
+override ALBEDO_LOD_BIAS: f32 = 0.0;
 // The UV offset of a world offset `v` in a triangle's plane (edges e1, e2
 // carrying UV steps du1, du2).
 fn triangle_uv_delta(v: vec3<f32>, e1: vec3<f32>, e2: vec3<f32>, du1: vec2<f32>, du2: vec2<f32>) -> vec2<f32> {
@@ -4136,7 +4140,7 @@ fn shade_simple_material(gid:vec3<u32>, terrain_lighting:bool, tile_lights:u32) 
             let texels = sqrt(length(gx) * length(gy)) * f32(textureDimensions(albedo).x);
             base*=textureSampleLevel(albedo,samp,uv,m.layer,max(log2(max(texels,1.0)),albedo_lod_floor(m.layer))).rgb;
         } else {
-            base*=textureSampleLevel(albedo,samp,uv,m.layer,max(log2(max(distance(p,view.cam.xyz)*0.03,1.0)),albedo_lod_floor(m.layer))).rgb;
+            if SHADE_PROBE != 7u { base*=textureSampleLevel(albedo,samp,uv,m.layer,max(log2(max(distance(p,view.cam.xyz)*0.03,1.0))+ALBEDO_LOD_BIAS,albedo_lod_floor(m.layer))).rgb; }
         }}
     var ambient=sky_irradiance(n);
     if FEATURE_IRRADIANCE && gi.params.w > 0.0 {

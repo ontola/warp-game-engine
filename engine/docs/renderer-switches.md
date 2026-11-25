@@ -32,7 +32,6 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_SHADE_UNLIT` | Frames without spot or local lights keep the full shade pipelines instead of the ones built without the local light loop. |
 | `KERN_TERRAIN_COARSE` | Turns off the coarse terrain footprint in shading. `KERN_COARSE_FOOTPRINT_M=<m>` sets its size. |
 | `KERN_TILED_POST` | Untiled tone mapping and post (same image). |
-| `KERN_FOOTPRINT_LOD` | The simple and compact shade passes pick the albedo mip from distance alone (mip 0 nearer than 33 m) instead of the pixel's footprint through the triangle's UVs. |
 | `KERN_LIGHT_TILES` | The simple and compact shade passes loop every local light per pixel instead of only those reaching the pixel's 8x8 tile (same image). |
 | `KERN_SKY_VIS_CACHE` | No cached sky transmittance through the canopy. |
 | `KERN_CANOPY_CLUMPING` | Crowns as a uniform fog at the coarse canopy levels again (a forest floor far away then sees a fifth of its sky; `canopy.rs` clumping_on). |
@@ -113,7 +112,9 @@ Use these to compare against the old path. All of them are the normal route.
 | --- | --- |
 | `KERN_CPU_SPANS=1`, `KERN_STARTUP_PROFILE=1` | CPU time per frame phase; renderer construction profile. |
 | `KERN_DIAGNOSTIC_HIDE` | Hide geometry categories in captures. |
-| `KERN_SHADE_PROBE=N` | The simple/compact shade pass stops after stage N and stores what it has, so a device's pass times show what each stage costs: `1` visibility and depth reads, `2` + triangle and normal, `3` + material, game surfaces and sun, `4` + albedo texture and ambient/GI, `5` + local lights, `6` + the game's light styling (the rest is flash, glow and fog). The image is a debug view. |
+| `KERN_FOOTPRINT_LOD=1` | The simple and compact shade passes pick the albedo mip from the pixel's footprint through the triangle's UVs instead of from distance (mip 0 nearer than 33 m). Off: on an Adreno 740 it made the compact pass 3.4x slower (2026-11-25, cause open). |
+| `KERN_ALBEDO_LOD_BIAS=<mips>` | Added to the simple/compact passes' albedo LOD (bandwidth experiment). |
+| `KERN_SHADE_PROBE=N` | The simple/compact shade pass stops after stage N and stores what it has, so a device's pass times show what each stage costs: `1` visibility and depth reads, `2` + triangle and normal, `3` + material, game surfaces and sun, `4` + albedo texture and ambient/GI, `5` + local lights, `6` + the game's light styling (the rest is flash, glow and fog); `7` the whole pass without the albedo texture. The image is a debug view. |
 | `KERN_SUN_DAMAGE_REPORT=1` | Prints, every frame, how many of the 4096 tiles of each cached sun map were marked changed, and how many casters changed by snapshot row (blocking readback). |
 | `KERN_FAR_CROWN_DEBUG` | Debug colours on the painted far forest: `1` red for the averaged share and green for single-crown cover, `2` white noise in 2 m world cells, `3` red where the stand field reaches the ground (`terrain_surface.wgsl`). |
 | `KERN_SPLIT_SELECTION_TIMING=1` | Times the GPU forest selection's parts (seed classify, refine, compact and finish, residency) separately (`frame.rs`). |

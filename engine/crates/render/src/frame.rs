@@ -2851,7 +2851,8 @@ impl Renderer {
         if let Some(stage) = crate::switches::SHADE_PROBE.parse::<u32>() { shade_constants.push(("SHADE_PROBE", f64::from(stage))); }
         if crate::switches::PHONE_GI.on() { shade_constants.push(("GI_PHONE", 1.0)); }
         if crate::switches::LIGHT_TILES.off() { shade_constants.push(("LIGHT_TILES", 0.0)); }
-        if crate::switches::FOOTPRINT_LOD.off() { shade_constants.push(("FOOTPRINT_LOD", 0.0)); }
+        if crate::switches::FOOTPRINT_LOD.on() { shade_constants.push(("FOOTPRINT_LOD", 1.0)); }
+        if let Some(bias) = crate::switches::ALBEDO_LOD_BIAS.parse::<f64>() { shade_constants.push(("ALBEDO_LOD_BIAS", bias)); }
         let shade = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label:Some("shade"),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some(if compact_shade {"shade_compact"} else if simple_lighting {"shade_simple"} else {"shade"}),
             compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
