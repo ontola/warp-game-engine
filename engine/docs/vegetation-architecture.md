@@ -762,8 +762,9 @@ Each flexible joint filters four seconds of wind pressure as a damped spring.
 The tree shares the sampled pressure across its limbs. Stiff boughs bend through
 small angles and respond slowly. Fine laterals bend under light pressure and
 oscillate faster around their moving parents. Joint flexibility and a small
-variation from branch identity set the frequency. The growth root stays anchored. The pose is a function of world position and time, so seeking
-or switching detail levels preserves the phase. `PartWindRig::sample_driven_into`
+variation from branch identity set the frequency. The growth root stays anchored.
+The pose is a function of world position and time, so seeking or switching detail
+levels preserves the phase. `PartWindRig::sample_driven_into`
 samples the equilibrium for comparisons at the same instant. Stem, bark relief
 and foliage follow the same pose with the bark grain anchored in rest space.
 
@@ -772,7 +773,7 @@ root-anchored sway and update their shadows as they move. For articulated
 branches, create a `PartWindRig` when the plant becomes resident and call
 `sample_into` each frame to reuse its validated bind poses and the output buffer.
 Use `sample_weighted_into` to fade articulation with distance while sampling
-the same storm as the surrounding stand.
+the same storm as the surrounding stand. [Branch and canopy measurements](log/2026-11-25-forest-storm-gusts.md).
 
 - [x] G5.1 — Demand-deduplicated ancestor poses and indirect depth dispatches are
   connected. Source, voxel and shadow paths share poses; bounded fallback exists.

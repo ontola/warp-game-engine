@@ -19,6 +19,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
   the guide or [status](../status.md) instead.
 - When a change alters how something works, update the guide for that part
   in the same commit. The log is not a substitute for that.
+- [Storm gusts and branch resonance in the 100,000-tree forest](2026-11-25-forest-storm-gusts.md)
 - [Low tier on a Samsung Tab S9+, games and Game Room](2026-11-25-low-tier-tablet.md)
 - [Port Meridian explosions and vehicle damage](2026-11-23-port-meridian-blasts-and-car-damage.md)
 - [Port Meridian curbside details](2026-11-23-port-meridian-street-details.md)
