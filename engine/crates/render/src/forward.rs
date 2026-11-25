@@ -11,13 +11,25 @@ struct Instance {rows:[[f32;4];3],material:u32,flags:u32,pad:[u32;2]}
 struct Spot {position:[f32;4],direction:[f32;4],intensity:[f32;4]}
 #[repr(C)] #[derive(Clone,Copy,Pod,Zeroable)]
 struct Uniform {vp:[[f32;4];4],camera:[f32;4],sun:[f32;4],sun_color:[f32;4],ambient:[f32;4],fog:[f32;4],spots:[Spot;4]}
-struct Part {indices:Range<u32>,material:u32,lava:bool}
+struct Part {indices:Range<u32>,material:u32,lava:bool,blend:bool}
 struct RigidDraw {model:usize,rows:[[f32;4];3],base:u32,hidden_views:u8,centre:Vec3}
 /// Joint rows the palette buffer holds: 16 characters of 64 joints.
 const PALETTE_ROWS:usize=16*64*3;
 struct Mesh {parts:Vec<Part>}
 struct Target {size:[u32;2],color:wgpu::Texture,depth:wgpu::Texture,instances:wgpu::Buffer,capacity:usize,uniform:wgpu::Buffer,bind:wgpu::BindGroup}
+/// What the low tier (`Lit`) reads from the main renderer.
+pub(crate) struct LitInputs<'a> {pub albedo:&'a wgpu::TextureView,pub headlights:&'a wgpu::Buffer}
+#[repr(C)] #[derive(Clone,Copy,Pod,Zeroable)]
+struct LitUniform {tone:[f32;4],sky:[f32;4],gi_origin:[f32;4],gi_dims:[f32;4]}
+/// The low tier: per-pixel light (forward_lit.wgsl) instead of the vertex
+/// light of the minimum profile. Opaque and blended pipelines per format.
+struct Lit {
+    opaque:wgpu::RenderPipeline,opaque_srgb:wgpu::RenderPipeline,blend:wgpu::RenderPipeline,blend_srgb:wgpu::RenderPipeline,
+    layout:wgpu::BindGroupLayout,uniform:wgpu::Buffer,bind:wgpu::BindGroup,albedo:wgpu::TextureView,samp:wgpu::Sampler,headlights:wgpu::Buffer,
+    probe_samp:wgpu::Sampler,probes:wgpu::TextureView,grid:Option<crate::irradiance_volume::Grid>,
+}
 pub(crate) struct Forward {
+    lit:Option<Lit>,
     pipeline:wgpu::RenderPipeline,pipeline_srgb:wgpu::RenderPipeline,layout:wgpu::BindGroupLayout,vertices:wgpu::Buffer,indices:wgpu::Buffer,materials:wgpu::Buffer,
     lava_view:wgpu::TextureView,lava_sampler:wgpu::Sampler,stone_view:wgpu::TextureView,stone_detail:bool,
     /// `Graphics::minimal_draw_distance` and `minimal_min_angle`.
@@ -29,7 +41,7 @@ pub(crate) struct Forward {
     meshes:Vec<Mesh>,ranges:HashMap<(u32,u32),usize>,owners:Vec<GpuInstance>,targets:Vec<Target>,
 }
 impl Forward {
-    pub fn new(gpu:&Gpu,scene:&Scene,materials:&wgpu::Buffer)->Self {
+    pub fn new(gpu:&Gpu,scene:&Scene,materials:&wgpu::Buffer,lit:Option<LitInputs>)->Self {
         let mut indices=Vec::new();let mut meshes=Vec::new();let mut ranges=HashMap::new();
         for mesh in &scene.meshes {
             let mut by_material:BTreeMap<u32,Vec<u32>>=BTreeMap::new();
@@ -41,7 +53,7 @@ impl Forward {
                 }
             }
             let mut parts=Vec::new();
-            for (material,list) in by_material {let start=indices.len()as u32;indices.extend(list);parts.push(Part{indices:start..indices.len()as u32,material,lava:scene.materials[material as usize].flags&crate::scene::LAVA!=0});}
+            for (material,list) in by_material {let start=indices.len()as u32;indices.extend(list);let flags=scene.materials[material as usize].flags;parts.push(Part{indices:start..indices.len()as u32,material,lava:flags&crate::scene::LAVA!=0,blend:flags&crate::scene::BLEND!=0});}
             ranges.insert((mesh.first_cluster,mesh.cluster_count),meshes.len());meshes.push(Mesh{parts});
         }
         // Characters go after the scene's vertices, outside the cluster data.
@@ -58,13 +70,14 @@ impl Forward {
         let indices=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor{label:Some("minimal indices"),contents:bytemuck::cast_slice(&indices),usage:wgpu::BufferUsages::INDEX});
         let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{label:Some("minimal lighting"),entries:&[
             wgpu::BindGroupLayoutEntry{binding:0,visibility:wgpu::ShaderStages::VERTEX_FRAGMENT,ty:wgpu::BindingType::Buffer{ty:wgpu::BufferBindingType::Uniform,has_dynamic_offset:false,min_binding_size:None},count:None},
-            wgpu::BindGroupLayoutEntry{binding:1,visibility:wgpu::ShaderStages::VERTEX,ty:wgpu::BindingType::Buffer{ty:wgpu::BufferBindingType::Storage{read_only:true},has_dynamic_offset:false,min_binding_size:None},count:None},
+            wgpu::BindGroupLayoutEntry{binding:1,visibility:wgpu::ShaderStages::VERTEX_FRAGMENT,ty:wgpu::BindingType::Buffer{ty:wgpu::BufferBindingType::Storage{read_only:true},has_dynamic_offset:false,min_binding_size:None},count:None},
             wgpu::BindGroupLayoutEntry{binding:2,visibility:wgpu::ShaderStages::FRAGMENT,ty:wgpu::BindingType::Texture{sample_type:wgpu::TextureSampleType::Float{filterable:true},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false},count:None},
             wgpu::BindGroupLayoutEntry{binding:3,visibility:wgpu::ShaderStages::FRAGMENT,ty:wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),count:None},
             wgpu::BindGroupLayoutEntry{binding:4,visibility:wgpu::ShaderStages::FRAGMENT,ty:wgpu::BindingType::Texture{sample_type:wgpu::TextureSampleType::Float{filterable:true},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false},count:None},
             wgpu::BindGroupLayoutEntry{binding:5,visibility:wgpu::ShaderStages::VERTEX,ty:wgpu::BindingType::Buffer{ty:wgpu::BufferBindingType::Storage{read_only:true},has_dynamic_offset:false,min_binding_size:None},count:None}]});
         let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor{label:Some("minimal forward"),source:wgpu::ShaderSource::Wgsl(concat!(include_str!("shaders/lod_coverage.wgsl"), "\n", include_str!("shaders/forward.wgsl")).into())});
         let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{label:None,bind_group_layouts:&[Some(&layout)],immediate_size:0});
+        let lit=lit.map(|inputs|Lit::new(gpu,&layout,inputs));
         let pipeline_for=|format,entry|gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{label:Some("minimal forward"),layout:Some(&pl),
             vertex:wgpu::VertexState{module:&module,entry_point:Some("vs"),compilation_options:Default::default(),buffers:&[
                 Some(wgpu::VertexBufferLayout{array_stride:32,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x2]}),
@@ -79,8 +92,13 @@ impl Forward {
         let stone_view=crate::minimum_stone::texture(gpu);
         let supported=gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY|wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
         let query=supported.then(||(gpu.device.create_query_set(&wgpu::QuerySetDescriptor{label:Some("minimum timestamps"),ty:wgpu::QueryType::Timestamp,count:48}),gpu.device.create_buffer(&wgpu::BufferDescriptor{label:Some("minimum timestamps resolve"),size:48*8,usage:wgpu::BufferUsages::QUERY_RESOLVE|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false})));
-        Self{profiler:crate::gpu_profile::Profiler::new(supported,48),profiling:false,query,sequence:0,profile_frame_id:None,pipeline,pipeline_srgb,layout,lava_view,lava_sampler,stone_view,stone_detail:scene.graphics.stone_detail,draw_distance:scene.graphics.minimal_draw_distance,min_angle:scene.graphics.minimal_min_angle,rigid_models,rigid_actors:Vec::new(),palette,vertices,indices,materials:materials.clone(),meshes,ranges,owners:scene.instances.clone(),targets:Vec::new()}
+        Self{lit,profiler:crate::gpu_profile::Profiler::new(supported,48),profiling:false,query,sequence:0,profile_frame_id:None,pipeline,pipeline_srgb,layout,lava_view,lava_sampler,stone_view,stone_detail:scene.graphics.stone_detail,draw_distance:scene.graphics.minimal_draw_distance,min_angle:scene.graphics.minimal_min_angle,rigid_models,rigid_actors:Vec::new(),palette,vertices,indices,materials:materials.clone(),meshes,ranges,owners:scene.instances.clone(),targets:Vec::new()}
     }
+    /// The low tier's baked room light (`Renderer::set_irradiance_volume`).
+    pub fn set_probes(&mut self,gpu:&Gpu,grid:crate::irradiance_volume::Grid,probes:&[crate::irradiance_volume::Probe]) {
+        if let Some(lit)=&mut self.lit {lit.set_probes(gpu,grid,probes);}
+    }
+    pub fn lit(&self)->bool {self.lit.is_some()}
     pub fn update_vertices(&self,gpu:&Gpu,offset:u64,bytes:&[u8]) { if !bytes.is_empty() { gpu.queue.write_buffer(&self.vertices,offset,bytes); } }
     pub fn update(&mut self,first:usize,instances:&[GpuInstance])->Result<(),String>{
         if first.checked_add(instances.len()).is_none_or(|n|n>self.owners.len()){return Err("minimal owner update exceeds scene".into());}
@@ -139,7 +157,7 @@ impl Forward {
                 for part in &mesh.parts {let start=packed.len()as u32;
                     for &owner in &owners {let i=self.owners[owner];packed.push(Instance{rows:i.rows,material:part.material,flags:i.flags,pad:[0;2]});}
                     let end=packed.len()as u32;stats.triangles+=(part.indices.len()/3)as u32*(end-start);stats.submitted_vertices+=part.indices.len()as u64*(end-start)as u64;
-                    draws.push((part.lava,part.indices.clone(),start..end));
+                    draws.push((part.lava,part.blend,part.indices.clone(),start..end));
                 }
             }
             for actor in &self.rigid_actors {
@@ -148,10 +166,10 @@ impl Forward {
                 packed.push(Instance{rows:actor.rows,material:0,flags:0,pad:[actor.base+1,0]});
                 let indices=self.rigid_models[actor.model].clone();
                 stats.triangles+=(indices.len()/3)as u32;
-                draws.push((false,indices,start..start+1));
+                draws.push((false,false,indices,start..start+1));
             }
             // Fill depth with solid blocks first; hidden lava needs no texture reads.
-            draws.sort_by_key(|draw|draw.0);
+            draws.sort_by_key(|draw|(draw.1,draw.0));
             let size=[view.w,view.h];
             if self.targets.len()<=vi {self.targets.push(self.target(gpu,size));}
             if self.targets[vi].size!=size {self.targets[vi]=self.target(gpu,size);}
@@ -163,14 +181,22 @@ impl Forward {
             for (out,l) in lamps.iter_mut().zip(spots){*out=Spot{position:l.position.extend(l.range_m).to_array(),direction:l.direction.extend(l.outer_angle_radians.cos()).to_array(),intensity:(l.intensity_cd*exposure).extend(l.inner_angle_radians.cos()).to_array()};}
             let uniform=Uniform{vp:vp.to_cols_array_2d(),camera:view.cam.pos.extend(exposure).to_array(),sun:light.sun_dir.extend(light.sun_lux*exposure).to_array(),sun_color:light.sun_color.extend(light.emissive_scale()).to_array(),ambient:[light.sky_lux*exposure,spots.len().min(4)as f32,light.debug,light.time],fog:[light.fog_start,light.fog_end,0.,if self.stone_detail {1.} else {0.}],spots:lamps};
             gpu.queue.write_buffer(&t.uniform,0,bytemuck::bytes_of(&uniform));
+            if let Some(l)=&self.lit {l.write(gpu,light,exposure);}
             let target=external.map_or(&t.color,|targets|targets[vi]);
             let color=target.create_view(&Default::default());let depth=t.depth.create_view(&Default::default());
             let sky=(light.sky_lux*exposure*0.25).max(0.0);let sky=(sky/(1.0+sky)).sqrt()as f64;
             let clear=|c:f64|if target.format().is_srgb(){if c<=0.04045{c/12.92}else{((c+0.055)/1.055).powf(2.4)}}else{c};
             if let Some(q)=query {enc.write_timestamp(q,vi as u32*6);}
             {let mut pass=enc.begin_render_pass(&wgpu::RenderPassDescriptor{label:Some("minimal forward eye"),color_attachments:&[Some(wgpu::RenderPassColorAttachment{view:&color,depth_slice:None,resolve_target:None,ops:wgpu::Operations{load:wgpu::LoadOp::Clear(wgpu::Color{r:clear(sky*0.75),g:clear(sky*0.85),b:clear(sky),a:1.}),store:wgpu::StoreOp::Store}})],depth_stencil_attachment:Some(wgpu::RenderPassDepthStencilAttachment{view:&depth,depth_ops:Some(wgpu::Operations{load:wgpu::LoadOp::Clear(0.0),store:wgpu::StoreOp::Store}),stencil_ops:None}),timestamp_writes:None,occlusion_query_set:None,multiview_mask:None});
-                pass.set_pipeline(if target.format().is_srgb(){&self.pipeline_srgb}else{&self.pipeline});pass.set_bind_group(0,&t.bind,&[]);pass.set_vertex_buffer(0,self.vertices.slice(..));pass.set_vertex_buffer(1,t.instances.slice(..));pass.set_index_buffer(self.indices.slice(..),wgpu::IndexFormat::Uint32);
-                for (_,indices,instances) in draws {pass.draw_indexed(indices,0,instances);}
+                let srgb=target.format().is_srgb();
+                pass.set_pipeline(match &self.lit {Some(l)=>if srgb {&l.opaque_srgb} else {&l.opaque},None=>if srgb {&self.pipeline_srgb} else {&self.pipeline}});
+                pass.set_bind_group(0,&t.bind,&[]);pass.set_vertex_buffer(0,self.vertices.slice(..));pass.set_vertex_buffer(1,t.instances.slice(..));pass.set_index_buffer(self.indices.slice(..),wgpu::IndexFormat::Uint32);
+                if let Some(l)=&self.lit {pass.set_bind_group(1,&l.bind,&[]);}
+                let mut blending=false;
+                for (_,blend,indices,instances) in draws {
+                    if blend && !blending && let Some(l)=&self.lit {blending=true;pass.set_pipeline(if srgb {&l.blend_srgb} else {&l.blend});}
+                    pass.draw_indexed(indices,0,instances);
+                }
             }
             if let Some(q)=query {enc.write_timestamp(q,vi as u32*6+1);enc.write_timestamp(q,vi as u32*6+2);}
             if let Some(fx)=fx.0.lock().unwrap().as_mut() {
@@ -187,6 +213,77 @@ impl Forward {
         }
         if let (Some(ticket),Some((query,resolve)))=(&ticket,&self.query) {enc.resolve_query_set(query,0..ticket.query_count,resolve,0);enc.copy_buffer_to_buffer(resolve,0,&ticket.read,0,ticket.query_count as u64*8);}
         gpu.queue.submit([enc.finish()]);if let Some(ticket)=ticket {ticket.submitted();}Ok(stats)
+    }
+}
+
+impl Lit {
+    fn new(gpu:&Gpu,layout0:&wgpu::BindGroupLayout,inputs:LitInputs)->Self {
+        let entry=|binding,ty|wgpu::BindGroupLayoutEntry{binding,visibility:wgpu::ShaderStages::FRAGMENT,ty,count:None};
+        let uniform_ty=wgpu::BindingType::Buffer{ty:wgpu::BufferBindingType::Uniform,has_dynamic_offset:false,min_binding_size:None};
+        let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{label:Some("forward lit"),entries:&[
+            entry(0,uniform_ty),entry(1,uniform_ty),
+            entry(2,wgpu::BindingType::Texture{sample_type:wgpu::TextureSampleType::Float{filterable:true},view_dimension:wgpu::TextureViewDimension::D2Array,multisampled:false}),
+            entry(3,wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
+            entry(4,wgpu::BindingType::Texture{sample_type:wgpu::TextureSampleType::Float{filterable:true},view_dimension:wgpu::TextureViewDimension::D3,multisampled:false}),
+            entry(5,wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering))]});
+        let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor{label:Some("forward lit"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/forward_lit.wgsl").into())});
+        let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{label:None,bind_group_layouts:&[Some(layout0),Some(&layout)],immediate_size:0});
+        let pipeline=|format,entry,blend:bool|gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{label:Some("forward lit"),layout:Some(&pl),
+            vertex:wgpu::VertexState{module:&module,entry_point:Some("vs"),compilation_options:Default::default(),buffers:&[
+                Some(wgpu::VertexBufferLayout{array_stride:32,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x2]}),
+                Some(wgpu::VertexBufferLayout{array_stride:64,step_mode:wgpu::VertexStepMode::Instance,attributes:&wgpu::vertex_attr_array![3=>Float32x4,4=>Float32x4,5=>Float32x4,6=>Uint32,7=>Uint32,8=>Uint32]})]},
+            primitive:wgpu::PrimitiveState{cull_mode:None,..Default::default()},
+            depth_stencil:Some(wgpu::DepthStencilState{format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:Some(!blend),depth_compare:Some(wgpu::CompareFunction::GreaterEqual),stencil:Default::default(),bias:Default::default()}),
+            multisample:Default::default(),fragment:Some(wgpu::FragmentState{module:&module,entry_point:Some(entry),compilation_options:Default::default(),
+                targets:&[Some(wgpu::ColorTargetState{format,blend:blend.then_some(wgpu::BlendState::ALPHA_BLENDING),write_mask:wgpu::ColorWrites::ALL})]}),multiview_mask:None,cache:gpu.pipeline_cache()});
+        let (unorm,srgb)=(wgpu::TextureFormat::Rgba8Unorm,wgpu::TextureFormat::Rgba8UnormSrgb);
+        // No anisotropy: on an Adreno 740 anisotropic taps cost the shade
+        // pass 3.4x (2026-11-25).
+        let samp=gpu.device.create_sampler(&wgpu::SamplerDescriptor{label:Some("forward lit albedo"),address_mode_u:wgpu::AddressMode::Repeat,address_mode_v:wgpu::AddressMode::Repeat,
+            mag_filter:wgpu::FilterMode::Linear,min_filter:wgpu::FilterMode::Linear,mipmap_filter:wgpu::MipmapFilterMode::Linear,..Default::default()});
+        let probe_samp=gpu.device.create_sampler(&wgpu::SamplerDescriptor{label:Some("forward lit probes"),mag_filter:wgpu::FilterMode::Linear,min_filter:wgpu::FilterMode::Linear,..Default::default()});
+        let uniform=gpu.device.create_buffer(&wgpu::BufferDescriptor{label:Some("forward lit"),size:std::mem::size_of::<LitUniform>()as u64,usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
+        let probes=Self::probe_texture(gpu,[1,1,1],&[0u16;4]);
+        let bind=Self::bind(gpu,&layout,&uniform,inputs.headlights,inputs.albedo,&samp,&probes,&probe_samp);
+        Self{opaque:pipeline(unorm,"fs",false),opaque_srgb:pipeline(srgb,"fs_srgb",false),blend:pipeline(unorm,"fs",true),blend_srgb:pipeline(srgb,"fs_srgb",true),
+            layout,uniform,bind,albedo:inputs.albedo.clone(),samp,headlights:inputs.headlights.clone(),probe_samp,probes,grid:None}
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn bind(gpu:&Gpu,layout:&wgpu::BindGroupLayout,uniform:&wgpu::Buffer,headlights:&wgpu::Buffer,albedo:&wgpu::TextureView,samp:&wgpu::Sampler,probes:&wgpu::TextureView,probe_samp:&wgpu::Sampler)->wgpu::BindGroup {
+        gpu.device.create_bind_group(&wgpu::BindGroupDescriptor{label:Some("forward lit"),layout,entries:&[
+            wgpu::BindGroupEntry{binding:0,resource:uniform.as_entire_binding()},wgpu::BindGroupEntry{binding:1,resource:headlights.as_entire_binding()},
+            wgpu::BindGroupEntry{binding:2,resource:wgpu::BindingResource::TextureView(albedo)},wgpu::BindGroupEntry{binding:3,resource:wgpu::BindingResource::Sampler(samp)},
+            wgpu::BindGroupEntry{binding:4,resource:wgpu::BindingResource::TextureView(probes)},wgpu::BindGroupEntry{binding:5,resource:wgpu::BindingResource::Sampler(probe_samp)}]})
+    }
+    /// The probes' six axes side by side along x (forward_lit.wgsl `probe_axis`), half floats.
+    fn probe_texture(gpu:&Gpu,size:[u32;3],texels:&[u16])->wgpu::TextureView {
+        let extent=wgpu::Extent3d{width:size[0],height:size[1],depth_or_array_layers:size[2]};
+        let texture=gpu.device.create_texture(&wgpu::TextureDescriptor{label:Some("forward lit probes"),size:extent,mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D3,
+            format:wgpu::TextureFormat::Rgba16Float,usage:wgpu::TextureUsages::TEXTURE_BINDING|wgpu::TextureUsages::COPY_DST,view_formats:&[]});
+        gpu.queue.write_texture(texture.as_image_copy(),bytemuck::cast_slice(texels),wgpu::TexelCopyBufferLayout{offset:0,bytes_per_row:Some(size[0]*8),rows_per_image:Some(size[1])},extent);
+        texture.create_view(&Default::default())
+    }
+    fn set_probes(&mut self,gpu:&Gpu,grid:crate::irradiance_volume::Grid,probes:&[crate::irradiance_volume::Probe]) {
+        let [dx,dy,dz]=grid.dims;
+        let mut texels=vec![0u16;(dx*6*dy*dz*4)as usize];
+        for z in 0..dz {for y in 0..dy {for x in 0..dx {
+            let probe=&probes[(x+y*dx+z*dx*dy)as usize];
+            for axis in 0..6u32 {
+                let at=(((z*dy+y)*dx*6+axis*dx+x)*4)as usize;let c=probe.axes[axis as usize];
+                for (k,v) in [c.x,c.y,c.z,1.0].into_iter().enumerate() {texels[at+k]=crate::noise_field::f16_bits(v.min(65000.0));}
+            }
+        }}}
+        self.probes=Self::probe_texture(gpu,[dx*6,dy,dz],&texels);
+        self.bind=Self::bind(gpu,&self.layout,&self.uniform,&self.headlights,&self.albedo,&self.samp,&self.probes,&self.probe_samp);
+        self.grid=Some(grid);
+    }
+    fn write(&self,gpu:&Gpu,light:&Lighting,exposure:f32) {
+        let (gi_origin,gi_dims,on)=match self.grid {
+            Some(g)=>(g.origin.extend(g.cell).to_array(),[g.dims[0]as f32,g.dims[1]as f32,g.dims[2]as f32,0.0],1.0),
+            None=>([0.0,0.0,0.0,1.0],[1.0;4],0.0),
+        };
+        let sky=light.sky_lux;
+        gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&LitUniform{tone:[exposure,light.emissive_scale(),light.contrast,light.saturation],sky:[sky,sky,sky,on],gi_origin,gi_dims}));
     }
 }
 

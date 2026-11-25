@@ -1977,6 +1977,7 @@ impl Renderer {
         let (offset, grid) = self.irradiance_volume.ok_or("the scene reserved no irradiance volume")?;
         let words = crate::irradiance_volume::pack(&grid, probes)?;
         self.scene_tables.write_aux(gpu, offset, &words)?;
+        if let Some(forward) = &self.minimal_forward { forward.lock().unwrap().set_probes(gpu, grid, probes); }
         Ok(())
     }
 
@@ -2711,8 +2712,12 @@ impl Renderer {
         // can use a conservative direct draw with GPU-side count rejection.
         let adreno=cfg!(target_os="android") && gpu.info.backend==wgpu::Backend::Vulkan && gpu.info.vendor==0x5143;
         let bounded_draws=plain_meshes && crate::switches::BOUNDED_DRAWS.var().map_or(adreno && simple_cull,|v|v=="1");
-        let minimal_forward=(scene.graphics.minimal_forward && plain_meshes && scene.skinning.actors.is_empty()
-            && scene.debris.is_none_or(|d|d.capacity==0)).then(||std::sync::Mutex::new(crate::forward::Forward::new(gpu,scene,&materials)));
+        // The low tier (KERN_FORWARD=1): the forward renderer with per-pixel
+        // light; a game's own minimum profile keeps its vertex light.
+        let forward_lit=crate::switches::FORWARD.on() && !scene.graphics.minimal_forward;
+        let minimal_forward=((forward_lit || scene.graphics.minimal_forward) && plain_meshes && scene.skinning.actors.is_empty()
+            && scene.debris.is_none_or(|d|d.capacity==0)).then(||std::sync::Mutex::new(crate::forward::Forward::new(gpu,scene,&materials,
+                forward_lit.then_some(crate::forward::LitInputs{albedo:&albedo_view,headlights:&headlights.uniform}))));
         let portable=scene.procedural_terrain.as_ref().filter(|_|crate::portable::wanted(gpu)).map(|spec|std::sync::Mutex::new(
             crate::portable::Portable::new(gpu,scene,spec,&topology,&instances,&materials,&albedo,&samp)));
         let direct_bounds=bounded_draws.then(||std::sync::Mutex::new(crate::direct_draw::Bounds::new(scene,small_cluster_triangles)));
@@ -4915,7 +4920,13 @@ impl Renderer {
             let camera_views:Vec<_>=views.iter().enumerate().map(|(vi,v)|camera_view(v.cam,axes.get(vi).copied())).collect();
             let matrices:Vec<_>=views.iter().enumerate().map(|(vi,v)|projections.get(vi).copied().unwrap_or_else(||
                 Mat4::perspective_infinite_reverse_rh(v.cam.fov_y,v.w as f32/v.h as f32,v.cam.near))*camera_view(v.cam,axes.get(vi).copied())).collect();
-            let stats=forward.lock().unwrap().render(gpu,views,&matrices,&camera_views,&self.sprites,&self.fx,light,&self.headlight_state.lock().unwrap(),Some(&output),None)?;
+            let mut forward=forward.lock().unwrap();
+            if forward.lit() {
+                let spots=if self.debug_options().headlights_enabled {self.headlight_state.lock().unwrap().clone()} else {Vec::new()};
+                let spot_falloff=self.spot_falloff.lock().unwrap().clone();
+                self.headlights.upload(gpu,&spots,&self.local_light_state.lock().unwrap(),&spot_falloff,*self.spot_softness.lock().unwrap());
+            }
+            let stats=forward.render(gpu,views,&matrices,&camera_views,&self.sprites,&self.fx,light,&self.headlight_state.lock().unwrap(),Some(&output),None)?;
             if let Some(submission)=submitted {(submission.show)(&output)?;}
             let pixels=if readback==Readback::ImageAndMetrics {gpu.read_rgba8(&output)}else{Vec::new()};
             return Ok((output,pixels,stats));

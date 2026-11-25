@@ -161,3 +161,15 @@ note linked says why. They are candidates for removal from the code.
 | `KERN_DIRECT_DRAWS`, `KERN_SKY_TILES`, `KERN_NEAR_SUN_SOURCE`, `KERN_SOURCE_CROWN_BOUNDS`, `KERN_CANOPY_COMPACT_SUPPORT`, `KERN_LEGACY_LIGHT_LOOKAHEAD`, `KERN_VOXEL_ANTIPODAL_NORMALS` | Direct draw arguments, tiled sky light, near sun from source geometry, crown bounds, legacy headlight lookahead, voxel normals | No note describes these; read the code before relying on them. |
 | `KERN_LIGHT_DEBUG` (terrain_fly) | Lighting debug view for crops: 1 sky visibility, 2 albedo, 3 direct, 4 indirect, 5 specular | terrain_fly.rs `draw` |
 | `KERN_REFINE_WAVE_PUBLISH`, `KERN_REFINE_ROUNDS` | Foliage refine: workgroup-aggregated record publishes (0 = one global atomic per task); fixed refine round count (diagnostic) | foliage_refine.rs / foliage_refine.wgsl `fast_round_wave` |
+
+## KERN_FORWARD
+
+`KERN_FORWARD=1` renders plain mesh scenes with the low tier: the forward
+renderer (`forward.rs`) with per-pixel light (`shaders/forward_lit.wgsl`).
+One render pass, no compute per pixel: the material colour and albedo
+texture, the baked room probes (`set_irradiance_volume`) as one 3D texture
+(three filtered taps), every local light and spot unshadowed, emission,
+then exposure, AgX, contrast and saturation straight into the display
+target. No bloom, fog beams, shadows or TAA yet. Made for tile GPUs
+(phones, tablets, Quest); see the plan "Mobiel renderpad voor Warp". A
+game's own `Graphics::minimal_forward` keeps its vertex-lit minimum profile.
