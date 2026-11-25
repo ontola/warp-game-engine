@@ -11,6 +11,10 @@ normal map array, and the per-layer and per-material words live in the scene
 tables buffer (`material_maps.rs`). The engine rule of at most 8 storage
 buffers per stage ([browser](browser.md)) still holds.
 
+## Thin foliage in glTF
+
+The glTF material boolean `extras.warpThinFoliage` enables reflected and transmitted light for leaves and needles. It defaults to `false`. A masked woody twig can share the same atlas and keep an opaque lighting response. The alpha mask controls the silhouette independently.
+
 ## Material maps
 
 Each texture layer can carry a material map (`TextureSource::orm`) in glTF's

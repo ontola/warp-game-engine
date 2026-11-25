@@ -11,7 +11,7 @@
 //! scene.add_instance(model.mesh, Affine3A::from_translation(at));
 //! ```
 use render::cluster::{ClusterMesh, Part, SimplificationPolicy, Vertex};
-use render::scene::{Material, Scene, ALPHA_TEST, TWO_SIDED};
+use render::scene::{Material, Scene, ALPHA_TEST, THIN_FOLIAGE, TWO_SIDED};
 use glam::{Mat4, Vec3};
 use std::collections::HashSet;
 use std::path::Path;
@@ -201,6 +201,11 @@ pub fn read_bytes(scene: &mut Scene, bytes: &[u8], path: &Path) -> Result<Docume
             if let Some(value) = extras.get("warpPreserveShading") {
                 preserve = value.as_bool().ok_or("material extras.warpPreserveShading must be a boolean")?;
             }
+            if let Some(value) = extras.get("warpThinFoliage") {
+                if value.as_bool().ok_or("material extras.warpThinFoliage must be a boolean")? {
+                    flags |= THIN_FOLIAGE;
+                }
+            }
             if let Some(kind) = extras.get("warpSurface") {
                 let kind = kind.as_u64().and_then(|n| u8::try_from(n).ok())
                     .ok_or("material extras.warpSurface must be an integer from 0 to 255")?;
@@ -281,6 +286,20 @@ mod tests {
     fn base64_decodes() {
         assert_eq!(base64_decode("aGVsbG8=").unwrap(), b"hello");
         assert_eq!(base64_decode("AAEC").unwrap(), [0, 1, 2]);
+    }
+
+    #[test]
+    fn thin_foliage_is_independent_of_the_cutout_mask() {
+        let mut scene = Scene::default();
+        let bytes = br#"{"asset":{"version":"2.0"},"materials":[
+            {"alphaMode":"MASK"},{"alphaMode":"MASK","extras":{"warpThinFoliage":false}},
+            {"alphaMode":"MASK","extras":{"warpThinFoliage":true}},{}
+        ]}"#;
+        let doc = read_bytes(&mut scene, bytes, Path::new("tree.gltf")).unwrap();
+        let flags: Vec<_> = doc.materials.iter().map(|&m| scene.materials[m as usize].flags).collect();
+        assert_eq!(flags, [ALPHA_TEST, ALPHA_TEST, ALPHA_TEST | THIN_FOLIAGE, 0]);
+        let invalid = br#"{"asset":{"version":"2.0"},"materials":[{"extras":{"warpThinFoliage":"true"}}]}"#;
+        assert!(read_bytes(&mut scene, invalid, Path::new("tree.gltf")).is_err());
     }
 
     #[test]
