@@ -27,7 +27,10 @@ impl Cam {
     /// `self` drawn `alpha` (0..1) of the way to `to`; a jump snaps.
     pub fn towards(&self, to: &Cam, alpha: f32) -> Cam {
         if self.pos.distance(to.pos) > 4.0 { return *to; }
-        Cam { pos: self.pos.lerp(to.pos, alpha), target: self.target.lerp(to.target, alpha), fov: self.fov + (to.fov - self.fov) * alpha }
+        // Interpolate the displacement so a fixed eye or target stays bit-exact.
+        Cam { pos: self.pos + (to.pos - self.pos) * alpha,
+            target: self.target + (to.target - self.target) * alpha,
+            fov: self.fov + (to.fov - self.fov) * alpha }
     }
 }
 
@@ -1625,6 +1628,21 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stationary_camera_components_stay_exact_between_ticks() {
+        let cam = Cam { pos: Vec3::new(168.27, 8.31, 21.45),
+            target: Vec3::new(168.27, 8.288, 20.45), fov: 51.0 };
+        let moving = Cam { pos: cam.pos + Vec3::Y, target: cam.target + Vec3::Y, ..cam };
+        for step in 0..=180 {
+            let alpha = step as f32 / 180.0;
+            assert_eq!(cam.towards(&cam, alpha), cam);
+            let sample = cam.towards(&moving, alpha);
+            assert_eq!(sample.pos.x, cam.pos.x);
+            assert_eq!(sample.target.z, cam.target.z);
+            assert_eq!(sample.pos.y, cam.pos.y + alpha);
+        }
+    }
 
     #[test]
     fn colours_vectors_and_random() {
