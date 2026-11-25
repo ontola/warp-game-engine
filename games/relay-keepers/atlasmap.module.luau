@@ -97,7 +97,7 @@ local function card(l)
     end
     mark(l.pad,6,2,amber,0)
     mark(l.crate,5,5,"#e1a475",0)
-    mark(l.clock,5,5,violet,3)
+    mark(l.hourglass,5,5,violet,3)
     mark(l.key,6,2,amber,5)
     mark(l.key,3,3,amber,6)
     mark(l.spring,7,3,amber,0)

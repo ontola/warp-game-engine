@@ -6,6 +6,10 @@ local portals = require("portals")
 local view = require("view")
 local jump = require("jump")
 local HEIGHT, SPEED, SWIM_SPEED = 1.20, 5.55, 4.2
+-- The hourglass sends a keeper this far back; their echo replays it.
+local ECHO_TICKS = 300
+-- After a clear everyone keeps moving while the room celebrates.
+local CELEBRATE = 1.8
 
 local function roster()
     local present = {}
@@ -39,7 +43,8 @@ local function enter(n)
     state.room,state.phase,state.delay=n,"play",0
     state.promptRest=0.7
     state.key,state.owner,state.latch,state.past=false,0,false,true
-    state.clockHeld,state.pad,state.open,state.timer=false,false,false,0
+    state.pad,state.open,state.timer=false,false,0
+    state.trail,state.echo,state.turning={{},{}},nil,{false,false}
     state.crate=l.crate and l.crate[1] or nil
     state.ferry=carriage.start(l.ferry)
     state.water=tidepool.start(l.water)
@@ -176,6 +181,8 @@ local function move(l,i,r,other,pad,dt)
     end
     if state.crate and math.abs(x-state.crate)<0.58 then support(0.9,"crate") end
     if math.abs(x-other.x)<0.48 then support(other.y+HEIGHT,"head") end
+    local echo=state.echo and state.echo.frames[state.echo.k]
+    if echo and math.abs(x-echo.x)<0.48 then support(echo.y+HEIGHT,"echo") end
     if not r.on and source~="" and r.vy < -4 then
         r.impact=math.min(1,-r.vy/12)
         if source=="water" then sound.play("tide",{db=-13,pitch=1.2})
@@ -282,12 +289,17 @@ local function tick(dt,inputs)
     elseif mapInput(inputs,dt) then return end
     state.time+=dt
     if state.phase~="play" then
+        local before=state.delay
         state.delay+=dt
-        if state.phase=="transfer" and state.delay>=1 then enter(state.room+1)
-        elseif state.phase=="complete" and state.delay>1 then
-            for _,r in state.crew do if inputs[r.id].pressed.south then init() break end end
+        if before<0.22 and state.delay>=0.22 then sound.play("cheer",{pitch=1.5,db=-12}) end
+        if state.phase=="transfer" then
+            if state.delay>=CELEBRATE then enter(state.room+1) return end
+        else
+            if state.delay>1 then
+                for _,r in state.crew do if inputs[r.id].pressed.south then init() break end end
+            end
+            return
         end
-        return
     end
     local l=rooms[state.room]
     local still=true
@@ -331,6 +343,20 @@ local function tick(dt,inputs)
             if math.abs(x-base.x)<0.48 then r.y=base.y+HEIGHT end
         end
     end
+    -- The echo replays one recorded tick per tick, then enters the hourglass.
+    local echo=state.echo
+    if echo then
+        echo.k+=1
+        if echo.k>#echo.frames then
+            state.echo=nil
+            sound.play("echo",{pitch=1.6,db=-14})
+        end
+    end
+    for i,r in state.crew do
+        local trail=state.trail[i]
+        table.insert(trail,{x=r.x,y=r.y,on=r.on,face=r.face,stride=r.stride,speed=r.speed,vy=r.vy})
+        if #trail>ECHO_TICKS then table.remove(trail,1) end
+    end
     portals.step(l,state)
     -- A stacked pair lights the counterweights. A short coast lets the rider dismount.
     if state.balance~=nil then
@@ -339,20 +365,35 @@ local function tick(dt,inputs)
         if previous==0 and state.balance>0 then sound.play("counterweight",{db=-8}) end
     end
     local held=l.pad and state.crate and math.abs(state.crate-l.pad[1])<0.64 or false
-    local clock,home=false,true
+    local home=true
     local paired=l.secondGoal and ((near(state.crew[1],l.secondGoal,0.85) and near(state.crew[2],l.goal,0.85)) or
         (near(state.crew[2],l.secondGoal,0.85) and near(state.crew[1],l.goal,0.85)))
     for _,r in state.crew do
         held=held or (r.on and near(r,l.pad,0.56)) or false
-        clock=clock or (r.on and near(r,l.clock,0.53)) or false
         home=home and r.on and (paired or near(r,l.goal,0.85))
     end
-    if clock and not state.clockHeld then
-        state.past=not state.past
-        sound.play("pickup",{pitch=if state.past then 0.65 else 1.35})
+    local ghost=state.echo and state.echo.frames[state.echo.k]
+    held=held or (ghost~=nil and ghost.on and near(ghost,l.pad,0.56)) or false
+    -- Stepping onto the hourglass sends that keeper back in time: they
+    -- reappear where they stood ECHO_TICKS ago and their echo replays the rest.
+    for i,r in state.crew do
+        local touching=l.hourglass~=nil and r.on and near(r,l.hourglass,0.53)
+        if touching and not state.turning[i] and not state.echo and #state.trail[i]>=30 then
+            local frames=state.trail[i]
+            local past=frames[1]
+            state.echo={seat=i,frames=frames,k=1}
+            state.trail[i]={}
+            r.x,r.y,r.vy,r.on,r.face=past.x,past.y,0,past.on,past.face
+            r.ride,r.deck,r.buffer=false,false,0
+            r.spawnGlow=1
+            sound.play("echo",{db=-6})
+            players.rumble(r.id,0.35,0.2)
+            touching=near(r,l.hourglass,0.53)
+        end
+        state.turning[i]=touching
     end
     if held and not state.pad then sound.play("pickup",{pitch=0.55,db=-10}) end
-    state.clockHeld,state.pad=clock,held
+    state.pad=held
     state.timer=if held then l.timer or 0 else math.max(0,state.timer-dt)
     state.open=if l.timer then state.latch or (not held and state.timer>0)
         elseif l.pad then held or state.latch else state.key
@@ -366,10 +407,10 @@ local function tick(dt,inputs)
             sound.play("pickup",{pitch=0.7+state.link*0.16})
         end
     end
-    if home and (not l.links or state.link==#l.links) and (not l.secondGoal or paired) and (not l.key or state.key) and (not l.latch or state.latch) then
+    if state.phase=="play" and home and (not l.links or state.link==#l.links) and (not l.secondGoal or paired) and (not l.key or state.key) and (not l.latch or state.latch) then
         state.phase=if state.room==#rooms then "complete" else "transfer"
         game.log(l.name)
-        sound.play("pickup",{pitch=1.4})
+        sound.play("cheer",{db=-4})
         if state.review then
             state.review.held,state.review.cleared=true,true
         elseif state.phase=="complete" then

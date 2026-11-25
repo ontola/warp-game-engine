@@ -71,22 +71,34 @@ local function latch(box,x,y,tripped)
     box(x-4,y-15,8,8,brass)
 end
 
-local function clockFace(box,x,y,past)
+-- The hourglass: the top bulb drains while an echo is replaying.
+local function hourglass(box,x,y,run,time)
     box(x-17,y-6,34,6,ink)
-    box(x-5,y-16,10,11,iron)
-    local cy=y-31
-    box(x-10,cy-20,20,40,ink)
-    box(x-16,cy-16,32,32,ink)
-    box(x-20,cy-10,40,20,ink)
-    local rim=if past then brass else violet
-    box(x-9,cy-17,18,34,rim)
-    box(x-14,cy-13,28,26,rim)
-    box(x-17,cy-8,34,16,rim)
-    box(x-8,cy-13,16,26,cream)
-    box(x-13,cy-8,26,16,cream)
-    box(x-2,cy-12,4,13,ink)
-    box(x+(if past then -12 else 0),cy-2,12,4,ink)
-    box(x-3,cy-3,6,6,ink)
+    box(x-18,y-64,36,6,ink)
+    box(x-16,y-62,32,3,brass)
+    box(x-16,y-9,32,3,brass)
+    for _,d in {-14,11} do box(x+d,y-58,3,52,ink) end
+    local glass="#e6e2ff"
+    -- Two bulbs narrowing to a neck.
+    for n=0,5 do
+        local w=24-n*4
+        box(x-w/2,y-57+n*4,w,4,glass)
+        box(x-w/2,y-31-n*4,w,4,glass)
+    end
+    local top=math.floor(5*(1-run)+0.5)
+    for n=6-top,5 do
+        local w=20-n*4
+        if w>0 then box(x-w/2,y-55+n*4,w,3,brass) end
+    end
+    local bottom=math.floor(5*run+0.5)
+    for n=0,bottom-1 do
+        local w=20-n*3
+        box(x-w/2,y-12-n*4,w,3,brass)
+    end
+    if run>0 then box(x-1,y-34,2,20,brass) end
+    -- A soft violet halo invites stepping on it.
+    local glow=0.5+0.5*math.sin(time*3)
+    box(x-20-glow*3,y-2,40+glow*6,3,violet)
 end
 
 local function spring(box,x,y)
@@ -185,9 +197,10 @@ function M.draw(box,xy,l,s)
         local x,y=xy(l.latch[1],l.latch[2])
         latch(box,x,y,s.latch)
     end
-    if l.clock then
-        local x,y=xy(l.clock[1],l.clock[2])
-        clockFace(box,x,y,s.past)
+    if l.hourglass then
+        local x,y=xy(l.hourglass[1],l.hourglass[2])
+        local e=s.echo
+        hourglass(box,x,y,if e then (e.k-1)/#e.frames else 0,s.time)
     end
     relay(box,xy,l,s)
     if l.key and not s.key then

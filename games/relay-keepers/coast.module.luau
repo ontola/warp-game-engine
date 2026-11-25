@@ -30,6 +30,7 @@ local districtStyle={
     {"ice","ice"}, {"trestle","trestle"}, {"lantern","lantern"},
     {"kiln","kilns"}, {"beacon","beacon"},
     {"water","water"}, {"crab","crab"}, {"portal","portal"},
+    {"stars","observatory"},
 }
 
 local function blend(a,b,k)

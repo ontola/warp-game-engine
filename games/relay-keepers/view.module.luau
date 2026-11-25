@@ -106,20 +106,76 @@ local function draw(rooms,s)
         keepers.demonstrate(box,xy,l,s)
     end
     instruments.draw(box,xy,l,s)
+    if s.echo then
+        -- The echo: a pale print of the keeper replaying the last seconds.
+        -- Dots ahead of it show where it is going; it flickers before it ends.
+        local e=s.echo
+        local left=#e.frames-e.k
+        for n=e.k+12,#e.frames,12 do
+            local f=e.frames[n]
+            local x,y=xy(f.x,f.y)
+            box(x-2,y-30,4,4,"#d9d2ff")
+        end
+        if left>45 or math.floor(left/4)%2==0 then
+            local f=e.frames[e.k]
+            local x,y=xy(f.x,f.y)
+            local tint=if e.seat==1 then "#ffe2b8" else "#cdf5e6"
+            local shades={["#193640"]="#6e66a8",["#315566"]="#9d94d6",["#d2ffff"]="#ffffff",["#fff0c9"]="#b9a7ff"}
+            local function ghost(gx,gy,gw,gh,c)
+                box(gx,gy,gw,gh,shades[c] or tint)
+            end
+            keepers.draw(ghost,x,y,e.seat,f,{owner=0,time=s.time})
+        end
+    end
     for i,r in s.crew do
         if r.id~=0 then local x,y=xy(r.x,r.y) keepers.draw(box,x,y,i,r,s) end
     end
-    -- The trail of lights is also the level-complete transition.
-    local first=s.room<=14 and 1 or 15+7*math.floor((s.room-15)/7)
-    local count=math.min(if first==1 then 14 else 7,total-first+1)
-    local function progress(y)
+    -- The trail of lights shows the rooms of this district.
+    local first,count=s.room,0
+    while first>1 and rooms[first-1].district==l.district do first-=1 end
+    while first+count<=total and rooms[first+count].district==l.district do count+=1 end
+    local cleared=s.phase~="play" or (s.review and s.review.cleared)
+    local t=if cleared then (s.delay or 0) else 0
+    local function progress(y,big)
+        local gap=if big then 36 else 19
         for n=1,count do
             local i=first+n-1
-            local x=600+(n-(count+1)/2)*19
-            box(x-5,y,10,5,if i<s.room then mint elseif i==s.room then cream else "#668982")
+            local x=600+(n-(count+1)/2)*gap
+            local done=i<s.room or (i==s.room and cleared)
+            local hop=if big and done then -math.max(0,math.sin(t*9-n*0.7))*10*math.max(0,1-t/1.6) else 0
+            local w=if big then 22 else 10
+            if big and i==s.room then
+                -- The room just cleared pops in, then keeps a gentle pulse.
+                local pop=1+0.7*math.max(0,1-t*3)+0.12*math.sin(t*10)
+                w=math.floor(26*pop)
+                box(x-w/2-3,y-w/2+3-3,w+6,w+6,ink)
+                box(x-w/2,y-w/2+3,w,w,amber)
+                box(x-w/4,y-w/4+3,w/2,w/2,cream)
+                for k=0,7 do
+                    local a=k*math.pi/4+t*2
+                    local r=18+t*60
+                    if t<0.9 then box(x+r*math.cos(a)-3,y+3+r*math.sin(a)-3,6,6,if k%2==0 then mint else amber) end
+                end
+            else
+                box(x-w/2,y+hop,w,if big then 10 else 5,if done then mint else "#668982")
+            end
         end
     end
-    progress(30)
+    if cleared then
+        -- Confetti in the keepers' colours rains over the room.
+        local colors={amber,mint,cream,"#ff8fa3","#b9a7ff"}
+        for n=1,70 do
+            local seed=n*7919
+            local cx=(seed*13)%1200
+            local fall=t*(170+(seed%90))-((seed*31)%260)
+            if fall>-20 then
+                local sway=math.sin(t*4+n)*14
+                local flip=math.abs(math.sin(t*9+n))
+                box(cx+sway,fall,8,3+6*flip,colors[n%5+1])
+            end
+        end
+    end
+    if not cleared then progress(30) end
     if s.review and s.review.held then
         box(570,48,60,28,ink)
         box(584,54,7,16,amber)
@@ -135,8 +191,12 @@ local function draw(rooms,s)
             end
         end
     elseif s.phase~="play" then
-        box(455,95,290,71,ink)
-        progress(124)
+        local grow=math.min(1,t*5)
+        local half=(count*18+50)*(0.6+0.4*grow)
+        box(600-half-5,92,2*half+10,79,ink)
+        box(600-half,97,2*half,69,amber)
+        box(600-half+6,103,2*half-12,57,"#fff8e2")
+        progress(126,true)
         if s.phase=="complete" then
             box(585,176,30,30,ink)
             box(590,181,20,20,mint)

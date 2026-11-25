@@ -45,11 +45,33 @@ local districts={
     require("saltmarsh"), require("glasshouse"), require("starworks"), require("aurora"),
     require("counterpoise"), require("lanternmile"), require("emberkilns"), require("beaconhead"),
     require("tidepools"), require("crabwalk"), require("foldworks"),
+    require("echoes"),
 }
-for district,chapter in districts do
-    for _,room in chapter do
-        room.district=district
-        table.insert(rooms,room)
+-- The campaign climbs fast: a short opening, then only the hardest rooms of
+-- each district. Rooms built on the old past/future clock switch are retired;
+-- the echo hourglass (district 23, played right after the aviary) is the
+-- time mechanic now. `index` is a room's place in the full authored list,
+-- which the solution routes in scripts/campaign.py follow.
+local OPENING={Shoulders=true,["High Contact"]=true,Freight=true,["First Flight"]=true,["Fault Line"]=true}
+local ORDER={1,2,3,23,5,6,7,8,9,10,11,12,13,14,16,17,18,19,20,21,22}
+local KEEP={[23]=99}
+local campaign={}
+for index,room in ipairs(rooms) do
+    room.index=index
+    if OPENING[room.name] then table.insert(campaign,room) end
+end
+local index=#rooms
+local kept={}
+for district,chapter in ipairs(districts) do
+    kept[district]={}
+    for _,room in ipairs(chapter) do
+        index+=1
+        room.index,room.district=index,district
+        if not room.clock then table.insert(kept[district],room) end
     end
 end
-return rooms
+for _,district in ORDER do
+    local list=kept[district]
+    for n=math.max(1,#list-(KEEP[district] or 4)+1),#list do table.insert(campaign,list[n]) end
+end
+return campaign

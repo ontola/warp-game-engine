@@ -499,6 +499,23 @@ ROUTES = [
 for chapter in (saltmarsh_routes, aurora_routes, lantern_routes, beacon_routes, water_routes, crab_routes, portal_routes):
     ROUTES.extend(chapter(w, j, d, boost, dock, launch))
 
+# Hold still for a number of ticks (lets an echo get into place).
+def wait(seat, ticks): return [seat, 0, 0, 6, ticks]
+# Walk onto the hourglass; arrives when the keeper has gone back in time.
+def travel(seat, x): return [seat, x, 0, 5]
+
+# Echoes (authored last, played after the aviary).
+ROUTES += [
+    # Echo Plate
+    [w(1,6), w(2,18), travel(1,0.6), w(1,18)],
+    # Lend a Hand
+    [w(1,5), w(2,12.6), travel(1,0.6), w(1,11.85), j(1,12.6,1.2), j(1,13.5,2.65),
+     w(1,18.5), w(2,18)],
+    # On My Own Shoulders
+    [w(1,5.5), wait(1,150), travel(1,1), w(1,4.75), wait(1,30), j(1,5.5,1.2), j(1,5.5,2.65),
+     w(1,8), w(2,13), w(1,18.5), w(2,18)],
+]
+
 def literal(obj):
     if isinstance(obj, list):
         return "{" + ",".join(literal(item) for item in obj) + "}"
@@ -508,8 +525,9 @@ def literal(obj):
 DRIVER = """
 local playTick=tick
 local testRoom,step,elapsed,stable=0,1,0,0
+print("Campaign "..#rooms)
 tick=function(dt)
-    local plan=routes[state.room]
+    local plan=routes[rooms[state.room].index]
     if state.room~=testRoom then
         testRoom,step,elapsed,stable=state.room,1,0,0
         print("Testing "..rooms[testRoom].name)
@@ -522,7 +540,12 @@ tick=function(dt)
         local p=input[r.id]
         local delta=a[2]-r.x
         local arrived=math.abs(delta)<0.015 and math.abs(r.y-a[3])<0.03 and r.on
-        if a[4]==3 then
+        if a[4]==6 then
+            arrived=elapsed>=a[5]
+        elseif a[4]==5 then
+            arrived=state.echo~=nil and state.echo.seat==a[1]
+            p.move_x=if arrived then 0 else math.clamp(delta/(moveSpeed(rooms[state.room],r)*dt),-1,1)
+        elseif a[4]==3 then
             arrived=if a[2]>0 and a[2]<1 then state.ferry.t>=a[2] and state.ferry.direction==1
                 else math.abs(state.ferry.t-a[2])<0.0001
         else
@@ -568,16 +591,13 @@ with tempfile.TemporaryDirectory() as temp:
     shutil.copytree(ROOT,game,ignore=shutil.ignore_patterns("scripts"))
     src = (game / "main.luau").read_text()
     if args.room is not None:
-        if not 1 <= args.room <= len(ROUTES):
-            parser.error(f"--room must be between 1 and {len(ROUTES)}")
         include = 'local rooms = require("rooms")'
         assert src.count(include) == 1
-        src = src.replace(include, f'{include}\nrooms={{assert(rooms[{args.room}])}}')
-        ROUTES = [ROUTES[args.room - 1]]
+        src = src.replace(include, f'{include}\nrooms={{(assert(rooms[{args.room}],"no such campaign room"))}}')
     marker = "return {init=init,"
     assert src.count(marker) == 1
     (game/"main.luau").write_text(src.replace(marker,"local routes="+literal(ROUTES)+"\n"+DRIVER+"\n"+marker))
-    ticks = 1400*len(ROUTES) if args.room is None else 362*len(ROUTES[0])+100
+    ticks = 1400*len(ROUTES) if args.room is None else 362*20+100
     run = subprocess.run([args.warp,"check",str(game),"--ticks",str(ticks)],capture_output=True,text=True)
     log=run.stdout+run.stderr
     for line in log.splitlines():
@@ -585,9 +605,10 @@ with tempfile.TemporaryDirectory() as temp:
             print(line)
     snapshot=json.loads(run.stdout[run.stdout.index('{\n'):])
     state=snapshot["state"]
+    count=int(next(line for line in log.splitlines() if line.startswith("Campaign "))[9:])
     seen=[line for line in run.stdout.splitlines() if line.startswith("Testing ")]
-    assert len(seen)==len(ROUTES) and len(set(seen))==len(ROUTES), seen
+    assert len(seen)==count and len(set(seen))==count, seen
     assert not snapshot["errors"] and run.returncode==0, snapshot["errors"]
-    assert state["phase"]=="complete" and state["room"]==len(ROUTES) and state["falls"]==0, state
-    label = f"Room {args.room}" if args.room else f"All {len(ROUTES)} rooms"
+    assert state["phase"]=="complete" and state["room"]==count and state["falls"]==0, state
+    label = f"Room {args.room}" if args.room else f"All {count} rooms"
     print(f"{label} solved with two controllers, zero falls.")
