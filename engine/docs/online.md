@@ -31,12 +31,17 @@ connected, the long random code is the key).
 /play/?game=neon-siege&follow=ROOM     # another couch
 ```
 
+The Game Room build and the bare build both take these
+(`online_web::from_page`); in the Game Room only the `?game=` game goes
+online, once a page, and the next game in the queue plays locally.
+
 `?signal=wss://HOST` points at another signaling server (default: the
 page's origin) and `?ice=stun:...,turn:...` sets the ICE servers (default
 `stun:stun.cloudflare.com:3478`; `?ice=` for none, on one machine). Built
 with `engine/tools/build-web.py --warp --bare`. Tested 2026-11-25 with two
 pages of one Chromium (software GPU) and a local `gamenight-cloud`: the
-follower joined, got the world and its player was seated on the host.
+follower joined, got the world and its player was seated on the host; the
+same again through the Game Room build.
 
 ## What travels
 

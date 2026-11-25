@@ -14,6 +14,29 @@ const CHUNK: usize = 16 * 1024;
 
 fn log(s: &str) { app::web::log(s); }
 
+thread_local! { static USED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
+/// The page's online couch, from its address: `?follow=ROOM` follows that
+/// room, `?host=1` (or a code of 8 or more characters) hosts and logs the
+/// follow link. Only the page's own game (`?game=`, or the first one loaded)
+/// and only once a page, so the next game in a queue plays locally.
+pub fn from_page(name: &str, cfg: &mut app::Config, game: &mut crate::LuaGame) -> Result<(), String> {
+    if crate::web::param("game").is_some_and(|g| g != name) || USED.with(|u| u.replace(true)) { return Ok(()); }
+    if let Some(room) = crate::web::param("follow") {
+        game.follow_with(Box::new(Client::join(&room)?), cfg.size);
+        cfg.tick_hz = game.cfg.tick_rate / crate::online::send_every(game.cfg.tick_rate) as f32;
+        log(&format!("online: following room {room}"));
+    } else if let Some(room) = crate::web::param("host") {
+        let room = if room.len() >= 8 { room } else { room_code() };
+        game.host_with(Box::new(Host::start(&room)?));
+        let path = web_sys::window().and_then(|w| w.location().pathname().ok()).unwrap_or_default();
+        app::web::log_pinned(&format!("online: other couches join with {}{path}?game={name}&follow={room}", app::web::origin()));
+    } else {
+        USED.with(|u| u.set(false));
+    }
+    Ok(())
+}
+
 /// The signaling socket's address for a room: `?signal=URL` or this page's origin.
 pub fn signal_url(room: &str, role: &str) -> String {
     let base = app::web::query_param("signal").unwrap_or_else(|| app::web::origin().replacen("http", "ws", 1));

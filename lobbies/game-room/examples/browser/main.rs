@@ -862,7 +862,12 @@ pub(crate) mod page {
             let html = { let _ = entry; None };
             let loaded = if let Some(html) = html { Ok(html) } else { match super::builtin::load(&folder, players).await {
                 Some(l) => l,
-                None => warp::web::load(&folder, Some(players)).await.map(|(c, g)| (c, Box::new(g) as Box<dyn Game>)),
+                // `?host=1` / `?follow=ROOM`: online couches (engine/docs/online.md).
+                None => warp::web::load(&folder, Some(players)).await.and_then(|(mut c, mut g)| {
+                    #[cfg(target_arch = "wasm32")]
+                    warp::online_web::from_page(&folder, &mut c, &mut g)?;
+                    Ok((c, Box::new(g) as Box<dyn Game>))
+                }),
             } };
             with(|h| {
                 h.loading = None;
