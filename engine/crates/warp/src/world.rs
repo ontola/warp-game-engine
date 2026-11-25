@@ -234,12 +234,24 @@ fn show(slots: &mut Slots, scene: &mut Scene, e: &mut Entity) {
     while e.edge_slots.len() > want { slots.remove(scene, e.edge_slots.pop().unwrap()); }
     let xf = e.transform();
     let width = w.width * e.size.abs().max_element();
-    for (i, [a, b]) in w.edges.iter().take(want).enumerate() {
-        let (Some(a), Some(b)) = (w.points.get(*a as usize), w.points.get(*b as usize)) else { continue };
+    // Where two or more edges meet, each runs on half its width past the
+    // point, so a bend closes into a full square corner instead of leaving
+    // a notch on its outside (Neon Trails' 90 degree turns). Free ends stay
+    // exactly at their points.
+    let mut joined = vec![0u8; w.points.len()];
+    for [a, b] in w.edges.iter().take(want) {
+        for p in [*a, *b] { if let Some(n) = joined.get_mut(p as usize) { *n = n.saturating_add(1); } }
+    }
+    for (i, [ia, ib]) in w.edges.iter().take(want).enumerate() {
+        let (Some(a), Some(b)) = (w.points.get(*ia as usize), w.points.get(*ib as usize)) else { continue };
         let (a, b) = (xf.transform_point3(*a), xf.transform_point3(*b));
         let d = b - a;
         let length = d.length();
-        let turn = if length > 1e-6 { Quat::from_rotation_arc(Vec3::Z, d / length) } else { Quat::IDENTITY };
+        let dir = if length > 1e-6 { d / length } else { Vec3::Z };
+        let reach = |p: u16| if length > 1e-6 && joined[p as usize] > 1 { width * 0.5 } else { 0.0 };
+        let (a, b) = (a - dir * reach(*ia), b + dir * reach(*ib));
+        let length = (b - a).length();
+        let turn = Quat::from_rotation_arc(Vec3::Z, dir);
         let edge = Affine3A::from_scale_rotation_translation(Vec3::new(width, width, length.max(1e-4)), turn, (a + b) * 0.5);
         match e.edge_slots.get(i) {
             Some(&slot) => slots.set(scene, slot, e.mesh, edge),
@@ -885,6 +897,21 @@ mod tests {
         w.update(id, |e| e.look.coverage = None).unwrap();
         assert_eq!(flags(&w) & (NO_SHADOW | HIT_FLASH_MASK), 0);
         assert!(w.room_occluders(&[id]).unwrap().triangles() > 0);
+    }
+
+    #[test]
+    fn a_wire_bend_closes_into_a_full_corner() {
+        // An L: the shared point gets half the width more on both edges, the
+        // free ends stay put, so the outside of the bend has no notch.
+        let mut w = World::new(Path::new("."), 16);
+        let wire = Wire { points: vec![Vec3::ZERO, Vec3::X, Vec3::new(1.0, 0.0, 1.0)], edges: vec![[0, 1], [1, 2]], width: 0.2 };
+        let id = w.spawn(Spawn { shape: Shape::Wire, wire: Some(wire), solid: false, ..Default::default() }).unwrap();
+        let centre = |w: &World, i: usize| {
+            let r = w.scene.instances[w.slots.instance(w.entities[&id].edge_slots[i])].rows;
+            Vec3::new(r[0][3], r[1][3], r[2][3])
+        };
+        assert!(centre(&w, 0).distance(Vec3::new(0.55, 0.0, 0.0)) < 1e-5, "{}", centre(&w, 0));
+        assert!(centre(&w, 1).distance(Vec3::new(1.0, 0.0, 0.45)) < 1e-5, "{}", centre(&w, 1));
     }
 
     #[test]
