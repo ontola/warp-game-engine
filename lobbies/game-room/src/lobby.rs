@@ -840,6 +840,7 @@ impl Lobby {
         let exit = if mouse_only.as_deref() == Some("exit") { if self.mouse_quit_armed() { "Click again to quit" } else { "Quit Splitscreen Club" } }
             else if self.last_one_out() { if self.mouse_quit_armed() { "Press again to quit" } else { "Quit Splitscreen Club" } } else { "Leave" };
         self.set_prompt("exit", &[("Y", exit, true)], true, occupied.contains_key("exit"));
+        let keyed_join = matches!(self.join_with, crate::live::JoinWith::Key(_));
         for (name, p) in self.prompts.iter_mut() {
             let mouse = mouse_only.as_deref() == Some(name.as_str());
             let hover = if mouse { self.mouse.hover.as_ref().and_then(|h| h.1.clone()) } else { None };
@@ -848,6 +849,8 @@ impl Lobby {
             // Left and right halves at one place: neither's keys fit both.
             let k = keys.get(name).copied().unwrap_or(everyone_keys.is_some()) && half.is_some();
             let half = half.unwrap_or(0);
+            // The join prompt without a controller: the whole keyboard's key.
+            let (k, half) = if name == "join" && keyed_join { (true, 0) } else { (k, half) };
             if p.keys != k || p.half != half { p.keys = k; p.half = half; self.screens_dirty = true; }
         }
         let waiting = self.host.pending_profiles().len();
@@ -864,8 +867,19 @@ impl Lobby {
             self.hold_prompt(&key, "Y", charge);
         }
         let join_hint = self.profiles.is_empty() && (self.host.demo || self.client.as_ref().is_some_and(|c| c.connected));
-        let join = join_hint || self.mood.pad_activity > 0.0;
-        self.set_prompt("join", &[("A", "Join", true)], true, join);
+        match self.join_with {
+            crate::live::JoinWith::Pad => {
+                let join = join_hint || self.mood.pad_activity > 0.0;
+                self.set_prompt("join", &[("A", "Join", true)], true, join);
+            }
+            // No controller: the keyboard's join key, as a keycap. Enter
+            // until someone plays on it, then G for a second player there.
+            crate::live::JoinWith::Key(key) => {
+                let join = join_hint || key == "G" || self.key_activity > 0.0;
+                self.set_prompt("join", &[(key, "Join", true)], true, join);
+            }
+            crate::live::JoinWith::Nobody => self.set_prompt("join", &[("A", "Join", true)], true, false),
+        }
     }
 
     /// Fire a hold once Y has stayed down long enough at the same door.
@@ -882,13 +896,15 @@ impl Lobby {
     pub fn hold_charge(&self, id: &str) -> f32 { self.holds.get(id).map_or(0.0, |h| ((self.time - h.1) / HOLD_SECONDS).clamp(0.0, 1.0)) }
 
     /// Badges over items someone can pick up (and ones just picked up).
-    pub fn pickup_hint_items(&self) -> Vec<(u32, world::Kind)> {
-        let mut out: Vec<(u32, world::Kind)> = vec![];
+    /// With each, the keyboard half of the (first) player who can: their
+    /// key shows instead of B ([`Lobby::keyboard_half`]).
+    pub fn pickup_hint_items(&self) -> Vec<(u32, world::Kind, Option<u8>)> {
+        let mut out: Vec<(u32, world::Kind, Option<u8>)> = vec![];
         for (i, p) in self.world.players.iter().enumerate() {
             if self.menus.contains_key(&p.id) { continue; }
             if let Some(k) = self.world.pickup_target(i) {
                 let item = &self.world.items[k];
-                if !out.iter().any(|o| o.0 == item.id) { out.push((item.id, item.kind)); }
+                if !out.iter().any(|o| o.0 == item.id) { out.push((item.id, item.kind, self.keyboard_half(&p.id))); }
             }
         }
         out

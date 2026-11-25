@@ -99,6 +99,19 @@ pub struct Profile {
 /// punch or fire.
 struct Bot { target: f64, next: f64, jump: f64 }
 
+/// What the table's join prompt shows. A host that knows its inputs (the
+/// browser host) picks: A while a controller is there; without one, the
+/// key the keyboard joins with (Enter, then G for a second player on it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JoinWith {
+    /// "A Join": a controller is (or was) connected.
+    Pad,
+    /// No controller: this keyboard key joins ("ENTER" or "G").
+    Key(&'static str),
+    /// No controller and the keyboard is full: no join prompt.
+    Nobody,
+}
+
 pub struct Lobby {
     build: RoomBuild,
     pub(crate) stage: Stage,
@@ -177,6 +190,10 @@ pub struct Lobby {
     /// Seconds since the last key, for the keyboard's little hop.
     key_hop: f32,
     keyboard_shown: bool,
+    /// How the table's join prompt reads ([`JoinWith`]; a host sets it).
+    pub join_with: JoinWith,
+    /// Seconds the join prompt still shows after a key (as pad_activity).
+    pub(crate) key_activity: f32,
     /// More floor and ceiling towards the camera (tall screens), shown once.
     deeper: Vec<usize>,
     /// The full-screen game catalog (catalog.rs).
@@ -232,6 +249,7 @@ impl Lobby {
         let keys = self.keyboard.len().saturating_sub(1);
         if keys == 0 { return; }
         self.key_hop = 0.0;
+        if self.accepts_input() { self.key_activity = 2.0; }
         let mut h = code.wrapping_mul(2654435761);
         for _ in 0..2 {
             self.key_dips[1 + (h as usize % keys)] = 1.0;
@@ -285,7 +303,7 @@ impl Lobby {
             props: props.expect("props"), board: board.expect("board"), events: vec![], controllers: HashMap::new(), held: HashMap::new(), input_blocked: HashSet::new(), menus: HashMap::new(),
             bench: vec![], phones: vec![], lost_since: HashMap::new(), toasts: vec![], unjoined: HashMap::new(), table: Default::default(), holds: HashMap::new(), station_cooldown: HashMap::new(),
             pickup_cooldown: 0.0, item_presses: HashMap::new(), pressed_flash: HashMap::new(), claims: HashMap::new(), pop_box: None, featured_visible: false,
-            bumpers_visible: false, display_active: None, display_at: web_time::Instant::now(), quit: false, web_tx, web_rx, links_due: 0.0, last_queue: vec![], featured, bumpers, key_dips: vec![0.0; keyboard.len()], keyboard, key_hop: 99.0, keyboard_shown: false, deeper, catalog: Default::default(), hud_size: [1920, 1080], mouse: Default::default(), outbox: None,
+            bumpers_visible: false, display_active: None, display_at: web_time::Instant::now(), quit: false, web_tx, web_rx, links_due: 0.0, last_queue: vec![], featured, bumpers, key_dips: vec![0.0; keyboard.len()], keyboard, key_hop: 99.0, keyboard_shown: false, join_with: JoinWith::Pad, key_activity: 0.0, deeper, catalog: Default::default(), hud_size: [1920, 1080], mouse: Default::default(), outbox: None,
         };
         lobby.prompts = lobby.build.prompts.iter().map(|p| (p.name.clone(), Prompt {
             items: p.items.iter().map(|(k, t)| (k.clone(), t.clone(), true)).collect(), enabled: true, ..Default::default() })).collect();
@@ -643,7 +661,8 @@ impl Lobby {
         for &k in &self.bumpers { changed.push((k, self.bumpers_visible)); }
         // The table keyboard: keys dip back up, the board hops after a key.
         self.key_hop += delta;
-        let hop = (std::f32::consts::PI * (self.key_hop / 0.3).clamp(0.0, 1.0)).sin() * 0.03;
+        // As high and as long as the controllers' hop (room.rs PAD_HOP).
+        let hop = (std::f32::consts::PI * (self.key_hop / crate::room::PAD_HOP).clamp(0.0, 1.0)).sin() * 0.1;
         let moving = hop > 0.0 || self.key_dips.iter().any(|d| *d > 0.0);
         if moving || !self.keyboard_shown {
             for (n, &(k, rest)) in self.keyboard.iter().enumerate() {
@@ -687,6 +706,7 @@ impl Lobby {
         self.update_sleep();
         self.update_holds();
         self.mood.pad_activity = (self.mood.pad_activity - delta).max(0.0);
+        self.key_activity = (self.key_activity - delta).max(0.0);
         self.mood.pad_hop += delta;
         if self.table.update(delta) { self.mood.pad_hop = 0.0; }
         if let Some(heights) = self.table.heights() { self.mood.pad_drop = heights; }

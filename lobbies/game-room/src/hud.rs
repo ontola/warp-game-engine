@@ -182,18 +182,21 @@ pub fn draw(lobby: &Lobby, size: [u32; 2], _alpha: f32) -> HudDrawList {
 
 /// One B badge per reachable item, sized to the item on screen.
 fn item_hints(lobby: &Lobby, c: &mut Canvas, view_proj: Mat4, size: [u32; 2]) {
-    let mut targets: Vec<(u32, game_room_sim::world::Kind, Option<Vec3>, f32)> = lobby.pickup_hint_items().into_iter().map(|(id, kind)| (id, kind, None, 0.0)).collect();
+    let mut targets: Vec<(u32, game_room_sim::world::Kind, Option<Vec3>, f32, Option<u8>)> = lobby.pickup_hint_items().into_iter().map(|(id, kind, half)| (id, kind, None, 0.0, half)).collect();
+    // Just picked up: the badge presses, with the keys it showed (or all
+    // keys, when everyone plays on the keyboard).
+    let keys = (!lobby.world.players.is_empty() && lobby.world.players.iter().all(|p| lobby.keyboard_half(&p.id) == Some(0))).then_some(0);
     for (&id, &(kind, pos, at)) in &lobby.item_presses {
         let pressed = (1.0 - (lobby.time - at) / 0.2).max(0.0);
-        match targets.iter_mut().find(|t| t.0 == id) { Some(t) => { t.2 = Some(pos); t.3 = pressed; } None => targets.push((id, kind, Some(pos), pressed)) }
+        match targets.iter_mut().find(|t| t.0 == id) { Some(t) => { t.2 = Some(pos); t.3 = pressed; } None => targets.push((id, kind, Some(pos), pressed, keys)) }
     }
-    for (id, kind, pressed_at, pressed) in targets {
+    for (id, kind, pressed_at, pressed, half) in targets {
         let top = match pressed_at.or_else(|| lobby.world.items.iter().find(|i| i.id == id).map(|i| Vec3::new(i.x as f32, i.y as f32, 0.05))) { Some(p) => p, None => continue };
         let top = top + Vec3::new(0.0, 0.95, 0.0);
         let (Some(at), Some(above)) = (project(view_proj, size, top), project(view_proj, size, top + Vec3::new(0.0, 0.4032, 0.0))) else { continue };
         let factor = ((at[0] - above[0]).powi(2) + (at[1] - above[1]).powi(2)).sqrt() / 96.0;
         let label = if kind == game_room_sim::world::Kind::Ball { "Kick" } else { "Pick up" };
-        badge(c, at, factor, "B", label, crate::room::PAD_B, pressed, size);
+        badge(c, at, factor, "B", half.and_then(|h| crate::paint::key_cap_on(h, "B")), label, crate::room::PAD_B, pressed, size);
     }
     // Someone carrying a player: B throws them, out of the party when the
     // exit door is close in the way they face.
@@ -205,21 +208,29 @@ fn item_hints(lobby: &Lobby, c: &mut Canvas, view_proj: Mat4, size: [u32; 2]) {
         let top = Vec3::new(p.x as f32, p.y as f32 + 3.3, lobby.actor_depth(&p.id));
         let (Some(at), Some(above)) = (project(view_proj, size, top), project(view_proj, size, top + Vec3::new(0.0, 0.4032, 0.0))) else { continue };
         let factor = ((at[0] - above[0]).powi(2) + (at[1] - above[1]).powi(2)).sqrt() / 96.0;
-        badge(c, at, factor, "B", label, crate::room::PAD_B, 0.0, size);
+        let cap = lobby.keyboard_half(&p.id).and_then(|h| crate::paint::key_cap_on(h, "B"));
+        badge(c, at, factor, "B", cap, label, crate::room::PAD_B, 0.0, size);
     }
     c.over();
 }
 
 /// room.gd `draw_prompt` for one button, scaled by `k` and centred on `at`.
+/// `cap`: a keyboard player's key, drawn as its keycap instead of the disc.
 #[allow(clippy::too_many_arguments)]
-fn badge(c: &mut Canvas, at: [f32; 2], k: f32, key: &str, label: &str, color: Color, pressed: f32, size: [u32; 2]) {
+fn badge(c: &mut Canvas, at: [f32; 2], k: f32, key: &str, cap: Option<&str>, label: &str, color: Color, pressed: f32, size: [u32; 2]) {
     let h = 96.0 * k;
     let tw = render::hud::measure(label, bold(), 44.0 * k)[0];
-    let full = [(40.0 + 96.0 + 36.0) * k + tw, h];
+    let glyph = cap.map_or(96.0, |cap| crate::paint::key_cap_width(cap) + 24.0) * k;
+    let full = [40.0 * k + glyph + 36.0 * k + tw, h];
     let x0 = (at[0] - full[0] / 2.0).clamp(4.0, size[0] as f32 - full[0] - 4.0);
     let y0 = (at[1] - full[1] / 2.0).clamp(4.0, size[1] as f32 - full[1] - 4.0);
     let x = x0 + 20.0 * k;
-    c.style_box([x, y0 + 6.0 * k, 96.0 * k + tw + 16.0 * k, h - 12.0 * k], [h / 2.0 - 6.0 * k; 4], crate::room::PANEL, None);
+    c.style_box([x, y0 + 6.0 * k, glyph + tw + 16.0 * k, h - 12.0 * k], [h / 2.0 - 6.0 * k; 4], crate::room::PANEL, None);
+    if let Some(cap) = cap {
+        crate::paint::keycap(c, [x + 12.0 * k, y0 + 20.0 * k, glyph - 24.0 * k, 56.0 * k], cap, pressed, true);
+        c.text(bold(), [x + glyph - 6.0 * k, y0 + h / 2.0 + 16.0 * k], label, TextAlign::Left, -1.0, 44.0 * k, TEXT);
+        return;
+    }
     let center = [x + h / 2.0 - 4.0 * k, y0 + h / 2.0];
     c.circle(center, h / 2.0 - 13.0 * k, color.darkened(0.65));
     let r = h / 2.0 - 14.0 * k;

@@ -612,7 +612,7 @@ pub fn key_cap_on(half: u8, button: &str) -> Option<&'static str> {
         (1, "A") => "Space", (1, "B") => "L Shift", (1, "X") => "Q", (1, "Y") => "E", (1, "BACK") => "Tab", (1, "START") => "1",
         (2, "A") => "R Shift", (2, "B") => "/", (2, "X") => ".", (2, "Y") => "'", (2, "BACK") => "Backspace", (2, "START") => "Enter",
         (1 | 2, _) => return None,
-        (_, "A") => "Space", (_, "B") => "Backspace", (_, "X") => "R", (_, "Y") => "F", (_, "LB") => "Q", (_, "RB") => "E", (_, "BACK") => "Tab", (_, "START") => "Enter", (_, "R3") => "C",
+        (_, "A") => "Space", (_, "B") => "Backspace", (_, "X") => "R", (_, "Y") => "F", (_, "LB") => "Q", (_, "RB") => "E", (_, "BACK") => "Tab", (_, "START") => "Enter", (_, "R3") => "C", (_, "ENTER") => "Enter", (_, "G") => "G",
         _ => return None,
     })
 }

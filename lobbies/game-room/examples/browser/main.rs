@@ -221,7 +221,12 @@ pub(crate) mod page {
             // Any key on the keyboard: the keyboard on the room's table hops.
             // (WASD and the arrows move: they count as keys too.)
             let key_action = c.pressed.0 != 0 || c.mv != [0.0; 2];
-            if dev.is_keys() && key_action { h.last_keys = Some(*dev); }
+            if dev.is_keys() && key_action {
+                h.last_keys = Some(*dev);
+                // Any key: the keyboard on the room's table hops, as the
+                // controllers there do for a button.
+                h.key = Some(c.pressed.0 | ((c.mv[0] > 0.0) as u32) << 30 | ((c.mv[1] > 0.0) as u32) << 31);
+            }
             // G while one player has the whole keyboard: a second one joins
             // on it, and the keyboard splits in two halves.
             if *dev == Device::Keyboard && c.pressed.has(Buttons::KEYBOARD_JOIN) && h.bound.contains(&Some(Device::Keyboard)) { share_keyboard(h); continue; }
@@ -229,7 +234,6 @@ pub(crate) mod page {
             // action or captured mouse look can claim that seat in this tick.
             let solo_seat = h.on_screen.is_some() && h.bound.as_slice() == [None] && !h.phone[0];
             if *dev == Device::Keyboard && key_action {
-                h.key = Some(c.pressed.0 | ((c.mv[0] > 0.0) as u32) << 30 | ((c.mv[1] > 0.0) as u32) << 31);
                 if !solo_seat && !c.pressed.has(Buttons::START) && !h.bound.contains(&Some(Device::Keyboard)) {
                     if h.on_screen.is_some() { join_hint(true, None) } else { key_hint() }
                 }
@@ -534,6 +538,18 @@ pub(crate) mod page {
         }
     }
 
+    /// Whether a controller is connected: the page shows A's glyph only
+    /// then (`<html data-pad>`, see index.html `.with-pad`).
+    fn pad_present(pad: bool) {
+        thread_local! { static SHOWN: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) }; }
+        if SHOWN.with(|s| s.replace(Some(pad))) == Some(pad) { return; }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let Some(root) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.document_element()) else { return };
+            let _ = if pad { root.set_attribute("data-pad", "") } else { root.remove_attribute("data-pad") };
+        }
+    }
+
     /// A key pressed while nobody plays on the keyboard: the page shows
     /// for a moment that Enter joins (`<html data-key-hint>`, see index.html).
     fn key_hint() {
@@ -718,6 +734,16 @@ pub(crate) mod page {
             if let Some(code) = with(|h| h.key.take()) { self.lobby.key_pressed(code); }
             if with(|h| std::mem::take(&mut h.pad_heard)) { self.lobby.pad_heard(); }
             self.lobby.set_idle_controllers(with(|h| h.idle_pads));
+            // The table's join prompt: A only while a controller is there;
+            // without one, Enter, then G for a second player on the keyboard.
+            let pad = with(|h| h.idle_pads > 0 || h.bound.iter().any(|d| d.is_some_and(|d| d.is_pad())));
+            pad_present(pad);
+            self.lobby.join_with = with(|h| {
+                if pad { game_room::live::JoinWith::Pad }
+                else if h.bound.contains(&Some(Device::Keyboard)) { game_room::live::JoinWith::Key("G") }
+                else if h.bound.iter().any(|d| d.is_some_and(|d| d.is_keys())) { game_room::live::JoinWith::Nobody }
+                else { game_room::live::JoinWith::Key("ENTER") }
+            });
             for (game, png) in with(|h| std::mem::take(&mut h.covers)) { self.lobby.set_cover(&game, &png); }
             for (game, png) in with(|h| std::mem::take(&mut h.shots)) { self.lobby.set_screenshot(&game, &png); }
             fetch_ahead();
