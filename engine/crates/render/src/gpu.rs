@@ -4,6 +4,17 @@
 
 use web_time::Instant;
 
+/// The most storage buffers per shader stage a device asks for, below
+/// what the adapter offers ([`cap_storage_buffers`]).
+static MAX_STORAGE_BUFFERS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
+
+/// Ask devices made from now on for at most `n` storage buffers per shader
+/// stage. Below 16 the renderer leaves out the trees (their shaders need
+/// 16): Safari 27 turns their `atomicCompareExchangeWeak` into Metal its own
+/// compiler rejects ("field may not be qualified with an address space"),
+/// so the browser host asks WebKit for 10, as Chrome on a Mac gives.
+pub fn cap_storage_buffers(n: u32) { MAX_STORAGE_BUFFERS.store(n, std::sync::atomic::Ordering::Relaxed); }
+
 #[derive(Clone)]
 pub struct Gpu {
     pub device: wgpu::Device,
@@ -141,7 +152,7 @@ impl Gpu {
         let al = adapter.limits();
         limits.max_storage_buffer_binding_size = al.max_storage_buffer_binding_size;
         limits.max_buffer_size = al.max_buffer_size;
-        limits.max_storage_buffers_per_shader_stage = al.max_storage_buffers_per_shader_stage.min(16);
+        limits.max_storage_buffers_per_shader_stage = al.max_storage_buffers_per_shader_stage.min(16).min(MAX_STORAGE_BUFFERS.load(std::sync::atomic::Ordering::Relaxed));
         // The shade layout samples 20 textures in a stage (the noise field,
         // voxel depth, the coarse terrain and the voxel surface beyond
         // WebGPU's 16); desktop adapters allow far more.

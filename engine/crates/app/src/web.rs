@@ -361,6 +361,12 @@ pub fn mobile() -> bool {
     }
 }
 
+/// Safari, or any browser on iOS: WebKit's WebGPU, not Chrome's or Firefox's.
+fn webkit() -> bool {
+    web_sys::window().and_then(|w| w.navigator().user_agent().ok())
+        .is_some_and(|ua| ua.contains("AppleWebKit") && !["Chrome", "Chromium", "Edg", "Android"].iter().any(|k| ua.contains(k)) || ua.contains("CriOS") || ua.contains("FxiOS") || ua.contains("EdgiOS"))
+}
+
 /// Where adaptive quality starts on a phone: about half of a 1080p panel.
 const MOBILE_BASE_HEIGHT: u32 = 540;
 
@@ -529,6 +535,12 @@ pub fn run(cfg: crate::Config, game: Box<dyn Game>) {
         render_height: query_param("render").and_then(|h| h.parse().ok()), quality: None, mobile: mobile(), lock_seen: false,
         bench: crate::bench::Bench::from_query(query_param("bench").as_deref()) };
     if shell.mobile { log("phone preset: lower resolution, no bloom or contact occlusion (?quality=full turns it off)"); }
+    // Safari (and every iOS browser: WebKit) cannot compile the trees'
+    // compare-exchange shaders: the trees stay out there (render::gpu).
+    if webkit() && query_param("trees").as_deref() != Some("1") {
+        render::gpu::cap_storage_buffers(10);
+        log("WebKit: no trees (Safari cannot compile their shaders; ?trees=1 tries anyway)");
+    }
     match EventLoop::new() {
         Ok(events) => events.spawn_app(shell),
         Err(e) => log(&format!("event loop: {e}")),
