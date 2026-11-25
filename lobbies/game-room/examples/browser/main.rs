@@ -1108,6 +1108,7 @@ pub(crate) mod page {
         }
         let mut lobby = Lobby::new(options, players, 0)?;
         lobby.outbox = Some(vec![]);
+        lobby.host.no_jukebox = true;
         lobby.remember_view();
         app::web::log(&format!("Game Room built in {:.0} ms", t0.elapsed().as_secs_f32() * 1000.0));
         // The demo party, with this page's games, no phones and nothing loading.

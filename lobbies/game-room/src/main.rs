@@ -121,6 +121,8 @@ fn run() -> Result<(), String> {
             party["seats"][0]["controller"] = serde_json::json!("web:keyboard");
             lobby.set_party(party);
         }
+        // `--no-jukebox`: the room as the browser host shows it.
+        if flag("--no-jukebox") { lobby.host.no_jukebox = true; }
         let ticks = numf("--ticks", 180.0) as u32;
         let mut rgba = headless.frame(&mut lobby)?;
         for t in 0..ticks {

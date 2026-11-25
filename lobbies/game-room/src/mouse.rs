@@ -245,7 +245,7 @@ impl Lobby {
         if t <= 0.0 { return None; }
         let hit = near + dir * t;
         if !(-0.2..=6.4).contains(&hit.y) { return None; }
-        self.host.station_at(hit.x as f64, None).or_else(|| ((hit.x as f64 - l::EXIT_DOOR).abs() <= 0.6).then(exit_station)).map(|s| (s, None))
+        self.host.station_at(hit.x as f64, None).or_else(|| (self.outbox.is_none() && (hit.x as f64 - l::EXIT_DOOR).abs() <= 0.6).then(exit_station)).map(|s| (s, None))
     }
 
     fn mouse_station_named(&self, name: &str) -> Option<Station> {
@@ -253,7 +253,8 @@ impl Lobby {
             "tv" => 0.0,
             "shelf" => (l::GAME_SHELF.0 + l::GAME_SHELF.1) / 2.0,
             "queue" => (l::UP_NEXT.0 + l::UP_NEXT.1) / 2.0,
-            "exit" => return Some(exit_station()),
+            // A browser tab has nothing to quit.
+            "exit" => return self.outbox.is_none().then(exit_station),
             _ => l::JUKEBOX,
         };
         self.host.station_at(x, None)

@@ -65,6 +65,8 @@ pub struct Host {
     pub connected: bool,
     /// Running the demo: no host, everything works.
     pub demo: bool,
+    /// No jukebox in the room (the browser can't steer the OS's music).
+    pub no_jukebox: bool,
     pub time: f32,
     pub shelf_offset: usize,
     /// /api/player-links.
@@ -396,7 +398,7 @@ impl Host {
                 enabled: reason.is_empty(), extra: if shelf.len() > 1 { "X queue LB RB browse".into() } else { "X queue".into() }, ..Default::default() });
         }
         if x >= l::UP_NEXT.0 && x <= l::UP_NEXT.1 { return Some(self.queue_station()); }
-        if (x - l::JUKEBOX).abs() <= 0.85 {
+        if !self.no_jukebox && (x - l::JUKEBOX).abs() <= 0.85 {
             // Nothing on yet: Y starts the host's last media player, like the Play key.
             if !self.has_track() {
                 return Some(Station { id: "music1".into(), kind: "music".into(), label: "Play music".into(), action: "resume".into(), enabled: true, ..Default::default() });

@@ -211,6 +211,8 @@ pub struct RoomBuild {
     pub hidden: Vec<usize>,
     /// Logo pads: group name, position, yaw, body material.
     pub pads: Vec<(String, Vec3, f32, usize)>,
+    /// The jukebox's instances (the browser host has no music to steer).
+    pub jukebox: std::ops::Range<usize>,
     /// Instance shapes, for run-time copies (spines, items).
     pub shapes: Vec<Shape>,
     /// Each pad's pose as last posed.
@@ -244,6 +246,7 @@ impl RoomBuild {
             pads: vec![],
             shapes: vec![],
             pad_pose: vec![],
+            jukebox: 0..0,
             meshes: HashMap::new(),
             group: String::new(),
             rng: Pcg::new(1),
@@ -444,7 +447,9 @@ pub fn build() -> RoomBuild {
     up_next(&mut r);
     shelves(&mut r);
     couch_corner(&mut r);
+    let first = r.dump.instances.len();
     jukebox(&mut r);
+    r.jukebox = first..r.dump.instances.len();
     exit_door(&mut r);
     r.prompt("music", &[("LB", "Previous"), ("Y", "Pause"), ("RB", "Next")], Vec3::new(l::JUKEBOX as f32, 3.35, BACK + 1.2));
     r.prompt("exit", &[("Y", "Leave")], Vec3::new(l::EXIT_DOOR as f32, 3.0, BACK + 0.4));
