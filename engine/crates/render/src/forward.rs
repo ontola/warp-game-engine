@@ -121,6 +121,12 @@ impl Forward {
     /// The low tier's glow: strength (0 off) and the display value it starts at.
     pub fn set_sky_sh(&mut self,sh:[[f32;4];9]) {if let Some(l)=&mut self.lit {l.sky_sh=sh;}}
     pub fn set_glow(&mut self,strength:f32,threshold:f32) {if let Some(l)=&mut self.lit {l.glow=(strength,threshold);}}
+    /// Posed weighted vertices (skinning.rs, written into the scene's vertex
+    /// region at `offset`) into this renderer's copy: `[owner, first, count]` per actor.
+    pub fn copy_skinned(&self,enc:&mut wgpu::CommandEncoder,source:&wgpu::Buffer,offset:u64,ranges:&[[u32;3]]) {
+        let size=std::mem::size_of::<crate::cluster::Vertex>()as u64;
+        for &[_,first,count] in ranges {if count>0 {enc.copy_buffer_to_buffer(source,offset+first as u64*size,&self.vertices,first as u64*size,count as u64*size);}}
+    }
     pub fn update_vertices(&self,gpu:&Gpu,offset:u64,bytes:&[u8]) { if !bytes.is_empty() { gpu.queue.write_buffer(&self.vertices,offset,bytes); } }
     pub fn update(&mut self,first:usize,instances:&[GpuInstance])->Result<(),String>{
         if first.checked_add(instances.len()).is_none_or(|n|n>self.owners.len()){return Err("minimal owner update exceeds scene".into());}

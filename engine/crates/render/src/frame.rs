@@ -2721,12 +2721,12 @@ impl Renderer {
         let wanted=(crate::switches::FORWARD.on() || (crate::switches::FORWARD.is("auto") && !procedural)) && !scene.graphics.minimal_forward;
         let forward_source=if wanted {crate::shaders::forward_lit_source().map_err(|e|eprintln!("low tier off: the game surface does not compile there: {e}")).ok()} else {None};
         let forward_lit=forward_source.is_some();
-        let minimal_forward=((forward_lit || scene.graphics.minimal_forward) && plain_meshes && scene.skinning.actors.is_empty()
+        let minimal_forward=((forward_lit || scene.graphics.minimal_forward) && plain_meshes && (forward_lit || scene.skinning.actors.is_empty())
             && scene.debris.is_none_or(|d|d.capacity==0)).then(||std::sync::Mutex::new(crate::forward::Forward::new(gpu,scene,&materials,
                 forward_source.map(|source|crate::forward::LitInputs{albedo:&albedo_view,headlights:&headlights.uniform,scene_tables:&scene_tables.buffer,instances:&instances,source}))));
         if wanted {
             // Which tier draws, and why not the low one (logcat on the phone hosts).
-            let skinned=!scene.skinning.actors.is_empty();let debris=scene.debris.is_some_and(|d|d.capacity>0);
+            let skinned=!forward_lit && !scene.skinning.actors.is_empty();let debris=scene.debris.is_some_and(|d|d.capacity>0);
             if minimal_forward.is_some() {eprintln!("graphics tier: low (forward_lit)");}
             else {eprintln!("graphics tier: medium; low tier wanted but {}",[(!forward_lit,"game surface"),(!plain_meshes,"foliage/grass/terrain/crowd/wind"),(skinned,"skinned meshes"),(debris,"debris")]
                 .iter().filter(|(on,_)|*on).map(|(_,why)|*why).collect::<Vec<_>>().join(", "));}
@@ -4942,6 +4942,15 @@ impl Renderer {
             let matrices:Vec<_>=views.iter().enumerate().map(|(vi,v)|projections.get(vi).copied().unwrap_or_else(||
                 Mat4::perspective_infinite_reverse_rh(v.cam.fov_y,v.w as f32/v.h as f32,v.cam.near))*camera_view(v.cam,axes.get(vi).copied())).collect();
             let mut forward=forward.lock().unwrap();
+            // Weighted characters: the same skinning pass, then their posed
+            // vertices into the forward renderer's copy of the scene's.
+            if let Some(skinning)=&self.skinning {
+                let mut enc=gpu.device.create_command_encoder(&Default::default());
+                skinning.encode(&mut enc,None);
+                let (topology,_,ranges)=&self.motion_geometry;
+                forward.copy_skinned(&mut enc,&topology.buffer,topology.regions[0].0,ranges);
+                gpu.queue.submit([enc.finish()]);
+            }
             if forward.lit() {
                 // The HDR bloom's strength, on the 8-bit image (tuned by eye on the Game Room).
                 let options=self.debug_options();
