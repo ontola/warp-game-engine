@@ -594,6 +594,8 @@ struct Gfx {
     hud: HudRenderer,
     /// The loading screen's icon is on the HUD.
     hud_icon: bool,
+    /// The size the loading screen's background picture was made for.
+    hud_background: Option<[u32; 2]>,
     visible: bool,
 }
 
@@ -656,7 +658,7 @@ fn on_window(window: NativeWindow) -> Result<(), String> {
     gpu.device.set_device_lost_callback(|reason, message| log(&format!("GPU device lost ({reason:?}): {message}")));
     let out = Output::new(&gpu, config.format)?;
     let hud = HudRenderer::new(&gpu, config.format)?;
-    GFX.with(|g| *g.borrow_mut() = Some(Gfx { instance, gpu, out, surface: Some((surface, config, window)), renderer: None, hud, hud_icon: false, visible: true }));
+    GFX.with(|g| *g.borrow_mut() = Some(Gfx { instance, gpu, out, surface: Some((surface, config, window)), renderer: None, hud, hud_icon: false, hud_background: None, visible: true }));
     Ok(())
 }
 
@@ -782,13 +784,14 @@ fn draw_loading() {
         let clip = [0.0, 0.0, size[0], size[1]];
         let s = size[1] / 720.0;
         let (wordmark, _, body) = brand_fonts();
-        // The glows: amber upper left, violet lower right.
-        for (c, col, r) in [([0.30, 0.35], [1.0, 0.706, 0.329], 0.42), ([0.72, 0.65], [0.655, 0.545, 0.98], 0.40)] {
-            for i in 0..12 {
-                let f = 1.0 - i as f32 / 12.0;
-                d.circle([size[0] * c[0], size[1] * c[1]], size[1] * r * f, [col[0], col[1], col[2], 0.018], clip);
-            }
+        // The glows, one picture at the screen's own size: stacked
+        // translucent circles banded (Joep: "concentrische cirkels").
+        let px = [config.width, config.height];
+        if gfx.hud_background != Some(px) {
+            gfx.hud.set_image(&gfx.gpu, render::hud::HudImage(0x1C1), &loading_background(px), render::hud::ImageFilter::Nearest);
+            gfx.hud_background = Some(px);
         }
+        d.image([0.0, 0.0, size[0], size[1]], render::hud::HudImage(0x1C1), [0.0, 0.0, 1.0, 1.0], [1.0; 4], clip);
         let icon = 96.0 * s;
         if !gfx.hud_icon {
             if let Ok(pic) = render::picture::decode(include_bytes!("../../../../lobbies/game-room/assets/splitscreen-club-icon.png"), 1.0) {
@@ -841,6 +844,37 @@ fn draw_loading() {
         gfx.gpu.queue.submit([enc.finish()]);
         gfx.gpu.queue.present(texture);
     });
+}
+
+/// The browser page's loading background (index.html #warp-loading):
+/// `radial-gradient(60% 50% at 30% 35%, rgba(255,180,84,.16), transparent 70%)`
+/// over `radial-gradient(55% 50% at 72% 65%, rgba(167,139,250,.18), transparent 70%)`
+/// over #0d1020, in sRGB like a browser, dithered by a pixel hash so the
+/// 8-bit steps of so dark a gradient don't show as rings.
+fn loading_background([w, h]: [u32; 2]) -> render::picture::Picture {
+    let (wf, hf) = (w as f32, h as f32);
+    let glows = [([0.30, 0.35], [0.60, 0.50], [255.0, 180.0, 84.0], 0.16), ([0.72, 0.65], [0.55, 0.50], [167.0, 139.0, 250.0], 0.18)];
+    let mut rgba = vec![0u8; (w * h * 4) as usize];
+    for y in 0..h {
+        for x in 0..w {
+            let mut c = [13.0f32, 16.0, 32.0];
+            // The violet first: CSS paints the first gradient on top.
+            for (at, radius, col, alpha) in glows.iter().rev() {
+                let dx = (x as f32 + 0.5 - at[0] * wf) / (radius[0] * wf);
+                let dy = (y as f32 + 0.5 - at[1] * hf) / (radius[1] * hf);
+                let a = alpha * (1.0 - (dx * dx + dy * dy).sqrt() / 0.7).max(0.0);
+                for k in 0..3 { c[k] += (col[k] - c[k]) * a; }
+            }
+            // Triangular noise of one step, from a hash of the pixel.
+            let mut n = x.wrapping_mul(0x9E37_79B1) ^ y.wrapping_mul(0x85EB_CA77);
+            n ^= n >> 15; n = n.wrapping_mul(0x2C1B_3C6D); n ^= n >> 12;
+            let dither = ((n & 0xffff) as f32 + ((n >> 16) & 0xffff) as f32) / 65535.0 - 1.0;
+            let i = ((y * w + x) * 4) as usize;
+            for k in 0..3 { rgba[i + k] = (c[k] + dither).round().clamp(0.0, 255.0) as u8; }
+            rgba[i + 3] = 255;
+        }
+    }
+    render::picture::Picture { width: w, height: h, rgba }
 }
 
 struct Shell {
