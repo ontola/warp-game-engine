@@ -224,8 +224,9 @@ pub(crate) mod page {
             if dev.is_keys() && key_action {
                 h.last_keys = Some(*dev);
                 // Any key: the keyboard on the room's table hops, as the
-                // controllers there do for a button.
-                h.key = Some(c.pressed.0 | ((c.mv[0] > 0.0) as u32) << 30 | ((c.mv[1] > 0.0) as u32) << 31);
+                // controllers there do for a button. Not once two play on
+                // it: it takes nobody more, like a joined controller.
+                if !app::keyboard_split() { h.key = Some(c.pressed.0 | ((c.mv[0] > 0.0) as u32) << 30 | ((c.mv[1] > 0.0) as u32) << 31); }
             }
             // G while one player has the whole keyboard: a second one joins
             // on it, and the keyboard splits in two halves.

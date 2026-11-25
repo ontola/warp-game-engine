@@ -876,7 +876,8 @@ impl Lobby {
             // until someone plays on it, then G for a second player there.
             crate::live::JoinWith::Key(key) => {
                 let join = join_hint || key == "G" || self.key_activity > 0.0;
-                self.set_prompt("join", &[(key, "Join", true)], true, join);
+                let label = if key == "G" { "Join player 2" } else { "Join" };
+                self.set_prompt("join", &[(key, label, true)], true, join);
             }
             crate::live::JoinWith::Nobody => self.set_prompt("join", &[("A", "Join", true)], true, false),
         }
