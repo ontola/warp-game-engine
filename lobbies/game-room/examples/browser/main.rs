@@ -744,6 +744,8 @@ pub(crate) mod page {
         fn local_players(&self) -> usize { self.lobby.local_players() }
         fn tick(&mut self, controls: &[Controls]) {
             follow_loading();
+            // Bigger overlay on a phone: the screen is small in the hand.
+            if let Some(dp) = app::web::short_side_dp() { game_room::hud::set_ui_scale(game_room::hud::ui_for_dp(dp)); }
             if let Some(party) = with(|h| std::mem::take(&mut h.dirty).then(|| h.party.clone())) {
                 let ids = party["players"].as_array().map(|l| l.iter().filter_map(|p| p["id"].as_str().map(String::from)).collect()).unwrap_or_default();
                 self.lobby.set_local(ids);

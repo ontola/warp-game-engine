@@ -339,6 +339,14 @@ struct Shell {
     lock_seen: bool,
 }
 
+/// The window's short side in CSS pixels (a phone in landscape: about
+/// 400), for sizing UI to the hand rather than the pixels.
+pub fn short_side_dp() -> Option<f32> {
+    let w = web_sys::window()?;
+    let (iw, ih) = (w.inner_width().ok()?.as_f64()?, w.inner_height().ok()?.as_f64()?);
+    Some(iw.min(ih) as f32)
+}
+
 /// Phones get a cheaper preset: an Android, iPhone or iPad browser, or
 /// `?quality=mobile` anywhere (`?quality=full` turns it off). Adaptive
 /// quality then starts from [`MOBILE_BASE_HEIGHT`] lines (or `?render=H`)

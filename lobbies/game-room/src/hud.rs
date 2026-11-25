@@ -62,9 +62,23 @@ pub fn view_proj(camera: &render::Camera, size: [u32; 2]) -> Mat4 {
 /// Screen position of a world point, for the mouse.
 pub fn to_screen(view_proj: Mat4, size: [u32; 2], p: Vec3) -> Option<[f32; 2]> { project(view_proj, size, p) }
 
+static UI_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3f80_0000);
+
+/// How much bigger than on a TV the overlay draws: on a phone the screen
+/// is small in the hand, so the host asks for more (see [`ui_for_dp`]).
+pub fn set_ui_scale(k: f32) { UI_SCALE.store(k.clamp(0.5, 3.0).to_bits(), std::sync::atomic::Ordering::Relaxed); }
+
+/// The overlay's scale on a screen `h` pixels high: 1 at 1080p on a TV.
+pub fn ui(h: f32) -> f32 { h / 1080.0 * f32::from_bits(UI_SCALE.load(std::sync::atomic::Ordering::Relaxed)) }
+
+/// The UI scale for a screen whose short side is `dp` device-independent
+/// pixels (CSS px): a phone (about 400) gets 1.7x, a tablet or laptop
+/// (700 and up) 1x.
+pub fn ui_for_dp(dp: f32) -> f32 { (700.0 / dp.max(1.0)).clamp(1.0, 1.7) }
+
 /// Where the mouse's Start menu stands: the middle of the screen.
 fn mouse_menu_at(size: [u32; 2]) -> ([f32; 2], f32) {
-    let scale = size[1] as f32 / 1080.0;
+    let scale = ui(size[1] as f32);
     ([size[0] as f32 / 2.0, size[1] as f32 * 0.62], (20.0 * scale).floor())
 }
 
@@ -78,7 +92,7 @@ pub fn draw(lobby: &Lobby, size: [u32; 2], _alpha: f32) -> HudDrawList {
     let mut list = HudDrawList::new(size);
     let (w, h) = (size[0] as f32, size[1] as f32);
     let mut c = Canvas::new(&mut list, [0, 0, size[0], size[1]]);
-    let scale = h / 1080.0;
+    let scale = ui(h);
     let view_proj = view_proj(&lobby.stage.room.camera, size);
 
     let error = crate::host::get(&lobby.host.party, "onboarding_error", "");

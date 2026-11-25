@@ -61,7 +61,7 @@ struct Grid { cols: usize, card: [f32; 2], gap: f32, area: [f32; 4], rows: usize
 
 fn grid(size: [u32; 2], n: usize) -> Grid {
     let (w, h) = (size[0] as f32, size[1] as f32);
-    let scale = h / 1080.0;
+    let scale = crate::hud::ui(h);
     let area = [48.0 * scale, 112.0 * scale, w - 96.0 * scale, h - 112.0 * scale - 250.0 * scale];
     let gap = 28.0 * scale;
     // Two rows of covers, up to 30% of the screen high each, never so
@@ -70,8 +70,10 @@ fn grid(size: [u32; 2], n: usize) -> Grid {
     let mut card = [card_h * 0.75, card_h];
     let mut cols = (((area[2] + gap) / (card[0] + gap)).floor() as usize).max(1);
     if cols < 3 { cols = 3; card[0] = (area[2] - gap * 2.0) / 3.0; card[1] = card[0] / 0.75; }
-    cols = cols.min(n.max(1));
     let rows = (((area[3] + gap) / (card[1] + gap)).floor() as usize).max(1);
+    // Games that fit on one screen spread over its rows (8 on a wide
+    // phone: 2x4, not one row of 8).
+    cols = if n <= cols * rows { n.div_ceil(rows).max(3) } else { cols }.min(cols).min(n.max(1));
     Grid { cols, card, gap, area, rows }
 }
 
@@ -247,7 +249,7 @@ impl Lobby {
         }
         if !inside(layout.area, at) { return; }
         // Play or Queue on the hovered card: that game, wherever the choice was.
-        let scale = size[1] as f32 / 1080.0;
+        let scale = crate::hud::ui(size[1] as f32);
         let hit = layout.cards.iter().find_map(|&(i, r)| {
             if !self.host.shelf_games().get(i).is_some_and(|g| self.host.fits_party(g)) { return None; }
             let buttons = card_buttons(r, layout.area, scale)?;
@@ -347,7 +349,7 @@ pub fn catalog_layout(lobby: &Lobby, size: [u32; 2]) -> Layout {
         // Down to the screen's bottom: the next row shows through the panel.
         if r[1] + r[3] > g.area[1] - g.gap && r[1] < h { cards.push((i, r)); }
     }
-    let bh = (h * 0.05).max(34.0);
+    let bh = (54.0 * crate::hud::ui(h)).max(34.0);
     let y = g.area[1] + g.area[3] + h * 0.1;
     let bw = bh * 3.6;
     let gap = bh * 0.4;
@@ -417,7 +419,7 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
     use crate::lobby::{DIM, TEXT, VIOLET};
     use render::hud::TextAlign;
     let (w, h) = (size[0] as f32, size[1] as f32);
-    let scale = h / 1080.0;
+    let scale = crate::hud::ui(h);
     let shelf = &lobby.show.shelf;
     if shelf.is_empty() { return; }
     let fade = lobby.catalog_fade();

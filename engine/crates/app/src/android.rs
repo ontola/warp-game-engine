@@ -338,6 +338,14 @@ pub fn install_panic_hook() {
 }
 
 /// A phone: the browser's phone preset (`quality=full` turns it off).
+/// The screen's short side in dp (a phone: about 400, a tablet 800), for
+/// sizing UI to the hand rather than the pixels.
+pub fn short_side_dp() -> Option<f32> {
+    let config = APP.get()?.config();
+    let (w, h) = (config.screen_width_dp()?, config.screen_height_dp()?);
+    Some(w.min(h) as f32)
+}
+
 pub fn mobile() -> bool { !matches!(query_param("quality").as_deref(), Some("full" | "high")) }
 
 const MOBILE_BASE_HEIGHT: u32 = 1080;
