@@ -73,7 +73,10 @@ pub const SPINE_ROWS: [f64; 2] = [0.07, 0.93];
 pub const DISPLAY: (f64, f64) = (-8.7, -6.5);
 /// Selector: Y plays now, X queues, LB/RB browse.
 pub const GAME_SHELF: (f64, f64) = BOOKCASE;
-pub const UP_NEXT: (f64, f64) = (-6.2, -3.6);
+pub const UP_NEXT: (f64, f64) = (-5.8, -3.2);
+/// The browser host's Public / Friends only switch, on the floor between
+/// the display stand and Up next (Joep, 2026-11-26: by the door, narrow).
+pub const SWITCH: f64 = -6.75;
 /// In front of the TV: Y starts or resumes.
 pub const TV_STATION: (f64, f64) = (-2.9, 2.7);
 pub const EXIT_DOOR: f64 = -11.0;

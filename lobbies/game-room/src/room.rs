@@ -50,8 +50,10 @@ pub const PAD_Y: Color = rgb(0.949020, 0.756863, 0.305882);
 pub const CAMERA_BASE: Vec3 = Vec3::new(0.0, 4.7, 20.4);
 pub const CAMERA_TARGET: Vec3 = Vec3::new(0.0, 4.55, 0.0);
 pub const NEXT_SIZE: Vec2 = Vec2::new(2.7, 1.77);
-pub const NEXT_POSITION: Vec3 = Vec3::new(-4.95, 2.38, (l::BACK + 0.92) as f32);
-pub const TITLES_POSITION: Vec3 = Vec3::new(-4.95, 0.8, (l::BACK + 0.96) as f32);
+/// Up next's centre: moved 0.4 m right of Godot's room for the switch.
+pub const NEXT_X: f32 = -4.55;
+pub const NEXT_POSITION: Vec3 = Vec3::new(NEXT_X, 2.38, (l::BACK + 0.92) as f32);
+pub const TITLES_POSITION: Vec3 = Vec3::new(NEXT_X, 0.8, (l::BACK + 0.96) as f32);
 pub const QUEUE_TITLE_ROWS: usize = 4;
 
 /// A Godot StandardMaterial3D, as the exporter describes it.
@@ -465,7 +467,7 @@ pub fn build() -> RoomBuild {
     switch(&mut r);
     r.switch = first..r.dump.instances.len();
     r.hidden.extend(r.switch.clone());
-    r.prompt("privacy", &[("Y", "Friends only")], Vec3::new(l::JUKEBOX as f32, 3.05, -0.6));
+    r.prompt("privacy", &[("Y", "Friends only")], Vec3::new(l::SWITCH as f32, 2.5, -0.6));
     r.prompt("music", &[("LB", "Previous"), ("Y", "Pause"), ("RB", "Next")], Vec3::new(l::JUKEBOX as f32, 3.35, BACK + 1.2));
     r.prompt("exit", &[("Y", "Leave")], Vec3::new(l::EXIT_DOOR as f32, 3.0, BACK + 0.4));
     for (i, x) in l::PROFILE_DOORS.iter().map(|&x| x as f32).enumerate() {
@@ -785,11 +787,11 @@ fn up_next(r: &mut RoomBuild) {
     // One substantial preview for the next game; every later entry is text only.
     let z = BACK + 0.5;
     let frame = m(Color::hex("211d32"), 0.5);
-    r.box_(Vec3::new(2.88, 1.38, 0.65), Vec3::new(-4.95, 0.72, z), &frame);
+    r.box_(Vec3::new(2.88, 1.38, 0.65), Vec3::new(NEXT_X, 0.72, z), &frame);
     r.box_(Vec3::new(2.88, 1.94, 0.16), NEXT_POSITION - Vec3::new(0.0, 0.0, 0.1), &frame);
     // In front of the screen's frame (its face is at BACK + 0.9) and clear
     // of its top while it bobs.
-    r.prompt("queue", &[("Y", "Play"), ("X", "Skip")], Vec3::new(-4.95, 3.6, NEXT_POSITION.z + 0.12));
+    r.prompt("queue", &[("Y", "Play"), ("X", "Skip")], Vec3::new(NEXT_X, 3.6, NEXT_POSITION.z + 0.12));
     let texture = r.screen("queue0", [640, 420], false);
     let preview = r.quad(NEXT_SIZE, NEXT_POSITION, &RoomBuild::screen_material(texture, 1.05));
     r.dump.instances[preview].name = "queue_preview".into();
@@ -959,31 +961,31 @@ fn plaque(r: &mut RoomBuild) {
 /// Where the online switch stands: the jukebox's place, on the floor.
 const SWITCH_Z: f32 = -0.7;
 /// How far the lever travels either side of the middle.
-const SWITCH_THROW: f32 = 0.62;
+const SWITCH_THROW: f32 = 0.3;
 /// The lever's stem and ball centre heights.
-const LEVER_Y: [f32; 2] = [0.62, 1.05];
+const LEVER_Y: [f32; 2] = [0.47, 0.8];
 
-/// The online switch (Joep, 26 November 2026): a big lever on the floor,
-/// thrown left for Public, right for Friends only, both words on the sign
-/// above it. Built hidden; the browser host shows it instead of the jukebox.
+/// The online switch (Joep, 26 November 2026): a lever on the floor by the
+/// door, thrown left for Public, right for Friends only, both words on the
+/// narrow sign above it. Built hidden; the browser host shows it.
 fn switch(r: &mut RoomBuild) {
-    let x = l::JUKEBOX as f32;
+    let x = l::SWITCH as f32;
     let z = SWITCH_Z;
     let dark = mm(Color::hex("221d30"), 0.4, 0.6);
-    r.box_(Vec3::new(1.9, 0.3, 0.7), Vec3::new(x, 0.15, z), &dark);
-    r.box_flat(Vec3::new(1.5, 0.02, 0.16), Vec3::new(x, 0.305, z), &m(Color::hex("0d1020"), 1.0));
+    r.box_(Vec3::new(1.0, 0.22, 0.5), Vec3::new(x, 0.11, z), &dark);
+    r.box_flat(Vec3::new(0.78, 0.02, 0.12), Vec3::new(x, 0.225, z), &m(Color::hex("0d1020"), 1.0));
     r.group = "switch_lever".into();
-    r.cylinder(0.07, 0.7, Vec3::new(x - SWITCH_THROW, LEVER_Y[0], z), &mm(Color::hex("d8d4e8"), 0.15, 0.9));
-    r.sphere(0.22, Vec3::new(x - SWITCH_THROW, LEVER_Y[1], z), &glow(GREEN, 0.3, GREEN, 1.6));
+    r.cylinder(0.05, 0.5, Vec3::new(x - SWITCH_THROW, LEVER_Y[0], z), &mm(Color::hex("d8d4e8"), 0.15, 0.9));
+    r.sphere(0.15, Vec3::new(x - SWITCH_THROW, LEVER_Y[1], z), &glow(GREEN, 0.3, GREEN, 1.6));
     r.group.clear();
     for sx in [-1.0f32, 1.0] {
-        r.box_(Vec3::new(0.07, 1.9, 0.07), Vec3::new(x + sx * 1.1, 1.25, z - 0.3), &dark);
+        r.box_(Vec3::new(0.05, 1.75, 0.05), Vec3::new(x + sx * 0.6, 0.875, z - 0.2), &dark);
     }
-    r.box_(Vec3::new(2.4, 0.95, 0.07), Vec3::new(x, 2.15, z - 0.3), &dark);
+    r.box_(Vec3::new(1.32, 0.56, 0.05), Vec3::new(x, 1.75, z - 0.2), &dark);
     let texture = r.screen("privacy", [480, 184], false);
     let mut material = RoomBuild::screen_material(texture, 1.2);
     material.filter = 0;
-    r.quad(Vec2::new(2.3, 0.88), Vec3::new(x, 2.15, z - 0.26), &material);
+    r.quad(Vec2::new(1.25, 0.48), Vec3::new(x, 1.75, z - 0.17), &material);
 }
 
 /// Where a moving head points at `time` (room.gd's `_process`).
@@ -1266,7 +1268,7 @@ impl RoomBuild {
         // The lever eases over when the switch is thrown.
         let want = if mood.public { 0.0 } else { 1.0 };
         self.switch_at += (want - self.switch_at) * (delta * 10.0).min(1.0);
-        let lever_x = l::JUKEBOX as f32 + SWITCH_THROW * (self.switch_at * 2.0 - 1.0);
+        let lever_x = l::SWITCH as f32 + SWITCH_THROW * (self.switch_at * 2.0 - 1.0);
         for k in self.find("switch_lever") {
             let ball = matches!(self.shapes[k], Shape::Sphere { .. });
             set_transform(&mut self.dump.instances[k].transform, Affine3A::from_translation(Vec3::new(lever_x, LEVER_Y[ball as usize], SWITCH_Z)));
