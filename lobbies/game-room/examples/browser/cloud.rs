@@ -159,6 +159,11 @@ fn show_join(origin: &str, code: &str) {
         if let Some(e) = doc.get_element_by_id("warp-host") { e.set_text_content(Some(host)); }
         if let Some(e) = doc.get_element_by_id("warp-join") { let _ = e.remove_attribute("hidden"); }
         if let Some(root) = doc.document_element() { let _ = root.set_attribute("data-qr", ""); }
+        // The address bar shows the room too (index.html splitscreenSetRoom).
+        use wasm_bindgen::JsCast;
+        if let Some(set) = web_sys::window().and_then(|w| js_sys::Reflect::get(&w, &"splitscreenSetRoom".into()).ok()).and_then(|f| f.dyn_into::<js_sys::Function>().ok()) {
+            let _ = set.call1(&wasm_bindgen::JsValue::NULL, &code.into());
+        }
     }
     #[cfg(target_os = "android")]
     let _ = origin;

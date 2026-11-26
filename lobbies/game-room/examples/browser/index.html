@@ -248,7 +248,25 @@ const show = (f, t) => { bar.style.width = (f * 100).toFixed(1) + '%'; step.text
 // code is on screen from the start; the engine takes the token over
 // (cloud.rs register_early reads window.splitscreenRoom). ?cloud=off: none.
 const cloudParam = new URLSearchParams(location.search).get('cloud');
-window.splitscreenRoom = cloudParam === 'off' ? Promise.resolve(null) : (async () => {
+// The address bar carries the room (?r=CODE) once this page hosts one, so
+// its URL is the room's link to share. Opened on another device (not the
+// room this browser hosts last), it is that join link: the site sends a
+// computer on to follow the room and a phone to the app.
+const sharedRoom = new URLSearchParams(location.search).get('r');
+let hostedRoom = null;
+try { hostedRoom = localStorage.getItem('splitscreen-club-hosted-room'); } catch (e) {}
+const joining = sharedRoom && cloudParam !== 'off' && !new URLSearchParams(location.search).has('follow') && sharedRoom.toUpperCase() !== (hostedRoom || '').toUpperCase();
+const joinUrl = joining && (cloudParam || location.origin).replace(/\/+$/, '') + '/?r=' + encodeURIComponent(sharedRoom);
+if (joinUrl && new URL(joinUrl).pathname !== location.pathname) location.replace(joinUrl);
+window.splitscreenSetRoom = code => {
+  if (!code) return;
+  try { localStorage.setItem('splitscreen-club-hosted-room', code); } catch (e) {}
+  const u = new URL(location.href);
+  if (u.searchParams.get('r') === code) return;
+  u.searchParams.set('r', code);
+  history.replaceState(history.state, '', u);
+};
+window.splitscreenRoom = cloudParam === 'off' || joining ? Promise.resolve(null) : (async () => {
   try {
     const origin = (cloudParam || location.origin).replace(/\/+$/, '');
     let device = null;
@@ -281,6 +299,7 @@ function showJoin(origin, code) {
   document.getElementById('warp-host').textContent = origin.replace(/^[a-z]+:\/\//, '');
   document.getElementById('warp-join').hidden = false;
   document.documentElement.setAttribute('data-qr', '');
+  window.splitscreenSetRoom(code);
 }
 // On Windows the installer itself; elsewhere the site's download section.
 if (/Windows/.test(navigator.userAgent)) { const a = document.getElementById('warp-install-link'); a.href = 'https://splitscreen.club/download/GameNight-Setup.exe'; a.textContent = 'Download Splitscreen Club for Windows'; }
