@@ -6,6 +6,11 @@ local bakedKey=require("west-cape-bake").key
 local meshes = require("cape_mesh")
 local data = default
 local forest = require("forest")
+-- Older club hosts can still run the full-detail woodland.
+local phone = game.phone and game.phone()
+local standMesh = if phone then "assets/plants/forest-stand-low.glb" else "assets/plants/forest-stand.glb"
+local trailMesh = if phone then "assets/plants/trail-copse-low.gltf" else "assets/plants/trail-copse.gltf"
+local slopeMesh = if phone then "assets/plants/street-tree-low.glb" else "assets/plants/street-tree.glb"
 local cape = {}
 local v = vector.create
 function cape.heightIn(terrain,x,z)
@@ -203,7 +208,7 @@ local function plantTrail(c,path,noise,trunk,centers)
                         base=math.min(base,cape.height(tx,tz))
                     end)
                     if not clear then continue end
-                    stage(c,"assets/plants/trail-copse.gltf",{pos=v(cx,base,cz),rot=v(0,yaw,0),
+                    stage(c,trailMesh,{pos=v(cx,base,cz),rot=v(0,yaw,0),
                         size=v(scale,scale,scale),tag="trail-woodland",solid=false})
                     forest.trailTrunks(cx,cz,yaw,scale,function(tx,tz,r,h)
                         trunk(tx,tz,r,base+h,cape.height(tx,tz)-.04)
@@ -280,7 +285,7 @@ local function populate(c,seed,limit)
                 end)
                 if high-low<1.5 then
                     -- Seating the shared mesh at its lowest root keeps every stem planted.
-                    stage(c,"assets/plants/forest-stand.glb",forest.options(x,low,z,yaw,scale))
+                    stage(c,standMesh,forest.options(x,low,z,yaw,scale))
                     c.stands+=1
                     forest.trunks(x,z,yaw,scale,function(tx,tz,r,h)
                         trunk(tx,tz,r,low+h,cape.height(tx,tz)-.04)
@@ -293,7 +298,7 @@ local function populate(c,seed,limit)
                         local tz=z+19*(noise(i,j,n+10)-.5)
                         local y=cape.height(tx,tz)
                         local k=1.22+.78*noise(i,j,n+13)
-                        stage(c,"assets/plants/street-tree.glb",{pos=v(tx,y-.04,tz),rot=v(0,yaw+n*2.4,0),
+                        stage(c,slopeMesh,{pos=v(tx,y-.04,tz),rot=v(0,yaw+n*2.4,0),
                             size=v(k,k,k),solid=false,tag="woodland-tree"})
                         trunk(tx,tz,.20*k,y+6.2*k,y-.04)
                         c.slopeTrees+=1

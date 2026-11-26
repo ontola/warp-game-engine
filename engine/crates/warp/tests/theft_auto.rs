@@ -15,6 +15,22 @@ fn cape_trunks_stream_for_two_seats_and_custom_routes_reach_the_lookout() {
         assert!(g.errors().is_empty(), "{:?}", g.errors());
     };
     settle(&mut game);
+    {
+        let core = game.core();
+        let suffix = if warp::phone() { "-low" } else { "" };
+        for (tag, name, ext) in [
+            ("woodland", "forest-stand", "glb"),
+            ("trail-woodland", "trail-copse", "gltf"),
+            ("woodland-tree", "street-tree", "glb"),
+        ] {
+            let asset = format!("assets/plants/{name}{suffix}.{ext}");
+            let ids = core.world.find(tag);
+            assert!(!ids.is_empty(), "the test route needs {tag}");
+            for id in ids {
+                assert_eq!(core.world.entities[&id].shape.name(), asset);
+            }
+        }
+    }
     game.luau(r#"
         local c=state.city.cape
         assert(c.stands>20 and c.slopeTrees>0 and c.trailStands>=24 and next(c.active)==nil)

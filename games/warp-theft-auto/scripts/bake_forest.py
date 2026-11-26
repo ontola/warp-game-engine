@@ -6,7 +6,7 @@ import re
 import struct
 from pathlib import Path
 
-from bake_plants import Geometry, Model, TONES, add, between, blade, scale, shoot, unit
+from bake_plants import Geometry, Model, TONES, add, between, blade, crown_envelope, scale, shoot, unit
 
 GAME = Path(__file__).resolve().parents[1]
 TAU = math.tau
@@ -16,7 +16,7 @@ def polar(point, heading, reach, rise):
     return add(point, (reach*math.cos(heading), rise, reach*math.sin(heading)))
 
 
-def crown(mesh, center, radius, depth, tilt, rng, tone):
+def crown(mesh, center, radius, depth, tilt, rng, tone, low):
     """A canopy lobe. Irregular skirts and small groups of leaves break the lower edge."""
     sides = 8
     extents = [radius*rng.uniform(.69,1.12) for _ in range(sides)]
@@ -34,18 +34,21 @@ def crown(mesh, center, radius, depth, tilt, rng, tone):
                 triangles.extend(((lo+i,lo+i+sides,lo+k),(lo+k,lo+i+sides,lo+k+sides)))
     for i in range(1,sides-1):
         triangles.extend(((0,i,i+1),(3*sides,3*sides+i+1,3*sides+i)))
-    mesh.patch(tone,points,normals,triangles)
+    lobe = Geometry() if low else mesh
+    lobe.patch(tone,points,normals,triangles)
     # Folded branch tips catch light at the silhouette and underneath the crown.
     for i in [0,2,5]:
         a = TAU*i/sides+tilt
         tip = polar(center,a,extents[i]*.74,-depth*.27)
         for da in [-.34,.3]:
             angle = a + da
-            blade(mesh,tip,(math.cos(angle),rng.uniform(-.76,.12),math.sin(angle)),
+            blade(lobe,tip,(math.cos(angle),rng.uniform(-.76,.12),math.sin(angle)),
                   radius*.22,radius*rng.uniform(.34,.58),tone)
+    if low:
+        crown_envelope(mesh, lobe.groups[tone][0], tone, 5)
 
 
-def pine_or_birch(birch):
+def pine_or_birch(birch, low=False):
     rng = random.Random(142 if birch else 483)
     g = Geometry()
     wood = "birch bark" if birch else "bark"
@@ -53,21 +56,27 @@ def pine_or_birch(birch):
     trunk = [(0,0,0),(.03,1.2,0),(-.05,2.8,.03),(.08,4.1,.02),
              (.21,5.45,-.13),(.11,6.70,-.04),(-.13,h-.90,-.20)]
     r = .22 if birch else .32
-    shoot(g,trunk,[r,r*.85,r*.68,r*.58,r*.43,r*.24,.048],7,wood)
+    if low:
+        shoot(g,[trunk[i] for i in (0,3,6)],[r,r*.58,.048],4,wood)
+    else:
+        shoot(g,trunk,[r,r*.85,r*.68,r*.58,r*.43,r*.24,.048],7,wood)
     for i in range(6):
         a = 2.40*i+rng.uniform(-.28,.28)
         base = trunk[2+i//2]
         reach = (1.65 if birch else 2.24)*rng.uniform(.72,1.06) * (1-.035*i)
         top = polar(base,a,reach,(2.00+i*.048) if birch else (2.55+i*.077))
         elbow = polar(base,a,reach*.49,(top[1]-base[1])*.34)
-        shoot(g,[base,elbow,top],[r*.57-i*.007,.079,.025],5,wood)
+        if low:
+            shoot(g,[base,top],[r*.57-i*.007,.025],3,wood)
+        else:
+            shoot(g,[base,elbow,top],[r*.57-i*.007,.079,.025],5,wood)
         size = (1.31 if birch else 1.85)*rng.uniform(.75,1.05)
         depth = size*(1.13 if birch else .63)
         tone = ("sage" if i%3==1 else "sun leaf") if birch else ("pine tips" if i%4==1 else "pine")
-        crown(g,top,size,depth,a,rng,tone)
+        crown(g,top,size,depth,a,rng,tone,low)
     apex = add(trunk[-1],(.10,1.,.08))
-    shoot(g,[trunk[-1],apex],[.059,.020],5,wood)
-    crown(g,apex,1.27 if birch else 1.54,1.03 if birch else .69,1.2,rng,"sage" if birch else "pine")
+    shoot(g,[trunk[-1],apex],[.059,.020],3 if low else 5,wood)
+    crown(g,apex,1.27 if birch else 1.54,1.03 if birch else .69,1.2,rng,"sage" if birch else "pine",low)
     return g
 
 
@@ -96,20 +105,23 @@ def fir_bough(g, base, length, width, a, droop, rng):
     g.patch("deep leaf",vs,ns,ix)
 
 
-def fir():
+def fir(low=False):
     rng = random.Random(553)
     g = Geometry()
     shoot(g,[(0,0,0),(.04,2.45,.02),(-.08,6.,-.03),(.04,9.,-.04),(.08,12.2,0)],
-          [.29,.205,.14,.083,.012],7)
+          [.29,.205,.14,.083,.012],4 if low else 7)
     for ring in range(8):
         height = 3.5 + ring*1.19
         reach = (3.03-ring*.32)*rng.uniform(.91,1.06)
         count = 5 if ring<5 else 4
+        whorl = Geometry() if low else g
         for arm in range(count):
             a = TAU*(arm/count + ring*.217) + rng.uniform(-.15,.15)
             length = reach*rng.uniform(.76,1.14)
             base = (.035*math.sin(ring),height+rng.uniform(-.26,.26),0)
-            fir_bough(g,base,length,length*.37,a,.24+.46*length,rng)
+            fir_bough(whorl,base,length,length*.37,a,.24+.46*length,rng)
+        if low:
+            crown_envelope(g, whorl.groups["deep leaf"][0], "deep leaf", count)
     return g
 
 
@@ -134,7 +146,7 @@ def understory():
     return g
 
 
-def stand():
+def stand(low=False):
     # The same root records drive the collision query in Luau. Include only
     # the mesh/scene placements here; no renderer or physics state is cooked.
     recipe = (GAME/"forest.module.luau").read_text()
@@ -145,9 +157,11 @@ def stand():
     m = Model()
     # These two extra tones use the same physically matte materials as the street.
     TONES.update({"pine":(.062,.139,.073),"pine tips":(.101,.192,.093),"birch bark":(.50,.46,.34)})
-    parts = {"pine":m.part(pine_or_birch(False)), "birch":m.part(pine_or_birch(True)), "fir":m.part(fir())}
+    parts = {"pine":m.part(pine_or_birch(False,low)), "birch":m.part(pine_or_birch(True,low)), "fir":m.part(fir(low))}
     for x,z,k,degrees,kind in roots:
         m.place(parts[kind],(float(x),0,float(z)),math.radians(float(degrees)),size=(float(k),)*3)
+    if low:
+        return m
     fern = m.part(understory())
     rng = random.Random(3174)
     for _ in range(15):
@@ -164,10 +178,10 @@ def stand():
     return m
 
 
-def trail_copse():
+def trail_copse(source_name="forest-stand.glb"):
     # Reuse the indexed positions, normals and materials already downloaded with
     # forest-stand. The second glTF describes only a narrow arrangement of them.
-    source = (GAME / "assets/plants/forest-stand.glb").read_bytes()
+    source = (GAME / "assets/plants" / source_name).read_bytes()
     json_bytes = struct.unpack_from("<I", source, 12)[0]
     doc = json.loads(source[20:20 + json_bytes])
     nodes = doc["nodes"]
@@ -176,7 +190,7 @@ def trail_copse():
     assert len(roots) == 4
     doc["nodes"] = [dict(nodes[int(i)-1], translation=[float(x),0,float(z)]) for i,x,z in roots]
     doc["scenes"] = [{"nodes": list(range(len(roots)))}]
-    doc["buffers"] = [{"uri": "forest-stand.glb", "byteLength": len(source)}]
+    doc["buffers"] = [{"uri": source_name, "byteLength": len(source)}]
     for view in doc["bufferViews"]:
         view["byteOffset"] += 28 + json_bytes
     return json.dumps(doc, separators=(",", ":")).encode()
@@ -185,3 +199,5 @@ def trail_copse():
 if __name__ == "__main__":
     stand().save("forest-stand",(1,1,1))
     (GAME / "assets/plants/trail-copse.gltf").write_bytes(trail_copse())
+    stand(low=True).save("forest-stand-low",(1,1,1),closed=True)
+    (GAME / "assets/plants/trail-copse-low.gltf").write_bytes(trail_copse("forest-stand-low.glb"))
