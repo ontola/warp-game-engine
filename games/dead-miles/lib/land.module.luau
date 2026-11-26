@@ -1036,6 +1036,36 @@ local function pavement(c, sd, z0, z1, color, ...)
 	end
 end
 
+-- The way back, west of the start (x < 0): the same street running on
+-- into the dark, closed off by a barricade, so the view at the start never
+-- looks past the edge of the land. Adds to chunk c (the first one) and
+-- rolls no dice, so the land after it stays the same.
+function M.lead_in(c, length)
+	length = length or 40
+	local biome = c.biome
+	local look = LOOKS[biome]
+	local x0, x1 = -length, 0
+	ZC = 0
+	local w = { x0 = x0, x1 = x1, ents = c.ents }
+	add(w, mat.spawn("cube", { pos = v((x0 + x1) / 2, -0.5, 0), size = v(length, 1, M.HALF_Z * 2 + 30), color = look.ground, roughness = 1, solid = false, tag = "ground" }))
+	local road = if biome == "city" then 3.2 else 2.6
+	flat(w, x0, -road, x1, road, 0.004, look.path)
+	if biome == "city" or biome == "suburb" then
+		local outer = if biome == "city" then 4.4 else 3.6
+		for _, sd in { -1, 1 } do
+			flat(w, x0, sd * road, x1, sd * outer, 0.008, look.edge)
+			deco(w, "cube", v((x0 + x1) / 2, 0.05, sd * (road + 0.07)), v(length, 0.1, 0.16), KERB, { roughness = 0.95 })
+		end
+		for x = x0, x1 - 2, 4 do flat(w, x, -0.08, x + 2, 0.08, 0.009, "#d8d0a0") end
+	end
+	-- The barricade: concrete blocks across the road, one knocked askew.
+	for i = -3, 3 do
+		local z = i * 1.25
+		local skew = if i == 1 then 0.35 else 0
+		deco(w, "cube", v(-1.6 - (if i % 2 == 0 then 0 else 0.25), 0.45, z), v(0.7, 0.9, 1.15), KERB, { roughness = 0.95, rot = v(0, skew, 0) })
+	end
+end
+
 -- zc: this chunk's path centre; zc_prev: the one before (a turn between).
 function M.chunk(index, day, in_day, zc, zc_prev)
 	zc = zc or 0

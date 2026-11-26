@@ -22,6 +22,7 @@ fn cape_trunks_stream_for_two_seats_and_custom_routes_reach_the_lookout() {
             ("woodland", "forest-stand", "glb"),
             ("trail-woodland", "trail-copse", "gltf"),
             ("woodland-tree", "street-tree", "glb"),
+            ("street-tree", "street-tree", "glb"),
         ] {
             let asset = format!("assets/plants/{name}{suffix}.{ext}");
             let ids = core.world.find(tag);
@@ -739,4 +740,45 @@ fn reversing_sedan_headlight_stays_ahead_of_its_interpolated_bumper() {
     }
     assert!(reversed_fast && turned, "exercise reverse at 34 km/h through a turn");
     assert!(game.errors().is_empty(), "{:?}", game.errors());
+}
+
+#[test]
+fn shipped_trees_use_the_vegetation_cook_and_fit_the_city_triangle_budgets() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../games/warp-theft-auto/assets/plants");
+    for (suffix, tier, stand_cap, trail_cap, street_cap) in [
+        ("", "standard", 14_270, 3_048, 7_294),
+        ("-low", "phone", 1_810, 468, 256),
+    ] {
+        for (name, ext, cap) in [
+            ("forest-stand", "glb", stand_cap),
+            ("trail-copse", "gltf", trail_cap),
+            ("street-tree", "glb", street_cap),
+        ] {
+            let bytes = std::fs::read(root.join(format!("{name}{suffix}.{ext}"))).unwrap();
+            let json = if ext == "glb" {
+                assert_eq!(&bytes[..4], b"glTF");
+                let len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+                &bytes[20..20 + len]
+            } else {
+                bytes.as_slice()
+            };
+            let doc: serde_json::Value = serde_json::from_slice(json).unwrap();
+            let cook = &doc["asset"]["extras"]["warpVegetation"];
+            assert_eq!(cook["tier"], tier, "{name}{suffix} needs a {tier} cook");
+            assert_eq!(cook["trees"].as_array().unwrap().len(), if name == "street-tree" { 1 } else { 3 });
+            for tree in cook["trees"].as_array().unwrap() {
+                assert!(matches!(tree["source"].as_str(), Some("plant_growth" | "plant_recipe")));
+                assert!(tree["source_leaf_samples"].as_u64().unwrap() > 0);
+            }
+            let mut triangles = 0;
+            for node in doc["nodes"].as_array().unwrap() {
+                let Some(mesh) = node["mesh"].as_u64() else { continue };
+                for prim in doc["meshes"][mesh as usize]["primitives"].as_array().unwrap() {
+                    let index = prim["indices"].as_u64().unwrap() as usize;
+                    triangles += doc["accessors"][index]["count"].as_u64().unwrap() / 3;
+                }
+            }
+            assert!(triangles > 0 && triangles <= cap, "{name}{suffix}: {triangles} triangles, budget {cap}");
+        }
+    }
 }

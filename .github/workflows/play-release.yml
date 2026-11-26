@@ -1,0 +1,108 @@
+# The /play/ release pipeline (engine/docs/play-release.md). Every push to
+# main that touches the browser host builds the Game Room bundle from that
+# commit, runs the release checks (engine/tools/play-release.py, including
+# the two-seat Apache in Warp Theft Auto and its native crew tests) and, when
+# all pass, publishes the candidate as the prerelease play-<12 hex> with
+# warp-web.tar.gz and release.json. Production installs a candidate only
+# with gamenight-internal deploy/cloud/promote-play.py, after Joep's yes in
+# the prod monitor thread; this workflow never touches the server.
+name: Play release candidate
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'engine/**'
+      - 'games/**'
+      - 'lobbies/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/play-release.yml'
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: 'Commit on main to build (default: the head of main)'
+        required: false
+permissions:
+  contents: write
+concurrency:
+  # A newer push replaces a candidate still building; a dispatched commit builds on its own.
+  group: play-release-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.commit || 'main' }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.commit || github.sha }}
+          fetch-depth: 0
+      - name: Commit on main
+        id: commit
+        run: |
+          git fetch -q origin main
+          sha=$(git rev-parse HEAD)
+          git merge-base --is-ancestor "$sha" origin/main || { echo "$sha is not on main"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "tag=play-${sha:0:12}" >> "$GITHUB_OUTPUT"
+          echo "bindgen=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | sed -n 's/^version = "\(.*\)"/\1/p')" >> "$GITHUB_OUTPUT"
+      - name: Already released
+        id: exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "found=$(gh release view '${{ steps.commit.outputs.tag }}' >/dev/null 2>&1 && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - name: Toolchain (wasm32, Luau's C++ library, sound and pads for the native tests)
+        if: steps.exists.outputs.found == 'false'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q clang lld llvm wasi-libc libc++-dev-wasm32 libclang-rt-dev-wasm32 libasound2-dev libudev-dev
+          rustup toolchain install stable --profile minimal --target wasm32-unknown-unknown
+          rustup default stable
+      - if: steps.exists.outputs.found == 'false'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@${{ steps.commit.outputs.bindgen }}
+      - if: steps.exists.outputs.found == 'false'
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: play-release
+          save-if: ${{ github.event_name == 'push' }}
+      - name: Build and check
+        if: steps.exists.outputs.found == 'false'
+        run: python3 engine/tools/play-release.py build --native-tests
+      - name: Check report
+        if: always() && steps.exists.outputs.found == 'false'
+        run: |
+          [ -f build/play-release/release.json ] || exit 0
+          python3 - >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          import json
+          r = json.load(open('build/play-release/release.json'))
+          print(f"### /play/ candidate {r['commit'][:12]}: {'all checks passed' if r['passed'] else 'checks FAILED'}\n")
+          for c in r['checks']:
+              print(f"- {'ok' if c['ok'] else '**FAIL**'} `{c['name']}`: {(c['detail'].splitlines() or [''])[0]}")
+          EOF
+      - name: Publish the candidate
+        if: steps.exists.outputs.found == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha=${{ steps.commit.outputs.sha }}
+          subject=$(git log -1 --format=%s "$sha")
+          cat > notes.md <<EOF
+          /play/ release candidate for \`$sha\` ($subject).
+
+          All release checks passed (release.json). Install on production only via
+          gamenight-internal deploy/cloud/promote-play.py, after Joep's yes:
+
+              python3 /opt/gamenight-cloud/promote-play.py $sha
+          EOF
+          gh release create '${{ steps.commit.outputs.tag }}' --prerelease --target "$sha" \
+            --title "/play/ ${sha:0:12}" --notes-file notes.md \
+            build/play-release/warp-web.tar.gz build/play-release/warp-web.tar.gz.sha256 build/play-release/release.json
+      - name: Keep the newest 15 candidates
+        if: steps.exists.outputs.found == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release list --limit 200 --json tagName,createdAt --jq '[.[] | select(.tagName | startswith("play-"))] | sort_by(.createdAt) | reverse | .[15:] | .[].tagName' |
+            while read -r tag; do gh release delete "$tag" --yes --cleanup-tag || true; done

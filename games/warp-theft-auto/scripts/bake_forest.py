@@ -1,128 +1,99 @@
-"""Rebuild the shared woodland stand. Run with Python 3; no textures or external packages."""
+"""Bake the game trees offline from Warp Vegetation species.
+
+From the repository root run: python games/warp-theft-auto/scripts/bake_forest.py
+The browser and native game load the resulting shared glTF meshes.
+"""
+import argparse
 import json
 import math
+import os
 import random
 import re
 import struct
+import subprocess
+import tempfile
 from pathlib import Path
 
-from bake_plants import Geometry, Model, TONES, add, between, blade, crown_envelope, scale, shoot, unit
+from bake_plants import Geometry, Model, TONES, between, blade, shoot, soil
 
 GAME = Path(__file__).resolve().parents[1]
-TAU = math.tau
+REPO = GAME.parents[1]
+SWATCHES = {
+    "pine": (("pine bark", (.19, .128, .072)), ("pine shadow", (.044, .100, .049)),
+             ("pine leaf", (.062, .139, .073)), ("pine tips", (.098, .184, .091))),
+    "fir": (("spruce bark", (.193, .139, .083)), ("spruce shadow", (.046, .102, .052)),
+            ("spruce leaf", (.070, .145, .066)), ("spruce tips", (.100, .183, .083))),
+    "birch": (("birch bark", (.50, .46, .34)), ("birch shadow", (.088, .152, .052)),
+              ("birch leaf", (.151, .242, .075)), ("birch tips", (.182, .273, .100))),
+    "street": (("street bark", (.22, .153, .093)), ("street shadow", (.075, .145, .045)),
+               ("street leaf", (.117, .206, .058)), ("street tips", (.155, .248, .075))),
+}
+# Species, seed, development age and per-tree triangle caps (standard, phone).
+# The existing root transforms in forest.module.luau vary size and heading.
+RECIPES = {
+    "pine": ("pine", 18, 14, 850, 115),
+    "fir": ("spruce", 553, 15, 715, 115),
+    "birch": ("birch", 142, 14, 680, 112),
+    "street": ("broadleaf", 35, 14, 1500, 190),
+}
 
 
-def polar(point, heading, reach, rise):
-    return add(point, (reach*math.cos(heading), rise, reach*math.sin(heading)))
+def read_planting():
+    source = (GAME / "forest.module.luau").read_text()
+    number = r"(-?[\d.]+)"
+    roots = re.findall(r"\{" + ",".join([number] * 4) + r',"([a-z]+)"\}', source)
+    if not roots or any(row[-1] not in RECIPES for row in roots):
+        raise ValueError("Unknown or empty forest planting")
+
+    def dimensions(key):
+        table = re.search(r"local " + key + r" = \{([^}]+)\}", source).group(1)
+        return {kind: float(value) for kind, value in re.findall(r"([a-z]+)=" + number, table)}
+
+    return roots, dimensions("radius"), dimensions("height")
 
 
-def crown(mesh, center, radius, depth, tilt, rng, tone, low):
-    """A canopy lobe. Irregular skirts and small groups of leaves break the lower edge."""
-    sides = 8
-    extents = [radius*rng.uniform(.69,1.12) for _ in range(sides)]
-    points, normals, triangles = [], [], []
-    for j,(y,width) in enumerate([(-.46,.37),(-.20,1.0),(.43,.77),(.79,.22)]):
-        for i,r in enumerate(extents):
-            a = TAU*i/sides + tilt + .12*(j%2)
-            h = depth*(y+rng.uniform(-.16,.16))
-            x,z = math.cos(a),math.sin(a)
-            points.append(add(center,(x*r*width,h+.11*r*x,z*r*width)))
-            normals.append(unit((x,[-.82,-.18,.58,1.65][j],z)))
-            if j:
-                lo = (j-1)*sides
-                k = (i+1)%sides
-                triangles.extend(((lo+i,lo+i+sides,lo+k),(lo+k,lo+i+sides,lo+k+sides)))
-    for i in range(1,sides-1):
-        triangles.extend(((0,i,i+1),(3*sides,3*sides+i+1,3*sides+i)))
-    lobe = Geometry() if low else mesh
-    lobe.patch(tone,points,normals,triangles)
-    # Folded branch tips catch light at the silhouette and underneath the crown.
-    for i in [0,2,5]:
-        a = TAU*i/sides+tilt
-        tip = polar(center,a,extents[i]*.74,-depth*.27)
-        for da in [-.34,.3]:
-            angle = a + da
-            blade(lobe,tip,(math.cos(angle),rng.uniform(-.76,.12),math.sin(angle)),
-                  radius*.22,radius*rng.uniform(.34,.58),tone)
-    if low:
-        crown_envelope(mesh, lobe.groups[tone][0], tone, 5)
+def cook_trees(executable, radius, height):
+    trees = {}
+    with tempfile.TemporaryDirectory() as directory:
+        for kind, (species, seed, age, regular, phone) in RECIPES.items():
+            output = Path(directory) / (kind + ".json")
+            subprocess.run([str(executable), species, str(seed), str(age), str(height[kind]),
+                            str(radius[kind]), str(regular), str(phone), str(output)], check=True)
+            tree = json.loads(output.read_text())
+            metadata = {key: tree[key] for key in ("species", "botanical_name", "source", "age", "seed",
+                                                   "height", "trunk_radius", "source_leaf_samples")}
+            for tier, budget in (("standard", regular), ("phone", phone)):
+                parts = tree[tier]
+                count = sum(len(parts[i]["indices"]) // 3 for i in ("wood", "foliage"))
+                vertices = [p for i in ("wood", "foliage") for p in parts[i]["positions"]]
+                ymin, ymax = min(p[1] for p in vertices), max(p[1] for p in vertices)
+                if (not 0 < count <= budget or abs(ymin) > 0.06 or
+                        abs(ymax - height[kind]) > 0.04 * height[kind]):
+                    raise ValueError(f"{kind}/{tier}: {count}/{budget} tris, Y range {ymin}..{ymax}")
+            trees[kind] = (tree, metadata)
+    return trees
 
 
-def pine_or_birch(birch, low=False):
-    rng = random.Random(142 if birch else 483)
-    g = Geometry()
-    wood = "birch bark" if birch else "bark"
-    h = 8.65 if birch else 10.1
-    trunk = [(0,0,0),(.03,1.2,0),(-.05,2.8,.03),(.08,4.1,.02),
-             (.21,5.45,-.13),(.11,6.70,-.04),(-.13,h-.90,-.20)]
-    r = .22 if birch else .32
-    if low:
-        shoot(g,[trunk[i] for i in (0,3,6)],[r,r*.58,.048],4,wood)
-    else:
-        shoot(g,trunk,[r,r*.85,r*.68,r*.58,r*.43,r*.24,.048],7,wood)
-    for i in range(6):
-        a = 2.40*i+rng.uniform(-.28,.28)
-        base = trunk[2+i//2]
-        reach = (1.65 if birch else 2.24)*rng.uniform(.72,1.06) * (1-.035*i)
-        top = polar(base,a,reach,(2.00+i*.048) if birch else (2.55+i*.077))
-        elbow = polar(base,a,reach*.49,(top[1]-base[1])*.34)
-        if low:
-            shoot(g,[base,top],[r*.57-i*.007,.025],3,wood)
-        else:
-            shoot(g,[base,elbow,top],[r*.57-i*.007,.079,.025],5,wood)
-        size = (1.31 if birch else 1.85)*rng.uniform(.75,1.05)
-        depth = size*(1.13 if birch else .63)
-        tone = ("sage" if i%3==1 else "sun leaf") if birch else ("pine tips" if i%4==1 else "pine")
-        crown(g,top,size,depth,a,rng,tone,low)
-    apex = add(trunk[-1],(.10,1.,.08))
-    shoot(g,[trunk[-1],apex],[.059,.020],3 if low else 5,wood)
-    crown(g,apex,1.27 if birch else 1.54,1.03 if birch else .69,1.2,rng,"sage" if birch else "pine",low)
-    return g
-
-
-def fir_bough(g, base, length, width, a, droop, rng):
-    # A spreading twig fan with a raised midrib and individual serrated tips.
-    normal = (math.cos(a),0,math.sin(a))
-    side = (-normal[2],0,normal[0])
-    vs, ns, ix = [], [], []
-    for j in range(5):
-        t = j/5
-        reach = length*t
-        center = add(base,add(scale(normal,reach),(0,-droop*t+.22*t*t,0)))
-        breadth = width*(.23+math.sin(math.pi*(.06+t*.88)))*(.68 if j%2 else 1.)
-        for edge in [-1,0,1]:
-            tip = add(center,scale(side,breadth*edge*rng.uniform(.81,1.13)))
-            vs.append(add(tip,(0,(.28 if edge==0 else -.18)*(length/2),0)))
-            ns.append(unit(add(scale(normal,.19),add((0,1,0),scale(side,.79*edge)))))
-        if j:
-            i = (j-1)*3
-            ix.extend([(i,i+1,i+3),(i+1,i+4,i+3),(i+1,i+2,i+4),(i+2,i+5,i+4)])
-    vs.append(add(base,add(scale(normal,length),(0,.19-droop,0))))
-    ns.append(unit(add(normal,(0,1,0))))
-    ix.extend(((12,13,15),(13,14,15)))
-    # The fan can be seen from the trail and from above. Use the existing
-    # opaque two-sided leaf material convention from the street vegetation.
-    g.patch("deep leaf",vs,ns,ix)
-
-
-def fir(low=False):
-    rng = random.Random(553)
-    g = Geometry()
-    shoot(g,[(0,0,0),(.04,2.45,.02),(-.08,6.,-.03),(.04,9.,-.04),(.08,12.2,0)],
-          [.29,.205,.14,.083,.012],4 if low else 7)
-    for ring in range(8):
-        height = 3.5 + ring*1.19
-        reach = (3.03-ring*.32)*rng.uniform(.91,1.06)
-        count = 5 if ring<5 else 4
-        whorl = Geometry() if low else g
-        for arm in range(count):
-            a = TAU*(arm/count + ring*.217) + rng.uniform(-.15,.15)
-            length = reach*rng.uniform(.76,1.14)
-            base = (.035*math.sin(ring),height+rng.uniform(-.26,.26),0)
-            fir_bough(whorl,base,length,length*.37,a,.24+.46*length,rng)
-        if low:
-            crown_envelope(g, whorl.groups["deep leaf"][0], "deep leaf", count)
-    return g
+def geometry(parts, kind):
+    """Use the engine's indexed trunk, boughs and foliage; keep opaque surfaces single-sided."""
+    mesh = Geometry()
+    palette = SWATCHES[kind]
+    TONES.update(palette)
+    for key in ("wood", "foliage"):
+        src = parts[key]
+        points, normals, indices = src["positions"], src["normals"], src["indices"]
+        if not points or len(normals) != len(points) or len(indices) % 3:
+            raise ValueError(f"Invalid geometry on {kind} {key}")
+        groups = {}
+        for i in range(0, len(indices), 3):
+            tone = 0 if key == "wood" else 1 + src["tones"][i // 3]
+            groups.setdefault(palette[tone][0], []).append(indices[i:i+3])
+        for tone, faces in groups.items():
+            ids = dict.fromkeys(idx for face in faces for idx in face)
+            remap = {idx: local for local, idx in enumerate(ids)}
+            mesh.patch(tone, [points[idx] for idx in ids], [normals[idx] for idx in ids],
+                       [tuple(remap[idx] for idx in face) for face in faces])
+    return mesh
 
 
 def understory():
@@ -146,38 +117,6 @@ def understory():
     return g
 
 
-def stand(low=False):
-    # The same root records drive the collision query in Luau. Include only
-    # the mesh/scene placements here; no renderer or physics state is cooked.
-    recipe = (GAME/"forest.module.luau").read_text()
-    decimal = r"(-?[\d.]+)"
-    pattern = r"\{" + ",".join([decimal]*4) + r',"(pine|birch|fir)"\}'
-    roots = re.findall(pattern,recipe)
-    assert len(roots)==15
-    m = Model()
-    # These two extra tones use the same physically matte materials as the street.
-    TONES.update({"pine":(.062,.139,.073),"pine tips":(.101,.192,.093),"birch bark":(.50,.46,.34)})
-    parts = {"pine":m.part(pine_or_birch(False,low)), "birch":m.part(pine_or_birch(True,low)), "fir":m.part(fir(low))}
-    for x,z,k,degrees,kind in roots:
-        m.place(parts[kind],(float(x),0,float(z)),math.radians(float(degrees)),size=(float(k),)*3)
-    if low:
-        return m
-    fern = m.part(understory())
-    rng = random.Random(3174)
-    for _ in range(15):
-        x,z = rng.uniform(-10.7,10.7),rng.uniform(-10.7,10.7)
-        k = rng.uniform(.7,1.30)
-        m.place(fern,(x,0,z),rng.random()*TAU,size=(k,k,k))
-    # Crown details are centimetres across. A 1/32 m grid compresses their
-    # float attributes while keeping finer stem and ground-fern geometry intact.
-    for geometry in m.meshes[:3]:
-        for tone,(points,normals,_) in geometry.groups.items():
-            if "bark" not in tone:
-                points[:] = [tuple(round(v*32)/32 for v in p) for p in points]
-                normals[:] = [unit(tuple(round(v*6)/6 for v in n)) for n in normals]
-    return m
-
-
 def trail_copse(source_name="forest-stand.glb"):
     # Reuse the indexed positions, normals and materials already downloaded with
     # forest-stand. The second glTF describes only a narrow arrangement of them.
@@ -196,8 +135,48 @@ def trail_copse(source_name="forest-stand.glb"):
     return json.dumps(doc, separators=(",", ":")).encode()
 
 
+def write_models(trees, roots, tier):
+    low = tier == "phone"
+    suffix = "-low" if low else ""
+    output = GAME / "assets/plants"
+    output.mkdir(parents=True, exist_ok=True)
+    models = {kind: geometry(tree[tier], kind) for kind, (tree, _) in trees.items()}
+    stand = Model()
+    parts = {kind: stand.part(models[kind]) for kind in ("pine", "birch", "fir")}
+    for x, z, size, heading, kind in roots:
+        stand.place(parts[kind], (float(x), 0, float(z)), math.radians(float(heading)),
+                    size=(float(size),) * 3)
+    if not low:
+        fern = stand.part(understory())
+        rng = random.Random(3174)
+        for _ in range(15):
+            x, z = rng.uniform(-10.7, 10.7), rng.uniform(-10.7, 10.7)
+            size = rng.uniform(.7, 1.30)
+            stand.place(fern, (x, 0, z), rng.random() * math.tau, size=(size,) * 3)
+    stand_name = "forest-stand" + suffix
+    stand.save(stand_name, (1, 1, 1), {"tier": tier, "trees": [trees[k][1] for k in parts]})
+    (output / ("trail-copse" + suffix + ".gltf")).write_bytes(trail_copse(stand_name + ".glb"))
+
+    street = Model()
+    street.place(street.part(models["street"]), (0, 0, 0))
+    bed = Geometry()
+    soil(bed, 1.12, 1.12)
+    street.place(street.part(bed), (0, 0, 0), size=(.90, .875, .90))
+    street.save("street-tree" + suffix, (1, 1, 1),
+                {"tier": tier, "trees": [trees["street"][1]]})
+
+
 if __name__ == "__main__":
-    stand().save("forest-stand",(1,1,1))
-    (GAME / "assets/plants/trail-copse.gltf").write_bytes(trail_copse())
-    stand(low=True).save("forest-stand-low",(1,1,1),closed=True)
-    (GAME / "assets/plants/trail-copse-low.gltf").write_bytes(trail_copse("forest-stand-low.glb"))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--baker", type=Path, help="Use an existing bake_woodland_tree executable")
+    args = parser.parse_args()
+    if args.baker:
+        executable = args.baker.resolve(strict=True)
+    else:
+        subprocess.run(["cargo", "build", "--locked", "--release", "-p", "render", "--example",
+                        "bake_woodland_tree"], cwd=REPO, check=True)
+        executable = REPO / "target/release/examples" / ("bake_woodland_tree" + (".exe" if os.name == "nt" else ""))
+    roots, radius, height = read_planting()
+    trees = cook_trees(executable, radius, height)
+    for tier in ("standard", "phone"):
+        write_models(trees, roots, tier)

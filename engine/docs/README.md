@@ -33,6 +33,7 @@ and session notes are in the [development log](log/README.md).
 | [Workspace and crates](workspace.md) | The repository layout, the engine crates, the game packages and the build profiles. |
 | [Building and running](building-and-running.md) | Checks and tests, running the games, software rendering, scripted playtests, golden images, environment variables. |
 | [Running in a browser](browser.md) | terrain_fly built for wasm32 and WebGPU: building it, what a browser needs, how that build differs, what is open. |
+| [Releasing splitscreen.club/play/](play-release.md) | The only way /play/ changes: release candidates from main, the release checks (two-seat Apache), promote-play.py on the host, previews under /playtests/. |
 | [Store preview clips](store-previews.md) | A game's five-second store clip from a recipe in its folder, rendered on the GPU and published through the API with a publishing key. |
 | [Parenting and attachment points](parenting.md) | Luau entities, native model sockets and posed instance groups. |
 | [Making a game](making-a-game.md) | The `app::Game` trait, the loop, building a scene, costs and gotchas. Starts from the `hello` example. |

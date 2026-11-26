@@ -10,6 +10,17 @@ Start with [engine/docs/README.md](engine/docs/README.md) (the docs index),
 
 One Rust workspace, with Cargo.toml and Cargo.lock at the repository root.
 
+## Publishing splitscreen.club/play/
+
+Never copy, rsync, untar or symlink anything into `/play/` or
+`/srv/gamenight/play-releases/` on the server, from any machine or session.
+`/play/` only changes through the release pipeline in
+[engine/docs/play-release.md](engine/docs/play-release.md): push to main, the
+*Play release candidate* workflow builds and checks that commit (including the
+two-seat Apache in Warp Theft Auto), and the prod monitor installs the
+candidate with `promote-play.py` after Joep's yes. Previews go to
+`/playtests/GAME/NAME/` (same document, section 3).
+
 ## Map
 
 | Path | What it is |

@@ -284,9 +284,10 @@ local function park(s,x,z,plaza,lawns)
 end
 
 -- Each placement shares a small mesh. Only the woody trunk blocks movement.
+local streetTreeMesh = if game.phone and game.phone() then "assets/plants/street-tree-low.glb" else "assets/plants/street-tree.glb"
 local function streetTree(s,x,z,yaw,scale,garden)
     local pos=v(x,if garden then .036 else 0,z)
-    world.spawn("assets/plants/street-tree.glb",{pos=pos,rot=v(0,yaw,0),
+    world.spawn(streetTreeMesh,{pos=pos,rot=v(0,yaw,0),
         size=v(scale,scale,scale),solid=false,tag="street-tree"})
     obstacle(s,x,1.65*scale,z,.38*scale,3.3*scale,.38*scale,"#635445",nil,{visible=false})
     if garden then table.insert(garden.cutouts,{pos=pos,width=1.35*scale,depth=1.35*scale}) end
