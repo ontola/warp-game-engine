@@ -49,7 +49,7 @@ end
 
 local function clearMuzzle(ctx)
 	if ctx.flash then world.remove(ctx.flash) end
-	ctx.flash,ctx.muzzleAge,ctx.muzzleScale,ctx.muzzleLight=nil,nil,nil,nil
+	ctx.flash,ctx.muzzleAge,ctx.muzzleScale,ctx.muzzleLight,ctx.vehicleMuzzle=nil,nil,nil,nil,nil
 end
 
 function sidearm.remove(ctx)
@@ -75,7 +75,7 @@ end
 local MUZZLE_LIFE=.075
 function sidearm.muzzleTick(ctx,dt)
 	if not ctx.flash then return end
-	if not ctx.muzzleAge or not ctx.prop then clearMuzzle(ctx); return end
+	if not ctx.muzzleAge or (not ctx.prop and not ctx.vehicleMuzzle) then clearMuzzle(ctx); return end
 	ctx.muzzleAge+=dt
 	local u=ctx.muzzleAge/MUZZLE_LIFE
 	if u>=1 then clearMuzzle(ctx); return end
@@ -85,6 +85,14 @@ function sidearm.muzzleTick(ctx,dt)
 	local length=ctx.muzzleScale*(.74+.57*spread)*cool
 	world.set(ctx.flash,{size=v(width,width,length)})
 	ctx.muzzleLight=ctx.muzzleScale*5200*(1-u)^2
+end
+
+function sidearm.mountedMuzzle(ctx,mount,size,hiddenView)
+	clearMuzzle(ctx)
+	ctx.muzzleScale,ctx.muzzleAge,ctx.vehicleMuzzle=size,0,true
+	ctx.flash=world.spawn(MUZZLE,{tag="aircraft-flash",rot=v(0,math.pi,0),solid=false,
+		hide_views=if hiddenView~=nil then 2^hiddenView else 0},mount)
+	sidearm.muzzleTick(ctx,0)
 end
 
 local function igniteMuzzle(ctx,spec)

@@ -357,58 +357,121 @@ function models.sync(car)
 	end
 end
 
--- Skids, bubble cabin, fairing, tapered tail and articulated rotors share the
--- root's interpolated pose. The body centre sits one metre above the skids.
-function models.helicopter(pos, yaw)
-	local body = world.spawn("cube", {pos=pos+v(0,1,0), rot=v(0,yaw,0), size=v(2.2,2,4.8), visible=false, tag="vehicle"})
-	local hull, glass, keel, steel, cream = "#db623d", "#224a5b", "#2b3940", "#778889", "#eedbaf"
-	local function part(shape, offset, size, color, rot, parent)
-		return world.spawn(shape, {pos=offset, size=size, color=color, rot=rot or util.ZERO, solid=false, tag="airframe"}, parent or body)
+-- Keep the invisible flight collider independent of the imported airframe
+-- and its moving parts. Local -Z is the aircraft's forward axis.
+local APACHE_SCALE=1.7
+models.apacheScale=APACHE_SCALE
+models.apacheHull=v(2.2,2,4.8)*APACHE_SCALE
+
+function models.helicopter(pos,yaw)
+	local body=world.spawn("cube",{pos=pos+v(0,APACHE_SCALE,0),rot=v(0,yaw,0),size=models.apacheHull,visible=false,tag="vehicle"})
+	local function asset(name,offset)
+		return world.spawn("assets/apache/"..name..".gltf",{pos=offset*APACHE_SCALE,size=APACHE_SCALE,solid=false,tag="airframe"},body)
 	end
-	part("sphere", v(0,.12,-.14), v(2.4,1.82,3.58), hull)
-	part("sphere", v(0,.34,-.70), v(2.30,1.52,2.92), glass)
-	part("cube", v(0,.23,.25), v(2.28,.14,1.90), cream)
-	part("sphere", v(0,1.02,.38), v(1.05,.66,2.25), hull)
-	part("cube", v(0,.25,2.56), v(.42,.43,3.55), cream, v(-.12,0,0))
-	part("cube", v(0,.85,4.17), v(.12,1.4,.60), hull, v(.24,0,0))
-	part("cube", v(0,.46,3.63), v(1.7,.09,.40), hull)
+	asset("body",util.ZERO)
+	local rotor=asset("rotor",v(0,1.25,-.46))
+	local tail=asset("tail-rotor",v(-.22,1.21,4.25))
+	local turret=world.spawn("sphere",{pos=v(0,-.48,-2.08)*APACHE_SCALE,size=v(.43,.39,.47)*APACHE_SCALE,color="#38423d",solid=false,tag="apache-turret"},body)
+	local barrel=world.spawn("cube",{pos=v(0,0,-.38)*APACHE_SCALE,size=v(.10,.10,.80)*APACHE_SCALE,color="#313834",solid=false,tag="apache-barrel"},turret)
+	local tip=world.spawn("cube",{pos=v(0,0,-.43)*APACHE_SCALE,visible=false,solid=false,tag="mount"},barrel)
+	local rockets={}
 	for _,side in {-1,1} do
-		part("capsule", v(.98*side,-.91,-.12), v(.13,1.19,.13), keel, v(math.pi/2,0,0))
-		for _,z in {-.77,.70} do
-			part("cube", v(.78*side,-.65,z), v(.11,.64,.13), steel, v(0,0,-.48*side))
-		end
+		table.insert(rockets,world.spawn("cube",{pos=v(side*1.46,-.19,-1.75)*APACHE_SCALE,visible=false,solid=false,tag="mount"},body))
 	end
-	part("cube", v(0,1.48,.15), v(.15,.55,.15), steel)
-	local rotor = part("cube", v(0,1.78,.15), v(8.0,.06,.20), keel)
-	part("cube", util.ZERO, v(.20,.06,8.0), keel, nil, rotor)
-	local tail = part("cube", v(.16,.97,4.16), v(.07,1.43,.13), keel)
-	return {kind="helicopter", body=body, rotor=rotor, tail=tail, pos=pos, yaw=yaw,
-		vel=util.ZERO, speed=0, angle=0, grounded=true}
+	-- Attach the seated human's hips to the cockpit; the human keeps their own scale.
+	local function seatAnchor(forward,hipY)
+		return world.spawn("cube",{pos=v(0,hipY,-forward)*APACHE_SCALE,visible=false,solid=false,tag="seat"},body)
+	end
+	local pilotSeat,gunnerSeat=seatAnchor(.66,.40),seatAnchor(1.67,.12)
+	local searchlight=world.spawn("cube",{pos=v(.39,-.37,-2.89)*APACHE_SCALE,visible=false,solid=false,tag="mount"},body)
+	return {kind="helicopter",body=body,searchlight=searchlight,pilotSeat=pilotSeat,gunnerSeat=gunnerSeat,rotor=rotor,tail=tail,turret=turret,gunTip=tip,rocketMounts=rockets,
+		pos=pos,yaw=yaw,vel=util.ZERO,speed=0,angle=0,grounded=true}
+end
+
+local function flightAxes(rotation)
+	local flatForward,flatRight=util.forward(rotation.y),util.right(rotation.y)
+	local cp,sp=math.cos(rotation.x),math.sin(rotation.x)
+	local cr,sr=math.cos(rotation.z),math.sin(rotation.z)
+	local forward=flatForward*cp+util.UP*sp
+	local untiltedUp=util.UP*cp-flatForward*sp
+	return flatRight*cr+untiltedUp*sr,untiltedUp*cr-flatRight*sr,forward
+end
+
+function models.aimTurret(car,seat,input)
+	local right,up,forward=flightAxes(world.get(car.body).rot)
+	if not seat.sightYaw then
+		local initial=forward*math.cos(.17)-up*math.sin(.17)
+		seat.sightYaw,seat.sightPitch=util.yaw_to(initial),math.asin(initial.y)
+	end
+	local sensitivity=if input.held and input.held.aim then .42 else 1
+	seat.sightYaw-=sensitivity*(input.look_x or 0)
+	seat.sightPitch=math.clamp(seat.sightPitch+sensitivity*(input.look_y or 0),-math.pi*.499,math.pi*.499)
+	local wanted=util.forward(seat.sightYaw)*math.cos(seat.sightPitch)+util.UP*math.sin(seat.sightPitch)
+	local yaw=math.atan2(-vector.dot(wanted,right),vector.dot(wanted,forward))
+	local pitch=math.asin(math.clamp(vector.dot(wanted,up),-1,1))
+	seat.turretYaw=math.clamp(yaw,-1.95,1.95)
+	seat.turretPitch=math.clamp(pitch,-1.32,.28)
+	if seat.turretYaw~=yaw or seat.turretPitch~=pitch then
+		-- Carry the sight with the airframe only while a mechanical stop binds.
+		local flat=forward*math.cos(seat.turretYaw)-right*math.sin(seat.turretYaw)
+		local reachable=flat*math.cos(seat.turretPitch)+up*math.sin(seat.turretPitch)
+		seat.sightYaw,seat.sightPitch=util.yaw_to(reachable),math.asin(math.clamp(reachable.y,-1,1))
+	end
+	world.set(car.turret,{rot=v(seat.turretPitch,seat.turretYaw,0)})
+	local pos=world.get(car.gunTip).world_pos
+	local dir=vector.normalize(pos-world.get(car.turret).world_pos)
+	seat.mountPos,seat.mountDir=pos,dir
+end
+
+function models.aimRocket(car,seat)
+	local mounts=car.rocketMounts
+	local pos=world.get(mounts[if car.rightRocket then 2 else 1]).world_pos
+	local _,up,forward=flightAxes(world.get(car.body).rot)
+	seat.mountPos=pos
+	seat.mountDir=forward*math.cos(.16)-up*math.sin(.16)
 end
 
 function models.fly(c, input, dt, city)
-	local held = if input then input.held or {} else {}
-	local steer = if input then input.move_x or 0 else 0
-	local thrust = if input then input.move_y or 0 else 0
-	c.yaw -= steer * dt * 1.65
-	local up = if held.south then 1 else 0
-	local down = if held.right_shoulder or held.east or not c.owner then 1 else 0
-	local target = util.forward(c.yaw) * thrust * 26
-	local h = util.damp(util.flat(c.vel), target, 2.4, dt)
-	local vy = util.approach(c.vel.y, (up-down)*10, 18*dt)
+	input=input or {}
+	local held=input.held or {}
+	local lift=math.clamp((input.move_y or 0)+(if held.south then 1 else 0)-(if held.right_shoulder or held.east then 1 else 0),-1,1)
+	if not c.owner then lift=-1 end
+	local yawDemand=input.move_x or 0
+	local bank=input.aim_x or 0
+	local nose=input.aim_y or 0
+	-- The pad supplies absolute cyclic axes. Arrow keys hold an attitude,
+	-- and relative mouse movement provides short cyclic corrections.
+	if bank==0 then bank=math.clamp((input.look_x or 0)/(3*dt)+(if held.right then 1 else 0)-(if held.left then 1 else 0),-1,1) end
+	if nose==0 then nose=math.clamp((input.look_y or 0)/(3*dt)+(if held.up then 1 else 0)-(if held.down then 1 else 0),-1,1) end
+	if c.grounded and lift<=0 then bank,nose=0,0 end
+	c.pitch=util.damp(c.pitch or 0,-nose*math.rad(30),3.8,dt)
+	c.roll=util.damp(c.roll or 0,-bank*math.rad(38),4.2,dt)
+	c.yawRate=util.damp(c.yawRate or 0,-yawDemand*1.55,4,dt)
+	c.yaw+=c.yawRate*dt
+	-- Vertical assist holds height at centred collective. Banking redirects
+	-- lift sideways; levelling the disc leaves the existing momentum to drag.
+	local upward=9.81
+	local targetVy=lift*(if lift>=0 then 10 else 8)
+	local vy=util.approach(c.vel.y,targetVy,14*dt)
+	local thrust=upward+(vy-c.vel.y)/dt
+	local sideways=-math.tan(c.roll)/math.cos(c.pitch)
+	local forward=-math.tan(c.pitch)
+	local acceleration=(util.right(c.yaw)*sideways+util.forward(c.yaw)*forward)*math.max(0,thrust)
+	local h=(util.flat(c.vel)+acceleration*dt)*math.exp(-(if c.grounded then 4 else .27)*dt)
 	if c.pos.y >= 85 then vy = math.min(vy,0) end
-	local out, contact = world.move(c.body, v(h.x,vy-.02,h.z), dt, {tag="city"})
+	local sweepY=if c.grounded and vy==0 then -.02 else vy
+	local out, contact = world.move(c.body, v(h.x,sweepY,h.z), dt, {tag="city"})
 	local center = world.get(c.body).pos
 	local bounded = city.flight_bounds(center)
 	if not city.on_land(bounded.x,bounded.z,0) then
 		contact = false
-		if bounded.y < 1.45 then
-			bounded = v(bounded.x,1.45,bounded.z)
+		if bounded.y < APACHE_SCALE+.45 then
+			bounded = v(bounded.x,APACHE_SCALE+.45,bounded.z)
 			out = v(out.x,math.max(0,out.y),out.z)
 		end
 	end
-	world.set(c.body, {pos=bounded, rot=v(-thrust*.09,c.yaw,steer*.11)})
-	c.pos, c.vel = bounded-v(0,1,0), out
+	world.set(c.body, {pos=bounded, rot=v(c.pitch,c.yaw,c.roll)})
+	c.pos, c.vel = bounded-v(0,APACHE_SCALE,0), out
 	c.grounded, c.speed = contact, vector.magnitude(out)
 	if contact and not c.owner then c.vel, c.speed = util.ZERO, 0 end
 	c.angle = (c.angle + dt * (if c.owner then 27 else 9)) % (2*math.pi)

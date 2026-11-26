@@ -6,10 +6,12 @@ local sites = {v(10.7,.625,-10.8), v(159,.625,65), v(165,.625,-105)}
 local respawnTime = 15
 
 function explosions.play(pos, radius)
-    fx.explosion(pos, radius, radius*2.4)
+    local scale=math.min(1,radius/2)
+    local db=24*math.log10(scale)
+    fx.explosion(pos,radius,math.max(1,radius*2.4))
     local size = math.round(math.clamp(radius,2,24))
-    sound.play("explosion_bang", {at=pos, radius=size, db=0})
-    local rumbleDb = -10 + 3*math.clamp((size-6)/18,0,1)
+    sound.play("explosion_bang", {at=pos, radius=size, db=db})
+    local rumbleDb = -10 + db*2 + 3*math.clamp((size-6)/18,0,1)
     sound.play("explosion_rumble", {at=pos, radius=size, db=rumbleDb})
 end
 

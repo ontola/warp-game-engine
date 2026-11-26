@@ -142,7 +142,7 @@ function Cast:ride(key,vehicle,seat)
 	seat=seat or "passenger"
 	if not p or not car or car.wrecked or car.kind~="car" or p.impact or (seat~="driver" and seat~="passenger") then return false end
 	if p.rideId then return p.rideId==car.index and p.seat==seat end
-	if seat=="driver" and (car.owner or car.storyDriver) or seat=="passenger" and car.storyPassenger then return false end
+	if seat=="driver" and (car.owner or car.storyDriver) or seat=="passenger" and (car.storyPassenger or car.passenger) then return false end
 	if seat=="driver" then car.storyDriver=p.actor else car.storyPassenger=p.actor end
 	p.rideId,p.seat,p.route,p.arrived=car.index,seat,nil,true
 	seatPerson(p,car)

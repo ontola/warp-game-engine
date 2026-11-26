@@ -12,8 +12,8 @@ local HIP = v(0,.85,0)
 
 local function chassis(car, id, dt)
 	local heli = car.kind == "helicopter"
-	local size = if heli then v(2.2,2,4.8) else v(1.96,1.30,4.44)
-	local lift = v(0,if heli then 1 else .80,0)
+	local size = if heli then models.apacheHull else v(1.96,1.30,4.44)
+	local lift = v(0,if heli then models.apacheScale else .80,0)
 	local pos, prev = car.pos+lift, (car.prevPos or car.pos)+lift
 	local oldYaw = car.prevYaw or car.yaw
 	local vel = (pos-prev)/dt
@@ -37,9 +37,10 @@ end
 -- A stop against a flat door and a glancing bumper corner get different normals.
 local function contact(box, before, feet, dt)
 	local a,b=before-box.prevPos,feet-box.pos
-	if math.min(math.abs(a.x),math.abs(b.x))>3.5 and a.x*b.x>0
-		or math.min(math.abs(a.z),math.abs(b.z))>3.5 and a.z*b.z>0 then return nil end
 	local w,h,l=box.size.x*.5,box.size.y*.5,box.size.z*.5
+	local radius=math.sqrt(w*w+l*l)+RADIUS
+	if math.min(math.abs(a.x),math.abs(b.x))>radius and a.x*b.x>0
+		or math.min(math.abs(a.z),math.abs(b.z))>radius and a.z*b.z>0 then return nil end
 	local t,last=axis(a.y,b.y,-h-HEIGHT,h,0,1)
 	if t>last then return nil end
 	local ax,az=vector.dot(a,box.oldRight),vector.dot(a,box.oldForward)
@@ -303,7 +304,7 @@ end
 
 -- Fitted humans use exact feet; distant humans use the same interpolated sample
 -- as the renderer. Only visit occupied street cells along this shot's bounds.
-function impacts.visitResidents(pop, origin, endpoint, visit)
+function impacts.visitResidents(pop, origin, endpoint, visit, segment)
 	for id,actor in pop.pedestrians.active do
 		local c=pop.residents[id]
 		if c and c.active~=false and not c.shotUntil then visit(id,c,c.pos,actor) end
@@ -311,9 +312,20 @@ function impacts.visitResidents(pop, origin, endpoint, visit)
 	indexResidents(pop)
 	if not streetCells then return end
 	local age=math.clamp((pop.elapsed-sampleTime)/.4,0,1)
-	local margin=3 -- capsule width plus up to .4 seconds of sprinting between snapshots
+	-- Allow for up to .4 seconds of motion from the indexed position and,
+	-- on a bullet path, the 2.5 m near-miss radius.
+	local margin=if segment then 5 else 3
+	local dx,dz=endpoint.x-origin.x,endpoint.z-origin.z
 	for x=math.floor((math.min(origin.x,endpoint.x)-margin)/CELL),math.floor((math.max(origin.x,endpoint.x)+margin)/CELL) do
-		for z=math.floor((math.min(origin.z,endpoint.z)-margin)/CELL),math.floor((math.max(origin.z,endpoint.z)+margin)/CELL) do
+		local z0,z1=origin.z,endpoint.z
+		if segment and math.abs(dx)>CELL then
+			-- Clip the segment to this column before visiting its rows. A long
+			-- diagonal through town costs cells along the ray, not its whole bounding box.
+			local enter=math.clamp((x*CELL-margin-origin.x)/dx,0,1)
+			local leave=math.clamp(((x+1)*CELL+margin-origin.x)/dx,0,1)
+			z0,z1=origin.z+enter*dz,origin.z+leave*dz
+		end
+		for z=math.floor((math.min(z0,z1)-margin)/CELL),math.floor((math.max(z0,z1)+margin)/CELL) do
 			for _,row in streetCells[cell(x,z)] or EMPTY do
 				local c=pop.residents[row.id]
 				if not c.shotUntil and c.active~=false and not pop.pedestrians.active[row.id] then

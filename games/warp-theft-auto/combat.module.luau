@@ -92,7 +92,7 @@ local function updateRivals(s,fleet,dt)
 	end
 end
 
-local function visitPeople(state,minimum,maximum,visit)
+local function visitPeople(state,minimum,maximum,visit,segment)
 	local s,cast=state.combat,state.storyCast
 	local drivers=state.fleet.drivers
 	if drivers then
@@ -111,7 +111,7 @@ local function visitPeople(state,minimum,maximum,visit)
 	end
 	impacts.visitResidents(state.population,minimum,maximum,function(id,c,feet,actor,velocity)
 		visit("resident",id,c,feet,actor,velocity)
-	end)
+	end,segment)
 end
 
 local function characterBounds(p,feet,actor)
@@ -124,9 +124,9 @@ end
 
 -- A car's model profile is narrower at the bonnet and the boot than its overall
 -- bounds. Resolve the ordinary solid geometry, skipping a sedan's coarse box.
-local function sceneHit(fleet,origin,ray,distance)
-	local hit=world.raycast(origin,ray,distance)
-	local ignore={}
+local function sceneHit(fleet,origin,ray,distance,ignoreBody)
+	local ignore=if ignoreBody then {ignoreBody} else {}
+	local hit=world.raycast(origin,ray,distance,if ignoreBody then {ignore=ignore} else nil)
 	while hit and world.get(hit.id).tag=="vehicle" do
 		local sedan=false
 		for _,car in fleet.vehicles do
@@ -139,7 +139,7 @@ local function sceneHit(fleet,origin,ray,distance)
 	return hit
 end
 
-local function targetOnRay(state,origin,ray,from,distance,projectile,limited)
+local function targetOnRay(state,origin,ray,from,distance,projectile,limited,ignoreBody)
 	local target
 	local story=state.story
 	visitPeople(state,origin,origin+ray*(distance+2),function(kind,key,p,feet,actor,velocity)
@@ -171,7 +171,7 @@ local function targetOnRay(state,origin,ray,from,distance,projectile,limited)
 			(along==target.along and kind==target.kind and key<target.key)) then
 			target={kind=kind,key=key,along=along,point=point,feet=feet,actor=actor,person=p,velocity=velocity,cabin=cabin,head=if head~=nil then head else not p.impact and point.y>=pos.y+height*.82}
 		end
-	end)
+	end,true)
 	corpses.visit(state.population,origin,origin+ray*distance,function(id,_,feet,actor)
 		local along=humans.ragdoll_raycast(actor,origin,ray,distance)
 		if along and (not target or along<target.along or along==target.along and target.kind=="corpse" and id<target.key) then
@@ -187,7 +187,7 @@ local function targetOnRay(state,origin,ray,from,distance,projectile,limited)
 	end
 	local cover
 	if limit>0 then
-		cover=if projectile or limited then sceneHit(state.fleet,origin,ray,limit) else sidearm.sceneryHit(origin,ray,limit)
+		cover=if projectile or limited then sceneHit(state.fleet,origin,ray,limit,ignoreBody) else sidearm.sceneryHit(origin,ray,limit)
 	end
 	if cover then
 		local crate=state.combat.crates[cover.id]
@@ -315,13 +315,17 @@ local function warnDrivers(fleet,start,dir,length,hit,source,warned)
 end
 
 local function grenadeSweep(state,shot,dir,reach)
-	local target,point,solid=targetOnRay(state,shot.pos,dir,shot.pos,reach,true)
+	local target,point,solid=targetOnRay(state,shot.pos,dir,shot.pos,reach,true,nil,shot.aircraft)
 	shot.warned=shot.warned or {}
 	warnDrivers(state.fleet,shot.pos,dir,vector.dot(point-shot.pos,dir),target,shot.source or shot.pos,shot.warned)
 	return target,point,solid
 end
 
-local function blastDamage(state,owner,center,radius,target,forward,sourceCar,grenade)
+local STANDARD_BLAST={person=9,car=1}
+local CANNON={range=600,person=2.2,car=.20,radius=3.2,effect=.88,separateContact=true}
+
+local function blastDamage(state,owner,center,radius,target,forward,sourceCar,grenade,profile)
+	profile=profile or STANDARD_BLAST
 	local extent=v(radius,radius,radius)
 	local hits={}
 	local function candidate(kind,key,p,feet,actor,contact,velocity)
@@ -329,10 +333,11 @@ local function blastDamage(state,owner,center,radius,target,forward,sourceCar,gr
 		local distance=vector.magnitude(delta)
 		if distance>=radius then return end
 		local direct=target and target.kind==kind and target.key==key
+		if direct and profile.separateContact then return end
 		if not direct and blastBlocked(state.fleet,center,delta,distance,nil,sourceCar) then return end
 		-- Growing Guns uses quadratic falloff. The compact visible flash and the
 		-- gameplay radius are independent, so the outer edge only grazes a target.
-		local damage=9*(1-distance/radius)^2
+		local damage=profile.person*(1-distance/radius)^2
 		table.insert(hits,{kind=kind,key=key,feet=feet,actor=actor,person=p,point=contact,velocity=velocity,
 			dir=if distance>.01 then delta/distance else forward,damage=damage})
 	end
@@ -350,13 +355,14 @@ local function blastDamage(state,owner,center,radius,target,forward,sourceCar,gr
 	local carHits={}
 	for _,car in state.fleet.vehicles do
 		if car.kind~="car" or car==sourceCar or car.wrecked then continue end
+		if profile.separateContact and target and target.car==car then continue end
 		local point=cars.closestPoint(car,center,radius)
 		if not point then continue end
 		local delta=point-center
 		local distance=vector.magnitude(delta)
 		if distance>=radius then continue end
 		if blastBlocked(state.fleet,center,delta,distance,car,sourceCar) then continue end
-		table.insert(carHits,{car=car,point=point,damage=(1-distance/radius)^2,immediate=grenade and distance<=2.5})
+		table.insert(carHits,{car=car,point=point,damage=profile.car*(1-distance/radius)^2,immediate=grenade and distance<=2.5})
 	end
 	-- Every visibility query sees the same pre-blast car shapes.
 	local immediate
@@ -409,6 +415,56 @@ local function detonate(state,shot,center,target)
 	end
 end
 
+local function bulletContact(state,id,hit)
+	if hit.kind=="crate" then
+		hitCrate(state,id,hit.key,hit.dir,14)
+	elseif hit.kind=="car" then
+		cars.hit(hit.car,hit.point,math.min(.65,hit.damage*.065),id)
+		sidearm.confirmHit(state.combat.players[id],hit.point)
+	else
+		recordHit(state,id,hit,hit.dir,false,hit.damage)
+	end
+end
+
+local function mountedShot(state,id,player,seat,input)
+	local car=state.fleet.vehicles[seat.vehicle]
+	local gunner=seat.flightRole=="gunner"
+	if not car or (if gunner then car.gunner else car.owner)~=id or not seat.mountPos then return end
+	local pressed,held=input.pressed or {},input.held or {}
+	if not (pressed.fire or held.fire) then return end
+	local channel=if gunner then "turretReady" else "rocketReady"
+	local now=game.time()
+	if (car[channel] or 0)>now then return end
+	car[channel]=now+(if gunner then .14 else .80)
+	local origin,dir=seat.mountPos,seat.mountDir
+	player.shotFlash,player.tip=.10,origin
+	local mount=if gunner then car.gunTip else car.rocketMounts[if car.rightRocket then 2 else 1]
+	sidearm.mountedMuzzle(player,mount,if gunner then .38 else .52,if gunner then players.get(id).view else nil)
+	population.gunshot(state.population,origin,nil)
+	if gunner then
+		local hit,point,surface=targetOnRay(state,origin,dir,origin,CANNON.range,false,true,car.body)
+		player.turretShots=(player.turretShots or 0)+1
+		if player.turretShots%3==1 then sidearm.flash(player,point) end
+		sound.play("growing_guns_shot",{at=origin,db=-8})
+		local length=vector.dot(point-origin,dir)
+		warnDrivers(state.fleet,origin,dir,length,hit,origin,{})
+		if not hit and not surface then return end
+		-- Keep the cloud on the contact. Start the visibility rays just
+		-- outside it so a floor lights its own side and a wall shields the far side.
+		explosions.play(point,CANNON.effect)
+		local outside=point+(if surface then surface.normal else -dir)*.045
+		blastDamage(state,id,outside,CANNON.radius,hit,dir,nil,false,CANNON)
+		if hit then
+			hit.dir,hit.damage=dir,1.65
+			bulletContact(state,id,hit)
+		end
+	else
+		player.rockets=(player.rockets or 0)+1
+		launcher.rocket(state.combat.projectiles,id,car.body,origin,dir)
+		car.rightRocket=not car.rightRocket
+	end
+end
+
 local function shoot(state,id,player,seat,input,dt)
 	local spec=catalog.get(seat.weapon or "pistol",seat)
 	local pressed=sidearm.trigger(input,spec.automatic)
@@ -418,7 +474,8 @@ local function shoot(state,id,player,seat,input,dt)
 	player.aiming,player.onTarget=enabled and seat.aiming==true,false
 	if not enabled then
 		player.ready,player.hipHold,player.kick,player.kickSpeed,player.holdYaw=nil,nil,nil,nil,nil
-		sidearm.remove(player)
+		if player.prop or not seat.flightRole then sidearm.remove(player) end
+		if seat.flightRole and not seat.impact then mountedShot(state,id,player,seat,input) end
 		return
 	end
 	local origin,ray
@@ -476,16 +533,7 @@ local function shoot(state,id,player,seat,input,dt)
 	end
 	-- Draw the first and outermost actual pellet paths, up to three per seat.
 	sidearm.flash(player,tracePoint,spec.color,left,right)
-	for _,hit in contacts do
-		if hit.kind=="crate" then
-			hitCrate(state,id,hit.key,hit.dir,14)
-		elseif hit.kind=="car" then
-			cars.hit(hit.car,hit.point,math.min(.65,hit.damage*.065),id)
-			sidearm.confirmHit(player,hit.point)
-		else
-			recordHit(state,id,hit,hit.dir,false,hit.damage)
-		end
-	end
+	for _,hit in contacts do bulletContact(state,id,hit) end
 end
 
 local function roadDamage(state,hit)

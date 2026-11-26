@@ -51,6 +51,8 @@ pub struct GameToml {
     /// Two views: "stacked" (top and bottom, the default) or "side" (left
     /// and right).
     pub split_layout: Option<String>,
+    /// Standalone native multiplayer assigns connected pads to individual seats.
+    pub gamepad_seats: bool,
 }
 
 /// A pool of Warp Humans (`[humans.NAME]` in game.toml).
@@ -87,7 +89,7 @@ impl Default for HumanPool {
 
 impl Default for GameToml {
     fn default() -> Self {
-        GameToml { title: "Warp game".into(), id: String::new(), storage: false, room_lighting: false, tick_rate: 60.0, players: 1, split: true, bots: 0, min_players: 1, seed: 1, fresh_seed: false, max_entities: 1024, size: [1280, 720], sky: "gradient".into(), steps: 200_000, memory_mb: 64, humans: Default::default(), hdr: None, split_layout: None }
+        GameToml { title: "Warp game".into(), id: String::new(), storage: false, room_lighting: false, tick_rate: 60.0, players: 1, split: true, bots: 0, min_players: 1, seed: 1, fresh_seed: false, max_entities: 1024, size: [1280, 720], sky: "gradient".into(), steps: 200_000, memory_mb: 64, humans: Default::default(), hdr: None, split_layout: None, gamepad_seats: false }
     }
 }
 

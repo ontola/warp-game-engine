@@ -101,6 +101,8 @@ pub struct LuaGame {
     default_sky: SkyChoice,
     /// Print log lines to stdout (off for tests that read `logs()`).
     pub echo: bool,
+    /// Stable native pad assignments in standalone multiplayer.
+    pad_seats: Vec<Option<app::Device>>,
     /// The Splitscreen Club party host that launched the game, if any.
     pub party: Option<Party>,
     /// The start menu, when open: the selected item.
@@ -217,7 +219,7 @@ impl LuaGame {
         if single.is_none() { host.enable_libraries(); }
         crate::kit::install(&mut host);
         let mut g = LuaGame { dir: dir.to_path_buf(), single: single.clone(), seed: cfg.seed, fresh, cfg, host, core, inited: BTreeSet::new(), light: Lighting::default(), applied_sky: None, sky_upload: None, daylight: None,
-            log: VecDeque::new(), live: None, live_logs: None, default_sky, echo: true, party: None, menu: None, menu_stick: 0.0, running_for: 0, ready_due: false, windowed: false, polls: 0, next_id: 1, quit: false, back: false, page_seats: 0, surface: GameSurface::new(dir), trial: None, editor_pages: Default::default(),
+            log: VecDeque::new(), live: None, live_logs: None, default_sky, echo: true, party: None, pad_seats: Vec::new(), menu: None, menu_stick: 0.0, running_for: 0, ready_due: false, windowed: false, polls: 0, next_id: 1, quit: false, back: false, page_seats: 0, surface: GameSurface::new(dir), trial: None, editor_pages: Default::default(),
             online: Default::default() };
         g.surface.install();
         match &over.seats {
@@ -1143,6 +1145,23 @@ impl Game for LuaGame {
 
     /// The people; bots need no controls.
     fn local_players(&self) -> usize { self.core().roster.iter().filter(|p| !p.bot && p.remote.is_none()).count().max(1) }
+    fn devices(&mut self, devices: &[(app::Device, Controls)]) {
+        let players = self.local_players();
+        if !self.cfg.gamepad_seats || self.party.is_some() || players < 2
+            || cfg!(any(target_arch = "wasm32", target_os = "android")) {
+            self.pad_seats.clear();
+            return;
+        }
+        app::input::assign_local_pads(&mut self.pad_seats, devices, players);
+    }
+
+    fn seats(&self) -> Option<Vec<Vec<app::Device>>> {
+        if self.pad_seats.is_empty() { return None; }
+        let mut seats: Vec<Vec<_>> = self.pad_seats.iter().map(|p| p.iter().copied().collect()).collect();
+        seats[0].push(app::Device::Keyboard);
+        Some(seats)
+    }
+
     // A new seat reaches a Luau game through the page's seats (`page_seats`,
     // then its `player_joined` hook), up to four people.
     fn takes_joins(&self) -> bool { self.core().roster.iter().filter(|p| !p.bot).count() < 4 }

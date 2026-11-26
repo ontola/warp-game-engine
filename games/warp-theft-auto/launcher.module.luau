@@ -6,9 +6,27 @@ local gravity=v(0,-21,0)
 local shell={color="#785444",roughness=.65}
 local fuse={color="#ffba62",emissive=.40,roughness=1}
 
+-- Growing Guns' finned silhouette, contrasting nose band and hot exhaust,
+-- assembled from the same small meshes the city already has resident.
+local casing={color="#a7ad98",roughness=.58}
+local fin={color="#414844",roughness=.66}
+local stripe={color="#ba5429",roughness=.6}
+local flame={color="#ff822f",emissive=1.8,roughness=1}
+local throat={color="#ffdf92",emissive=3.0,roughness=1}
+local rocketParts={
+	{"sphere",stripe,v(0,.26,0),v(.156,.068,.156),"rocket-band"},
+	{"cube",fin,v(0,-.32,0),v(.31,.16,.03),"rocket-fin"},
+	{"cube",fin,v(0,-.32,0),v(.03,.16,.31),"rocket-fin"},
+	{"sphere",flame,v(0,-.65,0),v(.116,.49,.116),"rocket-exhaust"},
+	{"sphere",throat,v(0,-.46,0),v(.13,.17,.13),"rocket-core"},
+}
+local smokeSpacing=1.65
+
 function launcher.warm()
 	world.warm("sphere",shell)
 	world.warm("sphere",fuse)
+	world.warm("capsule",casing)
+	for _,part in rocketParts do world.warm(part[1],part[2]) end
 end
 
 function launcher.fire(shots,id,player,seat,aimPoint,aimDir,range)
@@ -36,20 +54,52 @@ function launcher.fire(shots,id,player,seat,aimPoint,aimDir,range)
 	return true
 end
 
+-- Like the Growing Guns air strike, the motor eases up along a straight
+-- arcade path. The same swept segment drives contacts and the smoke wake.
+function launcher.rocket(shots,owner,aircraft,pos,dir)
+	dir=vector.normalize(dir)
+	local body=table.clone(casing)
+	body.pos,body.size,body.tag,body.solid=pos,v(.15,.43,.15),"apache-rocket",false
+	body.rot=v(math.acos(math.clamp(dir.y,-1,1)),math.atan2(dir.x,dir.z),0)
+	local entity=world.spawn("capsule",body)
+	for _,part in rocketParts do
+		local opts=table.clone(part[2])
+		opts.pos,opts.size,opts.tag,opts.solid=part[3],part[4],part[5],false
+		world.spawn(part[1],opts,entity)
+	end
+	table.insert(shots,{owner=owner,source=pos,aircraft=aircraft,entity=entity,pos=pos,
+		dir=dir,velocity=dir*36,motor=dir*15,smokeIn=smokeSpacing,remaining=2.4})
+	sound.play("arcade_launcher",{at=pos,db=-5})
+end
+
+local function rocketWake(shot,point,dir)
+	local distance=vector.magnitude(point-shot.pos)
+	local nextPuff=shot.smokeIn or smokeSpacing
+	while nextPuff<=distance do
+		-- Fix each puff in world space behind the attached exhaust so the
+		-- trail stays in the air when its rocket is removed on contact.
+		fx.exhaust_smoke(shot.pos+dir*(nextPuff-.87),.38)
+		nextPuff+=smokeSpacing
+	end
+	shot.smokeIn=nextPuff-distance
+end
+
 function launcher.advance(state,dt,trace,detonate)
 	local shots=state.combat.projectiles
 	local i=1
 	while i<=#shots do
 		local shot=shots[i]
 		local step=math.min(dt,shot.remaining)
-		local delta=(shot.velocity+gravity*(step*.5))*step
+		local acceleration=if shot.aircraft then shot.motor or v(0,0,0) else gravity
+		local delta=(shot.velocity+acceleration*(step*.5))*step
 		local distance=vector.magnitude(delta)
 		local dir=if distance>.00001 then delta/distance else shot.dir
 		-- The aimed point lies exactly on a surface. Accumulated integration
 		-- roundoff can leave the last sweep a fraction of a millimetre short.
 		local reach=if step==shot.remaining then distance+.002 else distance
 		local target,point,solid=trace(state,shot,dir,reach)
-		shot.velocity+=gravity*step
+		if shot.aircraft then rocketWake(shot,point,dir) end
+		shot.velocity+=acceleration*step
 		shot.remaining-=step
 		shot.dir=dir
 		if target or solid or shot.remaining<=0 then

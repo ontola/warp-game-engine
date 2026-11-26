@@ -203,12 +203,19 @@ fn shared_car_then_helicopter_with_an_abrupt_pilot_departure() {
     run(&mut g, 36, none, Controls { mv: [-1.,0.], ..none });
     check(&mut g,"state.fleet.players[2].pos.x > 4.7 and state.fleet.players[2].pos.x < 5.8");
     run(&mut g, 1, board, board);
-    check(&mut g,"state.fleet.vehicles[1].owner == 1 and state.fleet.players[2].mode == 'walk'");
+    check(&mut g,"state.fleet.vehicles[1].owner == 1 and state.fleet.vehicles[1].passenger == 2 and state.fleet.players[2].mode == 'ride'");
+    run(&mut g, 24, none, Controls { mv: [1., 1.], look: [0.05, 0.], ..none });
+    check(&mut g,"state.fleet.vehicles[1].throttle == 0 and math.abs(state.fleet.players[2].view-state.fleet.players[1].view)>0.7");
+    check(&mut g,"vector.magnitude(camera.get(1).pos-camera.get(2).pos)>2");
     run(&mut g, 120, north, none);
     check(&mut g,"state.fleet.players[1].speed > 3 and state.fleet.vehicles[1].rpm > 1200");
-    run(&mut g, 1, board, none);
+    check(&mut g,"state.fleet.players[1].pos == state.fleet.players[2].pos and vector.magnitude(state.fleet.players[1].seatedPos-state.fleet.players[2].seatedPos) > 0.8");
+    run(&mut g, 1, board, board);
     check(&mut g,"state.fleet.players[1].mode == 'drive'");
+    check(&mut g,"state.fleet.players[2].mode == 'ride'");
     run(&mut g, 160, Controls { held: Buttons(Buttons::SOUTH), ..none }, none);
+    run(&mut g, 1, none, board);
+    check(&mut g,"state.fleet.players[2].mode == 'walk' and not state.fleet.vehicles[1].passenger and state.fleet.vehicles[1].owner == 1");
     run(&mut g, 1, board, none);
     check(&mut g,"state.fleet.players[1].mode == 'walk' and state.fleet.vehicles[1].owner == nil");
 
@@ -425,7 +432,8 @@ fn a_shot_at_a_car_taken_by_another_seat_leaves_that_player_in_control() {
         world.place(state.fleet.players[2].body,c.pos+vector.create(-2.2,.85,0))
     "#).unwrap();
     traffic_ticks(&mut g,1);
-    g.tick(&[board,board]);
+    // The second player stays outside the shared car to fire the test shot.
+    g.tick(&[board,Controls::default()]);
     g.luau(r#"
         local c,p=state.motorist,state.originalDriver
         assert(c.owner==1 and state.fleet.players[2].mode=="walk")

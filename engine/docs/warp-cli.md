@@ -117,6 +117,7 @@ my-game/
 | `size` | `[1280, 720]` | Window size in pixels. |
 | `hdr` | unset | `true` asks for HDR output on an HDR screen (highlights brighter than SDR white), `false` refuses it; unset follows `WARP_HDR`. F10 overrides it. See [hdr-and-exposure](hdr-and-exposure.md). |
 | `split_layout` | `"stacked"` | How two views share the screen: `"stacked"` (top and bottom) or `"side"` (left and right). |
+| `gamepad_seats` | false | In standalone desktop multiplayer, assign one connected controller per player. With one keyboard and one pad, the keyboard drives player one and the pad drives player two. A connected pad keeps its seat when another connects or leaves. Browser and phone hosts assign their own seats. |
 | `steps` | 200000 | Luau step budget per hook call (see [scripting](scripting.md#limits)). |
 | `memory_mb` | 64 | Luau memory cap. |
 | `[humans.NAME]` | none | A pool of Warp Humans: `count` (1 to 256 alive at once), `variety` (different people fitted at load, 1 to 16, default 4), `style` (`"person"` or `"zombie"`), `skin` and `shirt` (`"#rrggbb"`, default seeded), `height` (`[1.6, 1.9]` m), `age` (`[low, high]` in years, 18 to 100; the pool's people are spread over it; default seeded, mostly young adults), `seed`. At most 256 in all. Each one costs about 2 MB of GPU skinning memory, so on a device that binds less than all pools need (128 MB on some), the engine keeps each pool’s `reserved` minimum (default 1) and shares the remaining capacity proportionally. A line in the log reports the resulting counts. |

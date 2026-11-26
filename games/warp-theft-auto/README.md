@@ -4,9 +4,9 @@ Port Meridian is a 36-block coastal city you can explore on foot, by car or by h
 
 ## Play
 
-[Play Warp Theft Auto on Splitscreen Club](https://splitscreen.club/playtests/warp-theft-auto/v1.1/?game=warp-theft-auto&players=1)
+[Play Warp Theft Auto on Splitscreen Club](https://splitscreen.club/play/?game=warp-theft-auto&players=1)
 
-[Play with low material detail](https://splitscreen.club/playtests/warp-theft-auto/v1.1/?game=warp-theft-auto&players=1&detail=low) for simpler stone, glass and window interiors. On desktop set `WARP_SURFACE_DETAIL=low` before starting Warp. The regular profile shades brick bevels, recessed mortar and inset window frames in the moving sunlight. Street-level windows show people before the fully furnished room loads.
+[Play with low material detail](https://splitscreen.club/play/?game=warp-theft-auto&players=1&detail=low) for simpler stone, glass and window interiors. On desktop set `WARP_SURFACE_DETAIL=low` before starting Warp. The regular profile shades brick bevels, recessed mortar and inset window frames in the moving sunlight. Street-level windows show people before the fully furnished room loads.
 
 The browser playtest supports one keyboard player and additional seats on controllers. On the solo game link, click the city for mouse look and sound, then use WASD or F. A controller can take the first seat with A. In the Game Room, Enter joins the keyboard and A joins a controller. The host requires WebGPU. On first launch, the **Preparing graphics** screen stays up while the GPU compiles the cityâ€™s shaders. Browser interiors sample bounced window and fixture light as you approach. Devices with at least 17 sampled textures per shader stage can also draw the glass. To build the same single-game shelf locally, run `python3 engine/tools/build-web.py --warp --games warp-theft-auto --luau-only --serve`, then open `http://localhost:8790/?game=warp-theft-auto&players=1`.
 
@@ -36,14 +36,18 @@ A new round generates a new city seed. Pass `--seed 1948` to replay a layout. Th
 | Take a vehicle or get out | F | Y / North |
 | Accelerate or brake and reverse | W / S | RT / LT or left stick |
 | Steer and handbrake | A / D, Space | Left stick, A |
-| Fly forward, back or turn | W / S, A / D | Left stick |
-| Climb and descend | Space / Shift | A / RB |
+| Pilot: climb, descend and turn | W / S, A / D | Left stick vertically and horizontally |
+| Pilot: pitch and bank | Arrow keys | Right stick |
+| Pilot: fire rockets | Left mouse | RT |
+| Gunner: aim, zoom and fire | Mouse, hold right mouse, left mouse | Right stick, hold LT, RT |
 
 Walk through the entrance under the lit strip to enter any office, hotel or dock warehouse. The ground floors have reception desks, conference areas, hotel suites or freight racks. You can walk back out through the same doorway.
 
 Each of the twelve traffic cars has a seated Warp Human driver. You can see and hit the driver through the windows. A metal door or pillar can stop the shot. Taking a slow car makes its driver step out and run. Trapped drivers also try to get out when their escape stalls or the car catches fire.
 
 Traffic drivers flee when a shot strikes their car or passes close to its body. They accelerate, take intersections without waiting, and leave less braking room. A driver facing the shooter may turn around into the opposite lane. After several quiet seconds the driver returns to normal speed and yields again.
+
+Both heliports have a two-seat Apache. Find a teal helicopter marker on the map. Board on the ground with F or Y. The first player flies and the second uses the gunner optic. Each has a separate view in two-player split screen. Land to swap roles or get out.
 
 Take a parked car or wait alongside a traffic car at a stop. Slow down to get out. A helicopter must land first. On the map, white marks your position and heading, coral marks other players, teal marks available helicopters, and gold marks the current job.
 

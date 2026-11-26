@@ -87,7 +87,7 @@ end
 
 -- The start menu shows each player's controls on their own buttons (a
 -- disc on a controller, the key on a keyboard or keyboard half).
-local MENU_CONTROLS = { { "move", "Walk, drive or fly" }, { "Y", "Take a vehicle or get out" }, { "X", "Stories" }, { "LB", "Weapon wheel (hold)" }, { "RB", "Sprint" }, { "A", "Handbrake, climb" } }
+local MENU_CONTROLS = { { "move", "Walk, drive or fly" }, { "Y", "Take a vehicle or get out" }, { "X", "Stories" }, { "LB", "Weapon wheel (hold)" }, { "RB", "Sprint" }, { "A", "Handbrake" } }
 local function menu_controls(top)
 	local w, h = hud.size()
 	local k = hud.unit()
