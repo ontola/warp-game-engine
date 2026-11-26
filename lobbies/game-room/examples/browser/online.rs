@@ -25,16 +25,16 @@ enum Page {
 
 thread_local! {
     static PAGE: RefCell<Page> = const { RefCell::new(Page::Off) };
-    /// The Game Room's online switch: Public (the default) or Friends only.
+    /// The Game Room's online switch: Public (the default) or Private.
     static PUBLIC: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
-/// The online switch was thrown. Friends only and Public both take anyone
+/// The online switch was thrown. Private and Public both take anyone
 /// with the code or QR; Public will also list the room for strangers (the
 /// "play with strangers" button, not built yet).
 pub(crate) fn set_public(public: bool) {
     PUBLIC.with(|p| p.set(public));
-    app::web::log(&format!("online: the room is {}", if public { "public" } else { "friends only" }));
+    app::web::log(&format!("online: the room is {}", if public { "public" } else { "private" }));
 }
 
 #[allow(dead_code)]

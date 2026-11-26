@@ -742,7 +742,7 @@ pub(crate) mod page {
                     #[cfg(target_arch = "wasm32")]
                     if let (Some(code), Some(w)) = (msg["code"].as_str(), web_sys::window()) { let _ = w.navigator().clipboard().write_text(code); }
                 }
-                // The online switch (Public / Friends only).
+                // The online switch (Public / Private).
                 "set_public" => super::online::set_public(msg["public"].as_bool().unwrap_or(true)),
                 "room_pickup" => {
                     let seat = msg["player_id"].as_str().and_then(|p| with(|h| seat_of(h, p)));
