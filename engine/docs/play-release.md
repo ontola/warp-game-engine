@@ -24,7 +24,7 @@ Joep: "ja, zet <commit> live" in the prod monitor thread
 touches `engine/`, `games/`, `lobbies/` or the Cargo files (a newer push
 cancels a candidate still building), and by hand (Actions, *Play release
 candidate*, *Run workflow*, optionally with a commit on main). It runs
-`python3 engine/tools/play-release.py build --native-tests` on a clean
+`python3 engine/tools/play-release.py build --native-tests --browser --hlsl` on a clean
 checkout. When every check passes it publishes the prerelease
 `play-<first 12 hex of the commit>` with:
 
@@ -47,6 +47,8 @@ Release checks (`play-release.py`, each a line in `release.json`):
 | `shelf` | games/library.json has every default game (WARP_GAMES and RUST_GAMES in build-web.py) |
 | `files:<game>` | each Luau game ships exactly its tracked folder at this commit, byte for byte (an overlaid or left-out file fails) |
 | `wta-apache` | Warp Theft Auto has the two-seat Apache: the eight files of `assets/apache`, each glTF's buffers, the gunner optic (`apache_hud`), the airframe and seat mounts in `vehicles`, pilot and gunner seats in `instruments` |
+| `browser:room`, `browser:<game>` | `play-smoke.cjs`: Chromium with WebGPU (SwiftShader, in a virtual X display) boots the Game Room, then plays every game on the shelf and goes back, failing on a panic, GPU error, console or page error, failed request, the crash notice, no first frame, or a blank picture. Screenshots in the run's `play-smoke` artifact |
+| `hlsl` | `hlsl-check.py`: every WGSL module the browser compiled in that run goes through naga's HLSL output and DXC, as Firefox does on Windows (the 26 November Zen failure) |
 | `native:…` | the Warp Theft Auto crew tests: two pads board one Apache as pilot and gunner, the gunner optic holds its bearing, both stations fire, the car-then-helicopter handover |
 
 The 26 November regression (release `56346853…`: the Apache built from
@@ -58,7 +60,11 @@ Run the checks yourself before pushing:
 ```sh
 python3 engine/tools/build-web.py --warp
 python3 engine/tools/play-release.py check build/web
+xvfb-run -a node engine/tools/play-smoke.cjs build/web --shots build/shots   # npm i playwright
 ```
+
+`promote-play.py` refuses a candidate unless `browser:room`, `hlsl` and a
+`browser:<game>` for every game in the bundle passed.
 
 ## 2. Going live
 

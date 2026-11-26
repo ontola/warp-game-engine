@@ -10,7 +10,8 @@ A candidate is the GitHub prerelease play-<12 hex> of ontola/warp-game-engine
 (public), made by its Play release candidate workflow
 (.github/workflows/play-release.yml) from a commit on main after the
 release checks in engine/tools/play-release.py passed, including the
-two-seat Apache in Warp Theft Auto. This script checks the release, its
+two-seat Apache in Warp Theft Auto, a browser smoke test of the room and every
+game, and the DXC compile of their shaders. This script checks the release, its
 workflow run and job, that the commit is still on main, every check in
 release.json, and the archive's SHA-256. It unpacks into
 /srv/gamenight/play-releases/<12 hex>-<UTC stamp>, carries over the live
@@ -49,7 +50,9 @@ KEEP = 3
 OURS = re.compile(r'[0-9a-f]{12}-\d{14}')
 REQUIRED = ['version', 'engine', 'shelf', 'wta-apache',
             'native:theft_auto_flight::two_local_pads_board_the_apache_and_its_light_reaches_ahead_at_altitude',
-            'native:theft_auto_apache_combat::both_apache_stations_can_fire_and_switch_pilots_independently']
+            'native:theft_auto_apache_combat::both_apache_stations_can_fire_and_switch_pilots_independently',
+            # Chromium with WebGPU booted the room and every game; DXC compiled what it ran (Firefox on Windows).
+            'browser:room', 'hlsl']
 
 
 def get(url, raw=False):
@@ -118,7 +121,9 @@ def validate(commit, release, manifest, run, jobs, compare):
     if manifest.get('passed') is not True or not all(c['ok'] for c in manifest['checks']):
         raise SystemExit('Not every release check passed: ' + ', '.join(c['name'] for c in manifest['checks'] if not c['ok']))
     names = {c['name'] for c in manifest['checks']}
-    missing = [n for n in REQUIRED if n not in names]
+    # Every game in the bundle (files:<game>) must have booted in the browser smoke test.
+    booted = ['browser:' + n.split(':', 1)[1] for n in names if n.startswith('files:')]
+    missing = [n for n in REQUIRED + booted if n not in names]
     if missing:
         raise SystemExit(f'release.json lacks required checks: {missing}')
     if (run['path'] != WORKFLOW or run['head_sha'] != commit or run['id'] != manifest.get('run_id')
