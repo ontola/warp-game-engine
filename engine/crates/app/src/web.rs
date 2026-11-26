@@ -386,11 +386,6 @@ pub fn mobile() -> bool {
 }
 
 /// Safari, or any browser on iOS: WebKit's WebGPU, not Chrome's or Firefox's.
-/// Firefox and its forks (Zen, LibreWolf): Gecko's WebGPU (wgpu, naga).
-fn gecko() -> bool {
-    web_sys::window().and_then(|w| w.navigator().user_agent().ok()).is_some_and(|ua| ua.contains("Gecko/") && ua.contains("Firefox/") && !ua.contains("Seamonkey"))
-}
-
 fn webkit() -> bool {
     web_sys::window().and_then(|w| w.navigator().user_agent().ok())
         .is_some_and(|ua| ua.contains("AppleWebKit") && !["Chrome", "Chromium", "Edg", "Android"].iter().any(|k| ua.contains(k)) || ua.contains("CriOS") || ua.contains("FxiOS") || ua.contains("EdgiOS"))
@@ -582,14 +577,12 @@ pub fn run(cfg: crate::Config, game: Box<dyn Game>) {
         bench: crate::bench::Bench::from_query(query_param("bench").as_deref()) };
     if shell.mobile { log("phone preset: lower resolution, no bloom or contact occlusion (?quality=full turns it off)"); }
     // Safari (and every iOS browser: WebKit) cannot compile the trees'
-    // compare-exchange shaders, and Firefox's (Zen on Windows: DXC) fails
-    // on the shade pass with them: the trees stay out there (render::gpu).
+    // compare-exchange shaders: the trees stay out there (render::gpu).
     // ?trees=0 leaves them out anywhere, ?trees=1 tries them anyway.
     let trees = query_param("trees");
     let why = if trees.as_deref() == Some("0") { Some("?trees=0") }
         else if trees.as_deref() == Some("1") { None }
         else if webkit() { Some("WebKit cannot compile their shaders") }
-        else if gecko() { Some("Firefox cannot compile the shade pass with them") }
         else { None };
     if let Some(why) = why {
         render::gpu::cap_storage_buffers(10);

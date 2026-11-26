@@ -49,7 +49,12 @@ fn field_hash(i: vec2<f32>) -> f32 {
 // Hex tiling (Mikkelsen 2022): three samples per point from the corners of a
 // triangle grid, each with its own random turn and offset, blended so no
 // tile repeat lines up. `uv` is in texture tiles.
-struct HexTap { uv: array<vec2<f32>, 3>, r: array<mat2x2<f32>, 3>, w: vec3<f32> }
+// Each tap's turn is kept as (cos, sin), not a mat2x2: naga's HLSL wraps a
+// matrix inside a struct in a layout type DXC has no mul() for (Firefox on
+// Windows failed the whole shade pass on it).
+struct HexTap { uv: array<vec2<f32>, 3>, rot: array<vec2<f32>, 3>, w: vec3<f32> }
+
+fn hex_r(cs: vec2<f32>) -> mat2x2<f32> { return mat2x2<f32>(vec2<f32>(cs.x, cs.y), vec2<f32>(-cs.y, cs.x)); }
 
 fn hex_taps(uv: vec2<f32>) -> HexTap {
     let g = uv * 2.0;
@@ -66,8 +71,8 @@ fn hex_taps(uv: vec2<f32>) -> HexTap {
         let a = field_hash(v[i] + 91.0) * 6.2831853;
         let c = cos(a);
         let sn = sin(a);
-        t.r[i] = mat2x2<f32>(vec2<f32>(c, sn), vec2<f32>(-sn, c));
-        t.uv[i] = t.r[i] * uv + vec2<f32>(field_hash(v[i] + 13.0), field_hash(v[i] + 57.0)) * 7.0;
+        t.rot[i] = vec2<f32>(c, sn);
+        t.uv[i] = hex_r(t.rot[i]) * uv + vec2<f32>(field_hash(v[i] + 13.0), field_hash(v[i] + 57.0)) * 7.0;
     }
     w = w * w * w;
     t.w = w / (w.x + w.y + w.z);
@@ -77,14 +82,14 @@ fn hex_taps(uv: vec2<f32>) -> HexTap {
 fn hex_tex(l: i32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec3<f32> {
     let t = hex_taps(uv);
     var c = vec3<f32>(0.0);
-    for (var i = 0; i < 3; i++) { c += tex_w(l, t.uv[i], t.r[i] * dx, t.r[i] * dy).rgb * t.w[i]; }
+    for (var i = 0; i < 3; i++) { let r = hex_r(t.rot[i]); c += tex_w(l, t.uv[i], r * dx, r * dy).rgb * t.w[i]; }
     return c;
 }
 
 fn hex_nrm(l: i32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec2<f32> {
     let t = hex_taps(uv);
     var g = vec2<f32>(0.0);
-    for (var i = 0; i < 3; i++) { g += transpose(t.r[i]) * nrm(l, t.uv[i], t.r[i] * dx, t.r[i] * dy) * t.w[i]; }
+    for (var i = 0; i < 3; i++) { let r = hex_r(t.rot[i]); g += transpose(r) * nrm(l, t.uv[i], r * dx, r * dy) * t.w[i]; }
     return g;
 }
 

@@ -419,3 +419,17 @@ pub(crate) fn game_mask() -> String {
     GAME_MASK.lock().unwrap().clone().unwrap_or_else(||
         "fn game_mask(world:vec3<f32>, instance:u32, material:u32)->bool {return false;}".into())
 }
+
+/// Firefox on Windows (naga to HLSL, then DXC) failed the whole shade pass
+/// on an `array<mat2x2<f32>, N>`: naga wraps each such matrix in a layout
+/// type DXC has no `mul()` for. Keep matrices with two rows out of arrays.
+#[cfg(test)]
+#[test]
+fn no_arrays_of_two_row_matrices() {
+    for (name, source) in BUILT_IN {
+        let flat: String = source.chars().filter(|c| !c.is_whitespace()).collect();
+        for m in ["mat2x2", "mat3x2", "mat4x2"] {
+            assert!(!flat.contains(&format!("array<{m}")), "{name}: array<{m}...> breaks DXC (Firefox on Windows)");
+        }
+    }
+}
