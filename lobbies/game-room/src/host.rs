@@ -468,7 +468,7 @@ impl Host {
                 action: "play_pause".into(), enabled: true, extra: "LB previous RB next".into(), ..Default::default() });
         }
         if self.no_jukebox && (x - l::SWITCH).abs() <= 0.45 {
-            return Some(Station { id: "privacy".into(), kind: "privacy".into(), label: if self.public { "Make it friends only" } else { "Make it public" }.into(),
+            return Some(Station { id: "privacy".into(), kind: "privacy".into(), label: if self.public { "Make it private" } else { "Make it public" }.into(),
                 action: "toggle_public".into(), enabled: true, ..Default::default() });
         }
         let id = player?;

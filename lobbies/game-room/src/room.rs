@@ -218,7 +218,7 @@ pub struct RoomBuild {
     /// The online switch's instances (only the browser host shows it, where
     /// the jukebox would stand).
     pub switch: std::ops::Range<usize>,
-    /// Where the switch's lever is: 0 Public (left), 1 Friends only.
+    /// Where the switch's lever is: 0 Public (left), 1 Private.
     switch_at: f32,
     /// Instance shapes, for run-time copies (spines, items).
     pub shapes: Vec<Shape>,
@@ -467,7 +467,7 @@ pub fn build() -> RoomBuild {
     switch(&mut r);
     r.switch = first..r.dump.instances.len();
     r.hidden.extend(r.switch.clone());
-    r.prompt("privacy", &[("Y", "Friends only")], Vec3::new(l::SWITCH as f32, 2.5, -0.6));
+    r.prompt("privacy", &[("Y", "Private")], Vec3::new(l::SWITCH as f32, 1.6, -0.6));
     r.prompt("music", &[("LB", "Previous"), ("Y", "Pause"), ("RB", "Next")], Vec3::new(l::JUKEBOX as f32, 3.35, BACK + 1.2));
     r.prompt("exit", &[("Y", "Leave")], Vec3::new(l::EXIT_DOOR as f32, 3.0, BACK + 0.4));
     for (i, x) in l::PROFILE_DOORS.iter().map(|&x| x as f32).enumerate() {
@@ -963,29 +963,27 @@ const SWITCH_Z: f32 = -0.7;
 /// How far the lever travels either side of the middle.
 const SWITCH_THROW: f32 = 0.3;
 /// The lever's stem and ball centre heights.
-const LEVER_Y: [f32; 2] = [0.47, 0.8];
+const LEVER_Y: [f32; 2] = [0.72, 1.05];
 
 /// The online switch (Joep, 26 November 2026): a lever on the floor by the
-/// door, thrown left for Public, right for Friends only, both words on the
-/// narrow sign above it. Built hidden; the browser host shows it.
+/// door, thrown left for Public, right for Private, and one word on the
+/// front of its base saying which it is. Built hidden; the browser host
+/// shows it.
 fn switch(r: &mut RoomBuild) {
     let x = l::SWITCH as f32;
     let z = SWITCH_Z;
     let dark = mm(Color::hex("221d30"), 0.4, 0.6);
-    r.box_(Vec3::new(1.0, 0.22, 0.5), Vec3::new(x, 0.11, z), &dark);
-    r.box_flat(Vec3::new(0.78, 0.02, 0.12), Vec3::new(x, 0.225, z), &m(Color::hex("0d1020"), 1.0));
+    r.box_(Vec3::new(1.3, 0.48, 0.5), Vec3::new(x, 0.24, z), &dark);
+    r.box_flat(Vec3::new(0.78, 0.02, 0.12), Vec3::new(x, 0.485, z), &m(Color::hex("0d1020"), 1.0));
     r.group = "switch_lever".into();
     r.cylinder(0.05, 0.5, Vec3::new(x - SWITCH_THROW, LEVER_Y[0], z), &mm(Color::hex("d8d4e8"), 0.15, 0.9));
     r.sphere(0.15, Vec3::new(x - SWITCH_THROW, LEVER_Y[1], z), &glow(GREEN, 0.3, GREEN, 1.6));
     r.group.clear();
-    for sx in [-1.0f32, 1.0] {
-        r.box_(Vec3::new(0.05, 1.75, 0.05), Vec3::new(x + sx * 0.6, 0.875, z - 0.2), &dark);
-    }
-    r.box_(Vec3::new(1.32, 0.56, 0.05), Vec3::new(x, 1.75, z - 0.2), &dark);
-    let texture = r.screen("privacy", [480, 184], false);
-    let mut material = RoomBuild::screen_material(texture, 1.2);
+    // The word at its feet, on the base's front.
+    let texture = r.screen("privacy", [496, 160], false);
+    let mut material = RoomBuild::screen_material(texture, 1.0);
     material.filter = 0;
-    r.quad(Vec2::new(1.25, 0.48), Vec3::new(x, 1.75, z - 0.17), &material);
+    r.quad(Vec2::new(1.24, 0.4), Vec3::new(x, 0.24, z + 0.255), &material);
 }
 
 /// Where a moving head points at `time` (room.gd's `_process`).
