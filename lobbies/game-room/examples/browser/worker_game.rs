@@ -88,9 +88,20 @@ pub(crate) fn poll(quiet: Option<usize>) {
     if let Some(folder) = WANTED.with(|w| w.borrow().clone()) { warm(&folder, players); }
 }
 
-/// Warming the next game in a worker: `?warm=worker` on a computer for
-/// now (not opened to other couches yet).
-pub(crate) fn enabled() -> bool { !app::web::mobile() && app::web::query_param("warm").as_deref() == Some("worker") }
+/// Warming the next game in a worker: on by default in Chrome and Edge on
+/// a computer (tested there), `?warm=worker` elsewhere, `?warm=off` never.
+/// Not on phones (two engines' memory). With another couch online the
+/// game loads on the page instead (main.rs), where the link is.
+pub(crate) fn enabled() -> bool {
+    match app::web::query_param("warm").as_deref() {
+        Some("off") => false,
+        Some("worker") => !app::web::mobile(),
+        _ => {
+            let ua = web_sys::window().and_then(|w| w.navigator().user_agent().ok()).unwrap_or_default();
+            !app::web::mobile() && (ua.contains("Chrome/") || ua.contains("Edg/")) && !ua.contains("Android")
+        }
+    }
+}
 
 /// Build `folder` for `players` in a worker, unless it already is; any
 /// other warmed game goes.

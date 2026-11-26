@@ -263,6 +263,32 @@ resize policy fits the canvas to the iframe. The game's stretch settings and
 camera determine how much of the scene is visible inside it.
 
 
+## The next game warms in a Web Worker
+
+As the desktop host warms the next game in its own process, the browser
+host builds the next playlist game in a Web Worker (`worker_game.rs`,
+`worker-host.js`, `game-worker.js`, `app::web_offscreen`). Once
+`fetch_ahead` has its files and the room has been quiet for 3 s (nothing
+paused or loading), a worker gets the page's compiled wasm module and an
+`OffscreenCanvas` over the room's canvas, with its own GPU device. It loads
+the game and draws its first frame unseen, then waits. Play hands the
+room's shell a `WorkerGame`: it forwards each player's controls (so seats,
+Back chords and pausing work as for any game) and draws nothing; the
+worker's canvas shows while controls come and the game waits once they
+stop. Its sound renders in the worker 60 ms ahead and goes over a
+`MessageChannel` straight to an AudioWorklet node (`audio::device` in a
+worker). Measured on an M5 Pro in Chrome: "ready 62 ms after Play".
+
+- On by default in Chrome and Edge on a computer; `?warm=worker` forces it,
+  `?warm=off` turns it off. Not on phones (two engines in memory).
+- A worker that is not ready, failed, or was built for another player
+  count is dropped and the game loads on the page as before; so does a game
+  while another couch is online (the WebRTC link lives on the page).
+- A cold shader cache still stalls the whole browser's GPU process while
+  the worker compiles (4 to 6 s, once per game per browser): Chrome
+  compiles every context's pipelines in one process. Async pipeline
+  creation (`createRenderPipelineAsync`) is the fix, not done yet.
+
 ## Error reports (Sentry)
 
 `lobbies/game-room/examples/browser/error-report.js` sends the browser

@@ -906,7 +906,7 @@ pub(crate) mod page {
             let html = { let _ = entry; None };
             // Warmed in a worker (worker_game.rs, ?warm=worker): built and drawn already.
             #[cfg(target_arch = "wasm32")]
-            let warmed = if html.is_none() { super::worker_game::take(&folder, players, &with(|h| title(&h.party, &game))) } else { None };
+            let warmed = if html.is_none() && !super::online::couches() { super::worker_game::take(&folder, players, &with(|h| title(&h.party, &game))) } else { None };
             #[cfg(not(target_arch = "wasm32"))]
             let warmed: Option<(Config, Box<dyn Game>)> = None;
             let loaded = if let Some(w) = warmed { local(); Ok(w) } else if let Some(html) = html { local(); Ok(html) } else { match super::builtin::load(&folder, players).await {

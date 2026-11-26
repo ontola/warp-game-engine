@@ -181,6 +181,16 @@ impl app::net::Wire for FollowWire {
 }
 
 /// A game this page started that cannot go online (an HTML or Rust game).
+/// Another couch is here (following this page, or this page following
+/// one): a game then loads on this page's thread, where the link is.
+pub(crate) fn couches() -> bool {
+    PAGE.with(|p| match &*p.borrow() {
+        Page::Off => false,
+        Page::Host { link, .. } => !link.state().clients.is_empty(),
+        Page::Follow { .. } => true,
+    })
+}
+
 pub(crate) fn local_game() {
     PAGE.with(|p| if let Page::Host { link, game, told } = &mut *p.borrow_mut() { link.set_in_game(false); *game = None; told.clear(); });
 }
