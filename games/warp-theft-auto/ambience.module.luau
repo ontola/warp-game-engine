@@ -29,6 +29,10 @@ function ambience.tick(fleet)
 				sound.set_param(car.voice, "contact", car.contact)
 				sound.set_param(car.voice, "loose", car.loose)
 				sound.set_param(car.voice, "soft", car.soft)
+			else
+				-- Local split screen shares its speakers. The occupied optic is the ear inside this rotor.
+				local gunner = fleet.players[car.gunner]
+				sound.set_param(car.voice, "cabin", if gunner and not gunner.bot then 1 else 0)
 			end
 		elseif car.voice then
 			sound.stop(car.voice)
@@ -62,22 +66,23 @@ local function carHeadlight(car, level)
 end
 
 function ambience.headlights(fleet, clock)
-	if clock.lampLevel == 0 and not clock.headlights then return end
-	clock.headlights = clock.lampLevel > 0
 	local beams = {}
-	if clock.headlights then
-		for _, seat in fleet.players do
-			if not seat.vehicle then continue end
-			if seat.mode == "fly" then
-				local forward = util.forward(seat.yaw)
-				table.insert(beams, {pos = seat.pos + forward * 1.4 + v(0,.7,0), dir = forward + v(0,-.7,0),
-					color = "#ffebcc", intensity = 6200 * clock.lampLevel, angle = 25, range = 48})
-			else
-				table.insert(beams, carHeadlight(fleet.vehicles[seat.vehicle], clock.lampLevel))
-			end
+	for _, seat in fleet.players do
+		if not seat.vehicle then continue end
+		local forward = util.forward(seat.yaw)
+		if seat.mode == "fly" and seat.flightRole ~= "gunner" then
+			local heli = fleet.vehicles[seat.vehicle]
+			if not heli.searchlight then continue end
+			local nose = world.get(heli.searchlight).world_pos
+			-- The lamp follows the nose in yaw but keeps illuminating the ground during pitch and roll.
+			table.insert(beams, {pos = nose, dir = forward + v(0, -1.05, 0),
+				color = "#ffefd9", intensity = 185000, angle = 15, inner = 9, range = 185})
+		elseif seat.mode == "drive" and clock.lampLevel > 0 then
+			table.insert(beams, carHeadlight(fleet.vehicles[seat.vehicle], clock.lampLevel))
 		end
 	end
-	lights.spots(beams)
+	if #beams > 0 or clock.headlights then lights.spots(beams) end
+	clock.headlights = #beams > 0
 end
 
 function ambience.lamps(city, seats, clock)

@@ -2,6 +2,7 @@ local ui = require("kit/ui")
 local city = require("world")
 local dispatch = require("dispatch")
 local sidearm = require("sidearm")
+local optics = require("apache_hud")
 local wheel = require("weapon_wheel")
 local instruments = {}
 local ink, muted, panel = "#fff6df", "#b9cbd0", "#101e26ec"
@@ -190,6 +191,20 @@ local function objective(story, left, top, width, s)
 	hud.box(left,top,3*s,height,gold)
 	hud.text(string.upper(headline),left+11*s,top+6*s,{size=15*s,color=gold,width=width-22*s})
 	for i, part in lines do text(part,left+11*s,top+(8+i*20)*s,17*s,ink) end
+	return height
+end
+
+local function hitmark(gun,id,x,y,w,h,s)
+	if gun.hitPoint then
+		local hx,hy=hud.project(gun.hitPoint,id)
+		if hx and hx>x+14*s and hx<x+w-14*s and hy>y+14*s and hy<y+h-14*s then
+			for _,dx in {-1,1} do
+				for _,dy in {-1,1} do
+					for k=5,9,2 do hud.box(hx+(dx*k-1)*s,hy+(dy*k-1)*s,2.5*s,2.5*s,"#ffe0bd") end
+				end
+			end
+		end
+	end
 end
 
 local function reticle(gun,seat,id,x,y,w,h,s)
@@ -204,7 +219,8 @@ local function reticle(gun,seat,id,x,y,w,h,s)
 	else
 		-- The exploration camera looks down toward the avatar. Project the hip
 		-- shot direction into this seat's view, where the player can actually fire.
-		local origin,ray=sidearm.hipRay(seat)
+		local origin,ray=seat.mountPos,seat.mountDir
+		if not origin then origin,ray=sidearm.hipRay(seat) end
 		cx,cy=hud.project(origin+ray*25,id)
 		if cx and cx>x+4*s and cx<x+w-4*s and cy>y+4*s and cy<y+h-4*s then
 			local radius=(1.4+9*(gun.shotFlash or 0))*s
@@ -212,16 +228,7 @@ local function reticle(gun,seat,id,x,y,w,h,s)
 			hud.box(cx-radius,cy-radius,radius*2,radius*2,ink)
 		end
 	end
-	if gun.hitPoint then
-		local hx,hy=hud.project(gun.hitPoint,id)
-		if hx and hx>x+14*s and hx<x+w-14*s and hy>y+14*s and hy<y+h-14*s then
-			for _,dx in {-1,1} do
-				for _,dy in {-1,1} do
-					for k=5,9,2 do hud.box(hx+(dx*k-1)*s,hy+(dy*k-1)*s,2.5*s,2.5*s,"#ffe0bd") end
-				end
-			end
-		end
-	end
+	hitmark(gun,id,x,y,w,h,s)
 end
 
 function instruments.draw(cityState, fleet, clock, job, player, story, menu, titles, weapon)
@@ -236,8 +243,10 @@ function instruments.draw(cityState, fleet, clock, job, player, story, menu, tit
 	local margin = 15*s
 	local left, top = x + margin, y + margin
 	local width = math.min(w*0.61, 318*s)
+	local objectiveBottom=top+63*s
 	if story then
-		objective(story,left,top,math.min(w*.61,420*s),s)
+		width=math.min(w*.61,420*s)
+		objectiveBottom=top+objective(story,left,top,width,s)
 	else
 		hud.box(left,top,width,63*s,panel)
 		hud.box(left,top,3*s,63*s,gold)
@@ -263,14 +272,30 @@ function instruments.draw(cityState, fleet, clock, job, player, story, menu, tit
 	local mode
 	if seat.mode == "walk" then
 		mode = "ON FOOT"
-		action = if seat.nearby then "F / Y   Take " .. (if seat.nearby == "car" then "car" else "helicopter") elseif seat.doorway then "Walk through the doorway" else "WASD / stick   Move"
+		action = if seat.nearby then "F / Y   Take " .. (if seat.nearbyPassenger then "passenger seat" elseif seat.nearby == "car" then "car" elseif seat.nearbyGunner then "Apache gunner seat" else "Apache pilot seat") elseif seat.doorway then "Walk through the doorway" else "WASD / stick   Move"
+	elseif seat.mode=="ride" then
+		mode=string.format("PASSENGER   %d km/h",math.floor(math.abs(seat.speed)*3.6+.5))
+		action=if math.abs(seat.speed)<=2 then "F / Y   Exit" else "Mouse / right stick   Look around"
 	else
 		mode = if seat.mode == "drive" then string.format("%d km/h", math.floor(math.abs(seat.speed)*3.6+.5)) else string.format("%d m ALT", math.floor(seat.pos.y+.5))
 		action = if seat.mode == "fly" then "Space / A   Rise     Shift / RB   Lower" else "W / RT   Gas     S / LT   Brake"
 		if seat.mode == "drive" and math.abs(seat.speed) < 2 then action = "W / RT   Gas     F / Y   Exit" end
 	end
+	if seat.flightRole then
+		local car=fleet.vehicles[seat.vehicle]
+		local gunner=seat.flightRole=="gunner"
+		mode=if gunner then "APACHE  /  30 MM CANNON" else string.format("APACHE  /  PILOT   %d m",math.floor(seat.pos.y+.5))
+		action=if gunner then "Mouse / RS   Aim     RMB / LT   Zoom" else "WASD / LS   Lift, yaw     Arrows / RS   Tilt"
+		if car.grounded and math.abs(car.speed)<2 then
+			action=if gunner then "RMB / LT   Zoom     F / Y   Exit" else "W / LS up   Lift     F / Y   Exit"
+		end
+		if menu.owner~=id and weapon then
+			optics.draw(seat,car,id,x,y,w,h,s,left+width,objectiveBottom)
+			if gunner then hitmark(weapon,id,x,y,w,h,s) else reticle(weapon,seat,id,x,y,w,h,s) end
+		end
+	end
 	local armed = seat.mode == "walk" and not seat.impact and weapon ~= nil
-	local gunHint = "RMB / LT   Aim     LMB / RT   Fire"
+	local gunHint = if seat.flightRole=="pilot" then "LMB / RT   Rockets" elseif seat.flightRole=="gunner" then "LMB / RT   Fire" else "RMB / LT   Aim     LMB / RT   Fire"
 	if armed then
 		mode = string.upper(wheel.name(seat))
 		if weapon.ammo~=nil and weapon.magazine then
@@ -283,13 +308,14 @@ function instruments.draw(cityState, fleet, clock, job, player, story, menu, tit
 	if armed and menu.owner~=id then reticle(weapon,seat,id,x,y,w,h,s) end
 	text("R / X   Stories",mx+2*s,my-39*s,14*s,ink)
 	if armed then text("Hold Q / LB   Weapons",mx+2*s,my-57*s,14*s,ink) end
-	local aw = math.max(hud.measure(action,16*s), hud.measure(mode,23*s), if armed then hud.measure(gunHint,15*s) else 0) + 24*s
-	local height = (if armed then 80 else 58)*s
+	local gunHintVisible=armed or seat.flightRole~=nil
+	local aw = math.max(hud.measure(action,16*s), hud.measure(mode,23*s), if gunHintVisible then hud.measure(gunHint,15*s) else 0) + 24*s
+	local height = (if gunHintVisible then 80 else 58)*s
 	local ax, ay = tt-aw, y+h-margin-height
 	hud.box(ax,ay,aw,height,panel)
 	text(mode,ax+12*s,ay+3*s,23*s,ink)
 	text(action,ax+12*s,ay+34*s,16*s,muted)
-	if armed then text(gunHint,ax+12*s,ay+55*s,15*s,muted) end
+	if gunHintVisible then text(gunHint,ax+12*s,ay+55*s,15*s,muted) end
 	if menu.owner==id then drawStories(menu,titles,x,y,w,h,s) end
 end
 

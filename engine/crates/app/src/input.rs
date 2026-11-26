@@ -622,6 +622,26 @@ pub fn merge_into(o: &mut Controls, d: &Controls) {
     o.pressed.0 |= d.pressed.0;
 }
 
+/// Bind connected pads to standalone couch seats. With fewer pads than people a keyboard
+/// supplies the first seat. Once playing, a connected pad keeps its seat across hotplug.
+pub fn assign_local_pads(seats: &mut Vec<Option<Device>>, devices: &[(Device, Controls)], players: usize) {
+    seats.resize(players, None);
+    for seat in seats.iter_mut() {
+        if seat.is_some_and(|pad| !devices.iter().any(|(dev, _)| *dev == pad)) {
+            *seat = None;
+        }
+    }
+    let pads = devices.iter().map(|(dev, _)| *dev).filter(|dev| dev.is_pad());
+    let reserve_keyboard = devices.iter().any(|(dev, _)| *dev == Device::Keyboard)
+        && pads.clone().count() < players;
+    for pad in pads {
+        if seats.contains(&Some(pad)) { continue; }
+        if let Some(seat) = seats.iter_mut().skip(usize::from(reserve_keyboard)).find(|s| s.is_none()) {
+            *seat = Some(pad);
+        }
+    }
+}
+
 /// Per-device input to `players` seats. `seats`: the devices bound to each
 /// seat ([`crate::Game::seats`]); devices in no seat drive nothing. None:
 /// devices drive seats in order, and a single seat takes every device.
@@ -707,6 +727,25 @@ mod tests {
         assert!((shape(1.0, &t) - 1.0).abs() < 1e-6);
         assert!((shape(-1.0, &t) + 1.0).abs() < 1e-6);
         assert!(shape(0.5, &t) < 0.5);
+    }
+
+    #[test]
+    fn couch_pads_keep_their_players_when_another_controller_connects_or_leaves() {
+        let keyboard = (Device::Keyboard, Controls::default());
+        let a = (Device::Pad(7), press(Buttons::WEST));
+        let b = (Device::Pad(3), press(Buttons::NORTH));
+        let mut seats = Vec::new();
+        assign_local_pads(&mut seats, &[keyboard, a, b], 2);
+        assert_eq!(seats, [Some(a.0), Some(b.0)]);
+        assign_local_pads(&mut seats, &[keyboard, b], 2);
+        assert_eq!(seats, [None, Some(b.0)]);
+        assign_local_pads(&mut seats, &[keyboard, b, a], 2);
+        assert_eq!(seats, [Some(a.0), Some(b.0)]);
+        seats.clear();
+        assign_local_pads(&mut seats, &[keyboard, a], 2);
+        assert_eq!(seats, [None, Some(a.0)]);
+        assign_local_pads(&mut seats, &[keyboard, a, b], 2);
+        assert_eq!(seats, [Some(b.0), Some(a.0)]);
     }
 
     fn press(b: u32) -> Controls { Controls { held: Buttons(b), pressed: Buttons(b), ..Default::default() } }

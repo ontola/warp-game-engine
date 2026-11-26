@@ -6,7 +6,7 @@
   "steps": [
     {
       "note": "Stage a compact at the actual ferry drop and a second player beside the west helicopter.",
-      "cmd": "lua local c=state.fleet.vehicles[1]; local pos=vector.create(164.5,0,59); c.native=vehicles.spawn(pos,0); c.pos=pos; world.place(c.body,pos+vector.create(0,.33,0)); world.place(state.fleet.players[1].body,pos+vector.create(2,.85,0)); world.place(state.fleet.players[2].body,state.fleet.vehicles[9].pos+vector.create(2,.85,0))",
+      "cmd": "lua local c=state.fleet.vehicles[1]; local pos=vector.create(164.5,0,59); c.native=vehicles.spawn(pos,0); c.pos=pos; world.place(c.body,pos+vector.create(0,.33,0)); world.place(state.fleet.players[1].body,pos+vector.create(2,.85,0)); world.place(state.fleet.players[2].body,state.fleet.vehicles[9].pos+vector.create(-1.12,.85,3.0))",
       "ticks": 3
     },
     {
@@ -38,13 +38,13 @@
       "ticks": 55
     },
     {
-      "note": "The west berth faces away from the pad. Reverse into the landing circle.",
-      "mv": [
+      "note": "The west berth faces away from the pad. Pull the cyclic back, then coast into the landing circle.",
+      "aim": [
         0,
         -1
       ],
       "player": 1,
-      "ticks": 36
+      "ticks": 95
     },
     {
       "ticks": 100

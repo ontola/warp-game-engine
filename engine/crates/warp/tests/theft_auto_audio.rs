@@ -97,3 +97,20 @@ fn street_muffler_preserves_engine_body_and_attenuates_hiss() {
         );
     }
 }
+
+#[test]
+fn occupied_gunner_cockpit_softens_rotor_treble_and_keeps_the_blade_beat() {
+    let source = include_str!("../../../../games/warp-theft-auto/sounds/rotor.luau");
+    let rotor = synth::lua::load("rotor", source).unwrap().remove(0);
+    let bands = |cabin| {
+        let samples = rotor.voice(&[("speed", 17.), ("cabin", cabin)], 7, RATE as f32).render_all(0.7);
+        let spectrum = analysis::spectrum(&samples[RATE / 2..RATE / 2 + WINDOW], WINDOW);
+        let power = |lo, hi| spectrum[lo * WINDOW / RATE..hi * WINDOW / RATE]
+            .iter().map(|v| v * v).sum::<f32>();
+        (power(35, 105), power(1200, 6500))
+    };
+    let (low, high) = bands(0.0);
+    let (inside_low, inside_high) = bands(1.0);
+    assert!(high > 0. && inside_low > 0.35 * low);
+    assert!(inside_high / inside_low < 0.12 * high / low);
+}
