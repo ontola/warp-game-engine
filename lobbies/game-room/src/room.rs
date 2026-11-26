@@ -467,7 +467,7 @@ pub fn build() -> RoomBuild {
     switch(&mut r);
     r.switch = first..r.dump.instances.len();
     r.hidden.extend(r.switch.clone());
-    r.prompt("privacy", &[("Y", "Private")], Vec3::new(l::SWITCH as f32, 1.6, -0.6));
+    r.prompt("privacy", &[("Y", "Private")], Vec3::new(l::SWITCH as f32, 2.55, SWITCH_Z + 0.4));
     r.prompt("music", &[("LB", "Previous"), ("Y", "Pause"), ("RB", "Next")], Vec3::new(l::JUKEBOX as f32, 3.35, BACK + 1.2));
     r.prompt("exit", &[("Y", "Leave")], Vec3::new(l::EXIT_DOOR as f32, 3.0, BACK + 0.4));
     for (i, x) in l::PROFILE_DOORS.iter().map(|&x| x as f32).enumerate() {
@@ -959,22 +959,26 @@ fn plaque(r: &mut RoomBuild) {
 }
 
 /// Where the online switch stands: the jukebox's place, on the floor.
-const SWITCH_Z: f32 = -0.7;
+/// On the low display stand left of Up next (Joep, 2026-11-26): its top
+/// and the middle of its depth.
+const SWITCH_Y: f32 = 0.83;
+const SWITCH_Z: f32 = (l::BACK + 0.45) as f32;
 /// How far the lever travels either side of the middle.
 const SWITCH_THROW: f32 = 0.3;
 /// The lever's stem and ball centre heights.
-const LEVER_Y: [f32; 2] = [0.72, 1.05];
+const LEVER_Y: [f32; 2] = [SWITCH_Y + 0.72, SWITCH_Y + 1.05];
 
-/// The online switch (Joep, 26 November 2026): a lever on the floor by the
-/// door, thrown left for Public, right for Private, and one word on the
+/// The online switch (Joep, 26 November 2026): a lever on the display stand
+/// by the door, thrown left for Public, right for Private, and one word on the
 /// front of its base saying which it is. Built hidden; the browser host
 /// shows it.
 fn switch(r: &mut RoomBuild) {
     let x = l::SWITCH as f32;
     let z = SWITCH_Z;
     let dark = mm(Color::hex("221d30"), 0.4, 0.6);
-    r.box_(Vec3::new(1.3, 0.48, 0.5), Vec3::new(x, 0.24, z), &dark);
-    r.box_flat(Vec3::new(0.78, 0.02, 0.12), Vec3::new(x, 0.485, z), &m(Color::hex("0d1020"), 1.0));
+    let y = SWITCH_Y;
+    r.box_(Vec3::new(1.3, 0.48, 0.5), Vec3::new(x, y + 0.24, z), &dark);
+    r.box_flat(Vec3::new(0.78, 0.02, 0.12), Vec3::new(x, y + 0.485, z), &m(Color::hex("0d1020"), 1.0));
     r.group = "switch_lever".into();
     r.cylinder(0.05, 0.5, Vec3::new(x - SWITCH_THROW, LEVER_Y[0], z), &mm(Color::hex("d8d4e8"), 0.15, 0.9));
     r.sphere(0.15, Vec3::new(x - SWITCH_THROW, LEVER_Y[1], z), &glow(GREEN, 0.3, GREEN, 1.6));
@@ -983,7 +987,7 @@ fn switch(r: &mut RoomBuild) {
     let texture = r.screen("privacy", [496, 160], false);
     let mut material = RoomBuild::screen_material(texture, 1.0);
     material.filter = 0;
-    r.quad(Vec2::new(1.24, 0.4), Vec3::new(x, 0.24, z + 0.255), &material);
+    r.quad(Vec2::new(1.24, 0.4), Vec3::new(x, y + 0.24, z + 0.255), &material);
 }
 
 /// Where a moving head points at `time` (room.gd's `_process`).
