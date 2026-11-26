@@ -130,7 +130,7 @@ impl Session {
     /// world shell and the player slots this client controls.
     pub fn join(ticket: &str, players: u8, lan: bool) -> Result<(Session, World, Vec<usize>), String> {
         let mut client = crate::net::join(ticket, players, lan)?;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let deadline = web_time::Instant::now() + std::time::Duration::from_secs(20);
         loop {
             match client.rx.try_recv() {
                 Ok(ToClient::Welcome { slots, players, arena, coop }) => {
@@ -157,7 +157,7 @@ impl Session {
                 Ok(_) => {}
                 Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => return Err("host closed the connection".into()),
                 Err(_) => {
-                    if std::time::Instant::now() > deadline { return Err("no welcome from the host".into()); }
+                    if web_time::Instant::now() > deadline { return Err("no welcome from the host".into()); }
                     std::thread::sleep(std::time::Duration::from_millis(5));
                 }
             }

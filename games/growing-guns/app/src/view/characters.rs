@@ -4,6 +4,7 @@ use assets::skinned::{ActorHandle, Character};
 use glam::{Affine3A, Mat4, Quat, Vec3};
 use growing_guns::{Event, World, DT};
 use render::{Gpu, Renderer, Scene};
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 mod locomotion;
 use locomotion::{Locomotion, Stride};
@@ -236,6 +237,10 @@ pub(crate) fn grip_rotation(pitch: f32) -> Quat {
 
 fn load_rig() -> Result<Character, String> {
     let file = "player-rig.json";
+    #[cfg(target_arch = "wasm32")]
+    return Character::load_animation_rig(&std::path::Path::new(crate::web::ROOT).join("assets/characters").join(file));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
     let dir = if let Some(dir) = std::env::var_os("GG_CHARACTERS") {
         if dir == "off" { return Err("primitive roster selected".into()); }
         PathBuf::from(dir)
@@ -245,6 +250,7 @@ fn load_rig() -> Result<Character, String> {
             .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/characters"))
     };
     Character::load_animation_rig(&dir.join(file))
+    }
 }
 
 /// Fit the review model to the clip bind pose used by the animation tools.

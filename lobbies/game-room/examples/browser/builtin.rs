@@ -17,6 +17,7 @@ pub(crate) async fn load(folder: &str, players: usize) -> Option<Loaded> {
     match folder {
         "spellstorm" => Some(spellstorm_app::web::load(players, seed).await),
         "spaceracer" => Some(spaceracer_app::web::load(players, seed).await),
+        "growing-guns" => Some(growing_guns_app::web::load(players, seed).await),
         _ => {
             render::clear_game_hooks();
             None

@@ -167,10 +167,10 @@ impl Visuals {
         self.fx.blasts.clear();
         self.players.clear(&mut self.scene, &mut self.phys);
         self.phys.clear_bodies();
-        let t = std::time::Instant::now();
+        let t = web_time::Instant::now();
         self.arena.set(&mut self.scene, &mut self.phys, &mut self.fx, world);
         crate::play::hitch("set_arena: arena", t);
-        let t = std::time::Instant::now();
+        let t = web_time::Instant::now();
         self.stadium.set_arena(&mut self.scene, world);
         crate::play::hitch("set_arena: stadium", t);
     }

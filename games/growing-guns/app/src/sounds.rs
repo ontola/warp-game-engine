@@ -11,7 +11,6 @@ use glam::Vec3;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::SystemTime;
 
 /// One listener per local player, at eye height (for the crowd and stadium).
 pub fn ears(world: &World, slots: &[usize]) -> Vec<Listener> {
@@ -60,6 +59,8 @@ pub fn godot_checkout(rel: &str) -> Vec<PathBuf> {
 /// The patch folder: `--sfx DIR`, `GG_SFX`, beside the working directory, or
 /// the source tree this binary was built from.
 pub fn find_patches(arg: Option<&str>) -> Option<PathBuf> {
+    #[cfg(target_arch = "wasm32")]
+    if arg.is_none() { return crate::web::served("sounds"); }
     let built = concat!(env!("CARGO_MANIFEST_DIR"), "/../sounds").to_string();
     let candidates = [arg.map(PathBuf::from), std::env::var("GG_SFX").ok().map(PathBuf::from), beside_exe("sounds"), Some("games/growing-guns/sounds".into()), Some("sounds".into()), Some(built.into())];
     candidates.into_iter().flatten().find(|p| p.join("shot.luau").exists())
@@ -70,7 +71,7 @@ pub fn find_patches(arg: Option<&str>) -> Option<PathBuf> {
 pub struct Bank {
     dir: Option<PathBuf>,
     patches: HashMap<String, Arc<CompiledPatch>>,
-    files: HashMap<PathBuf, SystemTime>,
+    files: HashMap<PathBuf, vfs::Stamp>,
     warned: std::collections::HashSet<String>,
     since: f32,
 }
@@ -87,11 +88,10 @@ impl Bank {
     pub fn scan(&mut self) -> Vec<String> {
         let mut out = Vec::new();
         let Some(dir) = &self.dir else { return out };
-        let Ok(rd) = std::fs::read_dir(dir) else { return out };
-        for e in rd.flatten() {
-            let path = e.path();
+        let Ok(rd) = vfs::list(dir) else { return out };
+        for path in rd {
             if path.extension().and_then(|x| x.to_str()) != Some("luau") { continue; }
-            let Ok(t) = e.metadata().and_then(|m| m.modified()) else { continue };
+            let Some(t) = vfs::stamp(&path) else { continue };
             if self.files.get(&path) == Some(&t) { continue; }
             let fresh = self.files.insert(path.clone(), t).is_some();
             match synth::lua::load_file(&path).and_then(|ps| ps.iter().map(Patch::compile).collect::<Result<Vec<_>, _>>()) {
@@ -195,8 +195,11 @@ pub fn speakers(layout: Option<&str>, music: Option<&crate::music::Shared>) -> R
     let mut made = None;
     let named = layout.and_then(synth::Layout::named);
     let speaker = app::sound::open(|rate, channels| {
+        #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
         let (tx, mut mix) = synth::mixer(named.clone().unwrap_or_else(|| synth::Layout::for_channels(channels)), 160, rate);
         // Finished voices are freed here, not on the audio thread.
+        // A browser has one thread: the mixer frees them itself.
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(trash) = mix.take_trash() { std::thread::Builder::new().name("sfx-trash".into()).spawn(move || for g in trash { drop(g) }).ok(); }
         let (crowd, cmix) = audio::sfx::sfx(32, rate);
         made = Some((tx, crowd));
@@ -813,7 +816,7 @@ mod audio_stress_tests {
         sounds.ears = vec![Vec3::ZERO];
         let mut audio = Vec::new();
         let mut max_voices = 0;
-        let start = std::time::Instant::now();
+        let start = web_time::Instant::now();
         // 12 close shots + blasts per second, then four shooters, then decay.
         for frame in 0..840 {
             sounds.time = frame as f32 / 60.0;

@@ -188,7 +188,7 @@ fn bake_sun_cached(grid: render::irradiance_volume::Grid, boxes: &[Affine3A], sk
 }
 
 fn bake_sky(grid: render::irradiance_volume::Grid, boxes: &[Affine3A], reflectance: f32, half: f32) -> SkyBake {
-    let start = std::time::Instant::now();
+    let start = web_time::Instant::now();
     static CACHE: std::sync::OnceLock<std::sync::Mutex<BakeCache<SkyBake>>> = std::sync::OnceLock::new();
     let cache = CACHE.get_or_init(|| std::sync::Mutex::new(BakeCache(Default::default())));
     let separate = std::env::var("GG_SKY_SEPARATION").as_deref() == Ok("1");
@@ -860,7 +860,7 @@ impl StadiumVisuals {
     pub fn invalidate_lighting(&mut self) { self.sky_dirty=true; self.needs_initial_lighting=true; }
 
     fn upload_sun(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, upload: SunUpload) -> Result<(), String> {
-        let start=std::time::Instant::now();
+        let start=web_time::Instant::now();
         let result=match upload {
             SunUpload::Packed(words)=>renderer.set_packed_irradiance_volume(gpu,&words),
             SunUpload::Probes(probes) if self.sky_planes.is_empty()=>renderer.set_sky_sun(gpu,&probes),
@@ -899,7 +899,7 @@ impl StadiumVisuals {
                 let emission=(std::env::var("GG_LAVA_BOUNCE").as_deref()!=Ok("0")).then(||self.sky_emission.clone());
                 let planes=self.sky_planes.clone();
                 let bake = move || -> Result<SunUpload,String> {
-                    let start=std::time::Instant::now();
+                    let start=web_time::Instant::now();
                     let probes=bake_sun_cached(grid,&boxes,&sky,reflectance,sun)?;
                     let upload=if let Some(emission)=emission {
                         SunUpload::Packed(render::irradiance_volume::pack_sky_emission(&grid,&probes,&emission,&planes)?)

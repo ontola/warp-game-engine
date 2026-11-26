@@ -35,6 +35,7 @@ warp = { path = "../../engine/crates/warp" }
 # Rust games built into the page (examples/browser/builtin.rs).
 spellstorm-app = { path = "../../games/spellstorm/app" }
 spaceracer-app = { path = "../../games/spaceracer/app" }
+growing-guns-app = { path = "../../games/growing-guns/app" }
 script = { path = "../../engine/crates/script" }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"

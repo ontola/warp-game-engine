@@ -127,13 +127,14 @@ pub fn cache_probe(size:[u32;2],profile:Graphics,gpu_ms:f64) {
 /// probe numbers and every adaptive decision, for players to send. Kept
 /// under 256 KiB with one older file.
 pub fn log(line:&str) {
+    if cfg!(target_arch="wasm32") {return;}
     let dir=std::env::var_os("HOME").filter(|_|cfg!(target_os="macos")).map(|h|std::path::PathBuf::from(h).join("Library/Application Support/Growing Guns"))
         .or_else(||crate::play::settings_path()?.parent().map(std::path::Path::to_path_buf));
     let Some(dir)=dir else {return};
     let _=std::fs::create_dir_all(&dir);
     let path=dir.join("quality.log");
     if std::fs::metadata(&path).is_ok_and(|m|m.len()>256*1024) {let _=std::fs::rename(&path,dir.join("quality.log.1"));}
-    let stamp=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0,|d|d.as_secs());
+    let stamp=web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0,|d|d.as_secs());
     use std::io::Write;
     if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open(path) {let _=writeln!(f,"{stamp} {line}");}
 }
