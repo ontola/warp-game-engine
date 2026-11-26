@@ -276,7 +276,9 @@ pub fn store(key: &str, value: &str) {
 /// A value from the page's query string.
 pub fn query_param(k: &str) -> Option<String> {
     let query = web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default();
-    query.trim_start_matches('?').split('&').find_map(|kv| kv.split_once('=').filter(|(key, _)| *key == k).map(|(_, v)| v.to_owned()))
+    // Decoded: a link may carry `?cloud=http%3A%2F%2F...`.
+    query.trim_start_matches('?').split('&').find_map(|kv| kv.split_once('=').filter(|(key, _)| *key == k)
+        .map(|(_, v)| js_sys::decode_uri_component(v).ok().and_then(|d| d.as_string()).unwrap_or_else(|| v.to_owned())))
 }
 
 pub fn origin() -> String { web_sys::window().and_then(|w| w.location().origin().ok()).unwrap_or_default() }
