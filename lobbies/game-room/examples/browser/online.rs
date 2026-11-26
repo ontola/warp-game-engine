@@ -102,6 +102,81 @@ pub(crate) fn loaded(folder: &str, code: &str, cfg: &mut app::Config, game: &mut
     });
 }
 
+/// Open the room to other couches (this page hosts) once it has a code.
+fn ensure_host(code: &str) {
+    PAGE.with(|p| {
+        let mut p = p.borrow_mut();
+        if !matches!(*p, Page::Off) || off() || code.is_empty() { return; }
+        match warp::online_web::Host::start(&signal_room(code)) {
+            Ok(h) => *p = Page::Host { link: Shared::new(Box::new(h)), game: None, told: Vec::new() },
+            Err(e) => app::web::log(&format!("online: could not open the game to others: {e}")),
+        }
+    });
+}
+
+/// A Rust game that plays online itself (rollback, app::net): the page's
+/// couches for it, or None (off, or following a host that plays another).
+pub(crate) fn wire_for(folder: &str, code: &str) -> Option<Box<dyn app::net::Wire>> {
+    ensure_host(code);
+    PAGE.with(|p| match &mut *p.borrow_mut() {
+        Page::Off => None,
+        Page::Host { link, game, told } => {
+            *game = Some(folder.to_string());
+            told.clear();
+            app::web::log(&format!("online: {folder} is open to other couches (room {code})"));
+            Some(Box::new(HostWire { side: link.host_side(), shared: link.clone() }) as Box<dyn app::net::Wire>)
+        }
+        Page::Follow { link, game, .. } => {
+            if game.as_deref() != Some(folder) { return None; }
+            Some(Box::new(FollowWire { side: link.follow_side(), closed: false }) as Box<dyn app::net::Wire>)
+        }
+    })
+}
+
+struct HostWire { side: Box<dyn HostLink>, shared: Shared<dyn HostLink> }
+
+impl app::net::Wire for HostWire {
+    fn hosting(&self) -> bool { true }
+    fn send(&mut self, data: Vec<u8>) {
+        for c in self.shared.state().clients.clone() { self.side.send(c, Down::Game { from: 0, data: data.clone() }); }
+    }
+    fn poll(&mut self) -> Vec<(u64, Vec<u8>)> {
+        let mut got = Vec::new();
+        while let Some(ev) = self.side.poll() {
+            if let warp::online::LinkEvent::Message(c, warp::online::Up::Game(data)) = ev {
+                // Passed on to every other couch.
+                for o in self.shared.state().clients.clone() {
+                    if o != c { self.side.send(o, Down::Game { from: c, data: data.clone() }); }
+                }
+                got.push((c, data));
+            }
+        }
+        got
+    }
+    fn couches(&self) -> Vec<u64> { self.shared.state().clients.clone() }
+}
+
+struct FollowWire { side: Box<dyn FollowLink>, closed: bool }
+
+impl app::net::Wire for FollowWire {
+    fn hosting(&self) -> bool { false }
+    fn send(&mut self, data: Vec<u8>) { self.side.send(warp::online::Up::Game(data)); }
+    fn poll(&mut self) -> Vec<(u64, Vec<u8>)> {
+        let mut got = Vec::new();
+        loop {
+            match self.side.poll() {
+                warp::online::Got::Msg(Down::Game { from, data }) => got.push((from, data)),
+                warp::online::Got::Msg(_) => {}
+                warp::online::Got::Empty => break,
+                warp::online::Got::Closed => { self.closed = true; break; }
+            }
+        }
+        got
+    }
+    fn couches(&self) -> Vec<u64> { Vec::new() }
+    fn closed(&self) -> bool { self.closed }
+}
+
 /// A game this page started that cannot go online (an HTML or Rust game).
 pub(crate) fn local_game() {
     PAGE.with(|p| if let Page::Host { link, game, told } = &mut *p.borrow_mut() { link.set_in_game(false); *game = None; told.clear(); });

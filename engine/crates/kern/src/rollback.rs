@@ -117,6 +117,13 @@ impl<G: Game> Rollback<G> {
     pub fn seats(&self) -> usize { self.seats.len() }
     /// Every seat's input is known up to (not including) this frame.
     pub fn confirmed(&self) -> u32 { self.seats.iter().map(Seat::known_to).min().unwrap_or(self.frame) }
+    /// The saved state at the start of frame `f`, while it is kept (from
+    /// the last confirmed frame on): to compare couches (a desync check).
+    pub fn state_at(&self, f: u32) -> Option<&G::State> {
+        if f < self.saved_from { return None; }
+        self.states.get((f - self.saved_from) as usize)
+    }
+
     /// Frames this one may still run on guesses before it waits.
     pub fn room(&self) -> u32 { (self.confirmed() + self.max_ahead).saturating_sub(self.frame) }
 

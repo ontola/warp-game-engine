@@ -58,6 +58,8 @@ pub struct NetRun {
     /// What each other couch still needs of each seat.
     acks: BTreeMap<(u64, usize), u32>,
     pub seed: u64,
+    /// The next frame to compare between couches (logged as a digest).
+    pub check: u32,
 }
 
 /// What the game should do after a tick of the session.
@@ -154,7 +156,7 @@ impl Online {
         }
         let mut acks = BTreeMap::new();
         for &c in owners.iter().filter(|c| **c != self.me) { for &s in &mine { acks.insert((c, s), 0); } }
-        self.run = Some(NetRun { rb, owners: owners.clone(), mine: mine.clone(), out, acks, seed });
+        self.run = Some(NetRun { rb, owners: owners.clone(), mine: mine.clone(), out, acks, seed, check: 600 });
         Do::Start { seed, owners, mine }
     }
 
@@ -221,6 +223,24 @@ impl Online {
         self.wire.send(b);
         if stop { run.rb.correct(world); return false; }
         run.rb.advance(world)
+    }
+}
+
+impl Online {
+    /// Every 10 s of run, once every couch's inputs for it are in: a line
+    /// with that frame's digest, the same on every couch unless they split.
+    pub fn check(&mut self, world: &mut World) -> Option<String> {
+        let run = self.run.as_mut()?;
+        let f = run.check;
+        if run.rb.confirmed() <= f { return None; }
+        let state = run.rb.state_at(f)?.clone();
+        run.check += 600;
+        let now = world.save_frame();
+        world.load_frame(&state);
+        let mut d = kern::Digest::default();
+        kern::Sim::digest(world, &mut d);
+        world.load_frame(&now);
+        Some(format!("spellstorm online: frame {f} digest {} ({} wizards, {} frames played again so far)", d.hex16(), run.owners.len(), run.rb.resimulated))
     }
 }
 

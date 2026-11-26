@@ -899,6 +899,16 @@ pub(crate) mod page {
             #[cfg(not(target_arch = "wasm32"))]
             let html = { let _ = entry; None };
             let loaded = if let Some(html) = html { local(); Ok(html) } else { match super::builtin::load(&folder, players).await {
+                // A Rust game that plays online itself (rollback): it gets
+                // the page's couches; the others stay on this couch.
+                Some(Ok((c, mut g))) => {
+                    #[cfg(target_arch = "wasm32")]
+                    let online = super::online::wire_for(&folder, &with(|h| h.cloud.room_code().to_string())).is_some_and(|w| g.go_online(w));
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let online = false;
+                    if !online { local(); }
+                    Ok((c, g))
+                }
                 Some(l) => { local(); l }
                 // Online for other couches, or following another couch's
                 // game (online.rs, engine/docs/online.md).

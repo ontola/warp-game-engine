@@ -258,6 +258,8 @@ impl Spellstorm {
     fn step_online(&mut self, controls: &[Controls]) {
         let Some(mut on) = self.online.take() else { return };
         if let crate::net::Do::Start { seed, owners, mine } = on.poll() {
+            #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+            app::web::log(&format!("spellstorm online: a run with {} wizards, this couch plays {mine:?}", owners.len()));
             self.start_online(seed, owners.len(), mine);
         }
         let was_open = self.menu.open;
@@ -273,6 +275,12 @@ impl Spellstorm {
             self.view.fx.absorb(&self.world);
             self.hud.absorb(&self.world);
             self.hud.update(spellstorm::world::DT as f32);
+        }
+        if let Some(line) = on.check(&mut self.world) {
+            #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+            app::web::log(&line);
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            eprintln!("{line}");
         }
         self.online = Some(on);
     }
