@@ -1202,6 +1202,7 @@ local function add_chunk()
 	end
 	s.zcs[index] = zc
 	local c = land.chunk(index, day, in_day, zc, prev)
+	if index == 1 then land.lead_in(c) end
 	c.day, c.in_day = day, in_day
 	c.band = roll_band(day, index)
 	for _, r in c.rects do
