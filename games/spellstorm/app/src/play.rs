@@ -338,6 +338,23 @@ impl app::Game for Spellstorm {
     fn player_joins(&mut self, name: Option<&str>, color: Option<[f32; 3]>) -> bool {
         self.join_player(name, color)
     }
+    /// A profile picked up or changed at the page host: the wizard those
+    /// controls drive takes its name and colour, live, the run going on
+    /// (players-updated-live). The colour shows at once on the name tags
+    /// and arrows; the robe in 3D follows at the next level, as rebuilding
+    /// the scene now would freeze the game.
+    fn players_named(&mut self, players: &[(String, Option<[f32; 3]>)]) {
+        for (k, (name, color)) in players.iter().enumerate() {
+            let Some(&id) = self.drive.get(k).and_then(|&i| self.world.wizards.get(i)) else { continue };
+            let mut w = self.world.wiz_mut(id);
+            if !name.is_empty() {
+                w.name = name.clone();
+            }
+            if let Some(c) = color {
+                w.robe = [c[0], c[1], c[2], 1.0];
+            }
+        }
+    }
 
     fn scene_tuning(&self)->Option<&app::editor::SceneTuning>{Some(&self.view.spell_effects)}
     fn scene_tuning_mut(&mut self)->Option<&mut app::editor::SceneTuning>{Some(&mut self.view.spell_effects)}
