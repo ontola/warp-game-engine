@@ -138,7 +138,11 @@ async fn register(origin: &str) -> Result<(String, String), String> {
         app::web::store("splitscreen-club-device", &d);
         d
     });
-    let (status, body) = app::web::request("POST", &format!("{origin}/v1/lobbies/register"), &[], Some(&json!({"device": device}).to_string())).await?;
+    // Opened with the player's own link (the app's Host, or a game's play
+    // link): the room is theirs, their profile first at the door.
+    let mut body = json!({"device": device});
+    if let Some(owner) = warp::web::param("owner").or_else(|| warp::web::param("project")) { body["owner"] = json!(owner); }
+    let (status, body) = app::web::request("POST", &format!("{origin}/v1/lobbies/register"), &[], Some(&body.to_string())).await?;
     if !(200..300).contains(&status) { return Err(format!("register: HTTP {status}")); }
     let reply: Value = serde_json::from_slice(&body).map_err(|e| format!("register: {e}"))?;
     let token = reply["token"].as_str().ok_or("register: no token")?.to_string();

@@ -351,6 +351,7 @@ if not args.no_build:
     if room:
         page = page.replace('src="web-catalog.js"', f'src="web-catalog.js?v={version}"')
         page = page.replace('src="error-report.js"', f'src="error-report.js?v={version}"')
+        page = page.replace('src="gamedev.js"', f'src="gamedev.js?v={version}"')
         if not args.production_shelf and (args.web_game or args.luau_only or args.games != ','.join(WARP_GAMES)):
             page = page.replace('<html lang="en"', '<html lang="en" data-custom-shelf', 1)
     (OUT / 'version.json').write_text(json.dumps({'version': version}))
@@ -364,6 +365,7 @@ if not args.no_build:
         shutil.copy(ROOT / 'lobbies/game-room/examples/browser/qrcode.js', OUT)
         shutil.copy(ROOT / 'lobbies/game-room/examples/browser/web-catalog.js', OUT)
         shutil.copy(ROOT / 'lobbies/game-room/examples/browser/error-report.js', OUT)
+        shutil.copy(ROOT / 'lobbies/game-room/examples/browser/gamedev.js', OUT)
         shutil.copy(ROOT / 'lobbies/game-room/examples/browser/game-worker.js', OUT)
         shutil.copytree(ROOT / 'lobbies/game-room/examples/browser/stories', OUT / 'stories', dirs_exist_ok=True)
     (OUT / 'assets').mkdir(exist_ok=True)

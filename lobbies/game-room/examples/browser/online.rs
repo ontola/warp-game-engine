@@ -227,12 +227,14 @@ fn tick() {
             for (_, text) in link.poll_lobby() {
                 let Ok(v) = serde_json::from_str::<Value>(&text) else { continue };
                 if let Some(g) = v["game"].as_str() {
-                    if game.as_deref() != Some(g) {
+                    // A player's own game comes again when the host
+                    // reloaded it (changed by the Assistant): fetch it anew.
+                    if let Some(files) = v["files"].as_str() {
                         *game = Some(g.to_string());
-                        match v["files"].as_str() {
-                            Some(files) => own = Some((g.to_string(), files.to_string())),
-                            None => start = Some(g.to_string()),
-                        }
+                        own = Some((g.to_string(), files.to_string()));
+                    } else if game.as_deref() != Some(g) {
+                        *game = Some(g.to_string());
+                        start = Some(g.to_string());
                     }
                 }
             }

@@ -237,6 +237,7 @@ body.debug #warp-games{display:flex!important}
 <div id="warp-log"></div>
 <script src="qrcode.js"></script>
 <script src="web-catalog.js"></script>
+<script src="gamedev.js" defer></script>
 <script type="module">
 import init from './pkg/terrain_fly.js';
 import {connectStories} from './stories/editor.js';
@@ -275,10 +276,13 @@ window.splitscreenRoom = cloudParam === 'off' || joining ? Promise.resolve(null)
       device = Array.from(crypto.getRandomValues(new Uint8Array(32)), b => b.toString(16).padStart(2, '0')).join('');
       try { localStorage.setItem('splitscreen-club-device', device); } catch (e) {}
     }
+    // Opened with the player's own link (the app's Host, a game's play
+    // link): the room is theirs, their profile first at the door.
+    const owner = new URLSearchParams(location.search).get('owner') || new URLSearchParams(location.search).get('project');
     // Busy (429): try again for about half a minute, while the engine loads.
     let r;
     for (let i = 0; i < 6; i++) {
-      r = await fetch(origin + '/v1/lobbies/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ device }), credentials: 'omit' });
+      r = await fetch(origin + '/v1/lobbies/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(owner ? { device, owner } : { device }), credentials: 'omit' });
       if (r.status !== 429) break;
       await new Promise(done => setTimeout(done, 5000));
     }

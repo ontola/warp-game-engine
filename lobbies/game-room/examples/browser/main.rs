@@ -1421,6 +1421,25 @@ pub(crate) mod page {
         });
     }
 
+    /// The player's own game changed (the page's gamedev panel, after the
+    /// Assistant saved it): fetch it again by its link and restart it,
+    /// here and on the couches that follow.
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
+    #[cfg_attr(target_os = "android", allow(dead_code))]
+    pub fn reload_own_game() {
+        let found = with(|h| {
+            let g = h.party["library"].as_array()?.iter().find(|g| g["own_files"].is_string())?;
+            let id = g["id"].as_str()?.to_string();
+            // Paused behind the room: drop it, or Play would resume the old one.
+            if h.paused.as_ref().is_some_and(|(p, _)| *p == id) { h.paused = None; warp::web::hush(None); }
+            Some((id, g["own_files"].as_str()?.to_string()))
+        });
+        match found {
+            Some((id, url)) => { app::web::log(&format!("{id}: reloading your game")); start_own(id, url); }
+            None => app::web::log("reload: no own game on this page"),
+        }
+    }
+
     /// Start game `name` (folder or store id) from the page (its buttons), as the shelf's Play does.
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
     #[cfg_attr(target_os = "android", allow(dead_code))]
