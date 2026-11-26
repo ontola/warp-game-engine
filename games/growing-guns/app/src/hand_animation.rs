@@ -1,3 +1,4 @@
+use web_time::Instant;
 use crate::gun::Contacts;
 use glam::Vec3;
 use script::{
@@ -6,7 +7,7 @@ use script::{
 };
 use std::{
     path::Path,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 pub struct HandAnimation {
