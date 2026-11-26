@@ -220,6 +220,9 @@ How the build differs from native:
 
 ### Building the full production shelf for `/play/`
 
+The live `/play/` comes only from a release candidate: see
+[play-release.md](play-release.md).
+
 Build the two Godot games in adjacent checkouts with their Web export tools,
 including the game bridge and license files. Each produces `build/web` in its
 own repository. From the Warp repository run the production profile:
