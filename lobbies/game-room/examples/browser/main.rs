@@ -745,7 +745,11 @@ pub(crate) mod page {
                     if let (Some(text), Some(w)) = (msg["url"].as_str().or(msg["code"].as_str()), web_sys::window()) { let _ = w.navigator().clipboard().write_text(text); }
                 }
                 // The online switch (Public / Private).
-                "set_public" => super::online::set_public(msg["public"].as_bool().unwrap_or(true)),
+                // (Online couches are browser only, examples/browser/online.rs.)
+                "set_public" => {
+                    #[cfg(target_arch = "wasm32")]
+                    super::online::set_public(msg["public"].as_bool().unwrap_or(true));
+                }
                 "room_pickup" => {
                     let seat = msg["player_id"].as_str().and_then(|p| with(|h| seat_of(h, p)));
                     if let (Some(pending), Some(seat)) = (msg["pending"].as_str(), seat) { super::cloud::pickup(pending.to_string(), seat); }

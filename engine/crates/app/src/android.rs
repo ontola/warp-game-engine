@@ -696,7 +696,31 @@ fn follow_window(gfx: &mut Gfx) {
     }
 }
 
-fn window_size(w: &NativeWindow) -> [u32; 2] { [w.width().max(1) as u32, w.height().max(1) as u32] }
+/// The window's size in pixels. ANativeWindow's width and height are its
+/// buffers' (what the swapchain last set), so after a turn from portrait
+/// to landscape they can stay portrait: the picture came out stretched
+/// (Joep, 2026-11-26). The content rect follows the turn: when the two
+/// disagree on landscape or portrait, the sides swap.
+fn window_size(w: &NativeWindow) -> [u32; 2] {
+    let mut size = [w.width().max(1) as u32, w.height().max(1) as u32];
+    if let Some(r) = APP.get().map(|a| a.content_rect()) {
+        let (cw, ch) = (r.right - r.left, r.bottom - r.top);
+        if cw > 0 && ch > 0 && (cw > ch) != (size[0] > size[1]) { size.swap(0, 1); }
+    }
+    size
+}
+
+/// Whether the window still stands the wrong way for the host (landscape
+/// only): it starts portrait when the phone is held so, and turns a moment
+/// later. Heavy loading waits for that turn (up to 2 s), so the loading
+/// screen is drawn for the right shape and the room is not built while
+/// the screen turns.
+fn still_turning() -> bool {
+    static SINCE: OnceLock<Instant> = OnceLock::new();
+    let since = *SINCE.get_or_init(Instant::now);
+    if since.elapsed() > Duration::from_secs(2) { return false; }
+    APP.get().map(|a| a.content_rect()).is_some_and(|r| r.bottom - r.top > r.right - r.left)
+}
 
 /// Adreno 8xx drivers (the 830, 2026-11-23) drop indirect draws: only
 /// emissive and transparent things showed. There the renderer draws with
@@ -826,7 +850,7 @@ fn render_loop(rx: mpsc::Receiver<Event>, stop: Arc<std::sync::atomic::AtomicBoo
         }
         if let Some(c) = GFX.with(|g| g.borrow().as_ref().and_then(|g| g.surface.as_ref().map(|s| s.1.clone()))) { last_config = Some(c); }
         // Tasks start once there is a GPU: the loading screen can show.
-        let ready = GFX.with(|g| g.borrow().is_some());
+        let ready = GFX.with(|g| g.borrow().is_some()) && !still_turning();
         let t_tasks = Instant::now();
         if ready { poll_tasks(); }
         let tasks_ms = t_tasks.elapsed().as_secs_f32() * 1000.0;
