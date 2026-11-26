@@ -164,6 +164,7 @@ Owned by the foliage work; its working checklist is
   sun and the irradiance volume, temporally filtered, applied in shade. About
   0.6 ms at 4K. Glass reads it at its own depth; reflection probe captures
   march it along their rays.
+- Luau spotlights can mount on a world entity. Their beams and shadow maps follow its interpolated position and rotation between simulation ticks. [Luau lights](warp-cli.md#functions)
 - Luau games can opt into four independently streamed room bakes, shadowed ceiling panels and per-room reflections. [Streamed lighting](interior-light.md#streamed-ground-floors-in-luau)
 - Opt-in live reflection probes for rooms ([dynamic-gi.md](dynamic-gi.md#reflection-probes),
   `Renderer::set_reflection_probes`): one box per room, captured by the

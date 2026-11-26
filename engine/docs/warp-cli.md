@@ -354,6 +354,11 @@ keyboard mapping is in `app::input`.
   `dir` is the beam, `angle` its outer half-angle in degrees (2 to 74),
   `inner` where the edge starts to fade, `intensity` in candela with
   inverse-square falloff (a hand torch is about 1500), `range` in metres.
+  With `parent = entityId`, `pos` is an offset in local metres and `dir` a
+  local direction. Both follow the entity's interpolated render pose. Mesh
+  scale has no effect on these offsets. Removing the entity also stops its
+  light. Omit `parent` for world-space lights. Games targeting older hosts
+  can check `lights.supports_parent` before supplying the field.
   Each spot renders a 1024-square shadow map every frame, so use the ones
   that matter (Dead Miles: one per survivor's torch, then the street lights
   nearest the view). All three are looks only, allowed in `draw`

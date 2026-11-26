@@ -764,6 +764,69 @@ return { init = init, tick = tick }
 "##;
 
 #[test]
+fn mounted_spots_follow_rendered_parents_and_release_removed_owners() {
+    use glam::{Quat, Vec3};
+
+    let dir = folder("mounted-spots");
+    write(&dir.join("main.luau"), r#"
+        local v = vector.create
+        local function init()
+            assert(lights.supports_parent)
+            state.root = world.spawn("cube", {visible=false})
+            state.body = world.spawn("cube", {pos=v(0,0,-.5), size=v(3,2,4)}, state.root)
+            local spots = {
+                {parent=state.body, pos=v(0,.3,-2), dir=v(0,0,-1)},
+                {parent=state.root, pos=v(0,.3,-2), dir=v(0,0,-1)},
+                {pos=v(3,2,1), dir=v(0,-1,0)},
+            }
+            lights.spots(spots)
+            assert(not pcall(lights.spots, {{parent=99999}}))
+            state.x = 2
+        end
+        local function tick()
+            world.place(state.root, v(state.x,0,0), math.pi/2)
+        end
+        return {init=init, tick=tick}
+    "#);
+    let mut g = game(&dir);
+    g.tick(&[Controls::default()]);
+    assert!(g.errors().is_empty(), "{:?}", g.errors());
+    for alpha in [0., 0.25, 0.5, 0.75, 1.] {
+        let spots: Vec<_> = g.core().render_spots(alpha).collect();
+        assert_eq!(spots.len(), 3);
+        let turn = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 * alpha);
+        let offset = turn * Vec3::new(0., 0.3, -2.);
+        // The visible child mesh and the invisible pivot have different translation paths.
+        let child = Vec3::new(0., 0., -0.5).lerp(Vec3::new(1.5, 0., 0.), alpha);
+        let root = Vec3::X * (2. * alpha);
+        assert!(spots[0].pos.abs_diff_eq(child + offset, 1e-5));
+        assert!(spots[1].pos.abs_diff_eq(root + offset, 1e-5));
+        assert!(spots[0].dir.abs_diff_eq(turn * Vec3::NEG_Z, 1e-5));
+        assert!(spots[1].dir.abs_diff_eq(spots[0].dir, 1e-5));
+        assert_eq!(spots[2].pos, Vec3::new(3., 2., 1.));
+    }
+    for size in ["0,2,4", "1e-35,3,1", "2,-1,4", "-1,-2,3", "3,2,4"] {
+        g.luau(&format!("world.set(state.body, {{size=vector.create({size})}})")).unwrap();
+        g.tick(&[Controls::default()]);
+        for alpha in [0., 0.5, 1.] {
+            let spots: Vec<_> = g.core().render_spots(alpha).collect();
+            assert!(spots[0].pos.abs_diff_eq(Vec3::new(-0.5, 0.3, 0.), 1e-5), "{size} {alpha}");
+            assert!(spots[0].dir.abs_diff_eq(Vec3::NEG_X, 1e-5), "{size} {alpha}");
+        }
+    }
+    g.luau("state.x = 20").unwrap();
+    g.tick(&[Controls::default()]);
+    {
+        let core = g.core();
+        assert!(core.render_spots(0.).eq(core.render_spots(1.)));
+    }
+    g.luau("world.remove(state.root); world.spawn('cube')").unwrap();
+    let remaining: Vec<_> = g.core().render_spots(0.5).collect();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].parent, None);
+}
+
+#[test]
 fn effects_fly_out_and_are_gone_after_their_life() {
     let dir = folder("fx");
     std::fs::write(dir.join("main.luau"), FX_GAME).unwrap();

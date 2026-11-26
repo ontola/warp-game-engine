@@ -17,6 +17,8 @@ cargo run --locked --release -p warp -- run games/warp-theft-auto
 cargo run --locked --release -p warp -- run games/warp-theft-auto --players 4
 ```
 
+At dusk the sedan's headlights share one beam just ahead of the bumper. It follows the chassis through pitch, roll and reversing between simulation ticks. Older Club hosts use the tick pose with extra clearance while reversing. Traffic and buildings can still cast shadows in the beam.
+
 Follow Exchange Avenue west through Lido Gardens to reach the 1.68 km paved loop. Both branches lead to the red-roofed shelter at Cape Lookout. The ochre line on the minimap marks a 907 m gravel trail connecting the two branches through Mariner Wood. Expect hairpins and a loose surface on the climb. Press R to select Mariner Ridge Rally for a timed run.
 
 Shoot the red crate with the yellow hazard stripe across the junction from the starting cars on Exchange Avenue. There are two more crates at the eastern docks. A shot ignites the crate, damaging exposed people and cars within 14 metres. The crate returns after 15 seconds once the site is clear. For a scripted blast, add a story step such as `{op="explosion",pos=vector.create(10.7,.625,-10.8),radius=5,text="Signal from the docks"}`. It plays once when the story reaches that step.

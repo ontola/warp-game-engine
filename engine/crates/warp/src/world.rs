@@ -171,6 +171,10 @@ impl Entity {
         }
     }
 
+    pub(crate) fn mount_has_rigid_axes(&self) -> bool {
+        self.crush_hinge == Vec3::ZERO && self.size.min_element() > 1e-6
+    }
+
     pub fn local_delta(&self, world: Vec3) -> Vec3 {
         self.frame.map_or(world, |(rot, _)| rot.conjugate() * world)
     }
@@ -551,6 +555,27 @@ impl World {
     }
 
     pub fn get(&self, id: u32) -> Option<&Entity> { self.entities.get(&id) }
+
+    /// A mounted effect follows the same fractional-tick pose as its owner's
+    /// mesh. Hidden pivots and wires have no single mesh slot to sample.
+    pub(crate) fn mount_pose(&self, id: u32, alpha: f32, previous: Option<((Quat, Vec3), bool)>) -> Option<(Quat, Vec3)> {
+        let entity = self.get(id)?;
+        // Mirrored, sheared or collapsed mesh axes cannot identify the
+        // authored rigid frame. Such mounts use the logical entity pose.
+        if entity.mount_has_rigid_axes() && previous.is_none_or(|(_, rigid_axes)| rigid_axes) {
+            if let Some(pose) = entity.slot.and_then(|slot| self.slots.pose_at(&self.scene, slot, alpha)) {
+                return Some(pose);
+            }
+        }
+        let (rotation, position) = entity.world_pose();
+        if let Some(((prev_rotation, prev_position), _)) = previous {
+            if prev_position.distance(position) <= render::slots::INTERPOLATION_SNAP_DISTANCE {
+                let alpha = alpha.clamp(0.0, 1.0);
+                return Some((prev_rotation.slerp(rotation, alpha), prev_position.lerp(position, alpha)));
+            }
+        }
+        Some((rotation, position))
+    }
 
     /// Opaque render geometry for just these entities at their current world
     /// transforms. Hidden entities have no slots; a wire contributes each edge.

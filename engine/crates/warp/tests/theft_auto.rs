@@ -680,3 +680,55 @@ fn live_gravel_width_changes_the_surface_under_a_cars_wheels() {
     eprintln!("Same wheel position before {before} after {after}");
     assert!(game.errors().is_empty(),"{:?}",game.errors());
 }
+
+#[test]
+fn reversing_sedan_headlight_stays_ahead_of_its_interpolated_bumper() {
+    use glam::Vec3;
+
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../games/warp-theft-auto");
+    let mut game = LuaGame::load(&dir, &Overrides {
+        players: Some(2), seed: Some(1948), ..Default::default()
+    }, None).unwrap();
+    let idle = Controls::default();
+    let car: u32 = game.luau(r#"
+        local car=state.fleet.vehicles[4]
+        world.place(state.fleet.players[1].body,car.pos+vector.create(3.6,.85,9))
+        world.place(state.fleet.players[2].body,car.pos+vector.create(1.25,.85,0))
+        state.clock.hour=5.75
+        return car.body
+    "#).unwrap().parse().unwrap();
+    game.tick(&[idle, idle]);
+    game.tick(&[idle, Controls { pressed: Buttons(Buttons::NORTH), ..idle }]);
+    game.luau("assert(state.fleet.players[1].mode=='walk' and state.fleet.vehicles[4].owner==2)").unwrap();
+
+    let mut previous = game.core().world.get(car).unwrap().world_pose();
+    let start_forward = previous.0 * Vec3::NEG_Z;
+    let local_mount = Vec3::new(0., 0.31, -2.29);
+    let local_aim = Vec3::new(0., -0.13, -1.).normalize();
+    let mut reversed_fast = false;
+    let mut turned = false;
+    for tick in 0..161 {
+        let steer = if (90..151).contains(&tick) { -0.16 } else { 0.0 };
+        game.tick(&[idle, Controls { mv: [steer, -1.0], ..idle }]);
+        let core = game.core();
+        assert_eq!(core.spots.len(), 1);
+        assert_eq!(core.spots[0].parent, Some(car));
+        let (rot, pos) = core.world.get(car).unwrap().world_pose();
+        reversed_fast |= (pos - previous.1).dot(rot * Vec3::Z) * core.tick_rate > 9.4;
+        turned |= (rot * Vec3::NEG_Z).distance(start_forward) > 0.08;
+        for alpha in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let drawn_rot = previous.0.slerp(rot, alpha);
+            let drawn_pos = previous.1.lerp(pos, alpha);
+            let beam = core.render_spots(alpha).next().expect("second seat's headlight");
+            assert!(beam.pos.distance(drawn_pos + drawn_rot * local_mount) < 0.001,
+                "beam slipped behind the drawn nose at tick {tick}, alpha {alpha}");
+            assert!(beam.dir.distance(drawn_rot * local_aim) < 0.001,
+                "beam did not follow the tilted body at tick {tick}, alpha {alpha}");
+            assert!((0.0..beam.range).contains(&(-beam.pos.y / beam.dir.y)),
+                "the light should reach the road");
+        }
+        previous = (rot, pos);
+    }
+    assert!(reversed_fast && turned, "exercise reverse at 34 km/h through a turn");
+    assert!(game.errors().is_empty(), "{:?}", game.errors());
+}

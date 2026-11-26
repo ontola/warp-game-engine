@@ -268,7 +268,9 @@ declare lights: {
 	-- in degrees (2 to 74, default 30), inner where it starts to fade (default
 	-- 0.6 of angle), intensity in candela (default 1000, falls off with the
 	-- square of distance), range in metres (default 15). Replaces the list.
-	spots: (list: { { pos: Vec, dir: Vec?, color: Color?, intensity: number?, range: number?, angle: number?, inner: number? } }) -> (),
+	-- Supply parent to mount pos (local metres) and dir on a world entity.
+	supports_parent: boolean,
+	spots: (list: { { pos: Vec, parent: number?, dir: Vec?, color: Color?, intensity: number?, range: number?, angle: number?, inner: number? } }) -> (),
 	clear: () -> (),
 }
 
