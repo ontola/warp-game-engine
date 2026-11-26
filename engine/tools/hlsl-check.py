@@ -51,7 +51,10 @@ def main():
             for stage, name in entries:
                 # naga's namer renames some entry points (a trailing digit gets
                 # a '_': rsm_filter1 is rsm_filter1_); wgpu passes DXC the new name.
-                found = re.search(r'\b(' + re.escape(name) + r'_*)\s*\(', text)
+                # Match the definition (a return type, then the name at the
+                # start of a line), not a call: 'noise' is an HLSL intrinsic,
+                # so naga defines noise_ while noise( appears elsewhere.
+                found = re.search(r'^[A-Za-z_][\w<>]*\s+(' + re.escape(name) + r'_*)\s*\(', text, re.M)
                 name = found.group(1) if found else name
                 # The arguments wgpu-hal's DX12 backend gives DXC (dx12/shader_compilation.rs): HLSL 2018, strict.
                 out = subprocess.run([args.dxc, '-T', f'{PROFILE[stage]}_{args.shader_model}', '-E', name, '-HV', '2018', '-no-warnings', '-Ges',
