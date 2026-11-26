@@ -361,6 +361,36 @@ struct Shell {
     mobile: bool,
     /// The page held the pointer lock last frame.
     lock_seen: bool,
+    /// When a click asked for the pointer lock, until it arrives.
+    lock_asked: Option<Instant>,
+}
+
+thread_local! {
+    /// The game wants the mouse and has no lock: the canvas's next
+    /// pointerdown asks for it, inside the gesture (see [`lock_on_press`]).
+    static WANT_LOCK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Ask for the pointer lock from the canvas's own pointerdown listener:
+/// browsers grant it only inside the click's handler, and winit's events
+/// arrive later (Chrome: "A user gesture is required", and no lock).
+fn lock_on_press(canvas: &web_sys::HtmlCanvasElement) {
+    let target = canvas.clone();
+    let press = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || {
+        if !WANT_LOCK.with(|w| w.get()) { return; }
+        let locked = web_sys::window().and_then(|w| w.document()).is_some_and(|d| d.pointer_lock_element().is_some());
+        if locked { return; }
+        if let Ok(f) = js_sys::Reflect::get(&target, &"requestPointerLock".into()).and_then(|f| f.dyn_into::<js_sys::Function>()) {
+            // A promise in newer browsers: a refusal is not an error here (the shell retries on the next click).
+            if let Ok(p) = f.call0(&target) && let Ok(p) = p.dyn_into::<js_sys::Promise>() {
+                let ignore = wasm_bindgen::closure::Closure::<dyn FnMut(wasm_bindgen::JsValue)>::new(|_| {});
+                let _ = p.catch(&ignore);
+                ignore.forget();
+            }
+        }
+    });
+    let _ = canvas.add_event_listener_with_callback("pointerdown", press.as_ref().unchecked_ref());
+    press.forget();
 }
 
 /// The window's short side in CSS pixels (a phone in landscape: about
@@ -573,7 +603,7 @@ pub fn run(cfg: crate::Config, game: Box<dyn Game>) {
     let mut devices = Devices::new(cfg.keyboard);
     devices.pointer_enabled = cfg.pointer;
     let shell = Shell { cfg, game, devices, window: None, live: Rc::new(RefCell::new(None)), acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), failed: false, announced: false, hidden_editor:None, switched: Some((next_presentation(), Instant::now())), exited: false, back: Default::default(), named: 0, times: Vec::new(),
-        render_height: query_param("render").and_then(|h| h.parse().ok()), quality: None, mobile: mobile(), lock_seen: false,
+        render_height: query_param("render").and_then(|h| h.parse().ok()), quality: None, mobile: mobile(), lock_seen: false, lock_asked: None,
         bench: crate::bench::Bench::from_query(query_param("bench").as_deref()) };
     if shell.mobile { log("phone preset: lower resolution, no bloom or contact occlusion (?quality=full turns it off)"); }
     // Safari (and every iOS browser: WebKit) cannot compile the trees'
@@ -604,6 +634,10 @@ impl Shell {
             None => attributes.with_append(true),
         };
         let window = Arc::new(event_loop.create_window(attributes).map_err(|e| e.to_string())?);
+        {
+            use winit::platform::web::WindowExtWebSys;
+            if let Some(c) = window.canvas() { lock_on_press(&c); }
+        }
         self.window = Some(window.clone());
         let live = self.live.clone();
         progress(Some(0.8), "Starting the graphics");
@@ -695,7 +729,17 @@ impl Shell {
             self.devices.mouse_captured = false;
             self.devices.reset_mouse();
         }
+        if locked { self.lock_asked = None; }
+        // Asked for and never granted (refused, or the click was not the
+        // canvas's): not captured, so the next click asks again.
+        if self.devices.mouse_captured && !locked && self.lock_asked.is_some_and(|t| t.elapsed().as_secs_f32() > 1.0) {
+            if let Some(w) = &self.window { w.set_cursor_visible(true); }
+            self.devices.mouse_captured = false;
+            self.devices.reset_mouse();
+            self.lock_asked = None;
+        }
         self.lock_seen = locked;
+        WANT_LOCK.with(|w| w.set(!self.devices.mouse_captured && self.cfg.keyboard && self.game.mouse_capture() != Some(false)));
         // The game wants the cursor (a menu, a card pick): let go of the lock.
         // Taking it again waits for a click (browsers allow no other way).
         if self.devices.mouse_captured && self.game.mouse_capture() == Some(false) {
@@ -843,9 +887,11 @@ impl Shell {
         let Some(w) = &self.window else { return };
         self.devices.reset_mouse();
         if on {
-            let ok = w.set_cursor_grab(CursorGrabMode::Locked).is_ok();
-            w.set_cursor_visible(!ok);
-            self.devices.mouse_captured = ok;
+            // The canvas's pointerdown listener asked for the lock inside the
+            // click ([`lock_on_press`]); asking again from here has no gesture.
+            w.set_cursor_visible(false);
+            self.devices.mouse_captured = true;
+            self.lock_asked = Some(Instant::now());
         } else {
             let _ = w.set_cursor_grab(CursorGrabMode::None);
             w.set_cursor_visible(true);
