@@ -153,8 +153,20 @@ impl AdaptiveQuality {
     }
 
     /// Feed one presented frame interval in milliseconds. Returns true when the rung changed.
-    pub fn frame(&mut self, dt_ms: f64, now: Instant) -> bool {
+    pub fn frame(&mut self, dt_ms: f64, now: Instant) -> bool { self.frame_gpu(dt_ms, None, now) }
+
+    /// As `frame`, with the frame's measured GPU time when the host has
+    /// timestamps. Slow frames whose GPU work fits the budget are slow for
+    /// another reason (a game loading beside the lobby, shader compiles, the
+    /// CPU): a smaller picture would not help, so they never step down. The
+    /// Game Room on a Tab S9+ fell to a blurry ~60% while Warp Theft Auto
+    /// loaded behind it (Joep, 26 November).
+    pub fn frame_gpu(&mut self, dt_ms: f64, gpu_ms: Option<f64>, now: Instant) -> bool {
         if !self.enabled || !dt_ms.is_finite() || dt_ms <= 0.0 { return false; }
+        let dt_ms = match gpu_ms.filter(|g| g.is_finite() && *g > 0.0) {
+            Some(g) if dt_ms > self.target_ms * SLOW && g < self.target_ms * 0.9 => self.target_ms,
+            _ => dt_ms,
+        };
         // A changed rung reallocates targets: skip its own transient hitch.
         if now.duration_since(self.changed) < SETTLE { self.samples.clear(); return false; }
         if self.samples.len() == WINDOW { self.samples.remove(0); }
@@ -282,6 +294,17 @@ mod tests {
             resolution_only: false,
             starved_since: None,
         }
+    }
+
+    #[test]
+    fn slow_frames_with_light_gpu_work_keep_the_resolution() {
+        let start = Instant::now();
+        let mut q = AdaptiveQuality::new(Some(60.0), None, start).unwrap();
+        for i in 0..200 {
+            let now = start + Duration::from_millis(i * 40);
+            assert!(!q.frame_gpu(40.0, Some(7.0), now), "stepped down on a CPU-bound stall");
+        }
+        assert_eq!(q.render_height(1080), 1080);
     }
 
     #[test]

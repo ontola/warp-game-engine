@@ -1149,8 +1149,12 @@ impl Shell {
         let wait_ms = ms(t_out);
         let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let quality = self.quality.get_or_insert_with(|| crate::quality::AdaptiveQuality::new(self.game.target_fps(), requested_hz().map(f64::from), Instant::now()).unwrap_or_else(|| unreachable!()));
+        // A game that settles for 60 fps or less (the Game Room) asks for
+        // sharpness: start at the panel's own height and let adaptive quality
+        // find the most it can hold, not the 1080-line phone start.
+        let sharp = self.game.target_fps().is_some_and(|f| f <= 60.0);
         let base = |game: Option<u32>| match (self.mobile, game) {
-            (true, _) => self.render_height.unwrap_or(if self.upscale.is_some() { size[1] } else { MOBILE_BASE_HEIGHT }).min(game.filter(|h| *h > 0).unwrap_or(u32::MAX)).min(size[1]),
+            (true, _) => self.render_height.unwrap_or(if self.upscale.is_some() || sharp { size[1] } else { MOBILE_BASE_HEIGHT }).min(game.filter(|h| *h > 0).unwrap_or(u32::MAX)).min(size[1]),
             (false, Some(0)) => size[1],
             (false, Some(h)) => h,
             (false, None) => size[1].min(1440),
@@ -1176,7 +1180,7 @@ impl Shell {
         if !self.profiling { self.profiling = renderer.set_async_gpu_profiling(&live.gpu, true).is_ok(); }
         if let Some(sample) = renderer.drain_gpu_profiles(&live.gpu).samples.pop() { self.gpu_passes = sample.gpu_ms; self.gpu_total = sample.covered_union_ms; }
         self.frames += 1;
-        if self.switched.is_none() && benching.is_none() && (self.render_height.is_none() || self.mobile) && quality.frame(f64::from(dt) * 1000.0, Instant::now()) {
+        if self.switched.is_none() && benching.is_none() && (self.render_height.is_none() || self.mobile) && quality.frame_gpu(f64::from(dt) * 1000.0, (self.profiling && self.gpu_total > 0.0).then_some(self.gpu_total), Instant::now()) {
             let next = quality.render_height(base(self.cfg.max_render_height));
             log(&format!("{}: 3D view now {} lines high (chasing {:.0} fps)", self.cfg.title, next.min(size[1]), quality.target_fps()));
         }
