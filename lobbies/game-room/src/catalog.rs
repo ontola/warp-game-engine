@@ -513,7 +513,9 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
         let reason = games.get(i).map(|g| Some(lobby.host.shortfall(g)).filter(|r| !r.is_empty()).unwrap_or_else(|| lobby.host.hardware_note(g))).unwrap_or_default();
         if !reason.is_empty() {
             let fs = (22.0 * scale).floor();
-            let band = [r[0], r[1] + r[3] - fs * 2.4, r[2], fs * 2.4];
+            // At the top: a card in the last row shows only its top half
+            // above the panel, and its reason must still read.
+            let band = [r[0], r[1], r[2], fs * 2.4];
             c.rect(band, crate::room::PANEL_SOLID.with_alpha(0.85 * fade));
             c.text(faces.bold, [open[0], band[1] + band[3] / 2.0 + fs * 0.36], &reason, TextAlign::Center, open[2], fs, TEXT.with_alpha(fade));
         }

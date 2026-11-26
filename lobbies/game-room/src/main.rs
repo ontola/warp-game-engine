@@ -91,6 +91,9 @@ fn run() -> Result<(), String> {
                 ("space-racer", "Space Racer", "#3d8bff"), ("ball-kickers", "Ball Kickers", "#47c26b"), ("hexstead", "Hexstead", "#c9a227"), ("bombing-bugs", "Bombing Bugs", "#e2574c"),
                 ("stack-together", "Stack Together", "#ff8fb8"), ("pocket-aces", "Pocket Aces", "#2fa36b"), ("growing-guns", "Growing Guns", "#8a5cff"), ("hello-warp", "Hello Warp", "#3fb6a8")];
             party["library"] = serde_json::Value::Array(games.iter().map(|(id, title, color)| serde_json::json!({"id": id, "title": title, "color": color})).collect());
+            // As in its catalog entry: exactly two players.
+            party["library"][1]["min_players"] = serde_json::json!(2);
+            party["library"][1]["max_players"] = serde_json::json!(2);
             party["playlist"] = serde_json::json!({"entries": [{"game": "dead-miles", "title": "Dead Miles"}, {"game": "relay-keepers", "title": "Relay Keepers"}, {"game": "spellstorm", "title": "Spellstorm"}], "current": null});
             party["warm_session"] = serde_json::json!({"game": "dead-miles", "phase": "preparing", "progress": 0.6});
             party["active_session"] = serde_json::Value::Null;
