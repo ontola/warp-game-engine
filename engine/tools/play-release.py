@@ -3,7 +3,7 @@
 host from a clean checkout of a commit on main, run the release checks and
 package the result.
 
-    python3 engine/tools/play-release.py build [--native-tests] [--browser] [--hlsl] [--no-build]
+    python3 engine/tools/play-release.py build [--native-tests] [--browser] [--hlsl] [--firefox] [--no-build]
     python3 engine/tools/play-release.py check build/web
 
 `build` refuses a dirty tree or a commit that is not on origin/main, runs
@@ -37,6 +37,9 @@ The checks, each in release.json:
   display): the Game Room, then every game on the shelf and back, failing
   on a panic, GPU error, console error, missing first frame or a blank
   picture.
+- firefox:<name> (--firefox): the same smoke test in Playwright's Firefox
+  with WebGPU on (dom.webgpu.enabled), on Mesa's lavapipe Vulkan: the
+  wgpu and naga of Firefox and Zen instead of Chrome's Dawn and Tint.
 - hlsl (--hlsl, needs --browser): every WGSL module the browser compiled
   goes through naga's HLSL output and DXC (engine/tools/hlsl-check.py, the
   Firefox-on-Windows path); NAGA and DXC name the tools.
@@ -195,18 +198,19 @@ def check(web, sha=None):
     return results, version
 
 
-def browser_smoke():
-    smoke = OUT / 'smoke.json'
+def browser_smoke(browser='chromium'):
+    prefix = 'browser' if browser == 'chromium' else browser
+    smoke = OUT / ('smoke.json' if browser == 'chromium' else f'smoke-{browser}.json')
     OUT.mkdir(parents=True, exist_ok=True)
     smoke.unlink(missing_ok=True)
-    command = ['node', str(ROOT / 'engine/tools/play-smoke.cjs'), str(WEB), '--report', str(smoke),
-               '--shots', str(OUT / 'shots'), '--shaders', str(OUT / 'wgsl')]
+    command = ['node', str(ROOT / 'engine/tools/play-smoke.cjs'), str(WEB), '--browser', browser, '--report', str(smoke)]
+    command += ['--shots', str(OUT / 'shots'), '--shaders', str(OUT / 'wgsl')] if browser == 'chromium' else ['--shots', str(OUT / f'shots-{browser}')]
     if not os.environ.get('DISPLAY'):
         command = ['xvfb-run', '-a', '-s', '-screen 0 1280x800x24'] + command
     run = subprocess.run(command, cwd=ROOT)
     if not smoke.is_file():
-        return [{'name': 'browser:room', 'ok': False, 'detail': f'play-smoke.cjs stopped (exit {run.returncode}) without a report'}]
-    return [{'name': 'browser:' + r['name'], 'ok': r['ok'], 'detail': r['detail'] or ''} for r in json.loads(smoke.read_text())['results']]
+        return [{'name': f'{prefix}:room', 'ok': False, 'detail': f'play-smoke.cjs stopped (exit {run.returncode}) without a report'}]
+    return [{'name': f'{prefix}:' + r['name'], 'ok': r['ok'], 'detail': r['detail'] or ''} for r in json.loads(smoke.read_text())['results']]
 
 
 def hlsl_check():
@@ -260,6 +264,7 @@ def main():
     b = sub.add_parser('build', help='build, check and package a release of HEAD')
     b.add_argument('--native-tests', action='store_true', help='also run the Warp Theft Auto crew tests')
     b.add_argument('--browser', action='store_true', help='also boot the bundle and every game in Chromium (play-smoke.cjs)')
+    b.add_argument('--firefox', action='store_true', help='also boot the bundle and every game in Firefox with WebGPU')
     b.add_argument('--hlsl', action='store_true', help='with --browser: compile its WGSL through naga HLSL and DXC')
     b.add_argument('--no-build', action='store_true', help='check and package the existing build/web')
     b.add_argument('--branch', default='origin/main', help='the commit must be on this branch (default origin/main)')
@@ -286,6 +291,8 @@ def main():
         results += browser_smoke()
         if args.hlsl:
             results += hlsl_check()
+    if args.firefox and all(r['ok'] for r in results):
+        results += browser_smoke('firefox')
     release = {'repository': 'ontola/warp-game-engine', 'commit': sha, 'version': version,
                'subject': git('log', '-1', '--format=%s', sha),
                'built_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),

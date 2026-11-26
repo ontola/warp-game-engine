@@ -24,7 +24,7 @@ Joep: "ja, zet <commit> live" in the prod monitor thread
 touches `engine/`, `games/`, `lobbies/` or the Cargo files (a newer push
 cancels a candidate still building), and by hand (Actions, *Play release
 candidate*, *Run workflow*, optionally with a commit on main). It runs
-`python3 engine/tools/play-release.py build --native-tests --browser --hlsl` on a clean
+`python3 engine/tools/play-release.py build --native-tests --browser --hlsl --firefox` on a clean
 checkout. When every check passes it publishes the prerelease
 `play-<first 12 hex of the commit>` with:
 
@@ -48,6 +48,7 @@ Release checks (`play-release.py`, each a line in `release.json`):
 | `files:<game>` | each Luau game ships exactly its tracked folder at this commit, byte for byte (an overlaid or left-out file fails) |
 | `wta-apache` | Warp Theft Auto has the two-seat Apache: the eight files of `assets/apache`, each glTF's buffers, the gunner optic (`apache_hud`), the airframe and seat mounts in `vehicles`, pilot and gunner seats in `instruments` |
 | `browser:room`, `browser:<game>` | `play-smoke.cjs`: Chromium with WebGPU (SwiftShader, in a virtual X display) boots the Game Room, then plays every game on the shelf and goes back, failing on a panic, GPU error, console or page error, failed request, the crash notice, no first frame, or a blank picture. Screenshots in the run's `play-smoke` artifact |
+| `firefox:room`, `firefox:<game>` | the same smoke test in Playwright's Firefox with WebGPU switched on (`dom.webgpu.enabled`), on Mesa's lavapipe Vulkan: Firefox's and Zen's wgpu and naga instead of Chrome's Dawn and Tint. A grey or one-colour picture fails (fewer than 8 colours on a 32x32 grid). Screenshots in `shots-firefox` |
 | `hlsl` | `hlsl-check.py`: every WGSL module the browser compiled in that run goes through naga's HLSL output and DXC, as Firefox does on Windows (the 26 November Zen failure) |
 | `native:…` | the Warp Theft Auto crew tests: two pads board one Apache as pilot and gunner, the gunner optic holds its bearing, both stations fire, the car-then-helicopter handover |
 
@@ -61,10 +62,16 @@ Run the checks yourself before pushing:
 python3 engine/tools/build-web.py --warp
 python3 engine/tools/play-release.py check build/web
 xvfb-run -a node engine/tools/play-smoke.cjs build/web --shots build/shots   # npm i playwright
+xvfb-run -a node engine/tools/play-smoke.cjs build/web --browser firefox    # npx playwright install firefox
 ```
 
-`promote-play.py` refuses a candidate unless `browser:room`, `hlsl` and a
-`browser:<game>` for every game in the bundle passed.
+`promote-play.py` refuses a candidate unless `browser:room`, `firefox:room`,
+`hlsl` and a `browser:<game>` and `firefox:<game>` for every game in the
+bundle passed.
+
+What this does not cover: Windows itself (D3D12 drivers, Firefox's GPU
+process there). `hlsl` covers its shader compiler; a real Windows run needs
+a machine with a GPU.
 
 ## 2. Going live
 

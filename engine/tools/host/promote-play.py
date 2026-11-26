@@ -51,8 +51,8 @@ OURS = re.compile(r'[0-9a-f]{12}-\d{14}')
 REQUIRED = ['version', 'engine', 'shelf', 'wta-apache',
             'native:theft_auto_flight::two_local_pads_board_the_apache_and_its_light_reaches_ahead_at_altitude',
             'native:theft_auto_apache_combat::both_apache_stations_can_fire_and_switch_pilots_independently',
-            # Chromium with WebGPU booted the room and every game; DXC compiled what it ran (Firefox on Windows).
-            'browser:room', 'hlsl']
+            # Chromium and Firefox with WebGPU booted the room and every game; DXC compiled what it ran (Firefox on Windows).
+            'browser:room', 'firefox:room', 'hlsl']
 
 
 def get(url, raw=False):
@@ -121,8 +121,8 @@ def validate(commit, release, manifest, run, jobs, compare):
     if manifest.get('passed') is not True or not all(c['ok'] for c in manifest['checks']):
         raise SystemExit('Not every release check passed: ' + ', '.join(c['name'] for c in manifest['checks'] if not c['ok']))
     names = {c['name'] for c in manifest['checks']}
-    # Every game in the bundle (files:<game>) must have booted in the browser smoke test.
-    booted = ['browser:' + n.split(':', 1)[1] for n in names if n.startswith('files:')]
+    # Every game in the bundle (files:<game>) must have booted in Chromium and Firefox.
+    booted = [f'{b}:' + n.split(':', 1)[1] for n in names if n.startswith('files:') for b in ('browser', 'firefox')]
     missing = [n for n in REQUIRED + booted if n not in names]
     if missing:
         raise SystemExit(f'release.json lacks required checks: {missing}')

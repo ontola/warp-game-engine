@@ -25,13 +25,13 @@ on:
 permissions:
   contents: write
 concurrency:
-  # A running candidate always finishes (with the browser smoke test it takes about half an hour, and main moves faster); newer pushes wait, and only the newest waiting one runs next.
+  # A running candidate always finishes (with the Chromium and Firefox smoke tests it takes about an hour, and main moves faster); newer pushes wait, and only the newest waiting one runs next.
   group: play-release-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.commit || 'main' }}
   cancel-in-progress: false
 jobs:
   release:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
         with:
@@ -55,7 +55,7 @@ jobs:
         if: steps.exists.outputs.found == 'false'
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q clang lld llvm wasi-libc libc++-dev-wasm32 libclang-rt-dev-wasm32 libasound2-dev libudev-dev xvfb
+          sudo apt-get install -y -q clang lld llvm wasi-libc libc++-dev-wasm32 libclang-rt-dev-wasm32 libasound2-dev libudev-dev xvfb mesa-vulkan-drivers
           rustup toolchain install stable --profile minimal --target wasm32-unknown-unknown
           rustup default stable
       - if: steps.exists.outputs.found == 'false'
@@ -67,11 +67,11 @@ jobs:
         with:
           shared-key: play-release
           save-if: ${{ github.event_name == 'push' }}
-      - name: Browser smoke test tools (Playwright Chromium, naga-cli, DXC)
+      - name: Browser smoke test tools (Playwright Chromium and Firefox, naga-cli, DXC)
         if: steps.exists.outputs.found == 'false'
         run: |
           npm install --no-save --no-package-lock playwright@1.63.0
-          npx playwright install --with-deps chromium
+          npx playwright install --with-deps chromium firefox
           naga=$(grep -A1 '^name = "naga"$' Cargo.lock | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)
           cargo install naga-cli --version "$naga" --locked
           mkdir -p "$RUNNER_TEMP/dxc"
@@ -80,7 +80,7 @@ jobs:
           echo "LD_LIBRARY_PATH=$RUNNER_TEMP/dxc/lib" >> "$GITHUB_ENV"
       - name: Build and check
         if: steps.exists.outputs.found == 'false'
-        run: python3 engine/tools/play-release.py build --native-tests --browser --hlsl
+        run: python3 engine/tools/play-release.py build --native-tests --browser --hlsl --firefox
       - name: Smoke test screenshots and reports
         if: always() && steps.exists.outputs.found == 'false'
         uses: actions/upload-artifact@v4
@@ -89,6 +89,8 @@ jobs:
           path: |
             build/play-release/shots
             build/play-release/smoke.json
+            build/play-release/shots-firefox
+            build/play-release/smoke-firefox.json
             build/play-release/hlsl.json
             build/play-release/wgsl
           if-no-files-found: ignore

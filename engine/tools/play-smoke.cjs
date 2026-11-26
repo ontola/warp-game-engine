@@ -6,7 +6,13 @@
 // console error, the crash or GPU-problem notice, a game whose first frame
 // never comes, or a picture that is all one colour.
 //
-//   node engine/tools/play-smoke.cjs build/web [--games a,b] [--report out.json] [--shots DIR] [--shaders DIR]
+//   node engine/tools/play-smoke.cjs build/web [--browser chromium|firefox] [--games a,b] [--report out.json] [--shots DIR] [--shaders DIR]
+//
+// --browser firefox runs Playwright's Firefox with WebGPU switched on
+// (dom.webgpu.enabled): the wgpu and naga that Firefox and Zen use, here on
+// Vulkan (Mesa's lavapipe, also on the CPU). Chrome's Tint and Firefox's naga
+// accept different WGSL and the two WebGPU APIs differ in details, so a
+// bundle that runs in Chrome can stay grey in Zen.
 //
 // --shaders DIR writes every WGSL module the page and its game workers
 // compiled (one .wgsl per distinct source) for engine/tools/hlsl-check.py,
@@ -21,11 +27,12 @@
 // check (engine/docs/play-release.md).
 'use strict';
 const http = require('http'), fs = require('fs'), path = require('path'), zlib = require('zlib');
-let chromium;
-try { ({ chromium } = require('playwright')); } catch { console.error('play-smoke: needs playwright (npm i playwright)'); process.exit(2); }
+let playwright;
+try { playwright = require('playwright'); } catch { console.error('play-smoke: needs playwright (npm i playwright)'); process.exit(2); }
 
 const args = process.argv.slice(2);
 const opt = (name, dflt) => { const i = args.indexOf(name); return i >= 0 ? args.splice(i, 2)[1] : dflt; };
+const browserName = opt('--browser', 'chromium');
 const report = opt('--report'), shots = opt('--shots'), only = opt('--games'), shaderDir = opt('--shaders');
 const roomTimeout = +opt('--room-timeout', 240) * 1000, gameTimeout = +opt('--game-timeout', 300) * 1000;
 const dir = path.resolve(args[0] || 'build/web');
@@ -38,7 +45,7 @@ const CAPTURE = `(() => { const D = self.GPUDevice && GPUDevice.prototype; if (!
   const seen = new Set(), real = D.createShaderModule;
   D.createShaderModule = function (desc) { try { const c = desc && desc.code; if (c && !seen.has(c)) { seen.add(c); console.debug('WARP_WGSL ' + JSON.stringify({ label: desc.label || '', code: c })); } } catch (e) {} return real.apply(this, arguments); };
 })();\n`;
-const types = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.wasm': 'application/wasm', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.ttf': 'font/ttf', '.wgsl': 'text/plain' };
+const types = { '.html': 'text/html', '.css': 'text/css', '.svg': 'image/svg+xml', '.webp': 'image/webp', '.ogg': 'audio/ogg', '.mp3': 'audio/mpeg', '.woff2': 'font/woff2', '.js': 'text/javascript', '.mjs': 'text/javascript', '.wasm': 'application/wasm', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.ttf': 'font/ttf', '.wgsl': 'text/plain' };
 const server = http.createServer((q, r) => {
   let p = decodeURIComponent(q.url.split('?')[0]);
   if (p.endsWith('/')) p += 'index.html';
@@ -89,11 +96,18 @@ function colours(png) {
 (async () => {
   await new Promise(ok => server.listen(0, '127.0.0.1', ok));
   const url = `http://127.0.0.1:${server.address().port}/?cloud=off&players=2&render=180`;
-  const browser = await chromium.launch({
-    headless: false,
-    args: ['--enable-unsafe-webgpu', '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-webgpu-adapter=swiftshader',
-      '--disable-vulkan-surface', '--ignore-gpu-blocklist', '--disable-gpu-watchdog', '--disable-gpu-process-crash-limit', '--autoplay-policy=no-user-gesture-required'],
-  });
+  const browser = browserName === 'firefox'
+    ? await playwright.firefox.launch({
+      headless: false,
+      firefoxUserPrefs: { 'dom.webgpu.enabled': true, 'dom.webgpu.workers.enabled': true, 'gfx.webgpu.ignore-blocklist': true,
+        'media.autoplay.default': 0, 'media.autoplay.blocking_policy': 0 },
+    })
+    : await playwright.chromium.launch({
+      headless: false,
+      args: ['--enable-unsafe-webgpu', '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-webgpu-adapter=swiftshader',
+        '--disable-vulkan-surface', '--ignore-gpu-blocklist', '--disable-gpu-watchdog', '--disable-gpu-process-crash-limit', '--autoplay-policy=no-user-gesture-required'],
+    });
+  console.log(`${browserName} ${browser.version()}`);
   const page = await browser.newPage({ viewport: { width: 640, height: 360 } });
   await page.addInitScript(CAPTURE);
   const shaders = new Map();
