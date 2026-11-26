@@ -1287,6 +1287,10 @@ pub(crate) mod page {
         });
         app::web::on_exit(leave);
         app::web::on_devices(|d| with(|h| devices(h, d)));
+        // Once the room is up, a game loading shows on the room's own card
+        // and TV (follow_loading), not also on the page's box over it
+        // (Joep: the same notice twice). Errors still show on the page.
+        app::web::quiet_progress();
         app::web::run(room_config(), Box::new(Room { lobby }));
         super::cloud::start(players);
         #[cfg(target_arch = "wasm32")]
