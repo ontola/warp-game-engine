@@ -73,7 +73,7 @@ python3 /opt/gamenight-cloud/promote-play.py rollback
 ```
 
 `latest` instead of a commit takes the newest candidate. The script lives in
-gamenight-internal `deploy/cloud/promote-play.py`; see its docstring for
+`engine/tools/host/promote-play.py`; see its docstring for
 every check. It keeps the godot/ folder (`/play/godot/`) across releases,
 keeps its last 3 installs, and logs every switch in
 `/srv/gamenight/play-releases/HISTORY`.
@@ -83,7 +83,7 @@ keeps its last 3 installs, and logs every switch in
 Build, test and push to main as usual. To let someone try a build before it
 is a candidate, put it under `/playtests/GAME/NAME/`. The preview key
 (`gamenight_deploy`) is restricted on the host to
-`playtest-receive.py` (gamenight-internal `deploy/cloud`), which writes
+`engine/tools/host/playtest-receive.py`, which writes
 only below `/srv/gamenight/playtests/`:
 
 ```sh

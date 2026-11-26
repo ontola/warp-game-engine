@@ -16,7 +16,7 @@ It exits non-zero when any check fails, and then packages nothing.
 The GitHub workflow .github/workflows/play-release.yml runs this on every
 push to main and publishes the candidate as the GitHub release
 play-<12 hex>. Production installs a candidate only through
-gamenight-internal deploy/cloud/promote-play.py, after Joep's yes in the
+engine/tools/host/promote-play.py, after Joep's yes in the
 prod monitor thread. Nobody copies files into /play/ by hand: previews go
 to /playtests/ (see engine/docs/play-release.md).
 
