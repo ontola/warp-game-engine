@@ -80,6 +80,9 @@ pub(crate) fn seats_after(version: u64) -> Option<(u64, Vec<SeatInfo>)> {
 
 /// A sender into the page's one synth mixer, opening WebAudio the first time.
 pub fn sound() -> Option<audio::synth::SoundSender> {
+    // A game in a worker (app::web_offscreen) has no WebAudio there.
+    #[cfg(target_arch = "wasm32")]
+    if web_sys::window().is_none() { return None; }
     SOUND.with(|s| {
         let mut s = s.borrow_mut();
         if s.is_none() {

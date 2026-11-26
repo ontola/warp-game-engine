@@ -162,6 +162,8 @@ fn show_progress(fraction: Option<f32>, step: &str) {
 
 /// Let the browser draw (the progress bar) before a long blocking step.
 pub async fn yield_to_browser() {
+    // A worker paints nothing: one turn of its event loop is enough.
+    if web_sys::window().is_none() { return sleep(0).await; }
     let promise = js_sys::Promise::new(&mut |resolve, _| {
         let window = web_sys::window().expect("window");
         // Two frames: the first lays out the change, the second paints it.
@@ -181,7 +183,10 @@ pub fn spawn(task: impl std::future::Future<Output = ()> + 'static) { wasm_bindg
 /// A future that is ready `ms` milliseconds from now.
 pub async fn sleep(ms: u32) {
     let promise = js_sys::Promise::new(&mut |resolve, _| {
-        if let Some(w) = web_sys::window() { let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms as i32); }
+        match web_sys::window() {
+            Some(w) => { let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms as i32); }
+            None => { let _ = js_sys::global().unchecked_into::<web_sys::WorkerGlobalScope>().set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms as i32); }
+        }
     });
     let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }
@@ -202,18 +207,31 @@ pub async fn prefetch(url: &str) -> Result<usize, String> {
     Ok(n)
 }
 
+thread_local! {
+    /// The page's build (`data-version`), for a worker that has no page.
+    static VERSION: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// In a worker: the page's build stamp, so [`fetch`] asks for this build's files.
+pub fn set_version(v: &str) { VERSION.with(|s| *s.borrow_mut() = Some(v.to_string()).filter(|v| !v.is_empty())); }
+
 /// Forget what [`prefetch`] kept that nobody fetched.
 pub fn clear_prefetched() { PREFETCHED.with(|p| p.borrow_mut().clear()); }
 
 pub async fn fetch(url: &str) -> Result<Vec<u8>, String> {
     use wasm_bindgen_futures::JsFuture;
     if let Some(data) = PREFETCHED.with(|p| p.borrow_mut().remove(url)) { return Ok(data); }
-    let window = web_sys::window().ok_or("no window")?;
     // A file next to the page is this build's (`<html data-version>`, set
-    // by build-web.py): never an older one from the browser's cache.
-    let version = window.document().and_then(|d| d.document_element()).and_then(|e| e.get_attribute("data-version"));
+    // by build-web.py; a worker is told it, [`set_version`]): never an
+    // older one from the browser's cache.
+    let version = web_sys::window().and_then(|w| w.document()).and_then(|d| d.document_element()).and_then(|e| e.get_attribute("data-version"))
+        .or_else(|| VERSION.with(|v| v.borrow().clone()));
     let versioned = match version { Some(v) if !url.contains("://") && !url.contains('?') => format!("{url}?v={v}"), _ => url.to_string() };
-    let response: web_sys::Response = JsFuture::from(window.fetch_with_str(&versioned)).await.map_err(|e| format!("{url}: {e:?}"))?
+    let promise = match web_sys::window() {
+        Some(w) => w.fetch_with_str(&versioned),
+        None => js_sys::global().unchecked_into::<web_sys::WorkerGlobalScope>().fetch_with_str(&versioned),
+    };
+    let response: web_sys::Response = JsFuture::from(promise).await.map_err(|e| format!("{url}: {e:?}"))?
         .dyn_into().map_err(|_| format!("{url}: not a response"))?;
     if !response.ok() { return Err(format!("{url}: HTTP {}", response.status())); }
     let buffer = JsFuture::from(response.array_buffer().map_err(|e| format!("{url}: {e:?}"))?).await.map_err(|e| format!("{url}: {e:?}"))?;

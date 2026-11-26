@@ -29,6 +29,8 @@ mod html_game;
 mod online;
 #[cfg(any(target_arch = "wasm32", target_os = "android"))]
 mod cloud;
+#[cfg(target_arch = "wasm32")]
+mod worker_game;
 
 #[cfg(any(target_arch = "wasm32", target_os = "android"))]
 pub(crate) mod page {

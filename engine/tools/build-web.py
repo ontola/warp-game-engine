@@ -360,6 +360,7 @@ if not args.no_build:
         shutil.copy(ROOT / 'lobbies/game-room/examples/browser/qrcode.js', OUT)
         shutil.copy(ROOT / 'lobbies/game-room/examples/browser/web-catalog.js', OUT)
         shutil.copy(ROOT / 'lobbies/game-room/examples/browser/error-report.js', OUT)
+        shutil.copy(ROOT / 'lobbies/game-room/examples/browser/game-worker.js', OUT)
         shutil.copytree(ROOT / 'lobbies/game-room/examples/browser/stories', OUT / 'stories', dirs_exist_ok=True)
     (OUT / 'assets').mkdir(exist_ok=True)
     if args.example == 'terrain_fly':

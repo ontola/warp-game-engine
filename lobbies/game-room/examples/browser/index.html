@@ -422,10 +422,59 @@ window.splitscreenEarlyPads = [];
   requestAnimationFrame(watch);
 }
 const android = /Android/i.test(navigator.userAgent);
+
+// Spike (?worker=FOLDER): the game loads in its own worker and canvas
+// (game-worker.js) while the room keeps running; F8 shows or hides it.
+// Pad 1 and WASD/arrows/Space/Enter go to its player 1.
+function warpWorkerGame(folder, players = 1) {
+  const canvas = document.createElement('canvas');
+  canvas.id = 'warp-worker';
+  canvas.style.cssText = 'position:fixed;inset:0;width:100vw;height:100vh;z-index:5;visibility:hidden;background:#000';
+  document.body.appendChild(canvas);
+  const scale = devicePixelRatio || 1;
+  canvas.width = Math.round(innerWidth * scale); canvas.height = Math.round(innerHeight * scale);
+  const offscreen = canvas.transferControlToOffscreen();
+  const worker = new Worker(new URL('./game-worker.js', import.meta.url), {type: 'module'});
+  const t0 = performance.now();
+  worker.onmessage = ({data}) => {
+    console.log('worker game:', JSON.stringify(data), Math.round(performance.now() - t0) + ' ms since spawn');
+    if (data.type === 'first-frame') canvas.style.visibility = 'visible';
+  };
+  worker.postMessage({module: window.warpWasmModule, canvas: offscreen, folder, players, version: document.documentElement.dataset.version || ''}, [offscreen]);
+  addEventListener('resize', () => worker.postMessage({resize: [Math.round(innerWidth * scale), Math.round(innerHeight * scale)]}));
+  const keys = new Set();
+  addEventListener('keydown', e => { if (canvas.style.visibility === 'visible') keys.add(e.code); if (e.code === 'F8') canvas.style.visibility = canvas.style.visibility === 'visible' ? 'hidden' : 'visible'; });
+  addEventListener('keyup', e => keys.delete(e.code));
+  let was = 0;
+  const bit = {Space: 1, Enter: 512, KeyE: 4, KeyQ: 8, ShiftLeft: 2};
+  (function send() {
+    const c = {mv: [0, 0], look: [0, 0], aim: [0, 0], triggers: [0, 0], held: 0, pressed: 0};
+    if (keys.has('KeyD') || keys.has('ArrowRight')) c.mv[0] += 1;
+    if (keys.has('KeyA') || keys.has('ArrowLeft')) c.mv[0] -= 1;
+    if (keys.has('KeyW') || keys.has('ArrowUp')) c.mv[1] += 1;
+    if (keys.has('KeyS') || keys.has('ArrowDown')) c.mv[1] -= 1;
+    for (const [k, b] of Object.entries(bit)) if (keys.has(k)) c.held |= b;
+    const pad = [...(navigator.getGamepads?.() || [])].find(p => p && p.mapping === 'standard');
+    if (pad) {
+      const dz = v => Math.abs(v) < 0.15 ? 0 : v;
+      c.mv = [c.mv[0] + dz(pad.axes[0]), c.mv[1] - dz(pad.axes[1])];
+      c.aim = [dz(pad.axes[2]), -dz(pad.axes[3])];
+      c.look = [c.aim[0] * 0.05, c.aim[1] * 0.05];
+      c.triggers = [pad.buttons[6]?.value || 0, pad.buttons[7]?.value || 0];
+      const map = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 16384, 32768, 1024, 2048, 4096, 8192];
+      map.forEach((b, i) => { if (pad.buttons[i]?.pressed) c.held |= b; });
+    }
+    c.pressed = c.held & ~was; was = c.held;
+    worker.postMessage({controls: [c]});
+    requestAnimationFrame(send);
+  })();
+  return worker;
+}
+window.warpWorkerGame = warpWorkerGame;
 if (!navigator.gpu) showDirectGames(android
   ? 'This browser has no WebGPU. Open this page in Chrome, or host from the Splitscreen Club app.'
   : 'Splitscreen Club needs WebGPU: open this page in Chrome or Edge on a computer.');
 // WebGPU there, but no adapter for this device's GPU (blocklisted or too old).
-else navigator.gpu.requestAdapter().catch(() => null).then(a => a ? wasm() : Promise.reject('no adapter')).then(async bytes => { show(0.3, 'Starting'); const module = await WebAssembly.compile(bytes); await init({module_or_path: module}); connectStories(window.warp, module); })
+else navigator.gpu.requestAdapter().catch(() => null).then(a => a ? wasm() : Promise.reject('no adapter')).then(async bytes => { show(0.3, 'Starting'); const module = await WebAssembly.compile(bytes); await init({module_or_path: module}); connectStories(window.warp, module); window.warpWasmModule = module; const w = new URLSearchParams(location.search).get('worker'); if (w) setTimeout(() => warpWorkerGame(w), 3000); })
   .catch(e => { if (e === 'no adapter') { showDirectGames("This device's GPU isn't supported by this browser's WebGPU." + (android ? ' Try Chrome, or host from the Splitscreen Club app.' : ' Try Chrome or Edge, with hardware acceleration on.')); return; } showDirectGames('Could not start: ' + e); window.splitscreenReport?.('start-failed', e instanceof Error ? e.message : String(e), e?.stack); log.textContent += 'start failed: ' + e + '\n'; console.error(e); });
 </script></body></html>

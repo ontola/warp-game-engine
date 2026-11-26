@@ -135,8 +135,16 @@ impl Gpu {
                 })
                 .await
         })
-        .await
-        .map_err(|e| format!("no GPU adapter: {e}"))?;
+        .await;
+        // Chrome in a Web Worker (SwiftShader at least) can answer a
+        // high-performance request with no adapter, and the default one
+        // with an adapter that presents fine.
+        #[cfg(target_arch = "wasm32")]
+        let adapter = match adapter {
+            Err(_) => instance.request_adapter(&wgpu::RequestAdapterOptions { compatible_surface: surface, ..Default::default() }).await,
+            ok => ok,
+        };
+        let adapter = adapter.map_err(|e| format!("no GPU adapter: {e}"))?;
         let info = adapter.get_info();
         let optional = wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS | wgpu::Features::INDIRECT_FIRST_INSTANCE | wgpu::Features::PIPELINE_CACHE | wgpu::Features::PRIMITIVE_INDEX
             // BC7 albedo, normal and material arrays (texture_stream.rs).
