@@ -122,7 +122,10 @@ fn frame(live: &Rc<RefCell<Live>>) -> Result<(), String> {
     let now = Instant::now();
     // Warmed (its first frame drawn) and not played: it waits, drawing
     // nothing, until the page hands it controls again.
-    if l.frames > 0 && FED.get().is_none_or(|t| (now - t).as_secs_f32() > 0.25) {
+    let fed = FED.get().is_some_and(|t| (now - t).as_secs_f32() <= 0.25);
+    // Silent until played (warming draws its first frame unheard).
+    crate::sound::worker::set_waiting(!fed);
+    if l.frames > 0 && !fed {
         l.last = now;
         l.acc = 0.0;
         return Ok(());

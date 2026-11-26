@@ -72,7 +72,7 @@ thread_local! {
 }
 
 /// Warming the next game in a worker: `?warm=worker` on a computer for
-/// now (no sound in the worker yet, and not opened to other couches).
+/// now (not opened to other couches yet).
 pub(crate) fn enabled() -> bool { !app::web::mobile() && app::web::query_param("warm").as_deref() == Some("worker") }
 
 /// Build `folder` for `players` in a worker, unless it already is; any

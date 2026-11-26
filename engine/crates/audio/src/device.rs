@@ -20,6 +20,10 @@ use std::time::Duration;
 
 type Shared = Arc<Mutex<Box<dyn crate::Source>>>;
 
+#[cfg(target_arch = "wasm32")]
+#[path = "device_worker.rs"]
+pub mod worker;
+
 pub struct Speaker {
     stop: Arc<AtomicBool>, thread: Option<std::thread::Thread>, pub rate: f32, pub channels: usize,
     /// System output selected when this speaker was opened.
@@ -61,6 +65,12 @@ fn with_default_output<T>(mut open: impl FnMut(cpal::Device) -> Result<T, String
 /// Open the default output. Build the source once, even when Windows must
 /// retry the very same endpoint's native activation after stream creation fails.
 pub fn open(make: impl FnOnce(f32, usize) -> Box<dyn crate::Source>) -> Result<Speaker, String> {
+    #[cfg(target_arch = "wasm32")]
+    if worker::in_worker() {
+        let stop = Arc::new(AtomicBool::new(false));
+        worker::start(make(worker::RATE, 2), stop.clone());
+        return Ok(Speaker { stop, thread: None, rate: worker::RATE, channels: 2, output_name: "the page (from a worker)".into(), _stream: None });
+    }
     let mut make = Some(make);
     let mut prepared = None;
     with_default_output(|device| {
