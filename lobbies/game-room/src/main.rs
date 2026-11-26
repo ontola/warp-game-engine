@@ -4,7 +4,7 @@
 //!   game-room shot [--dump DIR] --out room.png [--size 1280x720]
 //!   game-room play [--players 1] [--bots 3] [--fullscreen]
 //!   game-room bake-light --out room-light.bin
-//!   game-room live-shot --out room.png [--ticks 180] [--bots 3] [--items] [--fx] [--mouse X,Y] [--mouse-menu] [--pending NAME] [--queue TITLE] [--keys] [--catalog] [--back-menu] [--keyboard] [--shelf]
+//!   game-room live-shot --out room.png [--ticks 180] [--bots 3] [--items] [--fx] [--mouse X,Y] [--mouse-menu] [--pending NAME] [--queue TITLE] [--keys] [--catalog] [--back-menu] [--keyboard] [--shelf] [--bug]
 //!
 //! For now the room comes from the Godot lobby's export (tools/
 //! warp_export.gd in gamenight/lobbies/game-room), so both engines draw the
@@ -75,6 +75,12 @@ fn run() -> Result<(), String> {
         // `--pending NAME`: a profile someone scanned in, waiting at a door.
         if let Some(name) = arg("--pending") {
             lobby.set_links(serde_json::json!({"room": {"pending": [{"id": "shot", "profile": {"display_name": name}}]}}));
+        }
+        // `--bug`: a bug just reported at the table, its describe link's QR code.
+        if flag("--bug") {
+            let url = "https://splitscreen.club/b/k7mq2xz9pw";
+            let svg = qrcode::QrCode::new(url.as_bytes()).map(|q| q.render::<qrcode::render::svg::Color>().quiet_zone(true).min_dimensions(256, 256).build()).unwrap_or_default();
+            lobby.set_links(serde_json::json!({"room": {"pending": []}, "bug": {"id": "shot", "title": "What went wrong in Dead Miles?", "line": "Scan the code with any phone, or tap the screen to type it here · no account needed", "link": "splitscreen.club/b/k7mq2xz9pw", "qr_svg": svg}}));
         }
         // `--queue TITLE`: a game waiting in the queue, so the TV offers Play.
         if let Some(title) = arg("--queue") {

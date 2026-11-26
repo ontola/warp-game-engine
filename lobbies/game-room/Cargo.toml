@@ -25,6 +25,8 @@ web-time = "1.1"
 gdcompat.workspace = true
 game-room-sim = { path = "sim" }
 splitscreen-club = { path = "../../engine/crates/splitscreen-club" }
+# `live-shot --bug`: a describe link's QR code, as the hosts make it.
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
 # The browser build (examples/browser.rs): the room first, Luau games from
 # its shelf. Only for wasm32, so native builds and tests never compile warp.

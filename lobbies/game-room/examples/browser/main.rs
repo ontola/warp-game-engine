@@ -1118,19 +1118,29 @@ pub(crate) mod page {
         true
     }
 
-    /// Tell the table a bug was reported: the room log, and a hint on screen.
+    /// Tell the table a bug was reported: the room log, and a hint on
+    /// screen. What to do next comes with the cloud's answer (the bug
+    /// panel), not here: a guest may have no phone linked.
     fn bug_noted(h: &mut Host, game: Option<&str>) {
         let text = match game {
-            Some(g) => format!("Bug reported in {}. Say what happened on your phone.", title(&h.party, g)),
-            None => "Bug reported. Say what happened on your phone.".to_string(),
+            Some(g) => format!("Bug reported in {}", title(&h.party, g)),
+            None => "Bug reported".to_string(),
         };
-        note(h, "game", &text, game);
+        note(h, "game", &format!("{text}."), game);
         show_hint("✓", &text, "");
+    }
+
+    /// The report never reached the cloud: say so, instead of a panel.
+    pub(crate) fn bug_failed(why: &str) {
+        with(|h| { h.links["bug"] = Value::Null; h.links_dirty = true; });
+        app::web::tap_opens(None, 0.0);
+        show_hint("!", why, "");
     }
 
     /// Back + Y or F4 in the room: report a bug with the room on screen.
     fn report_room_bug() {
         if !with(|h| { let ok = bug_allowed(h); if ok { bug_noted(h, None); } ok }) { return; }
+        if !app::web::can_capture() { super::cloud::report_bug(None, None, None); return; }
         app::web::capture_frame(Box::new(|size, rgba| {
             let img = image::RgbaImage::from_raw(size[0], size[1], rgba);
             super::cloud::report_bug(None, None, img.as_ref());
@@ -1162,7 +1172,8 @@ pub(crate) mod page {
             let bug = why == app::web::Exit::ReportBug && bug_allowed(h);
             if bug { bug_noted(h, Some(&game)); }
             let html = game_meta(&h.party, &game).is_some_and(|m| m["web_entry"].is_string());
-            if bug && (html || !keep) {
+            // (A phone host whose driver cannot copy its screen: no screenshot.)
+            if bug && (html || !keep || !app::web::can_capture()) {
                 super::cloud::report_bug(Some(game.clone()), Some(title(&h.party, &game)), None);
             }
             if keep {

@@ -267,9 +267,77 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// The browser hands a leaving game's last frame to `done` for the room's
-/// TV. Not yet on Android: the TV keeps its own picture.
-pub fn capture_frame(done: Box<dyn FnOnce([u32; 2], Vec<u8>)>) { drop(done); }
+/// A frame copied off the GPU, waiting to be read ([`poll_capture`]).
+struct Capture {
+    buffer: wgpu::Buffer,
+    size: [u32; 2],
+    row: u32,
+    bgra: bool,
+    /// 0 waiting, 1 mapped, 2 failed (set from the GPU's callback thread).
+    state: Arc<std::sync::atomic::AtomicU8>,
+    done: Box<dyn FnOnce([u32; 2], Vec<u8>)>,
+}
+
+thread_local! {
+    static CAPTURE: RefCell<Option<Box<dyn FnOnce([u32; 2], Vec<u8>)>>> = const { RefCell::new(None) };
+    static CAPTURING: RefCell<Option<Capture>> = const { RefCell::new(None) };
+    /// The swapchain can be copied from (its driver allows COPY_SRC).
+    static CAN_CAPTURE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Hand the frame this tick draws to `done` (size, RGBA8, top row first), as
+/// the browser shell does: a bug report's screenshot, a paused game's
+/// picture on the room's TV. A driver whose swapchain cannot be copied
+/// never calls `done`: ask [`can_capture`] first.
+pub fn capture_frame(done: Box<dyn FnOnce([u32; 2], Vec<u8>)>) {
+    if can_capture() { CAPTURE.with(|c| *c.borrow_mut() = Some(done)); }
+}
+
+/// Whether [`capture_frame`] will answer.
+pub fn can_capture() -> bool { CAN_CAPTURE.with(|c| c.get()) }
+
+/// Copy `texture` (the swapchain image) to a buffer; [`poll_capture`] reads
+/// it once the GPU is done.
+fn capture(gpu: &render::Gpu, texture: &wgpu::Texture, done: Box<dyn FnOnce([u32; 2], Vec<u8>)>) {
+    if !texture.usage().contains(wgpu::TextureUsages::COPY_SRC) || CAPTURING.with(|c| c.borrow().is_some()) { return; }
+    let (w, h) = (texture.width(), texture.height());
+    let row = (w * 4).div_ceil(256) * 256;
+    let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("frame capture"), size: u64::from(row) * u64::from(h), usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+    let mut enc = gpu.device.create_command_encoder(&Default::default());
+    enc.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo { texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        wgpu::TexelCopyBufferInfo { buffer: &buffer, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(h) } },
+        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+    );
+    gpu.queue.submit([enc.finish()]);
+    let bgra = matches!(texture.format(), wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+    let state = Arc::new(std::sync::atomic::AtomicU8::new(0));
+    let flag = state.clone();
+    buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| flag.store(if result.is_ok() { 1 } else { 2 }, std::sync::atomic::Ordering::Release));
+    CAPTURING.with(|c| *c.borrow_mut() = Some(Capture { buffer, size: [w, h], row, bgra, state, done }));
+}
+
+/// A native GPU answers a buffer read only when polled: once per frame
+/// while a capture waits, then hand the frame over (here, outside the
+/// game's tick).
+fn poll_capture(gpu: &render::Gpu) {
+    if CAPTURING.with(|c| c.borrow().is_none()) { return; }
+    let _ = gpu.device.poll(wgpu::PollType::Poll);
+    let state = CAPTURING.with(|c| c.borrow().as_ref().map_or(0, |c| c.state.load(std::sync::atomic::Ordering::Acquire)));
+    if state == 0 { return; }
+    let Some(c) = CAPTURING.with(|c| c.borrow_mut().take()) else { return };
+    if state != 1 { return; }
+    let [w, h] = c.size;
+    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    {
+        let Ok(data) = c.buffer.slice(..).get_mapped_range() else { return };
+        for y in 0..h as usize { rgba.extend_from_slice(&data[y * c.row as usize..y * c.row as usize + w as usize * 4]); }
+    }
+    c.buffer.unmap();
+    if c.bgra { for p in rgba.chunks_exact_mut(4) { p.swap(0, 2); } }
+    for p in rgba.chunks_exact_mut(4) { p[3] = 255; }
+    (c.done)([w, h], rgba);
+}
 
 /// Read `assets/web/<path>` from the APK.
 pub fn asset(path: &str) -> Result<Vec<u8>, String> {
@@ -603,6 +671,44 @@ fn input(app: &AndroidApp, tx: &mpsc::Sender<Event>) {
     }) {}
 }
 
+thread_local! {
+    /// A page a tap on the screen opens (a bug's describe link): the phone
+    /// or tablet is the TV, so its own touch screen types the words.
+    static TAP_OPENS: RefCell<Option<(String, Instant)>> = const { RefCell::new(None) };
+}
+
+/// For the next `seconds`, the next tap on the room's screen (not in a
+/// game) opens `url` in the browser. None: taps do nothing again.
+pub fn tap_opens(url: Option<&str>, seconds: f32) {
+    TAP_OPENS.with(|t| *t.borrow_mut() = url.map(|u| (u.to_string(), Instant::now() + Duration::from_secs_f32(seconds.max(0.0)))));
+}
+
+/// A tap on the screen: open the page [`tap_opens`] set, in the room only.
+fn tapped() {
+    if IN_GAME.with(|g| g.get()) { return; }
+    if let Some((url, until)) = TAP_OPENS.with(|t| t.borrow_mut().take()) && Instant::now() < until { open_url(&url); }
+}
+
+/// Open `url` in the phone's browser (an ACTION_VIEW intent).
+pub fn open_url(url: &str) {
+    let Some(app) = APP.get() else { return };
+    let (vm, activity, url) = (app.vm_as_ptr() as usize, app.activity_as_ptr() as usize, url.to_string());
+    app.run_on_java_main_thread(Box::new(move || {
+        let run = || -> jni::errors::Result<()> {
+            let vm = unsafe { jni::JavaVM::from_raw(vm as *mut _) }?;
+            let mut env = vm.attach_current_thread()?;
+            let activity = unsafe { jni::objects::JObject::from_raw(activity as jni::sys::jobject) };
+            let text = env.new_string(&url)?;
+            let uri = env.call_static_method("android/net/Uri", "parse", "(Ljava/lang/String;)Landroid/net/Uri;", &[(&text).into()])?.l()?;
+            let action = env.new_string("android.intent.action.VIEW")?;
+            let intent = env.new_object("android/content/Intent", "(Ljava/lang/String;Landroid/net/Uri;)V", &[(&action).into(), (&uri).into()])?;
+            env.call_method(&activity, "startActivity", "(Landroid/content/Intent;)V", &[(&intent).into()])?;
+            Ok(())
+        };
+        if let Err(e) = run() { log(&format!("open {url}: {e}")); }
+    }));
+}
+
 /// Hide the status and navigation bars (sticky immersive), on Android's UI thread.
 fn immersive(app: &AndroidApp) {
     let (vm, activity) = (app.vm_as_ptr() as usize, app.activity_as_ptr() as usize);
@@ -751,7 +857,12 @@ fn on_window(window: NativeWindow) -> Result<(), String> {
     let instance = render::gpu::instance();
     let surface = surface_for(&instance, &window)?;
     if let Some(hz) = requested_hz() { request_frame_rate(&window, hz); }
-    let (gpu, config) = Gpu::for_surface(&instance, &surface, size[0], size[1])?;
+    let (gpu, mut config, adapter) = Gpu::for_surface_with_adapter(&instance, &surface, size[0], size[1])?;
+    // A swapchain we can copy from: bug report screenshots ([`capture_frame`]).
+    if surface.get_capabilities(&adapter).usages.contains(wgpu::TextureUsages::COPY_SRC) {
+        config.usage |= wgpu::TextureUsages::COPY_SRC;
+        CAN_CAPTURE.with(|c| c.set(true));
+    }
     surface.configure(&gpu.device, &config);
     log(&format!("GPU: {} ({:?}), {}x{}, {:?}", gpu.info.name, gpu.info.backend, config.width, config.height, config.format));
     direct_draws(&gpu.info.name);
@@ -836,6 +947,9 @@ fn render_loop(rx: mpsc::Receiver<Event>, stop: Arc<std::sync::atomic::AtomicBoo
                 // phones), so a finger on the screen plays nobody. It used to
                 // drive a virtual stick that joined as a keyboard player
                 // ("Press Enter to join", Joep 2026-11-24).
+                Event::Touch(_, winit::event::TouchPhase::Ended, _) => {
+                    tapped();
+                }
                 Event::Touch(..) => {}
                 Event::Back => {
                     // A game: back to the room. The room: twice to stop hosting.
@@ -1136,6 +1250,7 @@ impl Shell {
             if let Err(e) = renderer.set_upscale(&live.gpu, mode) { log(&format!("upscale {} off: {e}", mode.as_str())); self.upscale = None; }
         }
         let draw_ms = ms(t_draw);
+        poll_capture(&live.gpu);
         let t_out = Instant::now();
         let (surface, config, _) = live.surface.as_ref().ok_or("no surface")?;
         let texture = match surface.get_current_texture() {
@@ -1168,6 +1283,7 @@ impl Shell {
         let t_render = Instant::now();
         live.out.draw(&live.gpu, renderer, &draw, size, split, &view, height)?;
         let render_ms = ms(t_render);
+        if let Some(done) = CAPTURE.with(|c| c.borrow_mut().take()) { capture(&live.gpu, &texture.texture, done); }
         let t_present = Instant::now();
         live.gpu.queue.present(texture);
         // A frame that stalls (a renderer made on a helper thread froze the

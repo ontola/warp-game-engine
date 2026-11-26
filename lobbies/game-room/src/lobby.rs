@@ -751,6 +751,24 @@ impl Lobby {
         };
         let svg = get(&self.host.links["room"], "qr_svg", "");
         self.show.qr = if svg.len() < 200_000 { crate::qr::modules(&svg) } else { vec![] };
+        // A bug reported at the table (Back + Y): its describe page.
+        let bug = &self.host.links["bug"];
+        let id = get(bug, "id", "");
+        let same = self.show.bug.as_ref().is_some_and(|b| b.link == get(bug, "link", ""));
+        self.show.bug = match bug.is_object() && !id.is_empty() {
+            false => None,
+            true if same => self.show.bug.take(),
+            true => {
+                let svg = get(bug, "qr_svg", "");
+                Some(crate::paint::BugNote {
+                    title: get(bug, "title", ""),
+                    line: get(bug, "line", ""),
+                    link: get(bug, "link", ""),
+                    qr: if svg.len() < 200_000 { crate::qr::modules(&svg) } else { vec![] },
+                    since: self.time,
+                })
+            }
+        };
         self.screens_dirty = true;
     }
 

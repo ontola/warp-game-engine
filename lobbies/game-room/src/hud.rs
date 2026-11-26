@@ -171,6 +171,8 @@ pub fn draw(lobby: &Lobby, size: [u32; 2], _alpha: f32) -> HudDrawList {
     back_panel(lobby, &mut c, view_proj, size, scale);
     c.over();
     bench(lobby, &mut c, scale);
+    c.over();
+    bug_panel(lobby, &mut c, scale);
 
     // Toasts, bottom centre; in the catalog view top centre, clear of its
     // buttons and hints.
@@ -425,6 +427,57 @@ fn menu(lobby: &Lobby, c: &mut Canvas, id: &str, at: [f32; 2], fs: f32) {
 }
 
 /// main.gd `_draw_bench`: players without a controller, bottom left.
+/// A bug just reported at the table (Back + Y): what to do, and the QR
+/// code of its describe page, for players without a linked phone (Joep,
+/// 26 November 2026: "use your phone" told a guest nothing). Top left,
+/// the room's free zone; gone after `BUG_SECONDS` or a new report.
+fn bug_panel(lobby: &Lobby, c: &mut Canvas, scale: f32) {
+    let Some(bug) = &lobby.show.bug else { return };
+    if lobby.time - bug.since > crate::paint::BUG_SECONDS || lobby.catalog_open() { return; }
+    let title_fs = (22.0 * scale).floor();
+    let body = (19.0 * scale).floor();
+    let small = (16.0 * scale).floor();
+    let kicker = (title_fs * 0.7).floor();
+    let pad = [16.0 * scale, 24.0 * scale];
+    let side = if bug.qr.is_empty() { 0.0 } else { (220.0 * scale).floor() };
+    let lines = wrap(&bug.line, body, 380.0 * scale);
+    let text_w = lines.iter().map(|l| width(l, body)).fold(render::hud::measure(&bug.title, bold(), title_fs)[0], f32::max).max(side).max(width(&bug.link, small));
+    let pw = (text_w + pad[1] * 2.0).min(c.size[0] - 64.0 * scale);
+    let mut y = pad[0] + kicker;
+    let title_y = y + 12.0 * scale + title_fs;
+    let lines_y = title_y + 8.0 * scale;
+    let qr_y = lines_y + lines.len() as f32 * (body * 1.4) + 12.0 * scale;
+    let ph = qr_y + if side > 0.0 { side + 12.0 * scale + small } else { 0.0 } + pad[0];
+    let r = [32.0 * scale, 32.0 * scale, pw, ph];
+    crate::paint::panel_solid(c, r, scale);
+    let x = r[0] + pad[1];
+    c.text(bold(), [x, r[1] + y], "BUG REPORTED", TextAlign::Left, -1.0, kicker, AMBER);
+    c.text(bold(), [x, r[1] + title_y], &bug.title, TextAlign::Left, -1.0, title_fs, TEXT);
+    for (i, l) in lines.iter().enumerate() {
+        y = lines_y + (i as f32 + 0.8) * body * 1.4;
+        c.text(regular(), [x, r[1] + y], l, TextAlign::Left, -1.0, body, DIM);
+    }
+    if side > 0.0 {
+        // Dark modules on white (phones' scanners do not read inverted codes).
+        let q = [x, r[1] + qr_y, side, side];
+        c.style_box(q, [8.0 * scale; 4], Color::WHITE, None);
+        for m in &bug.qr { c.rect([q[0] + m[0] * side, q[1] + m[1] * side, m[2] * side, m[3] * side], Color::hex("0c0a16")); }
+        c.text(regular(), [x, q[1] + side + 12.0 * scale + small * 0.8], &bug.link, TextAlign::Left, -1.0, small, TEXT);
+    }
+}
+
+/// `text` broken into lines no wider than `max` at `size`.
+fn wrap(text: &str, size: f32, max: f32) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match out.last_mut() {
+            Some(line) if width(&format!("{line} {word}"), size) <= max => { line.push(' '); line.push_str(word); }
+            _ => out.push(word.to_string()),
+        }
+    }
+    out
+}
+
 fn bench(lobby: &Lobby, c: &mut Canvas, scale: f32) {
     if lobby.bench.is_empty() { return; }
     let fs = (19.0 * scale).floor();

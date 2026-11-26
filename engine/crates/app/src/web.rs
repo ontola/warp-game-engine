@@ -412,6 +412,13 @@ pub fn capture_frame(done: Box<dyn FnOnce([u32; 2], Vec<u8>)>) {
     CAPTURE.with(|c| *c.borrow_mut() = Some(done));
 }
 
+/// A tap on a phone host's screen opening a page (Android only): a browser
+/// host's players are at a computer, so nothing to do here.
+pub fn tap_opens(_url: Option<&str>, _seconds: f32) {}
+
+/// Whether [`capture_frame`] will answer (always, on a canvas).
+pub fn can_capture() -> bool { true }
+
 /// Copy `texture` (the canvas) to a buffer and read it when the GPU is done.
 fn capture(gpu: &Gpu, texture: &wgpu::Texture, done: Box<dyn FnOnce([u32; 2], Vec<u8>)>) {
     if !texture.usage().contains(wgpu::TextureUsages::COPY_SRC) { return; }

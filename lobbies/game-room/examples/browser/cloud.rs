@@ -201,12 +201,15 @@ pub(crate) fn start(players: usize) {
 
 /// Report a bug to the cloud room (`/v1/lobbies/bug-report`), as the
 /// desktop host's Back + Y does: the game on screen (None: the room), its
-/// title and a JPEG of `shot`. The phones at the table are then asked what
-/// went wrong. Without a cloud room there is nobody to tell.
+/// title and a JPEG of `shot`. The cloud answers how many phones at the
+/// table it asked and a describe link: the room then shows the bug panel
+/// with that link's QR code (hud.rs `bug_panel`), so a table without a
+/// linked phone is never told to use one.
 pub(crate) fn report_bug(game: Option<String>, title: Option<String>, shot: Option<&image::RgbaImage>) {
     let screenshot = shot.and_then(jpeg_data_uri);
+    let id = uuid();
     let report = json!({
-        "id": uuid(),
+        "id": id,
         "app_version": env!("CARGO_PKG_VERSION"),
         "platform": if cfg!(target_os = "android") { "android-host" } else { "web" },
         "game": game,
@@ -216,19 +219,51 @@ pub(crate) fn report_bug(game: Option<String>, title: Option<String>, shot: Opti
     app::web::spawn(async move {
         let Some((origin, token)) = with(|h| Some((h.cloud.origin.clone(), h.cloud.token.clone()?))) else {
             app::web::log("bug report: no cloud room, nothing sent");
+            super::page::bug_failed("This room is offline, so the bug report was not sent");
             return;
         };
         let body = report.to_string();
         for attempt in 0..3 {
             match app::web::request("POST", &format!("{origin}/v1/lobbies/bug-report"), &[("authorization", &format!("Bearer {token}"))], Some(&body)).await {
-                Ok((status, _)) if (200..300).contains(&status) => { app::web::log("bug report sent"); return; }
+                Ok((status, reply)) if (200..300).contains(&status) => {
+                    app::web::log("bug report sent");
+                    let reply: Value = serde_json::from_slice(&reply).unwrap_or_default();
+                    with(|h| bug_panel(h, &origin, &id, title.as_deref(), &reply));
+                    return;
+                }
                 Ok((status, _)) if status == 400 || status == 413 => { app::web::log(&format!("bug report refused (HTTP {status})")); return; }
                 Ok((status, _)) => app::web::log(&format!("bug report: HTTP {status}")),
                 Err(e) => app::web::log(&format!("bug report: {e}")),
             }
             sleep(2000 * (attempt + 1)).await;
         }
+        super::page::bug_failed("Could not reach Splitscreen Club, so the bug report was not sent");
     });
+}
+
+/// The room's bug panel for the cloud's answer to a bug report: who to ask
+/// (`asked` phones in the app) and the describe link's QR code.
+fn bug_panel(h: &mut Host, origin: &str, id: &str, title: Option<&str>, reply: &Value) {
+    let Some(path) = reply["link"].as_str().filter(|p| p.starts_with('/')) else { return };
+    let url = format!("{origin}{path}");
+    let short = url.split_once("://").map_or(url.as_str(), |(_, rest)| rest).to_string();
+    let phones = reply["asked"].as_u64().unwrap_or(0) > 0;
+    let tap = cfg!(target_os = "android");
+    let line = match (phones, tap) {
+        (true, true) => "Say it in the Splitscreen Club app, scan the code with any phone, or tap the screen to type it here",
+        (true, false) => "Say it in the Splitscreen Club app, or scan the code with any phone",
+        (false, true) => "Scan the code with any phone, or tap the screen to type it here · no account needed",
+        (false, false) => "Scan the code with any phone to say what happened · no account needed",
+    };
+    app::web::tap_opens(Some(&url), game_room::paint::BUG_SECONDS);
+    h.links["bug"] = json!({
+        "id": id,
+        "title": match title { Some(t) => format!("What went wrong in {t}?"), None => "What went wrong?".to_string() },
+        "line": line,
+        "link": short,
+        "qr_svg": qr_svg(&url),
+    });
+    h.links_dirty = true;
 }
 
 /// A JPEG data URI of a bug screenshot: up to 1920 wide, under the cloud's 3 MB.

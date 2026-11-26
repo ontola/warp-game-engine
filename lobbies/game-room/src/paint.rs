@@ -88,7 +88,28 @@ pub struct Show {
     pub covers: std::collections::HashMap<String, Cover>,
     /// Gameplay screenshots by game id, for the TV.
     pub shots: std::collections::HashMap<String, Cover>,
+    /// A bug just reported at the table (Back + Y): where to describe it.
+    pub bug: Option<BugNote>,
 }
+
+/// The bug panel (hud.rs `bug_panel`): a bug reported at the table and
+/// the QR code of its describe page, for whoever has no linked phone.
+#[derive(Clone, Debug, Default)]
+pub struct BugNote {
+    /// "What went wrong in Dead Miles?"
+    pub title: String,
+    /// What to do: scan, the app, or tap the screen.
+    pub line: String,
+    /// The describe link, short enough to type ("splitscreen.club/b/…").
+    pub link: String,
+    /// Its QR code's dark modules, 0..1 (qr.rs).
+    pub qr: Vec<[f32; 4]>,
+    /// Lobby time it came; it goes after [`BUG_SECONDS`].
+    pub since: f32,
+}
+
+/// How long the bug panel stays in the room.
+pub const BUG_SECONDS: f32 = 180.0;
 
 /// Godot's draw calls on one screen's rectangle in an atlas draw list.
 /// Painters draw in the screen's own pixels (`size`); `k` atlas pixels
