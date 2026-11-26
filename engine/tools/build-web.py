@@ -184,9 +184,10 @@ RUST_GAMES = {
     'spaceracer': {'root': 'games/spaceracer', 'files': ['rules/*.luau'] + [f'assets/source/assets/{n}.png' for n in ('office-facade', 'corporate-posters', 'city-billboards', 'paint-wear')] + ['assets/source/assets/forest/authored/**/*'],
                    'id': 'spaceracer', 'title': 'Space Racer', 'players': {'min': 1, 'max': 4, 'keyboard': True},
                    'cover': 'games/spaceracer/assets/source/assets/gamenight/cover.png'},
+    # Keyboard and mouse or a controller: not playable on keys alone (no 'keyboard').
     'growing-guns': {'root': 'games/growing-guns', 'files': ['mods/base/*.luau', 'sounds/*.luau', 'assets/characters/player-rig.json', 'assets/characters/player.anim.bin'],
                      'id': 'growing-guns', 'title': 'Growing Guns', 'tagline': 'Fast arena FPS: the loser of each round picks the upgrade.',
-                     'players': {'min': 1, 'max': 4, 'keyboard': True, 'mouse': True}, 'cover': 'games/growing-guns/cover.png'},
+                     'players': {'min': 1, 'max': 4, 'mouse': True}, 'cover': 'games/growing-guns/cover.png'},
 }
 
 
