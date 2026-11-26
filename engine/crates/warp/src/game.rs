@@ -90,6 +90,9 @@ pub struct LuaGame {
     light: Lighting,
     applied_sky: Option<SkyChoice>,
     sky_upload: Option<PreparedSky>,
+    /// The renderer made on a helper thread before the first frame
+    /// ([`LuaGame::scene_for_renderer`]): that frame only takes it.
+    renderer_ahead: Option<render::Renderer>,
     daylight: Option<render::daylight::DaylightCycle>,
     log: VecDeque<String>,
     pub live: Option<live::Live>,
@@ -218,7 +221,7 @@ impl LuaGame {
         host.ignore(NOT_MODULES);
         if single.is_none() { host.enable_libraries(); }
         crate::kit::install(&mut host);
-        let mut g = LuaGame { dir: dir.to_path_buf(), single: single.clone(), seed: cfg.seed, fresh, cfg, host, core, inited: BTreeSet::new(), light: Lighting::default(), applied_sky: None, sky_upload: None, daylight: None,
+        let mut g = LuaGame { dir: dir.to_path_buf(), single: single.clone(), seed: cfg.seed, fresh, cfg, host, core, inited: BTreeSet::new(), light: Lighting::default(), applied_sky: None, sky_upload: None, renderer_ahead: None, daylight: None,
             log: VecDeque::new(), live: None, live_logs: None, default_sky, echo: true, party: None, pad_seats: Vec::new(), menu: None, menu_stick: 0.0, running_for: 0, ready_due: false, windowed: false, polls: 0, next_id: 1, quit: false, back: false, page_seats: 0, surface: GameSurface::new(dir), trial: None, editor_pages: Default::default(),
             online: Default::default() };
         g.surface.install();
@@ -854,6 +857,30 @@ impl LuaGame {
     /// Grown plants that changed or finished cooking go into a fresh scene
     /// (vegetation is attached last and cannot be taken out again), and the
     /// sky is applied to it again.
+    /// For a host that makes the renderer on a helper thread (the Android
+    /// host, so its room keeps moving: Warp Theft Auto froze it while it
+    /// loaded): the scene work of the first frame now (plants, sky, people,
+    /// rooms), then the scene and light to make the renderer from. Hand
+    /// both back with [`LuaGame::set_renderer_ahead`].
+    pub fn scene_for_renderer(&mut self, max_storage_binding: u64) -> Result<(render::Scene, Lighting), String> {
+        self.attach_plants();
+        self.update_sky(1.0)?;
+        let light = self.lighting(1.0);
+        let mut c = api::lock(&self.core);
+        let c = &mut *c;
+        if !c.humans.is_empty() && !c.humans.attached() && c.humans.error().is_none()
+            && let Err(e) = c.humans.attach(&mut c.world.scene, max_storage_binding) { c.humans.set_error(Some(format!("humans: {e}"))); }
+        if c.rooms.enabled { crate::room_scene::prepare(&mut c.world.scene)?; }
+        Ok((std::mem::take(&mut c.world.scene), light))
+    }
+
+    /// The renderer made from [`LuaGame::scene_for_renderer`]'s scene, and
+    /// that scene back.
+    pub fn set_renderer_ahead(&mut self, renderer: render::Renderer, scene: render::Scene) {
+        api::lock(&self.core).world.scene = scene;
+        self.renderer_ahead = Some(renderer);
+    }
+
     fn attach_plants(&mut self) {
         let mut lines = Vec::new();
         let mut sky_again = false;
@@ -1293,7 +1320,10 @@ impl Game for LuaGame {
                 let more = if added.len() > 4 { format!(" and {} more", added.len() - 4) } else { String::new() };
                 late = Some(format!("renderer rebuilt mid-game for new looks: {}{more} (warm them in init with world.warm, or reuse a look)", added[..added.len().min(4)].join(", ")));
             }
-            if self.surface.pending() {
+            let ahead = self.renderer_ahead.take().filter(|_| frame.renderer().is_none() && added.is_empty() && !self.surface.pending());
+            if let Some(r) = ahead {
+                frame.set_renderer(r);
+            } else if self.surface.pending() {
                 let gpu = frame.gpu;
                 surface_line = self.surface.apply(|| render::validated(gpu, || frame.set_scene(&c.world.scene, &light)));
             } else {

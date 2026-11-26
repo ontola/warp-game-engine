@@ -159,8 +159,40 @@ pub async fn load(name: &str, players: Option<usize>) -> Result<(app::Config, cr
     let t1 = web_time::Instant::now();
     let seats = SEATS.with(|s| { let s = s.borrow(); (s.0 > 0).then(|| s.1.clone()) });
     let over = crate::Overrides { fresh: true, players, seats, ..Default::default() };
+    // On a phone the scripts load and init runs on a helper thread too
+    // (Warp Theft Auto builds its city there): the room keeps moving.
+    #[cfg(target_os = "android")]
+    let mut game = {
+        let (dir, sound) = (dir.clone(), sound());
+        /// A game fresh from load: its online link (the only part that is
+        /// not Send, a page's WebRTC handle) is Off until the page thread
+        /// sets it, after this.
+        struct Fresh(crate::LuaGame);
+        // SAFETY: see above; LuaGame::load_with_storage leaves online Off.
+        unsafe impl Send for Fresh {}
+        app::android::off_thread_low(move || crate::LuaGame::load_with_storage(&dir, &over, sound, crate::storage::Location::Memory).map(Fresh)).await?.0
+    };
+    #[cfg(not(target_os = "android"))]
     let game = crate::LuaGame::load_with_storage(&dir, &over, sound(), crate::storage::Location::Memory)?;
     app::web::log(&format!("{name}: scripts loaded and init ran in {:.0} ms", t1.elapsed().as_secs_f32() * 1000.0));
+    // On a phone the renderer (pipelines, buffers, texture arrays: seconds
+    // on a tablet) is made on a helper thread, so the room keeps moving;
+    // a browser has one thread and makes it in the game's first frame.
+    #[cfg(target_os = "android")]
+    if let Some(gpu) = app::android::gpu() {
+        app::web::progress(Some(0.88), &format!("{name}: preparing the graphics"));
+        app::web::yield_to_browser().await;
+        let t2 = web_time::Instant::now();
+        let (scene, light) = game.scene_for_renderer(u64::from(gpu.limits.max_storage_buffer_binding_size))?;
+        let (renderer, scene) = app::android::off_thread_low(move || {
+            render::startup_profile::force(true);
+            let r = render::Renderer::with_generated_streaming(&gpu, &scene, &light, true);
+            render::startup_profile::force(false);
+            (r, scene)
+        }).await;
+        if let Some(p) = renderer.startup_profile() { app::web::log(&format!("{name}: renderer made ahead in {:.0} ms: {}", t2.elapsed().as_secs_f32() * 1000.0, p.slowest(6))); }
+        game.set_renderer_ahead(renderer, scene);
+    }
     let cfg = app::Config { title: game.cfg.title.clone(), size: game.cfg.size, tick_hz: game.cfg.tick_rate, keyboard: true, pointer: false, ..Default::default() };
     Ok((cfg, game))
 }
