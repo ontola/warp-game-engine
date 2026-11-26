@@ -217,14 +217,14 @@ pub struct World {
     pub fields: Vec<Id>,
     /// Spells, bullets and pickups, in the order they were made.
     pub fx: Vec<Id>,
-    next_order: u64,
+    pub(crate) next_order: u64,
     pub events: Vec<Ev>,
     pub stats: BTreeMap<&'static str, u64>,
     /// Spell keys cast this session (the grimoire just counts them).
     pub grimoire: BTreeMap<String, String>,
     pub confluences: BTreeMap<String, String>,
-    confluence_t: BTreeMap<(u64, u64), f64>,
-    dmg_t: f64,
+    pub(crate) confluence_t: BTreeMap<(u64, u64), f64>,
+    pub(crate) dmg_t: f64,
     /// The host paused the game or a menu is open: nothing moves.
     pub paused: bool,
     /// The run's seed; each new run takes the next one.
@@ -232,6 +232,9 @@ pub struct World {
     /// Runs this session that ended in a wipe or a win (the HUD's run
     /// counter after a death says the next one's number).
     pub runs_ended: u32,
+    /// Entity handles, handed out by the world itself so that a snapshot
+    /// brings them back exactly (crate::snapshot).
+    pub(crate) ids: crate::snapshot::Ids,
 }
 
 impl World {
@@ -260,6 +263,7 @@ impl World {
             paused: false,
             seed,
             runs_ended: 0,
+            ids: Default::default(),
         };
         w.seat(seats);
         w.new_run();
@@ -268,8 +272,8 @@ impl World {
 
     /// Put the wizards in their seats (main.gd _seat).
     pub fn seat(&mut self, seats: &[Seat]) {
-        for id in self.wizards.drain(..) {
-            let _ = self.ecs.despawn(id);
+        for id in std::mem::take(&mut self.wizards) {
+            self.despawn(id);
         }
         let mut used: Vec<C> = Vec::new();
         for (i, s) in seats.iter().enumerate() {
@@ -279,7 +283,7 @@ impl World {
             }
             used.push(robe);
             let (actor, wiz) = Wizard::make(i, s, robe, &self.settings);
-            let id = self.ecs.spawn((actor, wiz));
+            let id = self.spawn((actor, wiz));
             self.wizards.push(id);
         }
         self.unlocks_changed();
@@ -300,7 +304,7 @@ impl World {
         if let Some(u) = unlocks {
             wiz.unlocks = wiz.unlocks.max(u);
         }
-        let id = self.ecs.spawn((actor, wiz));
+        let id = self.spawn((actor, wiz));
         self.wizards.push(id);
         self.unlocks_changed();
         if let Some(p) = near {
@@ -392,7 +396,7 @@ impl World {
     /// Spawn a spell, bullet or pickup that ticks with the rest.
     pub fn spawn_fx<T: hecs::Component>(&mut self, c: T) -> Id {
         let o = self.order();
-        let id = self.ecs.spawn((o, c));
+        let id = self.spawn((o, c));
         self.fx.push(id);
         id
     }
@@ -754,12 +758,13 @@ impl World {
             r,
         );
         if blocks {
-            for (oid, o) in self.ecs.query::<&Actor>().iter() {
-                if oid == id || !o.solid {
-                    continue;
-                }
-                let d = p - Vec2::new(o.pos.x, o.pos.z);
-                let want = r + o.radius;
+            // In handle order, not storage order: a world loaded from a
+            // snapshot (rollback) stores entities in another order.
+            let mut others: Vec<(Id, Vec3, f32)> = self.ecs.query::<&Actor>().iter().filter(|(oid, o)| *oid != id && o.solid).map(|(oid, o)| (oid, o.pos, o.radius)).collect();
+            others.sort_by_key(|(oid, ..)| oid.to_bits());
+            for (_, pos, radius) in others {
+                let d = p - Vec2::new(pos.x, pos.z);
+                let want = r + radius;
                 let l = d.length();
                 if l < want && l > 1e-4 {
                     p += d / l * (want - l);

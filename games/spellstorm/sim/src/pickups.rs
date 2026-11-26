@@ -185,14 +185,14 @@ impl World {
         let mut bu = self.ecs.get::<&Bullet>(id).map(|r| (*r).clone()).unwrap();
         bu.life -= dt;
         if bu.life <= 0.0 {
-            let _ = self.ecs.despawn(id);
+            self.despawn(id);
             return;
         }
         let from = bu.pos;
         let to = from + bu.vel * dt as f32;
         if self.ray(from, to).is_some() {
             self.burst(from, fx::el_c(bu.primary), 8, 3.0, 0.2, None);
-            let _ = self.ecs.despawn(id);
+            self.despawn(id);
             return;
         }
         bu.pos = to;
@@ -221,7 +221,7 @@ impl World {
                     1.0,
                 );
                 self.burst(to, fx::el_c(bu.primary), 8, 3.0, 0.2, None);
-                let _ = self.ecs.despawn(id);
+                self.despawn(id);
                 return;
             }
         }
@@ -235,7 +235,7 @@ impl World {
             // Being drunk: the pool runs along its tongue into the drinker.
             g.slurp += dt / GLOBE_SLURP;
             if g.slurp >= 1.0 || !self.ecs.contains(w) {
-                let _ = self.ecs.despawn(id);
+                self.despawn(id);
                 return;
             }
             let to = flat(self.pos(w) - g.pos);
@@ -246,7 +246,7 @@ impl World {
             return;
         }
         if g.t > GLOBE_LIFE {
-            let _ = self.ecs.despawn(id);
+            self.despawn(id);
             return;
         }
         g.vel *= (-3.0 * dt).exp() as f32;
@@ -292,7 +292,7 @@ impl World {
         let mut s = self.ecs.get::<&Soul>(id).map(|r| (*r).clone()).unwrap();
         s.t += dt;
         if s.t > SOUL_LIFE {
-            let _ = self.ecs.despawn(id);
+            self.despawn(id);
             return;
         }
         let mut pos = s.pos;
@@ -325,7 +325,7 @@ impl World {
                     let at = self.pos(w) + Vec3::Y * 1.2;
                     self.burst(at, SOUL_COLOR, 6, 2.0, 0.12, None);
                     self.count("souls");
-                    let _ = self.ecs.despawn(id);
+                    self.despawn(id);
                     return;
                 }
                 let to = self.pos(w) + Vec3::Y * 0.9 - pos;

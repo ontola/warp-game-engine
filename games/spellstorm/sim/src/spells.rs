@@ -379,7 +379,7 @@ impl World {
     }
 
     fn gone(&mut self, id: Id) {
-        let _ = self.ecs.despawn(id);
+        self.despawn(id);
     }
 
     // --- Bolts -----------------------------------------------------------
@@ -872,7 +872,7 @@ impl World {
     pub fn start_spray(&mut self, caster: Id, s: &Spell, at: Vec3) -> Id {
         let dir = self.wiz(caster).aim_dir;
         let o = self.order();
-        let id = self.ecs.spawn((
+        let id = self.spawn((
             o,
             Spray {
                 caster,
@@ -896,7 +896,7 @@ impl World {
 
     pub fn start_beam(&mut self, caster: Id, s: &Spell, at: Vec3) -> Id {
         let o = self.order();
-        let id = self.ecs.spawn((
+        let id = self.spawn((
             o,
             Beam {
                 caster,

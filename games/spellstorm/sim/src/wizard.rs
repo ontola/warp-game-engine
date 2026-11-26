@@ -1225,7 +1225,7 @@ impl World {
                 w.traps.retain(|&t| self.ecs.contains(t));
                 while w.traps.len() >= most {
                     let old = w.traps.remove(0);
-                    let _ = self.ecs.despawn(old);
+                    self.despawn(old);
                 }
                 let at = self.level.clamp_inside(pos);
                 let t = self.plant_trap(id, &s, at);
@@ -1249,7 +1249,7 @@ impl World {
                         0.35,
                         None,
                     );
-                    let _ = self.ecs.despawn(old);
+                    self.despawn(old);
                 }
                 let at = self.level.clamp_inside(pos);
                 let t = self.plant_sentry(id, &s, at);

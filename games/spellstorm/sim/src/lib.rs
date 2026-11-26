@@ -22,6 +22,7 @@ pub mod rng;
 pub mod rules;
 pub mod run;
 pub mod sim;
+pub mod snapshot;
 pub mod spells;
 pub mod wizard;
 pub mod world;

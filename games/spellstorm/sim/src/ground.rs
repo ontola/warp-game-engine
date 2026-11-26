@@ -54,7 +54,7 @@ impl World {
             fading: false,
             look: 0,
         };
-        let id = self.ecs.spawn((o, f));
+        let id = self.spawn((o, f));
         self.fields.push(id);
         id
     }
@@ -85,7 +85,7 @@ impl World {
 
     /// Fades out and stops working (Field.fade).
     pub fn fade_field(&mut self, id: Id) {
-        let _ = self.ecs.despawn(id);
+        self.despawn(id);
     }
 
     pub fn field_step(&mut self, id: Id, dt: f64) {

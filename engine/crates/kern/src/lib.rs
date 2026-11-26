@@ -10,6 +10,7 @@
 pub mod collide;
 pub mod crush;
 pub mod parenting;
+pub mod rollback;
 
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};

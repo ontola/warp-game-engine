@@ -92,6 +92,9 @@ pub struct LaidField {
 }
 
 pub struct Level {
+    /// What it was built from (`Level::build`'s arguments), to build it
+    /// again on a rollback past a level change.
+    pub built: (usize, u64),
     pub biome_index: usize,
     pub half: Vec2,
     pub rng: Pcg,
@@ -229,6 +232,7 @@ impl Level {
     pub fn build(biome_index: usize, seed: u64) -> Level {
         let biome = &biomes()[biome_index % biomes().len()];
         let mut l = Level {
+            built: (biome_index, seed),
             biome_index: biome_index % biomes().len(),
             half: LEVEL_HALF,
             rng: Pcg::new(seed),

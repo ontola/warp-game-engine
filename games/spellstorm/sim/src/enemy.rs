@@ -467,7 +467,7 @@ impl World {
         let at = flat(self.level.clamp_inside(self.before_walls(at)));
         let (a, mut e) = Enemy::setup(k, hp_scale, champion, at, &mut self.rng);
         e.guard = guard;
-        let id = self.ecs.spawn((a, e));
+        let id = self.spawn((a, e));
         self.enemies.push(id);
         id
     }
@@ -1569,7 +1569,7 @@ impl World {
                 Err(_) => true,
             };
             if done {
-                let _ = self.ecs.despawn(id);
+                self.despawn(id);
             }
         }
         self.corpses.retain(|&c| self.ecs.contains(c));

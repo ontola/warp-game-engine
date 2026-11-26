@@ -98,6 +98,8 @@ pub struct Statics {
     shapes: Vec<Option<Shape2>>,
     owners: Vec<Option<usize>>,
     grid: HashMap<(i32, i32), Vec<usize>>,
+    /// Removed shapes, to put back on a rollback (crate::snapshot).
+    removed: HashMap<usize, Shape2>,
 }
 
 fn cell(p: Vec2) -> (i32, i32) {
@@ -121,8 +123,13 @@ impl Statics {
 
     pub fn remove(&mut self, i: usize) {
         if let Some(s) = self.shapes.get_mut(i) {
-            *s = None;
+            if let Some(gone) = s.take() { self.removed.insert(i, gone); }
         }
+    }
+
+    /// Put a removed shape back (a rollback to before it was removed).
+    pub fn put_back(&mut self, i: usize) {
+        if let Some(s) = self.removed.remove(&i) { self.shapes[i] = Some(s); }
     }
 
     /// Mark `shape` as belonging to prop `prop`, so a hit can damage it.

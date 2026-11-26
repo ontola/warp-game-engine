@@ -392,14 +392,15 @@ impl World {
     }
 
     fn clear_level(&mut self) {
-        for id in self
+        let gone: Vec<Id> = self
             .enemies
             .drain(..)
             .chain(self.corpses.drain(..))
             .chain(self.fx.drain(..))
             .chain(self.fields.drain(..))
-        {
-            let _ = self.ecs.despawn(id);
+            .collect();
+        for id in gone {
+            self.despawn(id);
         }
         self.later.clear();
         let r = &mut self.run;
