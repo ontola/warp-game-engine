@@ -55,7 +55,7 @@ jobs:
         if: steps.exists.outputs.found == 'false'
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q clang lld llvm wasi-libc libc++-dev-wasm32 libclang-rt-dev-wasm32 libasound2-dev libudev-dev
+          sudo apt-get install -y -q clang lld llvm wasi-libc libc++-dev-wasm32 libclang-rt-dev-wasm32 libasound2-dev libudev-dev xvfb
           rustup toolchain install stable --profile minimal --target wasm32-unknown-unknown
           rustup default stable
       - if: steps.exists.outputs.found == 'false'
@@ -67,9 +67,31 @@ jobs:
         with:
           shared-key: play-release
           save-if: ${{ github.event_name == 'push' }}
+      - name: Browser smoke test tools (Playwright Chromium, naga-cli, DXC)
+        if: steps.exists.outputs.found == 'false'
+        run: |
+          npm install --no-save --no-package-lock playwright@1.57.0
+          npx playwright install --with-deps chromium
+          naga=$(grep -A1 '^name = "naga"$' Cargo.lock | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)
+          cargo install naga-cli --version "$naga" --locked
+          mkdir -p "$RUNNER_TEMP/dxc"
+          curl -fsSL https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.8.2505/linux_dxc_2025_05_24.x86_64.tar.gz | tar xz -C "$RUNNER_TEMP/dxc"
+          echo "DXC=$RUNNER_TEMP/dxc/bin/dxc" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$RUNNER_TEMP/dxc/lib" >> "$GITHUB_ENV"
       - name: Build and check
         if: steps.exists.outputs.found == 'false'
-        run: python3 engine/tools/play-release.py build --native-tests
+        run: python3 engine/tools/play-release.py build --native-tests --browser --hlsl
+      - name: Smoke test screenshots and reports
+        if: always() && steps.exists.outputs.found == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: play-smoke
+          path: |
+            build/play-release/shots
+            build/play-release/smoke.json
+            build/play-release/hlsl.json
+            build/play-release/wgsl
+          if-no-files-found: ignore
       - name: Check report
         if: always() && steps.exists.outputs.found == 'false'
         run: |

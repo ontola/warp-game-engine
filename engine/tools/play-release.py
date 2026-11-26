@@ -3,7 +3,7 @@
 host from a clean checkout of a commit on main, run the release checks and
 package the result.
 
-    python3 engine/tools/play-release.py build [--native-tests] [--no-build]
+    python3 engine/tools/play-release.py build [--native-tests] [--browser] [--hlsl] [--no-build]
     python3 engine/tools/play-release.py check build/web
 
 `build` refuses a dirty tree or a commit that is not on origin/main, runs
@@ -32,6 +32,14 @@ The checks, each in release.json:
   assets/apache (body, rotor, tail rotor, livery, credits), the gunner
   optic (apache_hud), the Apache airframe in vehicles and the pilot and
   gunner seats in instruments, with each glTF's buffers present.
+- browser:<name> (--browser): engine/tools/play-smoke.cjs boots the bundle
+  in Chromium with WebGPU (SwiftShader, under xvfb-run when there is no
+  display): the Game Room, then every game on the shelf and back, failing
+  on a panic, GPU error, console error, missing first frame or a blank
+  picture.
+- hlsl (--hlsl, needs --browser): every WGSL module the browser compiled
+  goes through naga's HLSL output and DXC (engine/tools/hlsl-check.py, the
+  Firefox-on-Windows path); NAGA and DXC name the tools.
 - native:<test> (--native-tests): the Warp Theft Auto crew tests:
   two local pads board one Apache as pilot and gunner, both stations
   fire, and the car-then-helicopter crew handover.
@@ -187,6 +195,36 @@ def check(web, sha=None):
     return results, version
 
 
+def browser_smoke():
+    smoke = OUT / 'smoke.json'
+    OUT.mkdir(parents=True, exist_ok=True)
+    smoke.unlink(missing_ok=True)
+    command = ['node', str(ROOT / 'engine/tools/play-smoke.cjs'), str(WEB), '--report', str(smoke),
+               '--shots', str(OUT / 'shots'), '--shaders', str(OUT / 'wgsl')]
+    if not os.environ.get('DISPLAY'):
+        command = ['xvfb-run', '-a', '-s', '-screen 0 1280x800x24'] + command
+    run = subprocess.run(command, cwd=ROOT)
+    if not smoke.is_file():
+        return [{'name': 'browser:room', 'ok': False, 'detail': f'play-smoke.cjs stopped (exit {run.returncode}) without a report'}]
+    return [{'name': 'browser:' + r['name'], 'ok': r['ok'], 'detail': r['detail'] or ''} for r in json.loads(smoke.read_text())['results']]
+
+
+def hlsl_check():
+    # The tools must still reject the shader that broke Zen on 26 November.
+    tools = ['--naga', os.environ.get('NAGA', 'naga'), '--dxc', os.environ.get('DXC', 'dxc')]
+    known_bad = subprocess.run([sys.executable, str(ROOT / 'engine/tools/hlsl-check.py'), str(ROOT / 'engine/tools/hlsl-fixtures')] + tools,
+                               cwd=ROOT, capture_output=True, text=True)
+    if known_bad.returncode != 1:
+        return [{'name': 'hlsl', 'ok': False, 'detail': 'naga + DXC did not reject engine/tools/hlsl-fixtures (the 26 Nov Zen shader):\n'
+                 + (known_bad.stdout + known_bad.stderr)[-1500:]}]
+    report = OUT / 'hlsl.json'
+    run = subprocess.run([sys.executable, str(ROOT / 'engine/tools/hlsl-check.py'), str(OUT / 'wgsl'), '--report', str(report),
+                          '--naga', os.environ.get('NAGA', 'naga'), '--dxc', os.environ.get('DXC', 'dxc')], cwd=ROOT, capture_output=True, text=True)
+    print(run.stdout + run.stderr, flush=True)
+    lines = (run.stdout + run.stderr).strip().splitlines()
+    return [{'name': 'hlsl', 'ok': run.returncode == 0, 'detail': lines[-1] if run.returncode == 0 and lines else '\n'.join(lines[-40:])}]
+
+
 def native_tests():
     results = []
     for test, name in NATIVE_TESTS:
@@ -221,6 +259,8 @@ def main():
     sub = parser.add_subparsers(dest='command', required=True)
     b = sub.add_parser('build', help='build, check and package a release of HEAD')
     b.add_argument('--native-tests', action='store_true', help='also run the Warp Theft Auto crew tests')
+    b.add_argument('--browser', action='store_true', help='also boot the bundle and every game in Chromium (play-smoke.cjs)')
+    b.add_argument('--hlsl', action='store_true', help='with --browser: compile its WGSL through naga HLSL and DXC')
     b.add_argument('--no-build', action='store_true', help='check and package the existing build/web')
     b.add_argument('--branch', default='origin/main', help='the commit must be on this branch (default origin/main)')
     c = sub.add_parser('check', help='only check a built directory')
@@ -242,6 +282,10 @@ def main():
     results, version = check(WEB, sha)
     if args.native_tests:
         results += native_tests()
+    if args.browser and all(r['ok'] for r in results):
+        results += browser_smoke()
+        if args.hlsl:
+            results += hlsl_check()
     release = {'repository': 'ontola/warp-game-engine', 'commit': sha, 'version': version,
                'subject': git('log', '-1', '--format=%s', sha),
                'built_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
