@@ -70,7 +70,7 @@ local function tick(dt, input)
 	combat.tick(state, dt, input)
 	if state.story then stories.tick(state, dt, input) else dispatch.tick(state.job, state.fleet, dt) end
 	waypoint.update(state)
-	ambience.headlights(state.fleet.players, state.clock)
+	ambience.headlights(state.fleet, state.clock)
 	if game.tick() % 4 == 0 then ambience.tick(state.fleet) end
 	if game.tick() % 15 == 0 then
 		city.set_clock(state.city, state.clock.hour)

@@ -271,6 +271,7 @@ impl Lobby {
             "queue" => (l::UP_NEXT.0 + l::UP_NEXT.1) / 2.0,
             // A browser tab has nothing to quit.
             "exit" => return self.outbox.is_none().then(exit_station),
+            "privacy" => l::SWITCH,
             _ => l::JUKEBOX,
         };
         self.host.station_at(x, None)

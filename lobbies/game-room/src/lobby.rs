@@ -392,7 +392,7 @@ impl Lobby {
         self.screens_dirty = true;
         self.command(json!({"type": "set_public", "public": public}));
         if public { self.toast("Public: strangers can join this room.", GREEN); }
-        else { self.toast("Friends only: only people with the code can join.", GREEN); }
+        else { self.toast("Private: only people with the code can join.", GREEN); }
     }
 
     /// Use `station` for a player, or for the mouse (None), which is nobody:
@@ -857,7 +857,7 @@ impl Lobby {
             vec![("LB", "Previous", true), ("Y", if playing { "Pause" } else { "Play" }, true), ("RB", "Next", true)]
         } else { vec![("Y", "Play", true)] };
         self.set_prompt("music", &music, true, occupied.contains_key("music1"));
-        let privacy = if self.host.public { "Friends only" } else { "Public" };
+        let privacy = if self.host.public { "Private" } else { "Public" };
         self.set_prompt("privacy", &[("Y", privacy, true)], true, occupied.contains_key("privacy"));
         let exit = if mouse_only.as_deref() == Some("exit") { if self.mouse_quit_armed() { "Click again to quit" } else { "Quit Splitscreen Club" } }
             else if self.last_one_out() { if self.mouse_quit_armed() { "Press again to quit" } else { "Quit Splitscreen Club" } } else { "Leave" };

@@ -1,4 +1,5 @@
 local util = require("kit/util")
+local detachment = require("detachment")
 local v = vector.create
 local ambience = {}
 
@@ -36,18 +37,44 @@ function ambience.tick(fleet)
 	end
 end
 
-function ambience.headlights(seats, clock)
+-- One combined beam for the Toyama. Its foremost bumper vertex is at local Z = -2.221 m.
+local CAR_LAMP = v(0,.31,-2.29)
+local CAR_AIM = v(0,-.13,-1)
+local function carHeadlight(car, level)
+	local beam = {parent = car.body, pos = CAR_LAMP, dir = CAR_AIM,
+		color = "#ffebcc", intensity = 6200 * level, angle = 25, range = 48}
+	if not lights.supports_parent then
+		-- Older hosts take world-space spots only. When reversing, the displayed
+		-- bumper may be as far forward as its previous tick. Clear that pose too.
+		beam.parent = nil
+		beam.pos = detachment.worldPoint(car, CAR_LAMP)
+		beam.dir = detachment.worldPoint(car, CAR_LAMP + CAR_AIM) - beam.pos
+		if car.prevPos then
+			local previous = car.prevPos - car.pos
+			-- The slot renderer snaps movements over four metres in one tick.
+			if vector.magnitude(previous) <= 4 then
+				local forward = detachment.worldPoint(car, CAR_LAMP + v(0,0,-1)) - beam.pos
+				beam.pos += forward * math.max(0, vector.dot(previous, forward))
+			end
+		end
+	end
+	return beam
+end
+
+function ambience.headlights(fleet, clock)
 	if clock.lampLevel == 0 and not clock.headlights then return end
 	clock.headlights = clock.lampLevel > 0
 	local beams = {}
 	if clock.headlights then
-		for _, seat in seats do
+		for _, seat in fleet.players do
 			if not seat.vehicle then continue end
-			local forward = util.forward(seat.yaw)
-			local aircraft = seat.mode == "fly"
-			local mount = seat.pos + forward * (if aircraft then 1.4 else 2.05) + v(0, if aircraft then 0.7 else 0.64, 0)
-			table.insert(beams, {pos = mount, dir = forward + v(0, if aircraft then -0.7 else -0.13, 0),
-				color = "#ffebcc", intensity = 6200 * clock.lampLevel, angle = 25, range = 48})
+			if seat.mode == "fly" then
+				local forward = util.forward(seat.yaw)
+				table.insert(beams, {pos = seat.pos + forward * 1.4 + v(0,.7,0), dir = forward + v(0,-.7,0),
+					color = "#ffebcc", intensity = 6200 * clock.lampLevel, angle = 25, range = 48})
+			else
+				table.insert(beams, carHeadlight(fleet.vehicles[seat.vehicle], clock.lampLevel))
+			end
 		end
 	end
 	lights.spots(beams)

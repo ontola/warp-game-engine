@@ -492,19 +492,13 @@ pub fn plaque(c: &mut Canvas, show: &Show) {
 /// The online switch's sign: PUBLIC on the left, FRIENDS ONLY on the right,
 /// the one it is on lit in a green pill (green: state, DESIGN.md).
 pub fn privacy(c: &mut Canvas, show: &Show) {
+    // One word, what the room is now: green Public, amber Private.
     let [w, h] = c.size;
     c.rect([0.0, 0.0, w, h], Color::hex("0d1020"));
-    let half = w / 2.0;
-    for (i, lines) in [&["PUBLIC"][..], &["FRIENDS", "ONLY"][..]].into_iter().enumerate() {
-        let on = (i == 0) == show.public;
-        let x = i as f32 * half;
-        if on { c.style_box([x + 10.0, 12.0, half - 20.0, h - 24.0], [28.0; 4], GREEN.with_alpha(0.22), Some((4.0, GREEN))); }
-        let size = lines.iter().map(|l| fit(l, 58.0, half - 50.0, 24.0)).fold(58.0f32, f32::min);
-        let top = h / 2.0 - (lines.len() as f32 - 1.0) * size * 0.55 + size * 0.36;
-        for (k, l) in lines.iter().enumerate() {
-            c.text(faces().wordmark, [x, top + k as f32 * size * 1.1], l, TextAlign::Center, half, size, if on { TEXT } else { DIM });
-        }
-    }
+    let (word, color) = if show.public { ("PUBLIC", GREEN) } else { ("PRIVATE", AMBER) };
+    c.style_box([8.0, 8.0, w - 16.0, h - 16.0], [22.0; 4], Color::hex("0d1020"), Some((6.0, color)));
+    let size = fit(word, 96.0, w - 60.0, 30.0);
+    c.text(faces().wordmark, [0.0, h / 2.0 + size * 0.36], word, TextAlign::Center, w, size, color.lightened(0.25));
 }
 
 /// The one floating panel (DESIGN.md "Panel"): bg at 88 %, 1 px edge,

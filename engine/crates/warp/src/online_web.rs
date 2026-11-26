@@ -43,18 +43,63 @@ pub fn signal_url(room: &str, role: &str) -> String {
     format!("{}/v1/signal/{room}?role={role}", base.trim_end_matches('/'))
 }
 
-/// STUN (and TURN) servers: `?ice=stun:host:port,turn:...` or a public STUN server.
-fn rtc() -> Result<RtcPeerConnection, String> {
-    let urls = app::web::query_param("ice").unwrap_or_else(|| "stun:stun.cloudflare.com:3478".into());
-    let servers = js_sys::Array::new();
-    for u in urls.split(',').filter(|u| !u.is_empty()) {
-        let s = RtcIceServer::new();
-        s.set_urls(&JsValue::from_str(u));
-        servers.push(&s);
+thread_local! {
+    /// The cloud's ICE servers (`/v1/ice`: STUN and a TURN login), once fetched.
+    static ICE: RefCell<Option<serde_json::Value>> = const { RefCell::new(None) };
+}
+
+/// Fetch the cloud's ICE servers ahead, so links made later use its TURN
+/// server (couches behind strict networks). Done once per page.
+fn prefetch_ice() {
+    if ICE.with(|i| i.borrow().is_some()) || app::web::query_param("ice").is_some() { return; }
+    ICE.with(|i| *i.borrow_mut() = Some(serde_json::Value::Null));
+    wasm_bindgen_futures::spawn_local(async { let _ = ice_servers().await; });
+}
+
+/// The ICE servers: `?ice=stun:host:port,turn:...` (no login), the cloud's
+/// `/v1/ice`, or a public STUN server when the cloud has none.
+async fn ice_servers() -> serde_json::Value {
+    if let Some(urls) = app::web::query_param("ice") {
+        let list: Vec<_> = urls.split(',').filter(|u| !u.is_empty()).map(|u| serde_json::json!({"urls": [u]})).collect();
+        return serde_json::Value::Array(list);
+    }
+    if let Some(v) = ICE.with(|i| i.borrow().clone()).filter(|v| v.is_array()) { return v; }
+    let base = app::web::query_param("signal").map(|s| s.replacen("ws", "http", 1)).unwrap_or_else(app::web::origin);
+    let got = app::web::fetch(&format!("{}/v1/ice", base.trim_end_matches('/'))).await.ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .map(|v| v["iceServers"].clone()).filter(|v| v.is_array());
+    let v = got.unwrap_or_else(|| serde_json::json!([{"urls": ["stun:stun.cloudflare.com:3478"]}]));
+    let turn = v.as_array().is_some_and(|a| a.iter().any(|s| s["username"].is_string()));
+    log(&format!("online: ICE through {}", if turn { "STUN and TURN" } else { "STUN only" }));
+    ICE.with(|i| *i.borrow_mut() = Some(v.clone()));
+    v
+}
+
+fn config(servers: &serde_json::Value) -> RtcConfiguration {
+    let list = js_sys::Array::new();
+    for s in servers.as_array().into_iter().flatten() {
+        let urls = js_sys::Array::new();
+        for u in s["urls"].as_array().into_iter().flatten().filter_map(|u| u.as_str()) { urls.push(&JsValue::from_str(u)); }
+        let server = RtcIceServer::new();
+        server.set_urls(&urls);
+        if let Some(u) = s["username"].as_str() { server.set_username(u); }
+        if let Some(c) = s["credential"].as_str() { server.set_credential(c); }
+        list.push(&server);
     }
     let cfg = RtcConfiguration::new();
-    cfg.set_ice_servers(&servers);
-    RtcPeerConnection::new_with_configuration(&cfg).map_err(|e| format!("WebRTC: {e:?}"))
+    cfg.set_ice_servers(&list);
+    cfg
+}
+
+/// A peer connection with the ICE servers known now (see [`prefetch_ice`]).
+fn rtc() -> Result<RtcPeerConnection, String> {
+    let known = ICE.with(|i| i.borrow().clone()).filter(|v| v.is_array());
+    let servers = match (app::web::query_param("ice"), known) {
+        (Some(urls), _) => serde_json::Value::Array(urls.split(',').filter(|u| !u.is_empty()).map(|u| serde_json::json!({"urls": [u]})).collect()),
+        (None, Some(v)) => v,
+        (None, None) => serde_json::json!([{"urls": ["stun:stun.cloudflare.com:3478"]}]),
+    };
+    RtcPeerConnection::new_with_configuration(&config(&servers)).map_err(|e| format!("WebRTC: {e:?}"))
 }
 
 /// A long random room code (the code is the key to the room).
@@ -146,6 +191,7 @@ pub struct Host { room: String, state: Rc<RefCell<HostState>>, _ws: WebSocket }
 impl Host {
     /// Open room `room` for other couches.
     pub fn start(room: &str) -> Result<Self, String> {
+        prefetch_ice();
         let ws = WebSocket::new(&signal_url(room, "host")).map_err(|e| format!("signal: {e:?}"))?;
         let state = Rc::new(RefCell::new(HostState::default()));
         let (st, wsc) = (state.clone(), ws.clone());
@@ -226,6 +272,7 @@ pub struct Client { state: Rc<RefCell<FollowState>>, _ws: WebSocket, _pc: RtcPee
 impl Client {
     /// Follow the host of room `room`.
     pub fn join(room: &str) -> Result<Self, String> {
+        prefetch_ice();
         let ws = WebSocket::new(&signal_url(room, "follow")).map_err(|e| format!("signal: {e:?}"))?;
         let pc = rtc()?;
         let state = Rc::new(RefCell::new(FollowState::default()));
@@ -256,6 +303,8 @@ impl Client {
                 let (pc, ws) = (pcc.clone(), wsc.clone());
                 wasm_bindgen_futures::spawn_local(async move {
                     let r: Result<(), String> = async {
+                        // The cloud's TURN login, before ICE gathering starts.
+                        let _ = pc.set_configuration_with_configuration(&config(&ice_servers().await));
                         let offer = wait(pc.create_offer()).await?;
                         let init = RtcSessionDescriptionInit::new(RtcSdpType::Offer);
                         init.set_sdp(&sdp_of(&offer));

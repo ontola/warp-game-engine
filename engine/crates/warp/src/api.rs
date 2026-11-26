@@ -211,7 +211,7 @@ pub const MAX_LAMPS: usize = render::headlights::MAX_LOCAL_LIGHTS;
 /// A spotlight that casts shadows (`lights.spots`): torches, headlights,
 /// a lamp over a door. `angle` is the outer half-angle in radians.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Spot { pub pos: Vec3, pub dir: Vec3, pub color: [f32; 3], pub intensity: f32, pub range: f32, pub angle: f32, pub inner: f32 }
+pub struct Spot { pub parent: Option<u32>, pub pos: Vec3, pub dir: Vec3, pub color: [f32; 3], pub intensity: f32, pub range: f32, pub angle: f32, pub inner: f32 }
 
 pub const MAX_SPOTS: usize = render::headlights::MAX_LIGHTS;
 
@@ -256,6 +256,8 @@ pub struct Core {
     pub lamps: Vec<Lamp>,
     pub(crate) rooms: crate::room_scene::RoomScene,
     pub spots: Vec<Spot>,
+    /// Rigid poses for lamp owners that may be drawn from a slotless pivot.
+    pub(crate) prev_spot_parents: Vec<(u32, (glam::Quat, Vec3), bool)>,
     /// Warp Humans (game.toml `[humans.NAME]` pools).
     pub humans: crate::humans::Humans,
     pub tick: u64,
@@ -268,6 +270,30 @@ pub struct Core {
 }
 
 impl Core {
+    pub(crate) fn tick_start(&mut self) {
+        self.world.tick_start();
+        self.prev_spot_parents.clear();
+        for id in self.spots.iter().filter_map(|spot| spot.parent) {
+            if let Some(entity) = self.world.get(id) {
+                self.prev_spot_parents.push((id, entity.world_pose(), entity.mount_has_rigid_axes()));
+            }
+        }
+    }
+
+    /// Resolve mounted lights once per render frame. A removed owner takes
+    /// its light out of the list, even when another entity reuses its slot.
+    pub fn render_spots(&self, alpha: f32) -> impl Iterator<Item = Spot> + '_ {
+        self.spots.iter().copied().filter_map(move |mut spot| {
+            if let Some(id) = spot.parent {
+                let previous = self.prev_spot_parents.iter().find(|(p, ..)| *p == id).map(|(_, pose, rigid_axes)| (*pose, *rigid_axes));
+                let (rotation, position) = self.world.mount_pose(id, alpha, previous)?;
+                spot.pos = position + rotation * spot.pos;
+                spot.dir = rotation * spot.dir;
+            }
+            Some(spot)
+        })
+    }
+
     /// Interpolated simulation time for rendering between the last two fixed ticks.
     pub(crate) fn render_time(&self, alpha: f32) -> f64 {
         (self.tick as f64 - 1.0 + f64::from(alpha)).max(0.0) / f64::from(self.tick_rate)
@@ -741,12 +767,12 @@ fn data_file(c: &Core, name: &str) -> mlua::Result<std::path::PathBuf> {
 pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
     crate::storage::register(lua, api, core.clone())?;
     crate::vehicles::register(lua, api, core.clone())?;
-    let table = |name: &str, fns: Vec<(&str, mlua::Function)>| -> mlua::Result<()> {
-        let t = lua.create_table()?;
+    let define_table = |name: &str, t: Table, fns: Vec<(&str, mlua::Function)>| -> mlua::Result<()> {
         for (k, f) in fns { t.raw_set(k, f)?; }
         t.set_readonly(true);
         api.raw_set(name, t)
     };
+    let table = |name: &str, fns| define_table(name, lua.create_table()?, fns);
     macro_rules! f {
         ($core:ident, $body:expr) => {{ let $core = core.clone(); lua.create_function($body)? }};
     }
@@ -1333,7 +1359,9 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
         ("reset", f!(core, move |_, ()| { lock(&core).post = Post::default(); Ok(()) })),
     ])?;
 
-    table("lights", vec![
+    let lights = lua.create_table()?;
+    lights.raw_set("supports_parent", true)?;
+    define_table("lights", lights, vec![
         ("room", f!(core, move |_, (id, opts): (u32, Option<Table>)| {
             let mut c = lock(&core);
             sim(&c, "lights.room")?;
@@ -1387,9 +1415,10 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             let mut spots = Vec::new();
             for item in list.sequence_values::<Table>() {
                 let t = item?;
-                let mut l = Spot { pos: Vec3::ZERO, dir: Vec3::NEG_Y, color: [1.0; 3], intensity: 1000.0, range: 15.0, angle: 30f32.to_radians(), inner: -1.0 };
-                for (k, v) in options(&t, &["pos", "dir", "color", "intensity", "range", "angle", "inner"], "lights.spots")? {
+                let mut l = Spot { parent: None, pos: Vec3::ZERO, dir: Vec3::NEG_Y, color: [1.0; 3], intensity: 1000.0, range: 15.0, angle: 30f32.to_radians(), inner: -1.0 };
+                for (k, v) in options(&t, &["pos", "dir", "color", "intensity", "range", "angle", "inner", "parent"], "lights.spots")? {
                     match k.as_str() {
+                        "parent" => l.parent = Some(t.raw_get::<u32>("parent")?),
                         "pos" => l.pos = vec3(&v, "spot pos")?,
                         "dir" => l.dir = vec3(&v, "spot dir")?,
                         "color" => { let c = color(&v, "spot color")?; l.color = [c[0], c[1], c[2]]; }
@@ -1406,7 +1435,11 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
                 if spots.len() == MAX_SPOTS { return Err(rt(format!("lights.spots: at most {MAX_SPOTS} spots"))); }
                 spots.push(l);
             }
-            lock(&core).spots = spots;
+            let mut c = lock(&core);
+            if spots.iter().filter_map(|s| s.parent).any(|id| c.world.get(id).is_none()) {
+                return Err(rt("lights.spots: parent must be a live world entity"));
+            }
+            c.spots = spots;
             Ok(())
         })),
         ("clear", f!(core, move |_, ()| { let mut c = lock(&core); c.lamps.clear(); c.spots.clear(); Ok(()) })),

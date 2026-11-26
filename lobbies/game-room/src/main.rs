@@ -91,6 +91,9 @@ fn run() -> Result<(), String> {
                 ("space-racer", "Space Racer", "#3d8bff"), ("ball-kickers", "Ball Kickers", "#47c26b"), ("hexstead", "Hexstead", "#c9a227"), ("bombing-bugs", "Bombing Bugs", "#e2574c"),
                 ("stack-together", "Stack Together", "#ff8fb8"), ("pocket-aces", "Pocket Aces", "#2fa36b"), ("growing-guns", "Growing Guns", "#8a5cff"), ("hello-warp", "Hello Warp", "#3fb6a8")];
             party["library"] = serde_json::Value::Array(games.iter().map(|(id, title, color)| serde_json::json!({"id": id, "title": title, "color": color})).collect());
+            // As in its catalog entry: exactly two players.
+            party["library"][1]["min_players"] = serde_json::json!(2);
+            party["library"][1]["max_players"] = serde_json::json!(2);
             party["playlist"] = serde_json::json!({"entries": [{"game": "dead-miles", "title": "Dead Miles"}, {"game": "relay-keepers", "title": "Relay Keepers"}, {"game": "spellstorm", "title": "Spellstorm"}], "current": null});
             party["warm_session"] = serde_json::json!({"game": "dead-miles", "phase": "preparing", "progress": 0.6});
             party["active_session"] = serde_json::Value::Null;
@@ -128,8 +131,8 @@ fn run() -> Result<(), String> {
         // `--ui-dp N`: the overlay as on a screen N dp high (a phone: 400).
         if let Some(dp) = arg("--ui-dp").and_then(|v| v.parse::<f32>().ok()) { game_room::hud::set_ui_scale(game_room::hud::ui_for_dp(dp)); }
         // `--no-jukebox`: the room as the browser host shows it (the online
-        // switch on Public, or `--friends-only`).
-        if flag("--no-jukebox") { lobby.host.no_jukebox = true; lobby.host.public = !flag("--friends-only"); }
+        // switch on Public, or `--private`).
+        if flag("--no-jukebox") { lobby.host.no_jukebox = true; lobby.host.public = !(flag("--private") || flag("--friends-only")); }
         let ticks = numf("--ticks", 180.0) as u32;
         let mut rgba = headless.frame(&mut lobby)?;
         for t in 0..ticks {

@@ -40,20 +40,29 @@ pub struct Slots {
 }
 
 /// Farther than this in one tick is a teleport, not motion: no blending.
-const SNAP: f32 = 4.0;
+pub const INTERPOLATION_SNAP_DISTANCE: f32 = 4.0;
 
 fn affine(rows: &[[f32; 4]; 3]) -> Affine3A {
     let c = |j: usize| glam::Vec3A::new(rows[0][j], rows[1][j], rows[2][j]);
     Affine3A::from_cols(c(0), c(1), c(2), c(3))
 }
 
+// A collapsed mesh has no basis from which to recover a rotation.
+fn parts(rows: &[[f32; 4]; 3]) -> Option<(glam::Vec3, glam::Quat, glam::Vec3)> {
+    let transform = affine(rows);
+    let det = transform.matrix3.determinant();
+    if !det.is_finite() || det.abs() < 1e-18 { return None; }
+    let (scale, rotation, position) = transform.to_scale_rotation_translation();
+    (scale.is_finite() && rotation.is_finite() && position.is_finite()).then_some((scale, rotation, position))
+}
+
 /// `cur` drawn `alpha` of the way from `prev`; None when there is nothing to
 /// blend (same place, another mesh, or a teleport).
 fn between(prev: &GpuInstance, cur: &GpuInstance, alpha: f32) -> Option<GpuInstance> {
     if prev.rows == cur.rows || prev.first_cluster != cur.first_cluster || cur.cluster_count == 0 { return None; }
-    let (s0, r0, t0) = affine(&prev.rows).to_scale_rotation_translation();
-    let (s1, r1, t1) = affine(&cur.rows).to_scale_rotation_translation();
-    if t0.distance(t1) > SNAP { return None; }
+    let (s0, r0, t0) = parts(&prev.rows)?;
+    let (s1, r1, t1) = parts(&cur.rows)?;
+    if t0.distance(t1) > INTERPOLATION_SNAP_DISTANCE { return None; }
     let t = t0.lerp(t1, alpha);
     let m = glam::Mat4::from_scale_rotation_translation(s0.lerp(s1, alpha), r0.slerp(r1, alpha), t);
     let mut out = *cur;
@@ -89,6 +98,15 @@ impl Slots {
     pub fn is_empty(&self) -> bool { self.len() == 0 }
     /// Scene instance index of a slot (for flags such as `hide_in_views`).
     pub fn instance(&self, id: SlotId) -> usize { self.first + id.0 }
+
+    /// Rigid world pose of a mesh as drawn by `flush_at`. Attachments use local
+    /// metres, like child entities, independently of the size of the host mesh.
+    pub fn pose_at(&self, scene: &Scene, id: SlotId, alpha: f32) -> Option<(glam::Quat, glam::Vec3)> {
+        let current = &scene.instances[self.instance(id)];
+        let blended = self.prev[id.0].as_ref().and_then(|prev| between(prev, current, alpha.clamp(0.0, 1.0)));
+        let (_, rotation, position) = parts(&blended.as_ref().unwrap_or(current).rows)?;
+        Some((rotation.normalize(), position))
+    }
 
     /// Mark every slot in this pool as non-shadow-casting (`NO_SHADOW`).
     pub fn mark_no_shadow(&mut self, scene: &mut Scene) {

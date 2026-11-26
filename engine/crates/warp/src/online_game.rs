@@ -254,7 +254,7 @@ impl LuaGame {
         {
             let c = &mut *api::lock(&self.core);
             let Online::Follow(f) = &mut self.online else { return };
-            c.world.tick_start();
+            c.tick_start();
             for p in &mut c.roster { p.cam_prev = p.cam; }
             let people = c.roster.iter().filter(|p| !p.bot).count();
             let mut pads: Vec<Pad> = controls.iter().map(Pad::from).collect();

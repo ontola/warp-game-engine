@@ -202,6 +202,7 @@ impl LuaGame {
             lamps: Vec::new(),
             rooms: crate::room_scene::RoomScene::new(cfg.room_lighting),
             spots: Vec::new(),
+            prev_spot_parents: Vec::new(),
             humans: crate::humans::Humans::new(&cfg.humans),
             tick: 0,
             tick_rate: cfg.tick_rate,
@@ -329,6 +330,7 @@ impl LuaGame {
             c.lamps.clear();
             c.rooms.clear();
             c.spots.clear();
+            c.prev_spot_parents.clear();
             c.humans.clear();
             for p in &mut c.roster { p.cam = Cam::default(); }
         }
@@ -1075,7 +1077,7 @@ impl LuaGame {
 }
 
 /// Bloom and the scripts' lamps onto the renderer (cheap when unchanged).
-fn post(r: &render::Renderer, p: &api::Post, lamps: &[api::Lamp], spots: &[api::Spot], mut lights: Vec<render::headlights::LocalLight>) -> Result<(), String> {
+fn post(r: &render::Renderer, p: &api::Post, lamps: &[api::Lamp], spots: impl Iterator<Item = api::Spot>, mut lights: Vec<render::headlights::LocalLight>) -> Result<(), String> {
     let mut o = r.debug_options();
     let before = o;
     if let Some(b) = p.bloom {
@@ -1103,7 +1105,7 @@ fn post(r: &render::Renderer, p: &api::Post, lamps: &[api::Lamp], spots: &[api::
         }
     }));
     r.set_local_lights(&lights)?;
-    let spots: Vec<render::headlights::SpotLight> = spots.iter().map(|l| {
+    let spots: Vec<render::headlights::SpotLight> = spots.map(|l| {
         let lin = l.color.map(|c| c.clamp(0.0, 1.0).powf(2.2));
         // Any up that is not along the beam.
         let up = if l.dir.y.abs() > 0.9 { glam::Vec3::Z } else { glam::Vec3::Y };
@@ -1156,7 +1158,7 @@ impl Game for LuaGame {
         // Frames until the next tick are drawn from here (Frame::alpha).
         {
             let mut c = self.core();
-            c.world.tick_start();
+            c.tick_start();
             for p in &mut c.roster { p.cam_prev = p.cam; }
         }
         if self.is_following() { self.follow_tick(controls); return; }
@@ -1327,7 +1329,7 @@ impl Game for LuaGame {
         } else {
             Vec::new()
         };
-        post(r, &c.post, &c.lamps, &c.spots, blast_lights)?;
+        post(r, &c.post, &c.lamps, c.render_spots(frame.alpha), blast_lights)?;
         if c.rooms.enabled {
             let c = &mut *c;
             c.rooms.update(&c.world, frame.gpu, r, light.sun_dir, rebuild)?;

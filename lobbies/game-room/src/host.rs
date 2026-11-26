@@ -467,8 +467,8 @@ impl Host {
             return Some(Station { id: "music1".into(), kind: "music".into(), label: if playing { "Pause music" } else { "Play music" }.into(),
                 action: "play_pause".into(), enabled: true, extra: "LB previous RB next".into(), ..Default::default() });
         }
-        if self.no_jukebox && (x - l::JUKEBOX).abs() <= 0.85 {
-            return Some(Station { id: "privacy".into(), kind: "privacy".into(), label: if self.public { "Make it friends only" } else { "Make it public" }.into(),
+        if self.no_jukebox && (x - l::SWITCH).abs() <= 0.45 {
+            return Some(Station { id: "privacy".into(), kind: "privacy".into(), label: if self.public { "Make it private" } else { "Make it public" }.into(),
                 action: "toggle_public".into(), enabled: true, ..Default::default() });
         }
         let id = player?;
