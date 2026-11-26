@@ -141,6 +141,14 @@ fn run() -> Result<(), String> {
         // `--no-jukebox`: the room as the browser host shows it (the online
         // switch on Public, or `--private`).
         if flag("--no-jukebox") { lobby.host.no_jukebox = true; lobby.host.public = !(flag("--private") || flag("--friends-only")); }
+        // `--visit CODE`: the visit field over the QR code open, CODE typed
+        // so far; `--visit-pad`: a pad spelling it (on the letter after).
+        if let Some(code) = arg("--visit") {
+            let pad = flag("--visit-pad").then(|| lobby.world.players.first().map(|p| p.id.clone())).flatten();
+            lobby.open_visit(pad);
+            lobby.visit.code = code.to_ascii_uppercase();
+            lobby.visit.pick = 7;
+        }
         let ticks = numf("--ticks", 180.0) as u32;
         let mut rgba = headless.frame(&mut lobby)?;
         for t in 0..ticks {

@@ -200,6 +200,8 @@ pub struct Lobby {
     deeper: Vec<usize>,
     /// The full-screen game catalog (catalog.rs).
     pub catalog: crate::catalog::Catalog,
+    /// The visit-a-room code field over the QR code (visit.rs).
+    pub visit: crate::visit::Visit,
     pub(crate) hud_size: [u32; 2],
     pub(crate) mouse: crate::mouse::Mouse,
     /// Without a host: the commands the lobby would have sent it, for a host
@@ -308,7 +310,7 @@ impl Lobby {
             props: props.expect("props"), board: board.expect("board"), events: vec![], controllers: HashMap::new(), held: HashMap::new(), input_blocked: HashSet::new(), menus: HashMap::new(),
             bench: vec![], phones: vec![], lost_since: HashMap::new(), toasts: vec![], unjoined: HashMap::new(), table: Default::default(), jukebox_gone: false, holds: HashMap::new(), station_cooldown: HashMap::new(),
             pickup_cooldown: 0.0, item_presses: HashMap::new(), pressed_flash: HashMap::new(), claims: HashMap::new(), pop_box: None, featured_visible: false,
-            bumpers_visible: false, display_active: None, display_at: web_time::Instant::now(), quit: false, web_tx, web_rx, links_due: 0.0, last_queue: vec![], featured, bumpers, key_dips: vec![0.0; keyboard.len()], keyboard, key_hop: 99.0, keyboard_shown: false, join_with: JoinWith::Pad, key_activity: 0.0, deeper, catalog: Default::default(), hud_size: [1920, 1080], mouse: Default::default(), outbox: None,
+            bumpers_visible: false, display_active: None, display_at: web_time::Instant::now(), quit: false, web_tx, web_rx, links_due: 0.0, last_queue: vec![], featured, bumpers, key_dips: vec![0.0; keyboard.len()], keyboard, key_hop: 99.0, keyboard_shown: false, join_with: JoinWith::Pad, key_activity: 0.0, deeper, catalog: Default::default(), visit: Default::default(), hud_size: [1920, 1080], mouse: Default::default(), outbox: None,
         };
         lobby.prompts = lobby.build.prompts.iter().map(|p| (p.name.clone(), Prompt {
             items: p.items.iter().map(|(k, t)| (k.clone(), t.clone(), true)).collect(), enabled: true, ..Default::default() })).collect();
@@ -860,6 +862,10 @@ impl Game for Lobby {
 
     fn pointer(&mut self, pointer: app::Pointer, size: [u32; 2]) { self.mouse_input(pointer, size); }
 
+    /// The visit field over the QR code takes the keyboard while it is open.
+    fn text_input(&self) -> bool { self.visit_typing() }
+    fn text(&mut self, event: app::TextEvent) { self.visit_text(event); }
+
     /// Escape is the mouse's Start: the room never closes on it.
     /// The game handing the screen back keeps rendering for a moment
     /// (about 1.6 s before it hides): those frames are not the room's cost.
@@ -869,7 +875,8 @@ impl Game for Lobby {
         // Escape belongs to the game in front; the one that closed it may
         // still reach the room as it comes back, so ignore it for a moment.
         let ours = self.display_active != Some(false) && self.display_at.elapsed().as_secs_f32() > 0.75;
-        if ours { self.mouse_escape(); }
+        if ours && self.visit.open { self.close_visit(); }
+        else if ours { self.mouse_escape(); }
         true
     }
 

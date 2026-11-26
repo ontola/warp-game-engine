@@ -20,3 +20,4 @@ pub mod props;
 pub mod qr;
 pub mod room;
 pub mod stage;
+pub mod visit;

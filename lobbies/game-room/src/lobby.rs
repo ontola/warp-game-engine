@@ -223,6 +223,12 @@ impl Lobby {
             p.last_input = time;
             p.sleeping = false;
         }
+        // Spelling a room code over the QR code (visit.rs).
+        if self.visit.owner.as_deref() == Some(id) {
+            self.visit_pad(pressed, stick);
+            self.world.set_input(id, 0, [0.0; 2]);
+            return;
+        }
         if pressed & BTN_START != 0 {
             if self.menus.remove(id).is_none() { self.menus.insert(id.into(), Menu::default()); }
         }
@@ -530,7 +536,7 @@ impl Lobby {
         if page == "remove" { return self.remove_items(id); }
         if let Some(player) = page.strip_prefix("player:") { return self.player_items(player); }
         if id == crate::mouse::MOUSE { return self.mouse_items(); }
-        let mut items = vec![MenuItem::new("Close menu", "close"), MenuItem::new("Leave the party", "leave")];
+        let mut items = vec![MenuItem::new("Close menu", "close"), MenuItem::new("Visit another room", "visit"), MenuItem::new("Leave the party", "leave")];
         if self.catalog_open() { items.insert(1, MenuItem::new("Show the room", "room")); }
         else if !self.host.shelf_games().is_empty() { items.insert(1, MenuItem::new("Show all games", "catalog")); }
         // Hosts that predate couch positions don't send them.
@@ -564,6 +570,7 @@ impl Lobby {
         else if !self.host.shelf_games().is_empty() { items.push(MenuItem::new("Show all games", "catalog")); }
         if !self.host.update_ready().is_empty() { items.push(MenuItem::new("Update Splitscreen Club now", "update")); }
         if self.host.party["lobbies"].as_array().is_some_and(|l| l.len() > 1) { items.push(MenuItem::new("Switch lobby", "lobbies")); }
+        items.push(MenuItem::new("Visit another room", "visit"));
         // A browser page (a host in the page, `outbox`) is closed with its tab.
         if self.outbox.is_none() { items.push(MenuItem::new("Quit Splitscreen Club", "quit")); }
         items
@@ -657,6 +664,13 @@ impl Lobby {
         match item.action.as_str() {
             "close" => { self.menus.remove(id); }
             "catalog" => { self.menus.remove(id); self.open_catalog(); }
+            // A pad spells the code; the mouse and keyboard players type it.
+            "visit" => {
+                self.menus.remove(id);
+                if self.catalog_open() { self.close_catalog(); }
+                let pad = id != crate::mouse::MOUSE && self.keyboard_half(id).is_none();
+                self.open_visit(pad.then(|| id.to_string()));
+            }
             "room" => { self.menus.remove(id); self.close_catalog(); }
             "lobbies" => self.menu_page(id, "lobbies"),
             "remove_page" => self.menu_page(id, "remove"),

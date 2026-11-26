@@ -168,6 +168,8 @@ pub fn draw(lobby: &Lobby, size: [u32; 2], _alpha: f32) -> HudDrawList {
         text(&mut c, label, [r[0] + 20.0 * scale, r[1] + r[3] / 2.0 + fs * 0.36], fs, TEXT);
     }
     c.over();
+    visit_field(lobby, &mut c, size, scale);
+    c.over();
     back_panel(lobby, &mut c, view_proj, size, scale);
     c.over();
     bench(lobby, &mut c, scale);
@@ -510,4 +512,52 @@ fn bench(lobby: &Lobby, c: &mut Canvas, scale: f32) {
             text(c, &format!("leaves in {}s", lobby.lost_left(id).unwrap_or(0)), [x, y + fs], (fs * 0.8).floor(), AMBER);
         }
     }
+}
+
+/// The visit-a-room field over the QR code (visit.rs): a kicker and four
+/// slots for the code. Open, the next slot has the focus ring and a hint
+/// line says how to type it; a pad sees the letter it is on, with arrows.
+fn visit_field(lobby: &Lobby, c: &mut Canvas, size: [u32; 2], scale: f32) {
+    let Some(r) = lobby.visit_rect(size) else { return };
+    let v = &lobby.visit;
+    let hover = lobby.mouse.at.is_some_and(|m| lobby.visit_at(m, size));
+    crate::paint::panel(c, r, scale);
+    let kick = (14.0 * scale).floor();
+    c.text(bold(), [r[0], r[1] + 16.0 * scale + kick * 0.8], "VISIT A ROOM", TextAlign::Center, r[2], kick, AMBER);
+    // The four slots, centred under it.
+    let side = (44.0 * scale).floor();
+    let gap = 8.0 * scale;
+    let n = crate::visit::LEN as f32;
+    let x0 = r[0] + (r[2] - (n * (side + gap) - gap)) / 2.0;
+    let y = r[1] + r[3] - 16.0 * scale - side;
+    let next = v.code.len();
+    let fs = (28.0 * scale).floor();
+    for i in 0..crate::visit::LEN {
+        let s = [x0 + i as f32 * (side + gap), y, side, side];
+        let focus = v.open && i == next;
+        let ring = if focus { (2.0 * scale, crate::room::NIGHT_LILAC) } else if hover && !v.open { (1.0 * scale, crate::room::NIGHT_LILAC.with_alpha(0.6)) } else { (1.0 * scale, crate::room::LINE) };
+        c.style_box(s, [8.0 * scale; 4], Color::hex("1a1e36"), Some(ring));
+        let (ch, color) = match v.code.chars().nth(i) {
+            Some(ch) => (ch.to_string(), TEXT),
+            None if focus && v.owner.is_some() => ((crate::visit::CHARS[v.pick] as char).to_string(), crate::room::NIGHT_LILAC),
+            None => ("·".to_string(), DIM.with_alpha(0.6)),
+        };
+        c.text(bold(), [s[0], s[1] + s[3] / 2.0 + fs * 0.36], &ch, TextAlign::Center, s[2], fs, color);
+        if focus && v.owner.is_some() {
+            // Up and down change the letter.
+            let a = (10.0 * scale).floor();
+            c.text(bold(), [s[0], s[1] + a + 2.0 * scale], "▲", TextAlign::Center, s[2], a, DIM);
+            c.text(bold(), [s[0], s[1] + s[3] - 3.0 * scale], "▼", TextAlign::Center, s[2], a, DIM);
+        }
+    }
+    if !v.open { return; }
+    // How to type it, over the field (under it is the QR code).
+    let hint = if v.owner.is_some() { "Stick picks a letter · A types · B deletes" } else { "Type the code · Enter to go · Esc cancels" };
+    let small = (16.0 * scale).floor();
+    let hw = width(hint, small) + 48.0 * scale;
+    let hh = small + 24.0 * scale;
+    let hx = (r[0] + r[2] / 2.0 - hw / 2.0).min(size[0] as f32 - hw - 8.0 * scale).max(8.0 * scale);
+    let hr = [hx, (r[1] - hh - 12.0 * scale).max(8.0 * scale), hw, hh];
+    crate::paint::panel_solid(c, hr, scale);
+    text(c, hint, [hr[0] + 24.0 * scale, hr[1] + hr[3] / 2.0 + small * 0.36], small, DIM);
 }

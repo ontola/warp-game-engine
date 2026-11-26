@@ -752,6 +752,12 @@ pub(crate) mod page {
                     #[cfg(target_arch = "wasm32")]
                     if let (Some(text), Some(w)) = (msg["url"].as_str().or(msg["code"].as_str()), web_sys::window()) { let _ = w.navigator().clipboard().write_text(text); }
                 }
+                // The visit field over the QR code (visit.rs): this page
+                // follows that room's games (online.rs `?follow=CODE`).
+                "visit_room" => {
+                    #[cfg(target_arch = "wasm32")]
+                    if let (Some(code), Some(w)) = (msg["code"].as_str(), web_sys::window()) { let _ = w.location().set_search(&format!("?follow={code}")); }
+                }
                 // The online switch (Public / Private).
                 // (Online couches are browser only, examples/browser/online.rs.)
                 "set_public" => {
@@ -824,6 +830,9 @@ pub(crate) mod page {
             }
         }
         fn pointer(&mut self, pointer: app::Pointer, size: [u32; 2]) { self.lobby.pointer(pointer, size); }
+        // The visit field over the QR code types with the keyboard.
+        fn text_input(&self) -> bool { self.lobby.text_input() }
+        fn text(&mut self, event: app::TextEvent) { self.lobby.text(event); }
         // The cursor points and clicks in the room: never captured.
         fn mouse_capture(&self) -> Option<bool> { Some(false) }
         fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {

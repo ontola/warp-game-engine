@@ -93,6 +93,10 @@ impl Lobby {
         let Some(at) = p.position else { self.mouse.hover = None; return };
         // A click on a player opens what the room can do with them.
         if p.pressed {
+            // The visit field over the QR code: a click types into it, a
+            // click anywhere else lets it go.
+            if self.visit_at(at, size) { if !self.visit_typing() { self.open_visit(None); } return; }
+            if self.visit_typing() { self.close_visit(); }
             if let Some(id) = self.player_at(at, size) { self.open_player_menu(&id); return; }
             // A click on the QR code copies the room's link (a browser host).
             if self.outbox.is_some() && !self.show.room_code.is_empty() && self.plaque_at(at, size) {
@@ -230,14 +234,32 @@ impl Lobby {
         best.map(|b| b.1)
     }
 
-    /// Whether `at` is on the plaque with the room's QR code and code.
-    pub fn plaque_at(&self, at: [f32; 2], size: [u32; 2]) -> bool {
+    /// The plaque with the room's QR code and code, on screen.
+    pub fn plaque_rect(&self, size: [u32; 2]) -> Option<[f32; 4]> {
         let view_proj = crate::hud::view_proj(&self.stage.room.camera, size);
         let c = Vec3::new(l::PLAQUE_CENTER[0] as f32, l::PLAQUE_CENTER[1] as f32, l::PLAQUE_CENTER[2] as f32 + 0.04);
         let corner = |dx: f32, dy: f32| crate::hud::to_screen(view_proj, size, c + Vec3::new(dx * 1.1, dy * 1.315, 0.0));
-        let (Some(a), Some(b)) = (corner(-1.0, 1.0), corner(1.0, -1.0)) else { return false };
-        inside([a[0].min(b[0]), a[1].min(b[1]), (b[0] - a[0]).abs(), (b[1] - a[1]).abs()], at)
+        let (Some(a), Some(b)) = (corner(-1.0, 1.0), corner(1.0, -1.0)) else { return None };
+        Some([a[0].min(b[0]), a[1].min(b[1]), (b[0] - a[0]).abs(), (b[1] - a[1]).abs()])
     }
+
+    /// Whether `at` is on the plaque with the room's QR code and code.
+    pub fn plaque_at(&self, at: [f32; 2], size: [u32; 2]) -> bool { self.plaque_rect(size).is_some_and(|r| inside(r, at)) }
+
+    /// The visit-a-room field (visit.rs), just over the plaque, as wide as it.
+    pub fn visit_rect(&self, size: [u32; 2]) -> Option<[f32; 4]> {
+        if self.catalog_open() { return None; }
+        let p = self.plaque_rect(size)?;
+        let scale = crate::hud::ui(size[1] as f32);
+        // A kicker over four 44 px slots (hud.rs `visit_field`).
+        let h = (102.0 * scale).floor();
+        let w = p[2].max(232.0 * scale);
+        let x = (p[0] + p[2] / 2.0 - w / 2.0).min(size[0] as f32 - w - 8.0 * scale);
+        Some([x, (p[1] - h - 14.0 * scale).max(8.0 * scale), w, h])
+    }
+
+    /// Whether `at` is on the visit field.
+    pub fn visit_at(&self, at: [f32; 2], size: [u32; 2]) -> bool { self.visit_rect(size).is_some_and(|r| inside(r, at)) }
 
     /// The station, and the button of it, under the cursor at `at`.
     fn pointed(&self, at: [f32; 2], size: [u32; 2]) -> Option<(Station, Option<String>)> {
