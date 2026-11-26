@@ -791,6 +791,8 @@ impl Shell {
         // page while the window grows, leaving its new edges unpainted
         // (white) for seconds. Wait until the page says it has repainted.
         if live.renderer.is_none() && page_holds() { return Ok(()); }
+        let fresh = live.renderer.is_none();
+        let made = wgpu::webgpu::created();
         let t_draw = Instant::now();
         let mut frame = Frame { gpu: &live.gpu, size, dt, alpha, split, scene_fps: if dt > 0.0 { 1.0 / dt } else { 0.0 }, scene_worst_ms: dt * 1000.0, focused: true, hdr: None, stream_generated_textures: true, renderer: &mut live.renderer };
         let mut draw: Draw = self.game.draw(&mut frame)?;
@@ -842,6 +844,13 @@ impl Shell {
         if let Some(done) = CAPTURE.with(|c| c.borrow_mut().take()) { capture(&live.gpu, &texture.texture, done); }
         live.gpu.queue.present(texture);
         self.frames += 1;
+        // Where "Preparing graphics" goes: the scene built on this thread,
+        // then the browser compiling what it asked for (first frame below).
+        if fresh && live.renderer.is_some() {
+            let now = wgpu::webgpu::created();
+            log(&format!("{}: scene built here in {:.0} ms, drawn in {:.0} ms more; {} shader modules, {} render + {} compute pipelines asked of the browser ({:.0} ms in those calls)",
+                self.cfg.title, draw_ms, ms(t_out), now.modules - made.modules, now.render - made.render, now.compute - made.compute, now.call_ms - made.call_ms));
+        }
         if self.switched.is_none() && benching.is_none() && (self.render_height.is_none() || self.mobile) {
             if quality.frame(f64::from(dt) * 1000.0, Instant::now()) {
                 let next = quality.render_height(base(self.cfg.max_render_height));
@@ -860,11 +869,12 @@ impl Shell {
         // final color submission. Later frames never wait for this callback.
         if size[0] > 1 && size[1] > 1 && let Some((generation, at)) = self.switched.take() {
             let title = self.cfg.title.clone();
+            let submitted = Instant::now();
             live.gpu.queue.on_submitted_work_done(move || {
                 if PRESENTATION.with(|p| p.get()) == generation {
                     progress(None, "Ready");
                     QUIET.with(|q| q.set((q.get().0, q.get().0)));
-                    log(&format!("{title}: first frame completed in {:.0} ms", at.elapsed().as_secs_f32() * 1000.0));
+                    log(&format!("{title}: first frame completed in {:.0} ms ({:.0} ms of it the GPU, compiling and drawing, after the submit)", at.elapsed().as_secs_f32() * 1000.0, submitted.elapsed().as_secs_f32() * 1000.0));
                 }
             });
         }

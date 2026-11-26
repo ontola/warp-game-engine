@@ -13,4 +13,8 @@ Change, which only matters on wasm32 (the WebGPU backend):
   with "Unexpected error" there, which ended the page ("Module terminated")
   and hid the browser's message.
 
+- `wgpu::webgpu::created()` (Warp addition): how many shader modules and
+  render/compute pipelines the page created and the time spent in those
+  calls, for the browser host's startup log ("Preparing graphics").
+
 Drop this copy when a wgpu release handles GPUInternalError.

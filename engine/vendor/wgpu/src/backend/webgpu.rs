@@ -35,6 +35,39 @@ use crate::{
 
 use defined_non_null_js_value::DefinedNonNullJsValue;
 
+/// Warp: what the page asked the browser to compile, for the startup log
+/// (shader modules, render pipelines, compute pipelines, and the time spent
+/// in those calls on this thread in ms). The browser compiles in its GPU
+/// process, so most of the cost shows up later, at the first submit.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Created { pub modules: u32, pub render: u32, pub compute: u32, pub call_ms: f64 }
+
+static CREATED_MODULES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static CREATED_RENDER: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static CREATED_COMPUTE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// Microseconds spent in the create calls.
+static CREATED_US: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Warp: the counts so far on this thread's module (see [`Created`]).
+pub fn created() -> Created {
+    use core::sync::atomic::Ordering::Relaxed;
+    Created { modules: CREATED_MODULES.load(Relaxed), render: CREATED_RENDER.load(Relaxed), compute: CREATED_COMPUTE.load(Relaxed), call_ms: CREATED_US.load(Relaxed) as f64 / 1000.0 }
+}
+
+fn now_ms() -> f64 {
+    let perf = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("performance")).ok();
+    perf.and_then(|p| {
+        let f: js_sys::Function = js_sys::Reflect::get(&p, &JsValue::from_str("now")).ok()?.dyn_into().ok()?;
+        f.call0(&p).ok()?.as_f64()
+    }).unwrap_or(0.0)
+}
+
+fn count(at: f64, what: &core::sync::atomic::AtomicU32) {
+    use core::sync::atomic::Ordering::Relaxed;
+    what.fetch_add(1, Relaxed);
+    CREATED_US.fetch_add(((now_ms() - at).max(0.0) * 1000.0) as u64, Relaxed);
+}
+
 // We need to mark various types as Send and Sync to satisfy the Rust type system.
 //
 // SAFETY: All webgpu handle types in wasm32 are internally a `JsValue`, and `JsValue` is neither
@@ -2031,8 +2064,11 @@ impl dispatch::DeviceInterface for WebDevice {
         if let Some(label) = desc.label {
             descriptor.set_label(label);
         }
+        let at = now_ms();
+        let module = self.inner.create_shader_module(&descriptor);
+        count(at, &CREATED_MODULES);
         WebShaderModule {
-            module: self.inner.create_shader_module(&descriptor),
+            module,
             compilation_info,
             ident: crate::cmp::Identifier::create(),
         }
@@ -2072,8 +2108,11 @@ impl dispatch::DeviceInterface for WebDevice {
         if let Some(label) = desc.label {
             descriptor.set_label(label);
         }
+        let at = now_ms();
+        let module = self.inner.create_shader_module(&descriptor);
+        count(at, &CREATED_MODULES);
         WebShaderModule {
-            module: self.inner.create_shader_module(&descriptor),
+            module,
             compilation_info,
             ident: crate::cmp::Identifier::create(),
         }
@@ -2395,7 +2434,9 @@ impl dispatch::DeviceInterface for WebDevice {
         let mapped_primitive = map_primitive_state(&desc.primitive);
         mapped_desc.set_primitive(&mapped_primitive);
 
+        let at = now_ms();
         let render_pipeline = self.inner.create_render_pipeline(&mapped_desc).unwrap();
+        count(at, &CREATED_RENDER);
 
         WebRenderPipeline {
             inner: render_pipeline,
@@ -2436,7 +2477,9 @@ impl dispatch::DeviceInterface for WebDevice {
             mapped_desc.set_label(label);
         }
 
+        let at = now_ms();
         let compute_pipeline = self.inner.create_compute_pipeline(&mapped_desc);
+        count(at, &CREATED_COMPUTE);
 
         WebComputePipeline {
             inner: compute_pipeline,
