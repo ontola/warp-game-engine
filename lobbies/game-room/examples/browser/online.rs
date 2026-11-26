@@ -138,14 +138,17 @@ struct HostWire { side: Box<dyn HostLink>, shared: Shared<dyn HostLink> }
 impl app::net::Wire for HostWire {
     fn hosting(&self) -> bool { true }
     fn send(&mut self, data: Vec<u8>) {
-        for c in self.shared.state().clients.clone() { self.side.send(c, Down::Game { from: 0, data: data.clone() }); }
+        // (The list first: the state stays borrowed for a loop's whole head.)
+        let clients = self.shared.state().clients.clone();
+        for c in clients { self.side.send(c, Down::Game { from: 0, data: data.clone() }); }
     }
     fn poll(&mut self) -> Vec<(u64, Vec<u8>)> {
         let mut got = Vec::new();
         while let Some(ev) = self.side.poll() {
             if let warp::online::LinkEvent::Message(c, warp::online::Up::Game(data)) = ev {
                 // Passed on to every other couch.
-                for o in self.shared.state().clients.clone() {
+                let clients = self.shared.state().clients.clone();
+                for o in clients {
                     if o != c { self.side.send(o, Down::Game { from: c, data: data.clone() }); }
                 }
                 got.push((c, data));
@@ -153,7 +156,7 @@ impl app::net::Wire for HostWire {
         }
         got
     }
-    fn couches(&self) -> Vec<u64> { self.shared.state().clients.clone() }
+    fn couches(&self) -> Vec<u64> { let c = self.shared.state().clients.clone(); c }
 }
 
 struct FollowWire { side: Box<dyn FollowLink>, closed: bool }
