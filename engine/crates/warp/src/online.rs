@@ -57,6 +57,9 @@ pub enum Up {
     /// For the page around the game (the Game Room's online couches, JSON):
     /// passed to [`Shared`] and never to a game.
     Lobby(String),
+    /// A Rust game's own messages (rollback inputs, kern::rollback): the
+    /// host passes them to its game and to every other couch.
+    Game(Vec<u8>),
 }
 
 /// Host to follower.
@@ -71,6 +74,8 @@ pub enum Down {
     Bye(String),
     /// For the page around the game, as [`Up::Lobby`].
     Lobby(String),
+    /// A Rust game's message from couch `from` (0: the host), as [`Up::Game`].
+    Game { from: u64, data: Vec<u8> },
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

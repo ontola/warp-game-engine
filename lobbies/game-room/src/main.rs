@@ -127,8 +127,9 @@ fn run() -> Result<(), String> {
         }
         // `--ui-dp N`: the overlay as on a screen N dp high (a phone: 400).
         if let Some(dp) = arg("--ui-dp").and_then(|v| v.parse::<f32>().ok()) { game_room::hud::set_ui_scale(game_room::hud::ui_for_dp(dp)); }
-        // `--no-jukebox`: the room as the browser host shows it.
-        if flag("--no-jukebox") { lobby.host.no_jukebox = true; }
+        // `--no-jukebox`: the room as the browser host shows it (the online
+        // switch on Public, or `--friends-only`).
+        if flag("--no-jukebox") { lobby.host.no_jukebox = true; lobby.host.public = !flag("--friends-only"); }
         let ticks = numf("--ticks", 180.0) as u32;
         let mut rgba = headless.frame(&mut lobby)?;
         for t in 0..ticks {

@@ -10,6 +10,7 @@ pub mod live;
 pub mod look;
 pub mod marks;
 pub mod menu;
+pub mod net;
 pub mod party;
 pub mod play;
 pub mod ragdoll;

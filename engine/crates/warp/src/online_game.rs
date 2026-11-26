@@ -96,7 +96,7 @@ impl LuaGame {
                     },
                     Up::Screen(s) => if let Some(r) = h.remotes.get_mut(&client) { r.screen = s; },
                     Up::Ping(t) => if h.remotes.contains_key(&client) { h.link.send(client, Down::Pong(t)); },
-                    Up::Lobby(_) => {}
+                    Up::Lobby(_) | Up::Game(_) => {}
                 },
                 LinkEvent::Left(client) => { if h.remotes.remove(&client).is_some() { left.push(client); } }
             }
@@ -277,7 +277,7 @@ impl LuaGame {
                     Down::Bye(why) => { lines.push(format!("online: the host said {why}")); f.closed = Some(why); }
                     Down::Pong(t) => { f.rtt_ms = Some((f.now_us().saturating_sub(t)) as f64 / 1000.0); }
                     Down::Frame(fr) => { f.meter.add(online::wire_size(&fr)); f.queue.push_back(fr); }
-                    Down::Lobby(_) => {}
+                    Down::Lobby(_) | Down::Game { .. } => {}
                 }
             }
             // One frame a tick; catch up when more than a few are waiting.

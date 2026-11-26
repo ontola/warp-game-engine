@@ -12,6 +12,7 @@ use app::{Buttons, Controls, Draw, Frame};
 use glam::Vec2;
 use render::hud::HudDrawList;
 use spellstorm::wizard::Pad;
+use spellstorm::net::NetPad;
 use crate::party::{Ev as PartyEv, Party};
 use spellstorm::world::NAMES;
 use spellstorm::{Seat, Settings, World};
@@ -43,6 +44,8 @@ pub struct Spellstorm {
     pub shader: crate::live::Shader,
     pub live: Option<Box<crate::live::SsLive>>,
     pub scan_t: u64,
+    /// Playing online with other couches (net.rs, rollback).
+    pub online: Option<Box<crate::net::Online>>,
 }
 
 /// The shell's buttons as pad.gd's.
@@ -129,7 +132,7 @@ impl Spellstorm {
         // Straight into the first level, no title screen (Joep); Start
         // opens the menu.
         let _ = humans;
-        Spellstorm { world, view: View::new(kits), hud, menu, humans, drive: (0..humans).collect(), party, party_seats: vec![], quit: false, built: false, prebuilt: false, renderer_ahead: None, ready_after_build: false, interp: Default::default(), tuning, shader, live: None, scan_t: 0 }
+        Spellstorm { world, view: View::new(kits), hud, menu, humans, drive: (0..humans).collect(), party, party_seats: vec![], quit: false, built: false, prebuilt: false, renderer_ahead: None, ready_after_build: false, interp: Default::default(), tuning, shader, live: None, scan_t: 0, online: None }
     }
 
     /// The party's seats (main.gd _on_prepared): a wizard for each, couch
@@ -235,8 +238,48 @@ impl Spellstorm {
         Some(p.controls(&self.party_seats, spellstorm::world::DT as f32, self.menu.open))
     }
 
+    /// A fresh online run (net.rs): a wizard per person on each couch, this
+    /// couch's controllers driving `mine`.
+    fn start_online(&mut self, seed: u64, wizards: usize, mine: Vec<usize>) {
+        let seats: Vec<Seat> = (0..wizards).map(|i| Seat::player(i, NAMES[i % NAMES.len()])).collect();
+        self.world = World::new(&seats, seed, Settings::default());
+        self.drive = mine;
+        self.humans = self.drive.len();
+        self.hud = crate::hud::Hud::default();
+        self.hud.level(&self.world);
+        self.view.fx = crate::fx::Fx::default();
+        self.menu.open = false;
+        self.built = false;
+    }
+
+    /// One online tick: the wire, this couch's pads, a frame of the run
+    /// (with any rollback). The menu is this couch's own and never pauses
+    /// the run, which goes on for the others.
+    fn step_online(&mut self, controls: &[Controls]) {
+        let Some(mut on) = self.online.take() else { return };
+        if let crate::net::Do::Start { seed, owners, mine } = on.poll() {
+            self.start_online(seed, owners.len(), mine);
+        }
+        let was_open = self.menu.open;
+        let before = self.world.save_frame();
+        let settings = self.world.settings.clone();
+        if let crate::menu::Action::Quit = self.menu.update(&mut self.world, controls, spellstorm::world::DT as f32) { self.quit = true; }
+        // A setting changed on one couch only would split the runs.
+        if self.world.settings != settings { self.world.load_frame(&before); }
+        let idle = self.menu.open || was_open;
+        let pads: Vec<NetPad> = (0..self.drive.len()).map(|k| match controls.get(k) { Some(c) if !idle => NetPad::from_pad(&pad(c)), _ => NetPad::default() }).collect();
+        self.interp.keep(&mut self.world);
+        if on.advance(&mut self.world, &pads) {
+            self.view.fx.absorb(&self.world);
+            self.hud.absorb(&self.world);
+            self.hud.update(spellstorm::world::DT as f32);
+        }
+        self.online = Some(on);
+    }
+
     /// One tick with these players' controls.
     pub fn step(&mut self, controls: &[Controls]) {
+        if self.online.is_some() { return self.step_online(controls); }
         self.live_tick();
         let from_party = self.party_tick();
         let controls = from_party.as_deref().unwrap_or(controls);
@@ -302,6 +345,13 @@ impl app::Game for Spellstorm {
 
     fn tick(&mut self, controls: &[Controls]) {
         self.step(controls);
+    }
+
+    fn go_online(&mut self, wire: Box<dyn app::net::Wire>) -> bool {
+        if self.party.is_some() { return false; }
+        let me = self.world.seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+        self.online = Some(Box::new(crate::net::Online::new(wire, self.humans, me)));
+        true
     }
 
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {

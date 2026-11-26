@@ -63,6 +63,7 @@ mod android_pads;
 pub use frame_rate::FrameRate;
 
 pub mod couch;
+pub mod net;
 pub use couch::{couch_order, couch_views, in_view_order, seat_couch, set_seat_couch};
 pub use input::{Buttons, Controls, Device, Devices, Pointer, Tuning, key_label, keyboard_split, seat_device, set_seat_devices, split_keyboard};
 pub use text::{FieldEvent, TextEvent, TextField};
@@ -238,6 +239,9 @@ pub trait Game {
     /// ([`Game::player_joins`]); the host then shows "Press A to join"
     /// instead of "you join from the next game".
     fn takes_joins(&self) -> bool { false }
+    /// Play online with the couches on `wire` (net.rs): true when this game
+    /// can. Called once, after loading, before the first tick.
+    fn go_online(&mut self, wire: Box<dyn net::Wire>) -> bool { let _ = wire; false }
     /// A line to show along the bottom of the screen for a few seconds,
     /// asked for after every frame's ticks: under a desktop party host,
     /// "Press A to join this game" when a spare controller is touched.

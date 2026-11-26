@@ -95,3 +95,39 @@ fn going_back_past_a_new_level() {
     play(&mut w);
     assert_eq!(digest(&w), want);
 }
+
+/// Two couches, one wizard each, inputs arriving 5 frames late: both end in
+/// the state the same inputs give without any network.
+#[test]
+fn two_couches_with_rollback_agree() {
+    use kern::rollback::{Game as _, InputRun, Outbox, Rollback};
+    use spellstorm::net::NetPad;
+    let seats: Vec<Seat> = (0..2).map(|i| Seat::player(i, "W")).collect();
+    let pad = |seat: usize, f: u32| {
+        let t = f as f32 / 40.0 + seat as f32;
+        let held = if (f / 25 + seat as u32) % 3 == 0 { 1 << spellstorm::wizard::Pad::RT } else { 0 } | if f % 90 == 10 { 1 } else { 0 };
+        NetPad { mv: [(t.sin() * 120.0) as i8, (t.cos() * 120.0) as i8], aim: [(t * 1.3).cos().mul_add(127.0, 0.0) as i8, 90], held }
+    };
+    let n = 60 * 20;
+    let mut reference = World::new(&seats, 3, Settings::default());
+    for f in 0..n { let i = [pad(0, f), pad(1, f)]; kern::rollback::Game::step(&mut reference, &i, false); }
+    let mut worlds = [World::new(&seats, 3, Settings::default()), World::new(&seats, 3, Settings::default())];
+    let mut rbs: [Rollback<World>; 2] = [Rollback::new(2, 0), Rollback::new(2, 0)];
+    let mut out = [Outbox::<NetPad>::new(0, 0), Outbox::new(1, 0)];
+    let mut wire: Vec<(u32, usize, InputRun<NetPad>)> = Vec::new();
+    for t in 0..n + 30 {
+        for c in 0..2 {
+            let f = out[c].next();
+            if f < n && f <= rbs[c].frame() { out[c].push(pad(c, f)); rbs[c].input(c, f, pad(c, f)); }
+            wire.push((t, c, out[c].run()));
+            for (sent, from, run) in &wire { if *from != c && sent + 5 == t { rbs[c].run(run); } }
+            let o = 1 - c;
+            out[o].ack(rbs[c].needs(o));
+            if rbs[c].frame() < n { rbs[c].advance(&mut worlds[c]); } else { rbs[c].correct(&mut worlds[c]); }
+        }
+    }
+    eprintln!("resimulated {} and {} frames", rbs[0].resimulated, rbs[1].resimulated);
+    assert!(rbs[0].resimulated > 0);
+    assert_eq!(digest(&worlds[0]), digest(&reference));
+    assert_eq!(digest(&worlds[1]), digest(&reference));
+}
