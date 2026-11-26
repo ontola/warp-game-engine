@@ -793,6 +793,9 @@ impl Shell {
         if live.renderer.is_none() && page_holds() { return Ok(()); }
         let fresh = live.renderer.is_none();
         let made = wgpu::webgpu::created();
+        // The renderer's own sections (textures, buffers, pipelines) for the
+        // log line below; a browser has no KERN_STARTUP_PROFILE.
+        if fresh { render::startup_profile::force(true); }
         let t_draw = Instant::now();
         let mut frame = Frame { gpu: &live.gpu, size, dt, alpha, split, scene_fps: if dt > 0.0 { 1.0 / dt } else { 0.0 }, scene_worst_ms: dt * 1000.0, focused: true, hdr: None, stream_generated_textures: true, renderer: &mut live.renderer };
         let mut draw: Draw = self.game.draw(&mut frame)?;
@@ -850,7 +853,9 @@ impl Shell {
             let now = wgpu::webgpu::created();
             log(&format!("{}: scene built here in {:.0} ms, drawn in {:.0} ms more; {} shader modules, {} render + {} compute pipelines asked of the browser ({:.0} ms in those calls)",
                 self.cfg.title, draw_ms, ms(t_out), now.modules - made.modules, now.render - made.render, now.compute - made.compute, now.call_ms - made.call_ms));
+            if let Some(p) = live.renderer.as_ref().and_then(|r| r.startup_profile()) { log(&format!("{}: renderer {}", self.cfg.title, p.slowest(8))); }
         }
+        if fresh { render::startup_profile::force(false); }
         if self.switched.is_none() && benching.is_none() && (self.render_height.is_none() || self.mobile) {
             if quality.frame(f64::from(dt) * 1000.0, Instant::now()) {
                 let next = quality.render_height(base(self.cfg.max_render_height));
