@@ -330,6 +330,12 @@ keep the IP address (`sdk.settings.infer_ip: never`; checked: `user.ip` stays em
   wider material layout enables the full lighting effects on devices that
   support it. `KERN_WEBGPU_LIMITS=spec` and `=mac` exercise those limits on
   a native adapter. These runs do not exercise a browser's shader compiler.
+- The page caps storage buffers at ten (no trees, `app::web`) on WebKit and
+  on Windows, `?trees=1` tries anyway, `?trees=0` caps anywhere. Windows
+  (Chrome 158, Edge, Zen; D3D12) drew frame 1, then took 59 s over frame 2
+  and lost the device ("A valid external Instance reference no longer
+  exists"), Sentry SPLITSCREEN-BROWSER-HOST-8, 26 November 2026. Which pass
+  stalls is not known yet.
 - Devices below eight storage buffers or sixteen sampled textures can use
   the three-buffer procedural terrain renderer. `KERN_PORTABLE=1` selects
   it explicitly.

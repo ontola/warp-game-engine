@@ -278,7 +278,7 @@ window.splitscreenRoom = cloudParam === 'off' || joining ? Promise.resolve(null)
     // Busy (429): try again for about half a minute, while the engine loads.
     let r;
     for (let i = 0; i < 6; i++) {
-      r = await fetch(origin + '/v1/lobbies/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ device }) });
+      r = await fetch(origin + '/v1/lobbies/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ device }), credentials: 'omit' });
       if (r.status !== 429) break;
       await new Promise(done => setTimeout(done, 5000));
     }

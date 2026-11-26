@@ -248,6 +248,10 @@ pub async fn request(method: &str, url: &str, headers: &[(&str, &str)], json: Op
     let window = web_sys::window().ok_or("no window")?;
     let init = web_sys::RequestInit::new();
     init.set_method(method);
+    // No cookies: the engine's requests carry their own tokens, and the
+    // site's login cookie makes the cloud demand a CSRF header on a POST
+    // (403: a signed-in visitor's room never registered, no QR code).
+    init.set_credentials(web_sys::RequestCredentials::Omit);
     let h = web_sys::Headers::new().map_err(|e| format!("{e:?}"))?;
     for (k, v) in headers { h.set(k, v).map_err(|e| format!("{e:?}"))?; }
     if let Some(body) = json {
@@ -416,6 +420,10 @@ pub fn mobile() -> bool {
 }
 
 /// Safari, or any browser on iOS: WebKit's WebGPU, not Chrome's or Firefox's.
+fn windows() -> bool {
+    web_sys::window().and_then(|w| w.navigator().user_agent().ok()).is_some_and(|ua| ua.contains("Windows"))
+}
+
 fn webkit() -> bool {
     web_sys::window().and_then(|w| w.navigator().user_agent().ok())
         .is_some_and(|ua| ua.contains("AppleWebKit") && !["Chrome", "Chromium", "Edg", "Android"].iter().any(|k| ua.contains(k)) || ua.contains("CriOS") || ua.contains("FxiOS") || ua.contains("EdgiOS"))
@@ -613,6 +621,10 @@ pub fn run(cfg: crate::Config, game: Box<dyn Game>) {
     let why = if trees.as_deref() == Some("0") { Some("?trees=0") }
         else if trees.as_deref() == Some("1") { None }
         else if webkit() { Some("WebKit cannot compile their shaders") }
+        // Chrome, Edge and Zen on Windows (D3D12): the second frame with
+        // trees took 59 s and Windows reset the GPU ("A valid external
+        // Instance reference no longer exists"; Sentry, 26 November 2026).
+        else if windows() { Some("Windows browsers stall on their shaders") }
         else { None };
     if let Some(why) = why {
         render::gpu::cap_storage_buffers(10);
