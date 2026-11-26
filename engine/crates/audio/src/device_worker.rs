@@ -1,7 +1,8 @@
 //! A game in a Web Worker (app::web_offscreen) has no WebAudio: its mixer
 //! renders here on a 20 ms timer, and each block goes to the page as
-//! `{type: "pcm", data}` (interleaved stereo f32 at [`RATE`]), which plays
-//! it (worker-host.js). While the game waits ([`set_waiting`]) it sends
+//! `{type: "pcm", data}` (interleaved stereo f32 at [`RATE`]), or straight
+//! to the page's sound node over the port it handed over, which plays it
+//! (worker-host.js). While the game waits ([`set_waiting`]) it sends
 //! nothing and the page runs dry: silence.
 use std::cell::Cell;
 use std::sync::Arc;
@@ -10,6 +11,9 @@ use wasm_bindgen::{JsCast, closure::Closure};
 
 /// The page's worker sound plays at this rate.
 pub const RATE: f32 = 48_000.0;
+
+/// How far ahead of now the mixer renders, in ms.
+const LEAD: f64 = 60.0;
 
 thread_local! {
     static WAITING: Cell<bool> = const { Cell::new(false) };
@@ -34,16 +38,31 @@ pub(crate) fn start(mut source: Box<dyn crate::Source>, stop: Arc<AtomicBool>) {
             return;
         }
         let now = js_sys::Date::now();
-        let frames = (((now - last) / 1000.0 * RATE as f64) as usize).min(RATE as usize / 10);
-        if WAITING.get() || frames == 0 { if WAITING.get() { last = now; } return; }
+        // Rendered LEAD ms ahead, so a late timer (a long frame) still finds
+        // sound queued on the page.
+        if WAITING.get() { last = now; return; }
+        if last < now - 200.0 { last = now - 200.0; }
+        let frames = ((now + LEAD - last) / 1000.0 * RATE as f64) as usize;
+        if frames < 64 { return; }
         last += frames as f64 * 1000.0 / RATE as f64;
         buf.resize(frames * 2, 0.0);
         source.render(&mut buf, 2);
         let data = js_sys::Float32Array::from(&buf[..]);
+        let transfer = js_sys::Array::of1(&data.buffer());
+        // Straight to the page's sound node once it handed its port over
+        // (game-worker.js), else through the page.
+        let global = js_sys::global();
+        let port = js_sys::Reflect::get(&global, &"warpAudioPort".into()).unwrap_or_default();
+        if port.is_object() {
+            if let Ok(post) = js_sys::Reflect::get(&port, &"postMessage".into()).and_then(|f| f.dyn_into::<js_sys::Function>().map_err(Into::into)) {
+                let _ = post.call2(&port, &data, &transfer);
+            }
+            return;
+        }
         let msg = js_sys::Object::new();
         let _ = js_sys::Reflect::set(&msg, &"type".into(), &"pcm".into());
         let _ = js_sys::Reflect::set(&msg, &"data".into(), &data);
-        let _ = js_sys::global().unchecked_into::<web_sys::DedicatedWorkerGlobalScope>().post_message_with_transfer(&msg, &js_sys::Array::of1(&data.buffer()));
+        let _ = global.unchecked_into::<web_sys::DedicatedWorkerGlobalScope>().post_message_with_transfer(&msg, &transfer);
     });
     if let Ok(i) = scope.set_interval_with_callback_and_timeout_and_arguments_0(tick.as_ref().unchecked_ref(), 20) { id.set(Some(i)); }
     tick.forget();

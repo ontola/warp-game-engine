@@ -792,6 +792,10 @@ pub(crate) mod page {
             for (game, png) in with(|h| std::mem::take(&mut h.covers)) { self.lobby.set_cover(&game, &png); }
             for (game, png) in with(|h| std::mem::take(&mut h.shots)) { self.lobby.set_screenshot(&game, &png); }
             fetch_ahead();
+            // Warmed only from the room with nothing paused: a cold shader
+            // cache stalls the page's GPU work while it compiles.
+            #[cfg(target_arch = "wasm32")]
+            super::worker_game::poll(with(|h| (h.paused.is_none() && h.on_screen.is_none() && h.loading.is_none()).then_some(h.players.max(1))));
             if app::web::take_report_key() { with(|h| h.chord = Some(Chord::ReportBug)); }
             match with(|h| h.chord.take()) {
                 Some(Chord::Next) => next_game(),
@@ -1072,7 +1076,7 @@ pub(crate) mod page {
                 }
                 app::web::log(&format!("{folder}: fetched ahead, {:.1} MB in {:.1} s", bytes as f64 / 1e6, started.elapsed().as_secs_f32()));
                 #[cfg(target_arch = "wasm32")]
-                super::worker_game::warm(&folder, with(|h| h.players.max(1)));
+                super::worker_game::want(&folder);
                 FETCHED.with(|f| f.borrow_mut().push(folder));
                 BUSY.set(false);
             });

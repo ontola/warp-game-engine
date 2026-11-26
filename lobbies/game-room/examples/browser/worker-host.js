@@ -9,11 +9,15 @@ const games = new Map();
 let next = 1;
 
 // The workers' sound (audio device_worker.rs): stereo f32 blocks at 48 kHz,
-// played through one AudioWorklet node per game with a small buffer.
+// played through one AudioWorklet node per game with a small buffer. The
+// worker sends them straight to the node (a MessageChannel), so a busy page
+// thread does not cut the sound.
 const PCM = `class P extends AudioWorkletProcessor {
   constructor() { super(); this.q = []; this.off = 0; this.n = 0;
-    this.port.onmessage = ({data}) => { this.q.push(data); this.n += data.length;
-      while (this.n > sampleRate * 2 * 0.2 && this.q.length > 1) { const x = this.q.shift(); this.n -= x.length - this.off; this.off = 0; } }; }
+    const take = ({data}) => { if (data.port) { data.port.onmessage = take; return; }
+      this.q.push(data); this.n += data.length;
+      while (this.n > sampleRate * 2 * 0.3 && this.q.length > 1) { const x = this.q.shift(); this.n -= x.length - this.off; this.off = 0; } };
+    this.port.onmessage = take; }
   process(_, outs) { const o = outs[0], len = o[0].length;
     for (let i = 0; i < len; i++) { const b = this.q[0];
       if (!b) { for (const c of o) c[i] = 0; continue; }
@@ -51,8 +55,8 @@ export function spawnGame(folder, players) {
   game.resize = resize;
   addEventListener('resize', resize);
   worker.onmessage = ({data}) => {
-    console.log(`worker game ${folder}:`, JSON.stringify(data), Math.round(performance.now() - t0) + ' ms since spawn');
     if (data.type === 'pcm') { game.pcm?.port.postMessage(data.data, [data.data.buffer]); return; }
+    console.log(`worker game ${folder}:`, JSON.stringify(data), Math.round(performance.now() - t0) + ' ms since spawn');
     if (game.phase === 'error') { if (data.type === 'exit') game.exit = data.why; return; }
     if (data.type === 'loaded') game.phase = 'loaded';
     else if (data.type === 'first-frame') game.phase = 'ready';
@@ -67,7 +71,10 @@ export function spawnGame(folder, players) {
     if (on !== game.shown) { game.shown = on; canvas.style.visibility = on ? 'visible' : 'hidden'; }
   }, 50);
   const a = sound();
-  a.ready.then(() => { if (!games.has(id)) return; game.pcm = new AudioWorkletNode(a.ctx, 'warp-worker-pcm', {outputChannelCount: [2]}); game.pcm.connect(a.ctx.destination); }).catch(e => console.warn('worker sound:', e));
+  a.ready.then(() => { if (!games.has(id)) return; game.pcm = new AudioWorkletNode(a.ctx, 'warp-worker-pcm', {outputChannelCount: [2]}); game.pcm.connect(a.ctx.destination);
+    const ch = new MessageChannel();
+    game.pcm.port.postMessage({port: ch.port1}, [ch.port1]);
+    worker.postMessage({audio: ch.port2}, [ch.port2]); }).catch(e => console.warn('worker sound:', e));
   games.set(id, game);
   return id;
 }

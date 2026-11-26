@@ -5,6 +5,8 @@
 let api = null;
 const early = [];
 self.onmessage = async ({data}) => {
+  // The page's sound node: the game's sound goes straight there (audio device_worker.rs).
+  if (data.audio) { self.warpAudioPort = data.audio; return; }
   if (data.canvas) {
     try {
       const glue = new URL('./pkg/browser.js', import.meta.url);

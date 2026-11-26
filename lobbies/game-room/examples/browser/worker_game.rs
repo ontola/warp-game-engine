@@ -69,6 +69,23 @@ struct Warm { folder: String, players: usize, id: u32 }
 
 thread_local! {
     static WARM: std::cell::RefCell<Option<Warm>> = const { std::cell::RefCell::new(None) };
+    /// The game whose files are here, to warm once the room is quiet.
+    static WANTED: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    /// Since when the room has been on screen with nothing paused.
+    static QUIET: std::cell::Cell<Option<web_time::Instant>> = const { std::cell::Cell::new(None) };
+}
+
+/// The next game's files are here: warm it once the room is quiet ([`poll`]).
+pub(crate) fn want(folder: &str) { WANTED.with(|w| *w.borrow_mut() = Some(folder.to_string())); }
+
+/// Each room tick: `Some(players)` while the room is on screen with
+/// nothing paused or loading. After 3 s of that, the wanted game warms.
+pub(crate) fn poll(quiet: Option<usize>) {
+    let Some(players) = quiet else { return QUIET.set(None) };
+    let since = *QUIET.get().get_or_insert_with(web_time::Instant::now);
+    QUIET.set(Some(since));
+    if since.elapsed().as_secs_f32() < 3.0 { return; }
+    if let Some(folder) = WANTED.with(|w| w.borrow().clone()) { warm(&folder, players); }
 }
 
 /// Warming the next game in a worker: `?warm=worker` on a computer for
@@ -91,6 +108,7 @@ pub(crate) fn warm(folder: &str, players: usize) {
 /// The warmed game, if it is `folder` for `players` and drew its first
 /// frame; any other warmed game goes.
 pub(crate) fn take(folder: &str, players: usize, title: &str) -> Option<(app::Config, Box<dyn Game>)> {
+    WANTED.with(|w| if w.borrow().as_deref() == Some(folder) { *w.borrow_mut() = None; });
     let warm = WARM.with(|w| w.borrow_mut().take())?;
     let state = game_state(warm.id);
     if warm.folder != folder || warm.players != players || state != "ready" {
