@@ -116,6 +116,9 @@ impl Lobby {
             self.catalog.sticks.clear();
             self.menus.remove(crate::mouse::MOUSE);
         }
+        // The order stays put while the view shows; once it has faded out,
+        // the games that don't fit go last again (update_catalog).
+        if open { self.host.shelf_order = None; self.host.shelf_order = Some(self.host.shelf_games().iter().map(|g| get(g, "id", "")).collect()); }
         self.catalog.open = open;
         self.screens_dirty = true;
         if self.catalog.remember { store_view(open); }
@@ -156,6 +159,7 @@ impl Lobby {
         // Covers decode whether or not the catalog shows: the shelf shows
         // its neighbours' covers too.
         self.decode_covers();
+        if !self.catalog.open && self.catalog_fade() == 0.0 { self.host.shelf_order = None; }
         if !self.catalog_open() { return; }
         // Scroll (in rows) so the chosen game's row shows, eased.
         let n = self.host.shelf_games().len();

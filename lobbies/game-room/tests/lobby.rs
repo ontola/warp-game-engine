@@ -394,3 +394,25 @@ fn a_keyboard_player_walking_off_keeps_keycaps() {
         assert!(lobby.prompts["tv"].keys, "the TV's nudge keeps its keycap as it tucks away (tick {t})");
     }
 }
+
+#[test]
+fn a_game_that_stops_fitting_keeps_its_place_in_the_open_catalog() {
+    let mut lobby = Lobby::new(options(), 0, 0).unwrap();
+    let mut party = lobby.host.party.clone();
+    party["library"] = json!([
+        {"id": "relay-keepers", "title": "Relay Keepers", "min_players": 2},
+        {"id": "dead-miles", "title": "Dead Miles"},
+        {"id": "spellstorm", "title": "Spellstorm"}]);
+    party["seats"] = json!([]);
+    lobby.set_party(party.clone());
+    let ids = |l: &Lobby| l.host.shelf_games().iter().map(|g| g["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    assert_eq!(ids(&lobby)[0], "relay-keepers", "nobody here: everything fits");
+    lobby.open_catalog();
+    // Someone sits down to play (the mouse started a game): two are needed.
+    party["seats"] = json!([{"index": 0, "occupant": {"player_id": "p1"}, "controller": "demo:0"}]);
+    lobby.set_party(party);
+    assert_eq!(ids(&lobby)[0], "relay-keepers", "stays put while the catalog is open");
+    lobby.close_catalog();
+    lobby.open_catalog();
+    assert_eq!(ids(&lobby).last().unwrap(), "relay-keepers", "opened again: last, dimmed");
+}
