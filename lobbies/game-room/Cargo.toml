@@ -25,6 +25,8 @@ web-time = "1.1"
 gdcompat.workspace = true
 game-room-sim = { path = "sim" }
 splitscreen-club = { path = "../../engine/crates/splitscreen-club" }
+# `live-shot --bug`: a describe link's QR code, as the hosts make it.
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
 # The browser build (examples/browser.rs): the room first, Luau games from
 # its shelf. Only for wasm32, so native builds and tests never compile warp.
@@ -33,6 +35,7 @@ warp = { path = "../../engine/crates/warp" }
 # Rust games built into the page (examples/browser/builtin.rs).
 spellstorm-app = { path = "../../games/spellstorm/app" }
 spaceracer-app = { path = "../../games/spaceracer/app" }
+growing-guns-app = { path = "../../games/growing-guns/app" }
 script = { path = "../../engine/crates/script" }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"

@@ -225,6 +225,11 @@ pub trait Game {
     /// their look, when the host knows it. False: this game cannot take
     /// players mid-game (the host keeps them for the next one).
     fn player_joins(&mut self, name: Option<&str>, color: Option<[f32; 3]>) -> bool { let _ = (name, color); false }
+    /// The page host's players, in controls order, with their names and
+    /// colours (sRGB): after the game loads or resumes, and whenever a
+    /// profile is picked up or changed (players_updated in the protocol).
+    /// Apply them live: never restart a round for this.
+    fn players_named(&mut self, players: &[(String, Option<[f32; 3]>)]) { let _ = players; }
     /// Extra menus and controls for the F2 debug menu, with ids from
     /// [`debug::GAME_IDS`] up (a control's `menu` may name an engine menu).
     fn debug(&self) -> (Vec<render::debug_ui::DebugMenu>, Vec<render::debug_ui::DebugControl>) { Default::default() }

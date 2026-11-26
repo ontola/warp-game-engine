@@ -41,6 +41,8 @@ thread_local! {
     static NEXT: RefCell<Option<(Parked, Option<Keep>)>> = const { RefCell::new(None) };
     static EXIT: RefCell<Option<Box<dyn FnMut(Exit) -> bool>>> = const { RefCell::new(None) };
     static JOINS: RefCell<Vec<(String, Option<[f32; 3]>)>> = const { RefCell::new(Vec::new()) };
+    /// The host's players' names and colours, with a version ([`set_players`]).
+    static NAMED: RefCell<(u64, Vec<(String, Option<[f32; 3]>)>)> = const { RefCell::new((0, Vec::new())) };
     static TAKES: Cell<bool> = const { Cell::new(false) };
     static SEATS: RefCell<Option<Box<dyn FnMut(&[(crate::Device, crate::Controls)]) -> Option<Vec<Vec<crate::Device>>>>>> = const { RefCell::new(None) };
     static QUIET: Cell<(bool, bool)> = const { Cell::new((false, false)) };
@@ -267,9 +269,77 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// The browser hands a leaving game's last frame to `done` for the room's
-/// TV. Not yet on Android: the TV keeps its own picture.
-pub fn capture_frame(done: Box<dyn FnOnce([u32; 2], Vec<u8>)>) { drop(done); }
+/// A frame copied off the GPU, waiting to be read ([`poll_capture`]).
+struct Capture {
+    buffer: wgpu::Buffer,
+    size: [u32; 2],
+    row: u32,
+    bgra: bool,
+    /// 0 waiting, 1 mapped, 2 failed (set from the GPU's callback thread).
+    state: Arc<std::sync::atomic::AtomicU8>,
+    done: Box<dyn FnOnce([u32; 2], Vec<u8>)>,
+}
+
+thread_local! {
+    static CAPTURE: RefCell<Option<Box<dyn FnOnce([u32; 2], Vec<u8>)>>> = const { RefCell::new(None) };
+    static CAPTURING: RefCell<Option<Capture>> = const { RefCell::new(None) };
+    /// The swapchain can be copied from (its driver allows COPY_SRC).
+    static CAN_CAPTURE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Hand the frame this tick draws to `done` (size, RGBA8, top row first), as
+/// the browser shell does: a bug report's screenshot, a paused game's
+/// picture on the room's TV. A driver whose swapchain cannot be copied
+/// never calls `done`: ask [`can_capture`] first.
+pub fn capture_frame(done: Box<dyn FnOnce([u32; 2], Vec<u8>)>) {
+    if can_capture() { CAPTURE.with(|c| *c.borrow_mut() = Some(done)); }
+}
+
+/// Whether [`capture_frame`] will answer.
+pub fn can_capture() -> bool { CAN_CAPTURE.with(|c| c.get()) }
+
+/// Copy `texture` (the swapchain image) to a buffer; [`poll_capture`] reads
+/// it once the GPU is done.
+fn capture(gpu: &render::Gpu, texture: &wgpu::Texture, done: Box<dyn FnOnce([u32; 2], Vec<u8>)>) {
+    if !texture.usage().contains(wgpu::TextureUsages::COPY_SRC) || CAPTURING.with(|c| c.borrow().is_some()) { return; }
+    let (w, h) = (texture.width(), texture.height());
+    let row = (w * 4).div_ceil(256) * 256;
+    let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("frame capture"), size: u64::from(row) * u64::from(h), usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+    let mut enc = gpu.device.create_command_encoder(&Default::default());
+    enc.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo { texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        wgpu::TexelCopyBufferInfo { buffer: &buffer, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(h) } },
+        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+    );
+    gpu.queue.submit([enc.finish()]);
+    let bgra = matches!(texture.format(), wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+    let state = Arc::new(std::sync::atomic::AtomicU8::new(0));
+    let flag = state.clone();
+    buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| flag.store(if result.is_ok() { 1 } else { 2 }, std::sync::atomic::Ordering::Release));
+    CAPTURING.with(|c| *c.borrow_mut() = Some(Capture { buffer, size: [w, h], row, bgra, state, done }));
+}
+
+/// A native GPU answers a buffer read only when polled: once per frame
+/// while a capture waits, then hand the frame over (here, outside the
+/// game's tick).
+fn poll_capture(gpu: &render::Gpu) {
+    if CAPTURING.with(|c| c.borrow().is_none()) { return; }
+    let _ = gpu.device.poll(wgpu::PollType::Poll);
+    let state = CAPTURING.with(|c| c.borrow().as_ref().map_or(0, |c| c.state.load(std::sync::atomic::Ordering::Acquire)));
+    if state == 0 { return; }
+    let Some(c) = CAPTURING.with(|c| c.borrow_mut().take()) else { return };
+    if state != 1 { return; }
+    let [w, h] = c.size;
+    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    {
+        let Ok(data) = c.buffer.slice(..).get_mapped_range() else { return };
+        for y in 0..h as usize { rgba.extend_from_slice(&data[y * c.row as usize..y * c.row as usize + w as usize * 4]); }
+    }
+    c.buffer.unmap();
+    if c.bgra { for p in rgba.chunks_exact_mut(4) { p.swap(0, 2); } }
+    for p in rgba.chunks_exact_mut(4) { p[3] = 255; }
+    (c.done)([w, h], rgba);
+}
 
 /// Read `assets/web/<path>` from the APK.
 pub fn asset(path: &str) -> Result<Vec<u8>, String> {
@@ -438,6 +508,16 @@ fn exit(why: Exit) -> bool { EXIT.with(|e| match e.borrow_mut().as_mut() { Some(
 
 pub fn player_joins(name: &str, color: Option<[f32; 3]>) { JOINS.with(|j| j.borrow_mut().push((name.to_string(), color))); }
 
+/// The host's players in controls order, with names and colours: the
+/// running game gets [`crate::Game::players_named`] when they change, and
+/// a game that comes on (loaded or resumed) gets them before its first tick.
+pub fn set_players(players: Vec<(String, Option<[f32; 3]>)>) {
+    NAMED.with(|n| {
+        let mut n = n.borrow_mut();
+        if n.1 != players { n.0 += 1; n.1 = players; }
+    });
+}
+
 pub fn game_takes_joins() -> bool { TAKES.with(|t| t.get()) }
 
 pub fn on_devices(f: impl FnMut(&[(crate::Device, crate::Controls)]) -> Option<Vec<Vec<crate::Device>>> + 'static) {
@@ -451,7 +531,7 @@ pub fn run(cfg: crate::Config, game: Box<dyn Game>) {
     devices.pointer_enabled = cfg.pointer;
     let mobile = mobile();
     if mobile { log("phone preset: lower resolution, no RSM, bloom or contact occlusion (quality=full turns it off)"); }
-    let shell = Shell { cfg, game, devices, acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), announced: false, switched: None, exited: false, back: Default::default(),
+    let shell = Shell { cfg, game, devices, acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), announced: false, switched: None, exited: false, back: Default::default(), named: 0,
         times: Vec::new(), render_height: query_param("render").and_then(|h| h.parse().ok()), quality: None, mobile, profiling: false, gpu_passes: Vec::new(), gpu_total: 0.0,
         upscale: query_param("upscale").and_then(|m| m.parse().map_err(|e: String| log(&e)).ok()).filter(|m| *m != render::upscale::UpscaleMode::Native),
         bench: crate::bench::Bench::from_query(query_param("bench").as_deref()) };
@@ -603,6 +683,44 @@ fn input(app: &AndroidApp, tx: &mpsc::Sender<Event>) {
     }) {}
 }
 
+thread_local! {
+    /// A page a tap on the screen opens (a bug's describe link): the phone
+    /// or tablet is the TV, so its own touch screen types the words.
+    static TAP_OPENS: RefCell<Option<(String, Instant)>> = const { RefCell::new(None) };
+}
+
+/// For the next `seconds`, the next tap on the room's screen (not in a
+/// game) opens `url` in the browser. None: taps do nothing again.
+pub fn tap_opens(url: Option<&str>, seconds: f32) {
+    TAP_OPENS.with(|t| *t.borrow_mut() = url.map(|u| (u.to_string(), Instant::now() + Duration::from_secs_f32(seconds.max(0.0)))));
+}
+
+/// A tap on the screen: open the page [`tap_opens`] set, in the room only.
+fn tapped() {
+    if IN_GAME.with(|g| g.get()) { return; }
+    if let Some((url, until)) = TAP_OPENS.with(|t| t.borrow_mut().take()) && Instant::now() < until { open_url(&url); }
+}
+
+/// Open `url` in the phone's browser (an ACTION_VIEW intent).
+pub fn open_url(url: &str) {
+    let Some(app) = APP.get() else { return };
+    let (vm, activity, url) = (app.vm_as_ptr() as usize, app.activity_as_ptr() as usize, url.to_string());
+    app.run_on_java_main_thread(Box::new(move || {
+        let run = || -> jni::errors::Result<()> {
+            let vm = unsafe { jni::JavaVM::from_raw(vm as *mut _) }?;
+            let mut env = vm.attach_current_thread()?;
+            let activity = unsafe { jni::objects::JObject::from_raw(activity as jni::sys::jobject) };
+            let text = env.new_string(&url)?;
+            let uri = env.call_static_method("android/net/Uri", "parse", "(Ljava/lang/String;)Landroid/net/Uri;", &[(&text).into()])?.l()?;
+            let action = env.new_string("android.intent.action.VIEW")?;
+            let intent = env.new_object("android/content/Intent", "(Ljava/lang/String;Landroid/net/Uri;)V", &[(&action).into(), (&uri).into()])?;
+            env.call_method(&activity, "startActivity", "(Landroid/content/Intent;)V", &[(&intent).into()])?;
+            Ok(())
+        };
+        if let Err(e) = run() { log(&format!("open {url}: {e}")); }
+    }));
+}
+
 /// Hide the status and navigation bars (sticky immersive), on Android's UI thread.
 fn immersive(app: &AndroidApp) {
     let (vm, activity) = (app.vm_as_ptr() as usize, app.activity_as_ptr() as usize);
@@ -696,7 +814,31 @@ fn follow_window(gfx: &mut Gfx) {
     }
 }
 
-fn window_size(w: &NativeWindow) -> [u32; 2] { [w.width().max(1) as u32, w.height().max(1) as u32] }
+/// The window's size in pixels. ANativeWindow's width and height are its
+/// buffers' (what the swapchain last set), so after a turn from portrait
+/// to landscape they can stay portrait: the picture came out stretched
+/// (Joep, 2026-11-26). The content rect follows the turn: when the two
+/// disagree on landscape or portrait, the sides swap.
+fn window_size(w: &NativeWindow) -> [u32; 2] {
+    let mut size = [w.width().max(1) as u32, w.height().max(1) as u32];
+    if let Some(r) = APP.get().map(|a| a.content_rect()) {
+        let (cw, ch) = (r.right - r.left, r.bottom - r.top);
+        if cw > 0 && ch > 0 && (cw > ch) != (size[0] > size[1]) { size.swap(0, 1); }
+    }
+    size
+}
+
+/// Whether the window still stands the wrong way for the host (landscape
+/// only): it starts portrait when the phone is held so, and turns a moment
+/// later. Heavy loading waits for that turn (up to 2 s), so the loading
+/// screen is drawn for the right shape and the room is not built while
+/// the screen turns.
+fn still_turning() -> bool {
+    static SINCE: OnceLock<Instant> = OnceLock::new();
+    let since = *SINCE.get_or_init(Instant::now);
+    if since.elapsed() > Duration::from_secs(2) { return false; }
+    APP.get().map(|a| a.content_rect()).is_some_and(|r| r.bottom - r.top > r.right - r.left)
+}
 
 /// Adreno 8xx drivers (the 830, 2026-11-23) drop indirect draws: only
 /// emissive and transparent things showed. There the renderer draws with
@@ -727,7 +869,12 @@ fn on_window(window: NativeWindow) -> Result<(), String> {
     let instance = render::gpu::instance();
     let surface = surface_for(&instance, &window)?;
     if let Some(hz) = requested_hz() { request_frame_rate(&window, hz); }
-    let (gpu, config) = Gpu::for_surface(&instance, &surface, size[0], size[1])?;
+    let (gpu, mut config, adapter) = Gpu::for_surface_with_adapter(&instance, &surface, size[0], size[1])?;
+    // A swapchain we can copy from: bug report screenshots ([`capture_frame`]).
+    if surface.get_capabilities(&adapter).usages.contains(wgpu::TextureUsages::COPY_SRC) {
+        config.usage |= wgpu::TextureUsages::COPY_SRC;
+        CAN_CAPTURE.with(|c| c.set(true));
+    }
     surface.configure(&gpu.device, &config);
     log(&format!("GPU: {} ({:?}), {}x{}, {:?}", gpu.info.name, gpu.info.backend, config.width, config.height, config.format));
     direct_draws(&gpu.info.name);
@@ -812,6 +959,9 @@ fn render_loop(rx: mpsc::Receiver<Event>, stop: Arc<std::sync::atomic::AtomicBoo
                 // phones), so a finger on the screen plays nobody. It used to
                 // drive a virtual stick that joined as a keyboard player
                 // ("Press Enter to join", Joep 2026-11-24).
+                Event::Touch(_, winit::event::TouchPhase::Ended, _) => {
+                    tapped();
+                }
                 Event::Touch(..) => {}
                 Event::Back => {
                     // A game: back to the room. The room: twice to stop hosting.
@@ -826,7 +976,7 @@ fn render_loop(rx: mpsc::Receiver<Event>, stop: Arc<std::sync::atomic::AtomicBoo
         }
         if let Some(c) = GFX.with(|g| g.borrow().as_ref().and_then(|g| g.surface.as_ref().map(|s| s.1.clone()))) { last_config = Some(c); }
         // Tasks start once there is a GPU: the loading screen can show.
-        let ready = GFX.with(|g| g.borrow().is_some());
+        let ready = GFX.with(|g| g.borrow().is_some()) && !still_turning();
         let t_tasks = Instant::now();
         if ready { poll_tasks(); }
         let tasks_ms = t_tasks.elapsed().as_secs_f32() * 1000.0;
@@ -999,6 +1149,8 @@ struct Shell {
     exited: bool,
     /// Back and its chords in a game: the room comes on Back's release.
     back: crate::back_chord::BackChords,
+    /// The [`set_players`] version the running game has.
+    named: u64,
     times: Vec<[f32; 4]>,
     render_height: Option<u32>,
     quality: Option<crate::quality::AdaptiveQuality>,
@@ -1045,6 +1197,7 @@ impl Shell {
             self.devices.pointer_enabled = self.cfg.pointer;
             self.exited = false;
             self.back = Default::default();
+            self.named = 0;
             self.acc = 0.0;
             self.switched = Some(Instant::now());
             self.times.clear();
@@ -1081,6 +1234,11 @@ impl Shell {
                 let now = self.game.player_joins(Some(&name), color);
                 log(&format!("{}: {name} {}", self.cfg.title, if now { "joined the game" } else { "joins from the next game" }));
             }
+            let named = NAMED.with(|n| { let n = n.borrow(); (n.0 != self.named).then(|| (n.0, n.1.clone())) });
+            if let Some((version, players)) = named {
+                self.named = version;
+                self.game.players_named(&players);
+            }
             let seats = self.game.seats().or(page);
             let controls = crate::input::route(&devices, seats.as_deref(), self.game.local_players());
             self.game.tick(&controls);
@@ -1112,6 +1270,7 @@ impl Shell {
             if let Err(e) = renderer.set_upscale(&live.gpu, mode) { log(&format!("upscale {} off: {e}", mode.as_str())); self.upscale = None; }
         }
         let draw_ms = ms(t_draw);
+        poll_capture(&live.gpu);
         let t_out = Instant::now();
         let (surface, config, _) = live.surface.as_ref().ok_or("no surface")?;
         let texture = match surface.get_current_texture() {
@@ -1125,8 +1284,12 @@ impl Shell {
         let wait_ms = ms(t_out);
         let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let quality = self.quality.get_or_insert_with(|| crate::quality::AdaptiveQuality::new(self.game.target_fps(), requested_hz().map(f64::from), Instant::now()).unwrap_or_else(|| unreachable!()));
+        // A game that settles for 60 fps or less (the Game Room) asks for
+        // sharpness: start at the panel's own height and let adaptive quality
+        // find the most it can hold, not the 1080-line phone start.
+        let sharp = self.game.target_fps().is_some_and(|f| f <= 60.0);
         let base = |game: Option<u32>| match (self.mobile, game) {
-            (true, _) => self.render_height.unwrap_or(if self.upscale.is_some() { size[1] } else { MOBILE_BASE_HEIGHT }).min(game.filter(|h| *h > 0).unwrap_or(u32::MAX)).min(size[1]),
+            (true, _) => self.render_height.unwrap_or(if self.upscale.is_some() || sharp { size[1] } else { MOBILE_BASE_HEIGHT }).min(game.filter(|h| *h > 0).unwrap_or(u32::MAX)).min(size[1]),
             (false, Some(0)) => size[1],
             (false, Some(h)) => h,
             (false, None) => size[1].min(1440),
@@ -1140,6 +1303,7 @@ impl Shell {
         let t_render = Instant::now();
         live.out.draw(&live.gpu, renderer, &draw, size, split, &view, height)?;
         let render_ms = ms(t_render);
+        if let Some(done) = CAPTURE.with(|c| c.borrow_mut().take()) { capture(&live.gpu, &texture.texture, done); }
         let t_present = Instant::now();
         live.gpu.queue.present(texture);
         // A frame that stalls (a renderer made on a helper thread froze the
@@ -1152,7 +1316,7 @@ impl Shell {
         if !self.profiling { self.profiling = renderer.set_async_gpu_profiling(&live.gpu, true).is_ok(); }
         if let Some(sample) = renderer.drain_gpu_profiles(&live.gpu).samples.pop() { self.gpu_passes = sample.gpu_ms; self.gpu_total = sample.covered_union_ms; }
         self.frames += 1;
-        if self.switched.is_none() && benching.is_none() && (self.render_height.is_none() || self.mobile) && quality.frame(f64::from(dt) * 1000.0, Instant::now()) {
+        if self.switched.is_none() && benching.is_none() && (self.render_height.is_none() || self.mobile) && quality.frame_gpu(f64::from(dt) * 1000.0, (self.profiling && self.gpu_total > 0.0).then_some(self.gpu_total), Instant::now()) {
             let next = quality.render_height(base(self.cfg.max_render_height));
             log(&format!("{}: 3D view now {} lines high (chasing {:.0} fps)", self.cfg.title, next.min(size[1]), quality.target_fps()));
         }

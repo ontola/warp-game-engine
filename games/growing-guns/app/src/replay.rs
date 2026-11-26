@@ -116,7 +116,7 @@ impl Recorder {
         let output = path.clone();
         let count = tape.len();
         *result.lock().unwrap() = None;
-        std::thread::spawn(move || { let saved = tape.write(&output).map(|_| output); *result.lock().unwrap() = Some(saved); });
+        crate::background(move || { let saved = tape.write(&output).map(|_| output); *result.lock().unwrap() = Some(saved); });
         Ok(serde_json::json!({ "file": path, "frames": count, "seconds": count as f32 * DT, "alpha": alpha, "status": "saving in background", "open": "F11",
             "input_history":{"hz":TICK_HZ,"rows_after_step_tick_seed_inputs":self.inputs,
             "live_edits":self.edits.iter().map(|(_,v)|v).collect::<Vec<_>>(),"omitted_edits_since_start":self.dropped_edits} }))
@@ -199,8 +199,8 @@ pub struct Viewer {
     pub overlay: bool,
     exit: bool,
     dragging: bool,
-    scrub_changed: Option<std::time::Instant>,
-    clock: Option<(std::time::Instant, f64)>,
+    scrub_changed: Option<web_time::Instant>,
+    clock: Option<(web_time::Instant, f64)>,
     sounds: Option<crate::sounds::Sounds>,
     music: Option<(crate::music::Shared, crate::music::Director)>,
     music_db: f32,
@@ -338,7 +338,7 @@ impl Viewer {
     }
     /// Recorded time is independent of how many app ticks or paints happened.
     /// A frame's alpha interpolates its previous and current snapshot.
-    fn advance_clock(&mut self, now: std::time::Instant) {
+    fn advance_clock(&mut self, now: web_time::Instant) {
         if self.paused { self.clock = None; return; }
         let Some((start, phase)) = self.clock else {
             if self.ready() { self.clock = Some((now, self.target.frame as f64 + self.target.alpha as f64)); }
@@ -420,14 +420,14 @@ impl Game for Viewer {
             }).unwrap_or(Mark { frame: (t * (self.tape.len() - 1) as f32).round() as usize, alpha: 1.0 });
             if mark != self.target {
                 if let Err(e) = self.seek(mark) { self.message = Some(e); }
-                if !releasing { self.scrub_changed = Some(std::time::Instant::now()); }
+                if !releasing { self.scrub_changed = Some(web_time::Instant::now()); }
             }
         } else if p.pressed {
             match (x / s) as u32 { 20..=150 => self.toggle(), 151..=245 => self.step(-1), 246..=340 => self.step(1), 341..=520 => { let _ = self.bookmark(); }, 521..=700 => { if let Err(e) = self.seek(self.tape.mark) { self.message = Some(e); } }, _ => {} }
         }
     }
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
-        let now = std::time::Instant::now();
+        let now = web_time::Instant::now();
         let was_playing = !self.paused;
         let clock_running = self.clock.is_some();
         self.advance_clock(now);
@@ -447,7 +447,7 @@ impl Game for Viewer {
                 if same_layout { self.game.replay_reuse_renderer(frame)?; self.rewind_reuses += 1; }
                 self.current = None;
             }
-            let started = std::time::Instant::now();
+            let started = web_time::Instant::now();
             for i in self.current.map_or(0, |n| n + 1)..=self.target.frame {
                 let sample = self.tape.sample(i)?;
                 let (chunk, offset) = self.tape.locate(i)?;
@@ -583,7 +583,7 @@ mod tests {
         let mut elapsed = std::time::Duration::ZERO;
         for i in 0..2705 {
             world.step(&[growing_guns::Input { mv: [0.15, 0.4], fire: true, look: [0.006, 0.0], ..Default::default() }]);
-            let start = std::time::Instant::now();
+            let start = web_time::Instant::now();
             recorder.push(&world, &[0], "godot", true);
             elapsed += start.elapsed();
             if i == 150 { recorder.barrier(); }
@@ -659,7 +659,7 @@ mod tests {
         viewer.target = Mark { frame: 20, alpha: 0.25 };
         viewer.toggle();
         assert!(!viewer.fixed_quality(), "normal adaptive quality during playback");
-        let now = std::time::Instant::now();
+        let now = web_time::Instant::now();
         viewer.advance_clock(now);
         viewer.advance_clock(now + std::time::Duration::from_millis(250));
         assert_eq!(viewer.target, Mark { frame: 35, alpha: 0.25 });
@@ -769,10 +769,10 @@ mod tests {
         let mut headless = app::Headless::new(&gpu, [1600, 900], TICK_HZ as f32).unwrap();
         let rgba = headless.frame_at(&mut game, 0.375).unwrap();
         app::screenshot::save_with(app::screenshot::Shot { title: "Replay review", size: [1600, 900], rgba: &rgba, metadata: serde_json::json!({"test_data": true}) }, |path| game.feedback_replay(path, 0.375)).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let deadline = web_time::Instant::now() + std::time::Duration::from_secs(15);
         loop {
             if let Some(done) = game.recorder.completion() { done.unwrap(); break; }
-            assert!(std::time::Instant::now() < deadline, "replay write timed out");
+            assert!(web_time::Instant::now() < deadline, "replay write timed out");
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         let (_, path) = game.recorder.last.clone().unwrap();
@@ -842,7 +842,7 @@ mod tests {
         impact.seek(Mark { frame: 0, alpha: 1.0 }).unwrap();
         render_ready(&mut headless, &mut impact);
         impact.toggle();
-        let began = std::time::Instant::now();
+        let began = web_time::Instant::now();
         impact.clock = Some((began, 1.0));
         let mut paints = 0;
         let mut painted_at = 0.0;

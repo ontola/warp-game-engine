@@ -145,6 +145,8 @@ pub struct Gg {
     /// The F10 match tools (hud/debug.rs): it runs the commands below.
     pub debug: hud::debug::DebugMenu,
     explosions: crate::explosion_editor::ExplosionEditor,
+    /// The speaker a browser page's game keeps open (natively `run` holds it).
+    pub(crate) speaker: Option<app::sound::Speaker>,
 }
 
 impl Gg {
@@ -156,7 +158,7 @@ impl Gg {
         Gg { recorder: Default::default(), replay: None, replay_size: [1600, 900], replay_alpha: 1.0, prev: view::Pose::all(&world), stepped: true, xr_gun: None, xr_aim: None, xr_stereo: false, vis, light: view::lighting(),
             hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, ready_due: false, environment_dirty: false, split_hint_left: 0.0, inferno: false, sounds: None, crowd_tx: None, crowd_audible: true, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), party_colors: Vec::new(), roster_seed, aim_synced: Vec::new(), live: None,
             sky: crate::sky::Sky::new(crate::sky::SkyChoice::Godot), sky_upload: None, before_blackout: None, light_overrides: Vec::new(), scatter: Default::default(),
-            split: false, binding: Vec::new(), connected: Vec::new(), last_pad: None, pad_last: false, joined_now: Vec::new(), player_menu: None, joining: None, saved_name: String::new(), probe_tries: Vec::new(), lan: false, lan_hosts: None, lan_beacon: None, xr_head: None, explosions:crate::explosion_editor::ExplosionEditor::new(), debug: Default::default() }
+            split: false, binding: Vec::new(), connected: Vec::new(), last_pad: None, pad_last: false, joined_now: Vec::new(), player_menu: None, joining: None, saved_name: String::new(), probe_tries: Vec::new(), lan: false, lan_hosts: None, lan_beacon: None, xr_head: None, explosions:crate::explosion_editor::ExplosionEditor::new(), debug: Default::default(), speaker: None }
             .with_split()
     }
 
@@ -304,7 +306,7 @@ impl Gg {
             match ev {
                 crate::party::Ev::Prepare { humans, bots } => {
                     let seat_flags: Vec<bool> = (0..humans.len() + bots).map(|i| i >= humans.len()).collect();
-                    let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_secs());
+                    let seed = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(1, |d| d.as_secs());
                     let mut world = World::new(seed, &seat_flags);
                     let party = self.party.as_mut().expect("party");
                     party.settings.apply_match(&mut world);
@@ -562,7 +564,7 @@ impl Gg {
     /// clock off the frame loop (a bake is ~0.2 s), take finished bakes.
     fn cycle_sky(&mut self) {
         let Some(want) = self.sky.choice.for_arena(self.world.round, self.world.tick as f32 * DT, self.world.arena.seed, self.world.modifier == Some(growing_guns::Modifier::Blackout)) else { return };
-        let now = std::time::Instant::now();
+        let now = web_time::Instant::now();
         let Some(live) = &mut self.sky.live else { return };
         if live.desired() != want && let Err(e) = live.request(want, now) { eprintln!("sky: {e}"); }
         if let Some(prepared) = live.poll(now) && prepared.settings == want { self.show_sky(prepared); }
@@ -571,7 +573,7 @@ impl Gg {
 
 /// `GG_HITCH=MS` (default 12 under Splitscreen Club, else off): print any step of
 /// a tick or frame slower than that, to find what freezes the screen.
-pub(crate) fn hitch(what: &str, since: std::time::Instant) {
+pub(crate) fn hitch(what: &str, since: web_time::Instant) {
     static LIMIT: std::sync::LazyLock<Option<f32>> = std::sync::LazyLock::new(|| {
         std::env::var("GG_HITCH").ok().and_then(|v| v.parse().ok()).or_else(|| std::env::var("GAMENIGHT").is_ok().then_some(12.0)).filter(|&l: &f32| l > 0.0)
     });
@@ -845,7 +847,7 @@ impl Gg {
                 let players = self.slots.len().max(1) as u8;
                 self.lan = true;
                 let (tx, rx) = std::sync::mpsc::channel();
-                std::thread::spawn(move || { let _ = tx.send(Session::join(&host.ticket, players, true)); });
+                crate::background(move || { let _ = tx.send(Session::join(&host.ticket, players, true)); });
                 self.joining = Some(rx);
                 self.ui.joining = true;
                 self.ui.notice = Some("Joining...".into());
@@ -869,7 +871,7 @@ impl Gg {
                 let ticket = self.ui.join_ticket();
                 let (players, lan) = (self.slots.len().max(1) as u8, self.lan);
                 let (tx, rx) = std::sync::mpsc::channel();
-                std::thread::spawn(move || { let _ = tx.send(Session::join(&ticket, players, lan)); });
+                crate::background(move || { let _ = tx.send(Session::join(&ticket, players, lan)); });
                 self.joining = Some(rx);
                 self.ui.joining = true;
                 println!("joining {}...", self.ui.join_ticket());
@@ -1183,7 +1185,7 @@ impl app::Game for Gg {
         let humans = self.world.players.iter().filter(|p| !p.bot).count();
         if matches!(self.ui.screen, hud::menus::Screen::Pause | hud::menus::Screen::Settings { from_start: false }) && humans <= 1 { return; }
         self.prev = view::Pose::all(&self.world);
-        let t = std::time::Instant::now();
+        let t = web_time::Instant::now();
         if self.xr_stereo {
             let mut aims = vec![None; inputs.len()];
             if let Some(&slot) = self.slots.first() { aims[slot] = self.xr_aim; }
@@ -1191,27 +1193,27 @@ impl app::Game for Gg {
         } else { self.world.step(&inputs); }
         hitch("world.step", t);
         self.stepped = true;
-        let t = std::time::Instant::now();
+        let t = web_time::Instant::now();
         if self.world.events.contains(&Event::NewArena) { self.new_arena(); }
         hitch("new_arena", t);
-        let t = std::time::Instant::now();
+        let t = web_time::Instant::now();
         // Shot feedback needs this frame's controller pose, including after
         // rebuilding the arena, before the render-time gun posing runs.
         if self.xr_stereo {self.vis.track_gun(self.slots[0],self.xr_gun);}
         self.vis.absorb(&self.world, &crate::sounds::ears(&self.world, &self.slots));
         hitch("vis.absorb", t);
-        let t = std::time::Instant::now();
+        let t = web_time::Instant::now();
         self.hud.tick(&self.world, DT);
         if let Some(s) = &mut self.sounds { s.tick(&self.world, &self.slots, DT); self.vis.stadium.sound.loudness_db = s.duck_db(); }
         let menu = matches!(self.ui.screen, hud::menus::Screen::Start | hud::menus::Screen::Settings { from_start: true });
         if let Some((_, d)) = &mut self.music { d.menu = menu; }
         follow_music(&mut self.music, &self.world, &self.slots);
         hitch("hud+sounds+music", t);
-        let t = std::time::Instant::now();
+        let t = web_time::Instant::now();
         self.session.publish(&self.world);
         hitch("session.publish", t);
         // Desktop replays do not capture headset/controller poses.
-        let t = std::time::Instant::now();
+        let t = web_time::Instant::now();
         if !self.xr_stereo { self.recorder.inputs(self.world.tick,self.world.arena.seed,&inputs); self.recorder.push(&self.world, &self.slots, &self.sky.choice.name(), self.ui.tilt); }
         hitch("replay.record", t);
     }
@@ -1219,7 +1221,7 @@ impl app::Game for Gg {
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
         if let Some(r) = &mut self.replay { return app::Game::draw(&mut **r, frame); }
         self.replay_size = frame.size;
-        let draw_t = std::time::Instant::now();
+        let draw_t = web_time::Instant::now();
         // Interpolating a frozen match swings between two ticks (a flicker at 120 Hz).
         let alpha = if self.session.is_client() {
             let a = self.receive(frame.dt);
@@ -1249,10 +1251,10 @@ impl app::Game for Gg {
         if self.recorder.disabled { self.apply_sky()?; self.sky.live = None; }
         else if self.sky.live.is_some() { self.cycle_sky(); }
         self.sync_atmosphere();
-        let t = std::time::Instant::now();
+        let t = web_time::Instant::now();
         if std::mem::take(&mut self.rebuild) || frame.renderer().is_none() {
             frame.set_scene(&self.vis.scene, &self.light);
-            let effects_started = std::time::Instant::now();
+            let effects_started = web_time::Instant::now();
             frame.renderer().expect("scene installed").prepare_effects(frame.gpu);
             hitch("prepare effects", effects_started);
             self.plates.invalidate();
@@ -1271,7 +1273,7 @@ impl app::Game for Gg {
         }
         crate::live::frame(self, frame);
         let r = frame.renderer().expect("scene set above");
-        let t = std::time::Instant::now();
+        let t = web_time::Instant::now();
         self.vis.flush(frame.gpu, r, &self.light)?;
         hitch("vis.flush", t);
         r.update_instances(frame.gpu, self.vis.first_dynamic, self.vis.dynamic())?;
@@ -1773,7 +1775,7 @@ pub fn match_options(args: &Args, w: &mut World, play: bool) {
 pub fn run(args: &Args) -> Result<(), String> {
     let total = args.num("--total", 4usize).clamp(1, 8);
     let humans = args.num("--players", 1usize).clamp(1, 4).min(total);
-    let seed = args.num("--seed", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_secs()));
+    let seed = args.num("--seed", web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(1, |d| d.as_secs()));
     let lan = args.flag("--lan");
     let (session, world, slots) = if let Some(ticket) = args.value("--join") {
         let ticket = hud::menus::extract_ticket(ticket);
@@ -1921,9 +1923,9 @@ mod tests {
         let mut game = Gg::new(World::new(5, &[false, true]), Session::Local, vec![0]);
         game.party = Some(crate::party::Party::new(splitscreen_club::party::Party::new(client)));
         let until = |game: &mut Gg, what: &str, f: &dyn Fn(&Gg) -> bool| {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            let deadline = web_time::Instant::now() + std::time::Duration::from_secs(60);
             while !f(game) {
-                assert!(std::time::Instant::now() < deadline, "{what}: slots {:?}, couch {:?}", game.slots, game.couch());
+                assert!(web_time::Instant::now() < deadline, "{what}: slots {:?}, couch {:?}", game.slots, game.couch());
                 game.tick(&[Controls::default(), Controls::default()]);
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
@@ -1970,8 +1972,8 @@ mod tests {
         let client = splitscreen_club::Client::connect(splitscreen_club::Config { url: format!("ws://{address}"), game_id: "growing-guns".into(), token: String::new(), launched_by_daemon: true }).unwrap();
         let mut game = Gg::new(World::new(5, &[false, true]), Session::Local, vec![0]);
         game.party = Some(crate::party::Party::new(splitscreen_club::party::Party::new(client)));
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !game.ready_due && std::time::Instant::now() < deadline {
+        let deadline = web_time::Instant::now() + std::time::Duration::from_secs(5);
+        while !game.ready_due && web_time::Instant::now() < deadline {
             game.tick(&[Controls::default()]);
             std::thread::sleep(std::time::Duration::from_millis(5));
         }

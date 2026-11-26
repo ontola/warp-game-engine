@@ -8,7 +8,7 @@ use glam::Vec3;
 use growing_guns::{World, TICK_HZ};
 use render::{Gpu, Renderer, ViewRect};
 use std::collections::BTreeMap;
-use std::time::Instant;
+use web_time::Instant;
 
 fn ms(t: Instant) -> f64 { t.elapsed().as_secs_f64() * 1000.0 }
 

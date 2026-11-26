@@ -4,7 +4,7 @@
 # the two-seat Apache in Warp Theft Auto and its native crew tests) and, when
 # all pass, publishes the candidate as the prerelease play-<12 hex> with
 # warp-web.tar.gz and release.json. Production installs a candidate only
-# with gamenight-internal deploy/cloud/promote-play.py, after Joep's yes in
+# with engine/tools/host/promote-play.py, after Joep's yes in
 # the prod monitor thread; this workflow never touches the server.
 name: Play release candidate
 on:
@@ -92,7 +92,7 @@ jobs:
           /play/ release candidate for \`$sha\` ($subject).
 
           All release checks passed (release.json). Install on production only via
-          gamenight-internal deploy/cloud/promote-play.py, after Joep's yes:
+          engine/tools/host/promote-play.py, after Joep's yes:
 
               python3 /opt/gamenight-cloud/promote-play.py $sha
           EOF

@@ -82,6 +82,10 @@ struct Inner {
 /// The mods folder: GG_MODS, else `games/growing-guns/mods` above the
 /// working directory or the executable.
 pub fn find_dir() -> Option<PathBuf> {
+    #[cfg(target_arch = "wasm32")]
+    return crate::web::served("mods");
+    #[cfg(not(target_arch = "wasm32"))]
+    {
     if let Some(d) = std::env::var_os("GG_MODS") { return Some(d.into()); }
     // A packaged game: `mods` beside the executable.
     if let Some(d) = crate::sounds::beside_exe("mods") && d.is_dir() { return Some(d); }
@@ -93,6 +97,7 @@ pub fn find_dir() -> Option<PathBuf> {
         }
     }
     None
+    }
 }
 
 /// Load the mods and hook them into `world` (cards and rules).

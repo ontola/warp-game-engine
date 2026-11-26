@@ -592,11 +592,18 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
         let radius = r[3] * 0.32;
         let gap = r[3] * 0.25;
         let tw = render::hud::measure(label, faces.bold, fs)[0];
-        let x = r[0] + (r[2] - (2.0 * radius + gap + tw)) / 2.0;
+        // The room is also R3 (as it opened): B / R3.
+        let slash = if name == "close" { render::hud::measure(" / ", faces.bold, fs)[0] } else { 0.0 };
+        let extra = if name == "close" { slash + 2.0 * radius } else { 0.0 };
+        let x = r[0] + (r[2] - (2.0 * radius + extra + gap + tw)) / 2.0;
         let disc = [x + radius, r[1] + r[3] / 2.0];
         c.circle(disc, radius, accent.with_alpha(if live { fade } else { 0.35 * fade }));
         c.text(faces.bold, [disc[0] - radius, disc[1] + fs * 0.33], key, TextAlign::Center, 2.0 * radius, (fs * 0.9).floor(), Color::hex("0d1020").with_alpha(fade));
-        c.text(faces.bold, [x + 2.0 * radius + gap, r[1] + r[3] / 2.0 + fs * 0.36], label, TextAlign::Left, -1.0, fs, TEXT.with_alpha(if live { fade } else { 0.4 * fade }));
+        if name == "close" {
+            c.text(faces.bold, [x + 2.0 * radius, disc[1] + fs * 0.36], " / ", TextAlign::Left, -1.0, fs, DIM.with_alpha(fade));
+            crate::paint::stick(c, [x + 3.0 * radius + slash, disc[1]], radius, "R3", true);
+        }
+        c.text(faces.bold, [x + 2.0 * radius + extra + gap, r[1] + r[3] / 2.0 + fs * 0.36], label, TextAlign::Left, -1.0, fs, TEXT.with_alpha(if live { fade } else { 0.4 * fade }));
     }
     // The queue (DESIGN.md "Playlist"), bottom right: green UP NEXT,
     // numbered rows with a small cover, "+N more" muted. Clear of the

@@ -5,7 +5,8 @@ use render::{
     Camera, Gpu,
     humans::{Far, Instance, ReviewRenderer},
 };
-use std::{path::Path, time::Instant};
+use std::path::Path;
+use web_time::Instant;
 
 pub fn run(args: &Args) -> Result<(), String> {
     let seed = args.num("--seed", 52u64);

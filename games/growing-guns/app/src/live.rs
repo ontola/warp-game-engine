@@ -140,7 +140,7 @@ pub fn serve(args: &Args) -> Result<(), String> {
     game.set_sounds(crate::sounds::Sounds::new(tx, crate::sounds::find_patches(args.value("--sfx")), None));
     std::thread::Builder::new().name("serve-audio".into()).spawn(move || {
         let mut buf = vec![0.0f32; (audio::SAMPLE_RATE / 100.0) as usize * 2];
-        let start = std::time::Instant::now();
+        let start = web_time::Instant::now();
         for block in 1u64.. {
             mix.render(&mut buf, 2);
             if let Some(wait) = std::time::Duration::from_millis(10 * block).checked_sub(start.elapsed()) { std::thread::sleep(wait); }
@@ -432,7 +432,7 @@ impl SoundHook for Ctx<'_> {
 fn render_report(patch: &Arc<Patch>, params: &[(String, f32)], seconds: Option<f32>) -> String {
     const SR: f32 = audio::SAMPLE_RATE;
     let seconds = seconds.unwrap_or(if patch.max_length > 0.0 { patch.max_length } else { 4.0 }).min(30.0);
-    let t0 = std::time::Instant::now();
+    let t0 = web_time::Instant::now();
     let (tx, mut mix) = audio::synth::mixer(audio::synth::Layout::mono(), 16, SR);
     tx.ears(vec![audio::synth::Ear { pos: [0.0; 3], forward: [0.0, 0.0, -1.0], right: [1.0, 0.0, 0.0] }]);
     let refs: Vec<(&str, f32)> = params.iter().map(|(n, v)| (n.as_str(), *v)).collect();

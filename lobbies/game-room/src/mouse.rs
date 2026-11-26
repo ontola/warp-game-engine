@@ -94,11 +94,13 @@ impl Lobby {
         // A click on a player opens what the room can do with them.
         if p.pressed {
             if let Some(id) = self.player_at(at, size) { self.open_player_menu(&id); return; }
-            // A click on the QR code copies the room code (a browser host).
+            // A click on the QR code copies the room's link (a browser host).
             if self.outbox.is_some() && !self.show.room_code.is_empty() && self.plaque_at(at, size) {
                 let code = self.show.room_code.clone();
-                if let Some(out) = &mut self.outbox { out.push(serde_json::json!({"type": "copy_room_code", "code": code})); }
-                self.toast(format!("Room code {code} copied"), crate::room::GREEN);
+                let url = crate::host::get(&self.host.links["room"], "join_url", "");
+                let url = if url.is_empty() || url == "<null>" { None } else { Some(url) };
+                if let Some(out) = &mut self.outbox { out.push(serde_json::json!({"type": "copy_room_code", "code": code, "url": url})); }
+                self.toast(if url.is_some() { "Room link copied".to_string() } else { format!("Room code {code} copied") }, crate::room::GREEN);
                 return;
             }
         }

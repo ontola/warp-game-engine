@@ -1,10 +1,11 @@
 //! Live F12 authoring. The Luau knob block supplies the sliders and its returned
 //! table maps them onto the conventional blast effect. Evaluate only on edits.
+use web_time::Instant;
 use app::editor::{SceneControl, SceneTuning};
 use script::mlua::Table;
 use std::{
     path::PathBuf,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 const BUILTIN: &str = include_str!("../../mods/base/explosion_editor.luau");

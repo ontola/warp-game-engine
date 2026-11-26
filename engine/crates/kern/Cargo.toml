@@ -6,6 +6,8 @@ license.workspace = true
 description = "Engine core: deterministic fixed-step runner, state hashes, traces, timings, simple collision"
 
 [dependencies]
+# std::time::Instant panics in a browser; web-time is std natively.
+web-time = "1.1"
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

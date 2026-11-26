@@ -37,6 +37,8 @@ pub(crate) struct Cloud {
     /// off a seat nobody touched for half an hour while its phone was away
     /// too (the poll's `idle`).
     heard: Vec<web_time::Instant>,
+    /// The device's main profile went to the only player once ([`main_player`]).
+    main_claimed: bool,
 }
 
 impl Cloud {
@@ -201,12 +203,15 @@ pub(crate) fn start(players: usize) {
 
 /// Report a bug to the cloud room (`/v1/lobbies/bug-report`), as the
 /// desktop host's Back + Y does: the game on screen (None: the room), its
-/// title and a JPEG of `shot`. The phones at the table are then asked what
-/// went wrong. Without a cloud room there is nobody to tell.
+/// title and a JPEG of `shot`. The cloud answers how many phones at the
+/// table it asked and a describe link: the room then shows the bug panel
+/// with that link's QR code (hud.rs `bug_panel`), so a table without a
+/// linked phone is never told to use one.
 pub(crate) fn report_bug(game: Option<String>, title: Option<String>, shot: Option<&image::RgbaImage>) {
     let screenshot = shot.and_then(jpeg_data_uri);
+    let id = uuid();
     let report = json!({
-        "id": uuid(),
+        "id": id,
         "app_version": env!("CARGO_PKG_VERSION"),
         "platform": if cfg!(target_os = "android") { "android-host" } else { "web" },
         "game": game,
@@ -216,19 +221,51 @@ pub(crate) fn report_bug(game: Option<String>, title: Option<String>, shot: Opti
     app::web::spawn(async move {
         let Some((origin, token)) = with(|h| Some((h.cloud.origin.clone(), h.cloud.token.clone()?))) else {
             app::web::log("bug report: no cloud room, nothing sent");
+            super::page::bug_failed("This room is offline, so the bug report was not sent");
             return;
         };
         let body = report.to_string();
         for attempt in 0..3 {
             match app::web::request("POST", &format!("{origin}/v1/lobbies/bug-report"), &[("authorization", &format!("Bearer {token}"))], Some(&body)).await {
-                Ok((status, _)) if (200..300).contains(&status) => { app::web::log("bug report sent"); return; }
+                Ok((status, reply)) if (200..300).contains(&status) => {
+                    app::web::log("bug report sent");
+                    let reply: Value = serde_json::from_slice(&reply).unwrap_or_default();
+                    with(|h| bug_panel(h, &origin, &id, title.as_deref(), &reply));
+                    return;
+                }
                 Ok((status, _)) if status == 400 || status == 413 => { app::web::log(&format!("bug report refused (HTTP {status})")); return; }
                 Ok((status, _)) => app::web::log(&format!("bug report: HTTP {status}")),
                 Err(e) => app::web::log(&format!("bug report: {e}")),
             }
             sleep(2000 * (attempt + 1)).await;
         }
+        super::page::bug_failed("Could not reach Splitscreen Club, so the bug report was not sent");
     });
+}
+
+/// The room's bug panel for the cloud's answer to a bug report: who to ask
+/// (`asked` phones in the app) and the describe link's QR code.
+fn bug_panel(h: &mut Host, origin: &str, id: &str, title: Option<&str>, reply: &Value) {
+    let Some(path) = reply["link"].as_str().filter(|p| p.starts_with('/')) else { return };
+    let url = format!("{origin}{path}");
+    let short = url.split_once("://").map_or(url.as_str(), |(_, rest)| rest).to_string();
+    let phones = reply["asked"].as_u64().unwrap_or(0) > 0;
+    let tap = cfg!(target_os = "android");
+    let line = match (phones, tap) {
+        (true, true) => "Say it in the Splitscreen Club app, scan the code with any phone, or tap the screen to type it here",
+        (true, false) => "Say it in the Splitscreen Club app, or scan the code with any phone",
+        (false, true) => "Scan the code with any phone, or tap the screen to type it here · no account needed",
+        (false, false) => "Scan the code with any phone to say what happened · no account needed",
+    };
+    app::web::tap_opens(Some(&url), game_room::paint::BUG_SECONDS);
+    h.links["bug"] = json!({
+        "id": id,
+        "title": match title { Some(t) => format!("What went wrong in {t}?"), None => "What went wrong?".to_string() },
+        "line": line,
+        "link": short,
+        "qr_svg": qr_svg(&url),
+    });
+    h.links_dirty = true;
 }
 
 /// A JPEG data URI of a bug screenshot: up to 1920 wide, under the cloud's 3 MB.
@@ -351,6 +388,7 @@ fn apply(h: &mut Host, reply: &Value) -> Option<(String, bool)> {
         h.dirty = true;
     }
     phones(h, reply, &held);
+    main_player(h, reply, &held);
     // A game a phone on a seat picked (first in the queue, or started now),
     // or its change to the queue.
     let s = &reply["selection"];
@@ -415,6 +453,30 @@ fn phones(h: &mut Host, reply: &Value, held: &[Option<(String, u64, Value)>]) {
         }
     }
     for player in leave { super::page::leave_party(h, &player); }
+}
+
+/// One player in a game, playing as nobody yet: they are this device's
+/// main profile (Joep, 2026-11-26: "if there's only one player, the first
+/// controller should be the main signed-in account"), with a notice saying
+/// so; Back and the doors switch profile. Once per page: a profile the
+/// player put back stays at the doors. With two or more players nobody
+/// gets it, since then the first controller may well be someone else's
+/// (the 2026-10-17 playtest). Clouds before the `main` flag: the one
+/// profile waiting, when exactly one waits.
+fn main_player(h: &mut Host, reply: &Value, held: &[Option<(String, u64, Value)>]) {
+    if h.cloud.main_claimed || h.cloud.seats.len() != 1 || held.first().is_none_or(Option::is_some) { return; }
+    if h.phone.first() == Some(&true) || (h.on_screen.is_none() && h.loading.is_none()) { return; }
+    let waiting: Vec<&Value> = reply["pending"].as_array().into_iter().flatten().filter(|p| p["phone_seat"] != true).collect();
+    let main = if waiting.iter().any(|p| p.get("main").is_some()) {
+        waiting.iter().find(|p| p["main"] == true).copied()
+    } else if waiting.len() == 1 { waiting.first().copied() } else { None };
+    let Some(main) = main else { return };
+    let Some(id) = main["id"].as_str() else { return };
+    h.cloud.main_claimed = true;
+    let name = main["profile"]["display_name"].as_str().unwrap_or("you").to_string();
+    app::web::log(&format!("cloud room: the only player plays as the main profile {name}"));
+    pickup(id.to_string(), 0);
+    super::page::show_hint("✓", &format!("Playing as {name}"), "Not you? Press Back and pick your profile at the door");
 }
 
 /// The room's QR code as the native host draws it (game_room::qr reads it back).

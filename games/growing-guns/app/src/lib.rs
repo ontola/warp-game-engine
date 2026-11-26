@@ -40,6 +40,15 @@ mod stadium;
 mod spectators;
 mod music;
 mod view;
+pub mod web;
+
+/// Run `job` on its own thread; in a browser (one thread) right away.
+pub(crate) fn background(job: impl FnOnce() + Send + 'static) {
+    #[cfg(not(target_arch = "wasm32"))]
+    std::thread::spawn(job);
+    #[cfg(target_arch = "wasm32")]
+    job();
+}
 
 use growing_guns::{Event, World, TICK_HZ};
 use render::Gpu;
@@ -145,7 +154,7 @@ fn sim(args: &Args) {
     let (mut shots, mut hits, mut rounds) = (0u32, 0u32, 0u32);
     // The arena of each round and the tick it began.
     let mut arenas = vec![(0u64, format!("{:?}", w.arena.variant))];
-    let t = std::time::Instant::now();
+    let t = web_time::Instant::now();
     for _ in 0..seconds * TICK_HZ {
         w.step(&[]);
         for e in &w.events {
@@ -247,7 +256,7 @@ fn lantest() -> Result<(), String> {
         let mut host = play::Gg::new(World::new(9, &[false, true, true, true]), session::Session::Local, vec![0]);
         host.command("lan host")?;
         if !matches!(host.session(), session::Session::Host { .. }) { return Err(format!("not hosting: {:?}", host.ui.notice)); }
-        let start = std::time::Instant::now();
+        let start = web_time::Instant::now();
         while start.elapsed().as_secs() < 25 {
             host.tick(&[Controls::default()]);
             if let Some((i, p)) = host.world.players.iter().enumerate().find(|(_, p)| p.tracked.is_some()) {
@@ -258,7 +267,7 @@ fn lantest() -> Result<(), String> {
         }
         Err("the host never saw the client's gun".into())
     });
-    let t = std::time::Instant::now();
+    let t = web_time::Instant::now();
     let mut client = play::Gg::new(World::new(1, &[false, true]), session::Session::Local, vec![0]);
     client.lan_hosts = Some(::net::lan::Listener::start(&String::from_utf8_lossy(net::ALPN))?);
     client.xr_stereo = true;
@@ -292,7 +301,7 @@ fn nettest(args: &Args) -> Result<(), String> {
         let mut host = play::Gg::new(World::new(9, &[false, true, true, true]), session::Session::host(true)?, vec![0]);
         let copied = host.command("copy").map(|_| app::clipboard::get())?;
         ticket_tx.send((host.session().ticket().unwrap().to_string(), copied)).map_err(|e| e.to_string())?;
-        let start = std::time::Instant::now();
+        let start = web_time::Instant::now();
         for k in 0..ticks + 120 {
             // Destruction mid-game: clients must end with the same arena.
             // Changes between ticks (debug console, live tools) reach clients.
@@ -300,7 +309,7 @@ fn nettest(args: &Args) -> Result<(), String> {
             if k == 90 || k == 150 { host.command(&format!("blast {} 0 {} 5 400", k as f32 * 0.1 - 10.0, 6.0))?; }
             host.tick(&[Controls::default()]);
             let due = start + std::time::Duration::from_secs_f32((k + 1) as f32 / TICK_HZ as f32);
-            if let Some(wait) = due.checked_duration_since(std::time::Instant::now()) { std::thread::sleep(wait); }
+            if let Some(wait) = due.checked_duration_since(web_time::Instant::now()) { std::thread::sleep(wait); }
         }
         host.state().ok_or("no state".into())
     });
@@ -308,7 +317,7 @@ fn nettest(args: &Args) -> Result<(), String> {
     if copied != ticket { return Err(format!("nettest failed: COPY put {copied:?} on the clipboard")); }
     // The client joins as a player would: the ticket pasted into the pause
     // menu's join field (a valid ID connects at once).
-    let t = std::time::Instant::now();
+    let t = web_time::Instant::now();
     let mut client = play::Gg::new(World::new(1, &[false, true]), session::Session::Local, vec![0]);
     client.lan = true;
     client.command("menu pause")?;
@@ -333,7 +342,7 @@ fn nettest(args: &Args) -> Result<(), String> {
         std::thread::sleep(std::time::Duration::from_secs_f32(1.0 / TICK_HZ as f32));
     }
     // Drain what the host still sends while it finishes.
-    let drain = std::time::Instant::now();
+    let drain = web_time::Instant::now();
     // until the host has stopped (it plays on for two seconds after us).
     while !host.is_finished() || drain.elapsed().as_secs_f32() < 1.0 { client.receive(1.0 / TICK_HZ as f32); std::thread::sleep(std::time::Duration::from_millis(16)); }
     for _ in 0..30 { client.receive(1.0 / TICK_HZ as f32); std::thread::sleep(std::time::Duration::from_millis(10)); }

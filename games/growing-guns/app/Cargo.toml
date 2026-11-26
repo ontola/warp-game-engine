@@ -25,6 +25,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 wgpu = "30"
 net = { path = "../../../engine/crates/net" }
 script = { path = "../../../engine/crates/script" }
+vfs = { path = "../../../engine/crates/vfs" }
 splitscreen-club = { path = "../../../engine/crates/splitscreen-club" }
 tokio = { version = "1", features = ["sync"] }
 serde = { workspace = true, features = ["rc"] }
@@ -33,6 +34,8 @@ serde_json.workspace = true
 
 postcard = { version = "1", features = ["alloc"] }
 flate2 = "1"
+# std::time::Instant panics in a browser; web-time is std natively.
+web-time = "1.1"
 
 [dev-dependencies]
 tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }

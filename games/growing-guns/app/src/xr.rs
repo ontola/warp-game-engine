@@ -67,7 +67,7 @@ impl warp_xr::Game for NativeGame {
         let t=Tracking {eyes,head,aim:Some(Pose {position:Vec3::new(0.25,1.3,-0.35),..head}),controls:Default::default(),turn:0.0,focused:false,recentered:false};
         for (name, debug) in [("lit",0.0),("albedo",2.0),("normals",11.0)] {
             self.game.light_mut().debug=debug;
-            let start=std::time::Instant::now();
+            let start=web_time::Instant::now();
             let out=self.frame(gpu,&t,[512,512],0.0,None)?;
             let rgba=gpu.read_rgba8(out.color.as_ref().unwrap());
             render::write_png(std::path::Path::new(&format!("diagnostic-{name}.png")),1024,512,&rgba)?;
@@ -195,7 +195,7 @@ pub fn shot(args:&crate::Args)->Result<(),String> {
     if args.flag("--frames") {
         gpu.wait();
         let count=args.num("--frames",30u32).clamp(1,600);
-        let start=std::time::Instant::now();
+        let start=web_time::Instant::now();
         for _ in 0..count {frame=game.frame(&gpu,&tracking,[size.0,size.1],DT,None)?;warp_xr::draw_hud(&gpu,&mut hud,&frame.hud,&hud_texture)?;if !args.flag("--queued") {gpu.wait();}}
         gpu.wait();
         println!("Headless native fixture: {count} frames, {:.2} ms/frame at {}x{} per eye including HUD (queued={}); no compositor or display pacing",start.elapsed().as_secs_f64()*1000.0/count as f64,size.0,size.1,args.flag("--queued"));

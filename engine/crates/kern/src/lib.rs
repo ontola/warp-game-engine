@@ -16,7 +16,7 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::time::Instant;
+use web_time::Instant;
 
 /// A deterministic simulation: the same inputs from the same state always
 /// give the same next state, bit for bit.
