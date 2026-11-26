@@ -369,32 +369,12 @@ struct Shell {
     lock_asked: Option<Instant>,
 }
 
-thread_local! {
-    /// The game wants the mouse and has no lock: the canvas's next
-    /// pointerdown asks for it, inside the gesture (see [`lock_on_press`]).
-    static WANT_LOCK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Ask for the pointer lock from the canvas's own pointerdown listener:
-/// browsers grant it only inside the click's handler, and winit's events
-/// arrive later (Chrome: "A user gesture is required", and no lock).
-fn lock_on_press(canvas: &web_sys::HtmlCanvasElement) {
-    let target = canvas.clone();
-    let press = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || {
-        if !WANT_LOCK.with(|w| w.get()) { return; }
-        let locked = web_sys::window().and_then(|w| w.document()).is_some_and(|d| d.pointer_lock_element().is_some());
-        if locked { return; }
-        if let Ok(f) = js_sys::Reflect::get(&target, &"requestPointerLock".into()).and_then(|f| f.dyn_into::<js_sys::Function>()) {
-            // A promise in newer browsers: a refusal is not an error here (the shell retries on the next click).
-            if let Ok(p) = f.call0(&target) && let Ok(p) = p.dyn_into::<js_sys::Promise>() {
-                let ignore = wasm_bindgen::closure::Closure::<dyn FnMut(wasm_bindgen::JsValue)>::new(|_| {});
-                let _ = p.catch(&ignore);
-                ignore.forget();
-            }
-        }
-    });
-    let _ = canvas.add_event_listener_with_callback("pointerdown", press.as_ref().unchecked_ref());
-    press.forget();
+/// Say in the log when the browser refuses the pointer lock (it gives no reason).
+fn log_lock_errors(canvas: &web_sys::HtmlCanvasElement) {
+    let Some(document) = canvas.owner_document() else { return };
+    let refused = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(|| log("pointer lock refused by the browser (pointerlockerror)"));
+    let _ = document.add_event_listener_with_callback("pointerlockerror", refused.as_ref().unchecked_ref());
+    refused.forget();
 }
 
 /// The window's short side in CSS pixels (a phone in landscape: about
@@ -648,7 +628,7 @@ impl Shell {
         let window = Arc::new(event_loop.create_window(attributes).map_err(|e| e.to_string())?);
         {
             use winit::platform::web::WindowExtWebSys;
-            if let Some(c) = window.canvas() { lock_on_press(&c); }
+            if let Some(c) = window.canvas() { log_lock_errors(&c); }
         }
         self.window = Some(window.clone());
         let live = self.live.clone();
@@ -751,7 +731,6 @@ impl Shell {
             self.lock_asked = None;
         }
         self.lock_seen = locked;
-        WANT_LOCK.with(|w| w.set(!self.devices.mouse_captured && self.cfg.keyboard && self.game.mouse_capture() != Some(false)));
         // The game wants the cursor (a menu, a card pick): let go of the lock.
         // Taking it again waits for a click (browsers allow no other way).
         if self.devices.mouse_captured && self.game.mouse_capture() == Some(false) {
@@ -899,10 +878,13 @@ impl Shell {
         let Some(w) = &self.window else { return };
         self.devices.reset_mouse();
         if on {
-            // The canvas's pointerdown listener asked for the lock inside the
-            // click ([`lock_on_press`]); asking again from here has no gesture.
-            w.set_cursor_visible(false);
-            self.devices.mouse_captured = true;
+            // Asked for from the click's MouseInput, still inside its gesture.
+            // The browser may refuse (no gesture, Esc a moment ago): then the
+            // lock never arrives and the frame loop counts it as not captured.
+            log("pointer lock requested (a click)");
+            let ok = w.set_cursor_grab(CursorGrabMode::Locked).is_ok();
+            w.set_cursor_visible(!ok);
+            self.devices.mouse_captured = ok;
             self.lock_asked = Some(Instant::now());
         } else {
             let _ = w.set_cursor_grab(CursorGrabMode::None);
