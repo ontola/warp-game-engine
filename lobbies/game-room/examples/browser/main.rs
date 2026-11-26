@@ -322,6 +322,7 @@ pub(crate) mod page {
         h.idle_pads = devices.iter().filter(|(d, _)| matches!(d, Device::Pad(_)) && !h.bound.contains(&Some(*d))).count();
         back_chords(h, devices);
         warp::web::set_seats(seats(h));
+        app::web::set_players(players_named(h));
         // Games draw each player's own buttons (hud.button): pad or keys.
         app::set_seat_devices(h.bound.clone());
         // Rust games lay out their views by where each seat sits (app::couch).
@@ -490,6 +491,13 @@ pub(crate) mod page {
             let text = |k: &str| p[k].as_str().unwrap_or_default().to_string();
             warp::party::SeatInfo { seat: i, name: p["name"].as_str().map_or_else(|| format!("Player {}", i + 1), String::from), color: warp::party::hex(&text("color")), bot: false, couch: p["couch"].as_i64(), skin: text("skin_color"), avatar: text("avatar") }
         }).collect()
+    }
+
+    /// The players' names and colours by seat, for Rust games
+    /// (app::Game::players_named): a profile picked up at the doors renames
+    /// the player in the game that is running or paused.
+    fn players_named(h: &Host) -> Vec<(String, Option<[f32; 3]>)> {
+        seats(h).into_iter().map(|s| (s.name, s.color)).collect()
     }
 
     /// The seat of player `id`.
@@ -675,7 +683,7 @@ pub(crate) mod page {
 
     /// The top hint: `key` as its glyph (A: the green disc), `text`, and a
     /// muted `detail` line under it ("": none).
-    fn show_hint(key: &str, text: &str, detail: &str) {
+    pub(crate) fn show_hint(key: &str, text: &str, detail: &str) {
         app::web::log(&format!("hint: {text}"));
         #[cfg(target_os = "android")]
         { app::web::banner_glyph(key, &if detail.is_empty() { text.to_string() } else { format!("{text}\n{detail}") }, 4.0); }
@@ -1285,6 +1293,7 @@ pub(crate) mod page {
             h.phone = vec![false; players]; h.next_id = players; h.links = links; h.own_looks = own_looks;
             // A direct game load can finish before the room's first device tick.
             warp::web::set_seats(seats(h));
+            app::web::set_players(players_named(h));
         });
         // The catalog's covers, fetched after the room is up (it shows a
         // title card until a cover arrives).

@@ -41,6 +41,8 @@ thread_local! {
     static NEXT: RefCell<Option<(Parked, Option<Keep>)>> = const { RefCell::new(None) };
     static EXIT: RefCell<Option<Box<dyn FnMut(Exit) -> bool>>> = const { RefCell::new(None) };
     static JOINS: RefCell<Vec<(String, Option<[f32; 3]>)>> = const { RefCell::new(Vec::new()) };
+    /// The host's players' names and colours, with a version ([`set_players`]).
+    static NAMED: RefCell<(u64, Vec<(String, Option<[f32; 3]>)>)> = const { RefCell::new((0, Vec::new())) };
     static TAKES: Cell<bool> = const { Cell::new(false) };
     static SEATS: RefCell<Option<Box<dyn FnMut(&[(crate::Device, crate::Controls)]) -> Option<Vec<Vec<crate::Device>>>>>> = const { RefCell::new(None) };
     static QUIET: Cell<(bool, bool)> = const { Cell::new((false, false)) };
@@ -506,6 +508,16 @@ fn exit(why: Exit) -> bool { EXIT.with(|e| match e.borrow_mut().as_mut() { Some(
 
 pub fn player_joins(name: &str, color: Option<[f32; 3]>) { JOINS.with(|j| j.borrow_mut().push((name.to_string(), color))); }
 
+/// The host's players in controls order, with names and colours: the
+/// running game gets [`crate::Game::players_named`] when they change, and
+/// a game that comes on (loaded or resumed) gets them before its first tick.
+pub fn set_players(players: Vec<(String, Option<[f32; 3]>)>) {
+    NAMED.with(|n| {
+        let mut n = n.borrow_mut();
+        if n.1 != players { n.0 += 1; n.1 = players; }
+    });
+}
+
 pub fn game_takes_joins() -> bool { TAKES.with(|t| t.get()) }
 
 pub fn on_devices(f: impl FnMut(&[(crate::Device, crate::Controls)]) -> Option<Vec<Vec<crate::Device>>> + 'static) {
@@ -519,7 +531,7 @@ pub fn run(cfg: crate::Config, game: Box<dyn Game>) {
     devices.pointer_enabled = cfg.pointer;
     let mobile = mobile();
     if mobile { log("phone preset: lower resolution, no RSM, bloom or contact occlusion (quality=full turns it off)"); }
-    let shell = Shell { cfg, game, devices, acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), announced: false, switched: None, exited: false, back: Default::default(),
+    let shell = Shell { cfg, game, devices, acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), announced: false, switched: None, exited: false, back: Default::default(), named: 0,
         times: Vec::new(), render_height: query_param("render").and_then(|h| h.parse().ok()), quality: None, mobile, profiling: false, gpu_passes: Vec::new(), gpu_total: 0.0,
         upscale: query_param("upscale").and_then(|m| m.parse().map_err(|e: String| log(&e)).ok()).filter(|m| *m != render::upscale::UpscaleMode::Native),
         bench: crate::bench::Bench::from_query(query_param("bench").as_deref()) };
@@ -1137,6 +1149,8 @@ struct Shell {
     exited: bool,
     /// Back and its chords in a game: the room comes on Back's release.
     back: crate::back_chord::BackChords,
+    /// The [`set_players`] version the running game has.
+    named: u64,
     times: Vec<[f32; 4]>,
     render_height: Option<u32>,
     quality: Option<crate::quality::AdaptiveQuality>,
@@ -1183,6 +1197,7 @@ impl Shell {
             self.devices.pointer_enabled = self.cfg.pointer;
             self.exited = false;
             self.back = Default::default();
+            self.named = 0;
             self.acc = 0.0;
             self.switched = Some(Instant::now());
             self.times.clear();
@@ -1218,6 +1233,11 @@ impl Shell {
             for (name, color) in JOINS.with(|j| std::mem::take(&mut *j.borrow_mut())) {
                 let now = self.game.player_joins(Some(&name), color);
                 log(&format!("{}: {name} {}", self.cfg.title, if now { "joined the game" } else { "joins from the next game" }));
+            }
+            let named = NAMED.with(|n| { let n = n.borrow(); (n.0 != self.named).then(|| (n.0, n.1.clone())) });
+            if let Some((version, players)) = named {
+                self.named = version;
+                self.game.players_named(&players);
             }
             let seats = self.game.seats().or(page);
             let controls = crate::input::route(&devices, seats.as_deref(), self.game.local_players());

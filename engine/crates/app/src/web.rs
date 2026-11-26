@@ -23,6 +23,8 @@ thread_local! {
     static EXIT: RefCell<Option<Box<dyn FnMut(Exit) -> bool>>> = const { RefCell::new(None) };
     /// Players who joined since the last tick ([`player_joins`]).
     static JOINS: RefCell<Vec<(String, Option<[f32; 3]>)>> = const { RefCell::new(Vec::new()) };
+    /// The host's players' names and colours, with a version ([`set_players`]).
+    static NAMED: RefCell<(u64, Vec<(String, Option<[f32; 3]>)>)> = const { RefCell::new((0, Vec::new())) };
     /// The running game's [`crate::Game::takes_joins`], each frame.
     static TAKES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The page's seats for games without their own ([`on_devices`]).
@@ -339,6 +341,8 @@ struct Shell {
     exited: bool,
     /// Back and its chords in a game: the room comes on Back's release.
     back: crate::back_chord::BackChords,
+    /// The [`set_players`] version the running game has.
+    named: u64,
     /// Per frame: time since the last frame, ticks, the game's draw, and the
     /// engine's encode and submit, in ms ([`Shell::stats`]).
     times: Vec<[f32; 4]>,
@@ -542,6 +546,16 @@ fn exit(why: Exit) -> bool {
 /// must then drive the game's next player in controls order.
 pub fn player_joins(name: &str, color: Option<[f32; 3]>) { JOINS.with(|j| j.borrow_mut().push((name.to_string(), color))); }
 
+/// The host's players in controls order, with names and colours: the
+/// running game gets [`crate::Game::players_named`] when they change, and
+/// a game that comes on (loaded or resumed) gets them before its first tick.
+pub fn set_players(players: Vec<(String, Option<[f32; 3]>)>) {
+    NAMED.with(|n| {
+        let mut n = n.borrow_mut();
+        if n.1 != players { n.0 += 1; n.1 = players; }
+    });
+}
+
 /// Whether the running game takes a player who joins now.
 pub fn game_takes_joins() -> bool { TAKES.with(|t| t.get()) }
 
@@ -556,7 +570,7 @@ pub fn run(cfg: crate::Config, game: Box<dyn Game>) {
     probe_refresh();
     let mut devices = Devices::new(cfg.keyboard);
     devices.pointer_enabled = cfg.pointer;
-    let shell = Shell { cfg, game, devices, window: None, live: Rc::new(RefCell::new(None)), acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), failed: false, announced: false, hidden_editor:None, switched: Some((next_presentation(), Instant::now())), exited: false, back: Default::default(), times: Vec::new(),
+    let shell = Shell { cfg, game, devices, window: None, live: Rc::new(RefCell::new(None)), acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), failed: false, announced: false, hidden_editor:None, switched: Some((next_presentation(), Instant::now())), exited: false, back: Default::default(), named: 0, times: Vec::new(),
         render_height: query_param("render").and_then(|h| h.parse().ok()), quality: None, mobile: mobile(), lock_seen: false,
         bench: crate::bench::Bench::from_query(query_param("bench").as_deref()) };
     if shell.mobile { log("phone preset: lower resolution, no bloom or contact occlusion (?quality=full turns it off)"); }
@@ -635,6 +649,7 @@ impl Shell {
             self.devices.pointer_enabled = self.cfg.pointer;
             self.exited = false;
             self.back = Default::default();
+            self.named = 0;
             self.acc = 0.0;
             self.switched = Some((generation, Instant::now()));
             self.times.clear();
@@ -699,6 +714,11 @@ impl Shell {
             for (name, color) in JOINS.with(|j| std::mem::take(&mut *j.borrow_mut())) {
                 let now = self.game.player_joins(Some(&name), color);
                 log(&format!("{}: {name} {}", self.cfg.title, if now { "joined the game" } else { "joins from the next game" }));
+            }
+            let named = NAMED.with(|n| { let n = n.borrow(); (n.0 != self.named).then(|| (n.0, n.1.clone())) });
+            if let Some((version, players)) = named {
+                self.named = version;
+                self.game.players_named(&players);
             }
             let seats = self.game.seats().or(page);
             let controls = crate::input::route(&devices, seats.as_deref(), self.game.local_players());

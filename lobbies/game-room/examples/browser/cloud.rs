@@ -37,6 +37,8 @@ pub(crate) struct Cloud {
     /// off a seat nobody touched for half an hour while its phone was away
     /// too (the poll's `idle`).
     heard: Vec<web_time::Instant>,
+    /// The device's main profile went to the only player once ([`main_player`]).
+    main_claimed: bool,
 }
 
 impl Cloud {
@@ -386,6 +388,7 @@ fn apply(h: &mut Host, reply: &Value) -> Option<(String, bool)> {
         h.dirty = true;
     }
     phones(h, reply, &held);
+    main_player(h, reply, &held);
     // A game a phone on a seat picked (first in the queue, or started now),
     // or its change to the queue.
     let s = &reply["selection"];
@@ -450,6 +453,30 @@ fn phones(h: &mut Host, reply: &Value, held: &[Option<(String, u64, Value)>]) {
         }
     }
     for player in leave { super::page::leave_party(h, &player); }
+}
+
+/// One player in a game, playing as nobody yet: they are this device's
+/// main profile (Joep, 2026-11-26: "if there's only one player, the first
+/// controller should be the main signed-in account"), with a notice saying
+/// so; Back and the doors switch profile. Once per page: a profile the
+/// player put back stays at the doors. With two or more players nobody
+/// gets it, since then the first controller may well be someone else's
+/// (the 2026-10-17 playtest). Clouds before the `main` flag: the one
+/// profile waiting, when exactly one waits.
+fn main_player(h: &mut Host, reply: &Value, held: &[Option<(String, u64, Value)>]) {
+    if h.cloud.main_claimed || h.cloud.seats.len() != 1 || held.first().is_none_or(Option::is_some) { return; }
+    if h.phone.first() == Some(&true) || (h.on_screen.is_none() && h.loading.is_none()) { return; }
+    let waiting: Vec<&Value> = reply["pending"].as_array().into_iter().flatten().filter(|p| p["phone_seat"] != true).collect();
+    let main = if waiting.iter().any(|p| p.get("main").is_some()) {
+        waiting.iter().find(|p| p["main"] == true).copied()
+    } else if waiting.len() == 1 { waiting.first().copied() } else { None };
+    let Some(main) = main else { return };
+    let Some(id) = main["id"].as_str() else { return };
+    h.cloud.main_claimed = true;
+    let name = main["profile"]["display_name"].as_str().unwrap_or("you").to_string();
+    app::web::log(&format!("cloud room: the only player plays as the main profile {name}"));
+    pickup(id.to_string(), 0);
+    super::page::show_hint("✓", &format!("Playing as {name}"), "Not you? Press Back and pick your profile at the door");
 }
 
 /// The room's QR code as the native host draws it (game_room::qr reads it back).
