@@ -900,7 +900,12 @@ pub(crate) mod page {
             let html = entry.map(|entry| super::html_game::HtmlGame::load(entry, with(|h| title(&h.party, &game)), players));
             #[cfg(not(target_arch = "wasm32"))]
             let html = { let _ = entry; None };
-            let loaded = if let Some(html) = html { local(); Ok(html) } else { match super::builtin::load(&folder, players).await {
+            // Warmed in a worker (worker_game.rs, ?warm=worker): built and drawn already.
+            #[cfg(target_arch = "wasm32")]
+            let warmed = if html.is_none() { super::worker_game::take(&folder, players, &with(|h| title(&h.party, &game))) } else { None };
+            #[cfg(not(target_arch = "wasm32"))]
+            let warmed: Option<(Config, Box<dyn Game>)> = None;
+            let loaded = if let Some(w) = warmed { local(); Ok(w) } else if let Some(html) = html { local(); Ok(html) } else { match super::builtin::load(&folder, players).await {
                 // A Rust game that plays online itself (rollback): it gets
                 // the page's couches; the others stay on this couch.
                 Some(Ok((c, mut g))) => {
@@ -1066,6 +1071,8 @@ pub(crate) mod page {
                     Err(e) => app::web::log(&format!("{folder}: {e}")),
                 }
                 app::web::log(&format!("{folder}: fetched ahead, {:.1} MB in {:.1} s", bytes as f64 / 1e6, started.elapsed().as_secs_f32()));
+                #[cfg(target_arch = "wasm32")]
+                super::worker_game::warm(&folder, with(|h| h.players.max(1)));
                 FETCHED.with(|f| f.borrow_mut().push(folder));
                 BUSY.set(false);
             });

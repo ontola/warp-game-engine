@@ -19,10 +19,13 @@ thread_local! {
     static INPUT: RefCell<Vec<Controls>> = const { RefCell::new(Vec::new()) };
     /// A new canvas size from the page (CSS pixels times its scale).
     static RESIZE: RefCell<Option<[u32; 2]>> = const { RefCell::new(None) };
+    /// When the page last sent controls: the game plays while they come.
+    static FED: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
 }
 
 /// The page's controls for each local player, in seat order.
 pub fn set_controls(players: Vec<Controls>) {
+    FED.set(Some(Instant::now()));
     INPUT.with(|i| {
         let mut i = i.borrow_mut();
         let old = std::mem::take(&mut *i);
@@ -64,6 +67,7 @@ struct Live {
     last: Instant,
     started: Instant,
     frames: u64,
+    quit: bool,
 }
 
 /// Run `game` in `canvas` until the worker ends. Returns once the GPU is
@@ -83,7 +87,7 @@ pub async fn run(canvas: web_sys::OffscreenCanvas, cfg: crate::Config, game: Box
     });
     gpu.device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| super::web::log(&format!("worker GPU error: {e}"))));
     let out = Output::new(&gpu, config.format.add_srgb_suffix())?;
-    let live = Rc::new(RefCell::new(Live { surface, config, gpu, out, renderer: None, game, tick: 1.0 / cfg.tick_hz, acc: 0.0, last: Instant::now(), started, frames: 0 }));
+    let live = Rc::new(RefCell::new(Live { surface, config, gpu, out, renderer: None, game, tick: 1.0 / cfg.tick_hz, acc: 0.0, last: Instant::now(), started, frames: 0, quit: false }));
     schedule(live);
     Ok(())
 }
@@ -116,6 +120,13 @@ fn frame(live: &Rc<RefCell<Live>>) -> Result<(), String> {
         l.surface.configure(&l.gpu.device, &l.config);
     }
     let now = Instant::now();
+    // Warmed (its first frame drawn) and not played: it waits, drawing
+    // nothing, until the page hands it controls again.
+    if l.frames > 0 && FED.get().is_none_or(|t| (now - t).as_secs_f32() > 0.25) {
+        l.last = now;
+        l.acc = 0.0;
+        return Ok(());
+    }
     let dt = (now - l.last).as_secs_f32().min(0.1);
     l.last = now;
     l.acc += dt;
@@ -125,7 +136,7 @@ fn frame(live: &Rc<RefCell<Live>>) -> Result<(), String> {
         steps += 1;
         let controls = take_controls(l.game.local_players());
         l.game.tick(&controls);
-        if l.game.quit() { post(&serde_json::json!({"type": "exit", "why": "quit"})); }
+        if l.game.quit() && !std::mem::replace(&mut l.quit, true) { post(&serde_json::json!({"type": "exit", "why": "quit"})); }
         if l.game.take_back() { post(&serde_json::json!({"type": "exit", "why": "back"})); }
     }
     if steps == 6 { l.acc = 0.0; }

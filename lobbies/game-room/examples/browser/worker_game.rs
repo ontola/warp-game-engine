@@ -48,3 +48,90 @@ pub fn worker_controls(json: &str) {
 /// The page resized the worker's canvas.
 #[wasm_bindgen]
 pub fn worker_resize(width: u32, height: u32) { app::web_offscreen::resize([width, height]); }
+
+// The page's side: the next game warmed in a worker (worker-host.js).
+
+#[wasm_bindgen(module = "/examples/browser/worker-host.js")]
+extern "C" {
+    #[wasm_bindgen(js_name = spawnGame)]
+    fn spawn_game(folder: &str, players: u32) -> u32;
+    #[wasm_bindgen(js_name = gameState)]
+    fn game_state(id: u32) -> String;
+    #[wasm_bindgen(js_name = takeExit)]
+    fn take_exit(id: u32) -> String;
+    #[wasm_bindgen(js_name = gameControls)]
+    fn game_controls(id: u32, json: &str);
+    #[wasm_bindgen(js_name = disposeGame)]
+    fn dispose_game(id: u32);
+}
+
+struct Warm { folder: String, players: usize, id: u32 }
+
+thread_local! {
+    static WARM: std::cell::RefCell<Option<Warm>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Warming the next game in a worker: `?warm=worker` on a computer for
+/// now (no sound in the worker yet, and not opened to other couches).
+pub(crate) fn enabled() -> bool { !app::web::mobile() && app::web::query_param("warm").as_deref() == Some("worker") }
+
+/// Build `folder` for `players` in a worker, unless it already is; any
+/// other warmed game goes.
+pub(crate) fn warm(folder: &str, players: usize) {
+    if !enabled() { return; }
+    WARM.with(|w| {
+        let mut w = w.borrow_mut();
+        if w.as_ref().is_some_and(|w| w.folder == folder && w.players == players) { return; }
+        if let Some(old) = w.take() { dispose_game(old.id); }
+        app::web::log(&format!("{folder}: warming in a worker for {players}"));
+        *w = Some(Warm { folder: folder.to_string(), players, id: spawn_game(folder, players as u32) });
+    });
+}
+
+/// The warmed game, if it is `folder` for `players` and drew its first
+/// frame; any other warmed game goes.
+pub(crate) fn take(folder: &str, players: usize, title: &str) -> Option<(app::Config, Box<dyn Game>)> {
+    let warm = WARM.with(|w| w.borrow_mut().take())?;
+    let state = game_state(warm.id);
+    if warm.folder != folder || warm.players != players || state != "ready" {
+        app::web::log(&format!("{}: warmed worker not used ({state}, for {} players)", warm.folder, warm.players));
+        dispose_game(warm.id);
+        return None;
+    }
+    let cfg = app::Config { title: title.to_string(), keyboard: true, pointer: false, ..Default::default() };
+    Some((cfg, Box::new(WorkerGame { id: warm.id, players, back: false, quit: false })))
+}
+
+/// The game in a worker, as the room's shell sees it: it hands over the
+/// players' controls and draws nothing (the worker's canvas is over it).
+struct WorkerGame { id: u32, players: usize, back: bool, quit: bool }
+
+impl Game for WorkerGame {
+    fn local_players(&self) -> usize { self.players }
+    fn tick(&mut self, controls: &[Controls]) {
+        let list: Vec<Value> = controls.iter().map(|c| json!({
+            "mv": c.mv, "look": c.look, "aim": c.aim, "triggers": c.triggers, "held": c.held.0, "pressed": c.pressed.0,
+        })).collect();
+        game_controls(self.id, &Value::Array(list).to_string());
+        match take_exit(self.id).as_str() {
+            "back" => self.back = true,
+            "quit" => self.quit = true,
+            _ => {}
+        }
+        let state = game_state(self.id);
+        if let Some(e) = state.strip_prefix("error: ") {
+            app::web::log(&format!("worker game: {e}"));
+            self.quit = true;
+        }
+    }
+    fn mouse_capture(&self) -> Option<bool> { Some(false) }
+    fn draw(&mut self, frame: &mut app::Frame) -> Result<app::Draw, String> {
+        Ok(app::Draw { cameras: Vec::new(), light: Default::default(), hud: render::hud::HudDrawList::new(frame.size) })
+    }
+    fn take_back(&mut self) -> bool { std::mem::take(&mut self.back) }
+    fn quit(&self) -> bool { self.quit }
+}
+
+impl Drop for WorkerGame {
+    fn drop(&mut self) { dispose_game(self.id); }
+}
