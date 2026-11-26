@@ -73,18 +73,60 @@
     };
     const body = JSON.stringify({ event_id: id, sent_at: new Date().toISOString() }) + '\n' + JSON.stringify({ type: 'event' }) + '\n' + JSON.stringify(event);
     // text/plain: no CORS preflight. keepalive: also while the page closes.
-    fetch(`https://${dsn[2]}/api/${dsn[3]}/envelope/?sentry_key=${dsn[1]}&sentry_version=7&sentry_client=splitscreen-browser/1`,
-      { method: 'POST', body, keepalive: body.length < 60000, headers: { 'content-type': 'text/plain;charset=UTF-8' }, credentials: 'omit' }).catch(() => {});
+    const post = url => fetch(url, { method: 'POST', body, keepalive: body.length < 60000, headers: { 'content-type': 'text/plain;charset=UTF-8' }, credentials: 'omit' });
+    const direct = () => post(`https://${dsn[2]}/api/${dsn[3]}/envelope/?sentry_key=${dsn[1]}&sentry_version=7&sentry_client=splitscreen-browser/1`).catch(() => {});
+    // Through splitscreen.club first: Zen (Firefox) and blockers drop
+    // requests to sentry.io (gamenight-cloud browser_errors.rs).
+    if (/(^|\.)splitscreen\.club$/.test(location.hostname)) post('/v1/telemetry/browser-errors').then(r => { if (!r.ok) direct(); }, direct);
+    else direct();
   };
-  window.splitscreenReport = report;
   // Uncaught errors of the page itself; not browser extensions' (another
   // origin's script shows as "Script error." without a file).
+  // After an engine panic the wasm is dead and every later call fails
+  // ("unreachable", "Module terminated"): those follow the panic's report.
+  const echo = text => crashed && /unreachable|Module terminated/i.test(String(text));
+  let crashed = false;
+  const reportAny = report;
+  window.splitscreenReport = (kind, ...rest) => { if (kind === 'crash') crashed = true; return reportAny(kind, ...rest); };
   addEventListener('error', e => {
-    if (!e.message || e.message === 'Script error.' || (e.filename && !e.filename.startsWith(location.origin))) return;
+    if (!e.message || e.message === 'Script error.' || (e.filename && !e.filename.startsWith(location.origin)) || echo(e.message)) return;
     report('page-error', e.message + (e.filename ? '\nat ' + e.filename.replace(location.origin, '').replace(/\?.*$/, '') + ':' + e.lineno + ':' + e.colno : ''), e.error?.stack);
   });
   addEventListener('unhandledrejection', e => {
     const r = e.reason;
+    if (echo(r instanceof Error ? r.message : r)) return;
     report('unhandled-rejection', r instanceof Error ? r.message : String(r), r?.stack);
   });
+
+  // What throws nothing: a start that never finishes (the loading card's
+  // step unchanged for 60 s), the page frozen for 10 s or more, and the
+  // cloud room failing (no QR code, no phones). Warnings, once each.
+  let step = '', since = performance.now();
+  setInterval(() => {
+    const card = document.getElementById('warp-progress'), text = document.getElementById('warp-step')?.textContent || '';
+    if (!card || card.hidden || card.classList.contains('direct-games')) { step = ''; since = performance.now(); return; }
+    if (text !== step) { step = text; since = performance.now(); return; }
+    const waited = (performance.now() - since) / 1000;
+    // Waiting for a player is not stuck.
+    if (waited > 60 && !/press a|join|could not/i.test(text)) report('stall', 'stuck at: ' + text.slice(0, 120) + '\nfor ' + Math.round(waited) + ' s', null, 'warning');
+  }, 5000);
+  let last = performance.now();
+  const beat = now => {
+    const gap = now - last;
+    last = now;
+    // Hidden tabs get no frames: only a gap while the page is shown counts.
+    if (gap > 10000 && document.visibilityState === 'visible' && !document.hidden) report('freeze', 'the page drew nothing for ' + Math.round(gap / 1000) + ' s', null, 'warning');
+    requestAnimationFrame(beat);
+  };
+  requestAnimationFrame(beat);
+  document.addEventListener('visibilitychange', () => { last = performance.now(); });
+  const watchLog = () => {
+    const box = document.getElementById('warp-log');
+    if (!box) return setTimeout(watchLog, 500);
+    new MutationObserver(() => {
+      const line = box.textContent.split('\n').find(l => /^cloud room: .*HTTP [45]\d\d/.test(l));
+      if (line) report('cloud', line.replace(/^cloud room: /, ''), null, 'warning');
+    }).observe(box, { childList: true, characterData: true, subtree: true });
+  };
+  watchLog();
 })();
