@@ -120,10 +120,7 @@ pub fn param(k: &str) -> Option<String> { app::web::query_param(k) }
 
 /// A value from the page's query string (`?game=neon-siege&players=2`).
 #[cfg(target_arch = "wasm32")]
-pub fn param(k: &str) -> Option<String> {
-    let query = web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default();
-    query.trim_start_matches('?').split('&').find_map(|kv| kv.split_once('=').filter(|(key, _)| *key == k).map(|(_, v)| v.to_owned()))
-}
+pub fn param(k: &str) -> Option<String> { app::web::query_param(k) }
 
 /// The game folders next to the page (`games/index.json`).
 pub async fn games() -> Result<Vec<String>, String> {
@@ -146,6 +143,30 @@ pub async fn fetch_game(name: &str) -> Result<PathBuf, String> {
     }
     app::web::log(&format!("{name}: {} files, {} KB in {:.0} ms", files.len(), bytes / 1024, t0.elapsed().as_secs_f32() * 1000.0));
     Ok(dir)
+}
+
+/// A player's own game from the cloud, by its play link (gamenight-cloud
+/// `/v1/game-files/TOKEN`: `{id, title, files: {path: text}}`), into the
+/// vfs as `games/<id>`, where [`fetch_game`] leaves a bundled game, so
+/// [`load`] runs it as any other. Fetched again each time: the player may
+/// have changed it. Returns its id (the host's shelf id) and title.
+pub async fn fetch_project(url: &str) -> Result<(String, String), String> {
+    let v: serde_json::Value = serde_json::from_slice(&app::web::fetch(url).await?).map_err(|e| format!("{url}: {e}"))?;
+    let id = v["id"].as_str()
+        .filter(|id| !id.is_empty() && id.len() <= 120 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'))
+        .ok_or_else(|| format!("{url}: not a game"))?;
+    let files = v["files"].as_object().ok_or_else(|| format!("{url}: no files"))?;
+    let dir = Path::new("games").join(id);
+    let mut bytes = 0;
+    for (rel, text) in files {
+        // Relative paths in the game's folder only (the cloud checks too).
+        if rel.is_empty() || rel.starts_with('/') || rel.split('/').any(|p| p.is_empty() || p == "." || p == "..") { continue; }
+        let text = text.as_str().unwrap_or_default().as_bytes().to_vec();
+        bytes += text.len();
+        vfs::insert(dir.join(rel), text);
+    }
+    app::web::log(&format!("{id}: own game, {} files, {} KB", files.len(), bytes / 1024));
+    Ok((id.to_string(), v["title"].as_str().unwrap_or(id).to_string()))
 }
 
 /// Fetch game `name` ([`fetch_game`]), load its scripts and run `init`,

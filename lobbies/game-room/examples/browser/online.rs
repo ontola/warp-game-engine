@@ -206,6 +206,7 @@ pub(crate) fn on_screen(on: bool) {
 
 fn tick() {
     let mut start = None;
+    let mut own = None;
     PAGE.with(|p| match &mut *p.borrow_mut() {
         Page::Off => {}
         Page::Host { link, game, told } => {
@@ -215,7 +216,10 @@ fn tick() {
             let Some(g) = game.clone() else { return };
             let new: Vec<u64> = clients.into_iter().filter(|c| !told.contains(c)).collect();
             for c in new {
-                link.send(c, Down::Lobby(json!({"game": g}).to_string()));
+                // A player's own game: the follower fetches it by its link.
+                let mut msg = json!({"game": g});
+                if let Some(files) = super::page::own_files(&g) { msg["files"] = json!(files); }
+                link.send(c, Down::Lobby(msg.to_string()));
                 told.push(c);
             }
         }
@@ -223,7 +227,13 @@ fn tick() {
             for (_, text) in link.poll_lobby() {
                 let Ok(v) = serde_json::from_str::<Value>(&text) else { continue };
                 if let Some(g) = v["game"].as_str() {
-                    if game.as_deref() != Some(g) { *game = Some(g.to_string()); start = Some(g.to_string()); }
+                    if game.as_deref() != Some(g) {
+                        *game = Some(g.to_string());
+                        match v["files"].as_str() {
+                            Some(files) => own = Some((g.to_string(), files.to_string())),
+                            None => start = Some(g.to_string()),
+                        }
+                    }
                 }
             }
             if link.closed() && !*gone {
@@ -240,5 +250,9 @@ fn tick() {
     if let Some(g) = start {
         app::web::log(&format!("online: the host plays {g}"));
         super::page::start(g);
+    }
+    if let Some((g, files)) = own {
+        app::web::log(&format!("online: the host plays its own game {g}"));
+        super::page::start_own(g, files);
     }
 }

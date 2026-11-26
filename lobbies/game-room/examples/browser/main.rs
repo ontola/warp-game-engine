@@ -935,11 +935,24 @@ pub(crate) mod page {
                 Some(l) => { local(); l }
                 // Online for other couches, or following another couch's
                 // game (online.rs, engine/docs/online.md).
-                None => warp::web::load(&folder, Some(players)).await.map(|(mut c, mut g)| {
+                None => {
+                    // Online needs the room's code, which the cloud gives
+                    // shortly after the page opens; a game that loads
+                    // faster than that (a player's own, from a link) waits
+                    // for it a moment, or it would stay off line.
+                    #[cfg(target_arch = "wasm32")]
+                    if warp::web::param("cloud").as_deref() != Some("off") && warp::web::param("online").as_deref() != Some("off") {
+                        for _ in 0..50 {
+                            if !with(|h| h.cloud.room_code().is_empty()) { break; }
+                            app::web::sleep(100).await;
+                        }
+                    }
+                    warp::web::load(&folder, Some(players)).await.map(|(mut c, mut g)| {
                     #[cfg(target_arch = "wasm32")]
                     super::online::loaded(&folder, &with(|h| h.cloud.room_code().to_string()), &mut c, &mut g);
                     (c, Box::new(g) as Box<dyn Game>)
-                }),
+                    })
+                }
             } };
 
             // Its first frame compiles and uploads the scene, which can take
@@ -1016,7 +1029,7 @@ pub(crate) mod page {
             // way (the room says to press A).
             if progress >= 100 { app::web::progress(None, label) } else { app::web::progress(Some(progress as f32 / 100.0), &format!("{name}: {label}")) }
         });
-        if html { return status(100, "Press A to join"); }
+        if html || with(|h| game_meta(&h.party, &game).is_some_and(|m| m["own_files"].is_string())) { return status(100, "Press A to join"); }
         status(0, "Loading");
         app::web::spawn(async move {
             let list = match app::web::fetch(&format!("games/{folder}/files.json")).await.and_then(|b| serde_json::from_slice::<Vec<String>>(&b).map_err(|e| e.to_string())) {
@@ -1058,7 +1071,7 @@ pub(crate) mod page {
                     .filter(|g| h.on_screen.as_deref() != Some(*g) && fits(&h.party, g, players))
                     .find_map(|g| {
                         let meta = game_meta(&h.party, g)?;
-                        if meta["web_entry"].is_string() { return None; }
+                        if meta["web_entry"].is_string() || meta["own_files"].is_string() { return None; }
                         let folder = meta["folder"].as_str()?.to_string();
                         (!FETCHED.with(|f| f.borrow().contains(&folder))).then_some(folder)
                     })
@@ -1232,7 +1245,20 @@ pub(crate) mod page {
             .as_string().ok_or("Game catalog was not JSON")?.into_bytes();
         #[cfg(not(target_arch = "wasm32"))]
         let bytes = app::web::fetch("games/library.json").await?;
-        let library: Vec<Value> = serde_json::from_slice(&bytes).map_err(|e| format!("games/library.json: {e}"))?;
+        let mut library: Vec<Value> = serde_json::from_slice(&bytes).map_err(|e| format!("games/library.json: {e}"))?;
+        // A player's own game (`?project=TOKEN`, the app's Play): fetched
+        // from the cloud, first on the shelf, and started below.
+        let own = match warp::web::param("project") {
+            Some(token) if token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit()) => {
+                app::web::progress(Some(0.1), "Getting your game");
+                let url = format!("{}/v1/game-files/{token}", own_origin());
+                match warp::web::fetch_project(&url).await {
+                    Ok((id, title)) => { library.insert(0, own_entry(&id, &title, &url)); Some(id) }
+                    Err(e) => { app::web::log(&format!("Your game: {e}")); None }
+                }
+            }
+            _ => None,
+        };
         // The native phone host runs Warp games only: a web export (Godot's,
         // `web_entry`) needs a browser page, so it stays off the shelf there
         // instead of silently dropping out of the queue when picked.
@@ -1241,7 +1267,7 @@ pub(crate) mod page {
         // A game link (`?game=`) seats one player unless `?players=` says
         // otherwise: the first key, mouse look or A on a pad claims it.
         let players = warp::web::param("players").and_then(|p| p.parse().ok())
-            .unwrap_or(if warp::web::param("game").is_some() { 1 } else { 0usize }).min(MAX_SEATS);
+            .unwrap_or(if warp::web::param("game").is_some() || own.is_some() { 1 } else { 0usize }).min(MAX_SEATS);
         // The room's QR code on the loading screen while the room is built.
         super::cloud::register_early();
         app::web::progress(Some(0.2), "Building the Game Room");
@@ -1273,6 +1299,10 @@ pub(crate) mod page {
         for i in (1..entries.len()).rev() {
             seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17;
             entries.swap(i, (seed % (i as u64 + 1)) as usize);
+        }
+        // Your own game goes first in the queue.
+        if let Some(id) = &own {
+            if let Some(i) = entries.iter().position(|e| e["game"] == id.as_str()) { let e = entries.remove(i); entries.insert(0, e); }
         }
         party["playlist"] = json!({"entries": entries, "current": null});
         party["library"] = Value::Array(library);
@@ -1336,8 +1366,50 @@ pub(crate) mod page {
         let following = super::online::following();
         #[cfg(not(target_arch = "wasm32"))]
         let following = false;
-        if let Some(game) = warp::web::param("game").filter(|_| !following) { start(game); }
+        if let Some(game) = own.or_else(|| warp::web::param("game")).filter(|_| !following) { start(game); }
         Ok(())
+    }
+
+    /// Where the play link points: the cloud this page talks to.
+    fn own_origin() -> String {
+        match warp::web::param("cloud") {
+            Some(o) if o != "off" => o.trim_end_matches('/').to_string(),
+            _ => app::web::origin(),
+        }
+    }
+
+    /// A shelf entry for a player's own game: its files are in the vfs
+    /// already ([`warp::web::fetch_project`]), so nothing is fetched ahead.
+    fn own_entry(id: &str, title: &str, url: &str) -> Value {
+        json!({"id": id, "folder": id, "title": title, "own_files": url, "min_players": 1, "keyboard": true})
+    }
+
+    /// The play link of `game` when it is a player's own game, for a
+    /// couch that follows this one (online.rs).
+    #[allow(dead_code)]
+    pub(crate) fn own_files(game: &str) -> Option<String> {
+        with(|h| game_meta(&h.party, game)?["own_files"].as_str().map(String::from))
+    }
+
+    /// The host plays a player's own game: fetch it from its play link,
+    /// put it on this page's shelf and play it (a following couch).
+    #[allow(dead_code)]
+    pub(crate) fn start_own(game: String, url: String) {
+        app::web::spawn(async move {
+            match warp::web::fetch_project(&url).await {
+                Ok((id, title)) => {
+                    with(|h| {
+                        let entry = own_entry(&id, &title, &url);
+                        if let Some(list) = h.party["library"].as_array_mut() {
+                            list.retain(|g| g["id"] != id.as_str());
+                            list.insert(0, entry);
+                        }
+                    });
+                    start(if id == game { id } else { game });
+                }
+                Err(e) => app::web::log(&format!("{game}: {e}")),
+            }
+        });
     }
 
     /// Start game `name` (folder or store id) from the page (its buttons), as the shelf's Play does.
