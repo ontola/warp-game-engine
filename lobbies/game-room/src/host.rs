@@ -100,6 +100,10 @@ pub struct Host {
     pub public: bool,
     pub time: f32,
     pub shelf_offset: usize,
+    /// The shelf's order while the catalog is open (game ids): a game that
+    /// stops fitting (someone joined to play) stays where it was instead of
+    /// jumping to the end under the mouse (Joep, 2026-11-26).
+    pub shelf_order: Option<Vec<String>>,
     /// /api/player-links.
     pub links: Value,
     /// A game just quit: hidden until the host has closed it.
@@ -125,6 +129,9 @@ impl Host {
         let games: Vec<&Value> = self.library().iter().filter(|g| get(g, "id", "<null>") != self.lobby_id && self.input_fits(g)).collect();
         let (mut fit, rest): (Vec<&Value>, Vec<&Value>) = games.into_iter().partition(|g| self.fits_party(g));
         fit.extend(rest);
+        if let Some(order) = &self.shelf_order {
+            fit.sort_by_key(|g| order.iter().position(|id| *id == get(g, "id", "")).unwrap_or(usize::MAX));
+        }
         fit
     }
 
