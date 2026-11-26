@@ -165,12 +165,18 @@ fn items(screen: Screen, ctx: &Ctx) -> Vec<Item> {
             Item::Text("Bots:", label), Item::Bots(""), Item::Row(LAN),
             Item::Note("Click or arrows + Enter · Esc exits"),
         ],
-        Screen::Pause if ctx.party.is_some() => vec![
-            Item::Button("RESUME", Action::Resume, true), Item::Button("RESTART MATCH", Action::Rematch, !ctx.client),
-            Item::Button("BACK TO LOBBY", Action::Lobby, true),
-            if ctx.coop { Item::Button("SWITCH TO VERSUS", Action::Versus, !ctx.client) } else { Item::Button("SWITCH TO WAVE SURVIVAL", Action::Wave, !ctx.client) },
-            Item::Bots("AI PLAYERS"), Item::Button("ADVANCED", Action::Advanced, true), Item::Button("SETTINGS", Action::Settings, true),
-        ],
+        // Under Splitscreen Club, and in its browser host (the room is the
+        // lobby there, and there are no iroh match IDs).
+        Screen::Pause if ctx.party.is_some() || cfg!(target_arch = "wasm32") => {
+            let mut v = vec![
+                Item::Button("RESUME", Action::Resume, true), Item::Button("RESTART MATCH", Action::Rematch, !ctx.client),
+                Item::Button("BACK TO LOBBY", Action::Lobby, true),
+                if ctx.coop { Item::Button("SWITCH TO VERSUS", Action::Versus, !ctx.client) } else { Item::Button("SWITCH TO WAVE SURVIVAL", Action::Wave, !ctx.client) },
+                Item::Bots("AI PLAYERS")];
+            if ctx.party.is_some() { v.push(Item::Button("ADVANCED", Action::Advanced, true)); }
+            v.push(Item::Button("SETTINGS", Action::Settings, true));
+            v
+        }
         Screen::Advanced => {
             let n = ctx.party.as_ref().map_or(0, |p| p.0.len());
             let mut v: Vec<Item> = (0..n).map(Item::Party).collect();

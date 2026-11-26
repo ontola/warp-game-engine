@@ -809,6 +809,8 @@ impl Gg {
             Action::Lobby => {
                 self.ui.open(Screen::Play);
                 if let Some(p) = &self.party { p.overlay(); }
+                // The browser host: leaving the game is going back to its room.
+                else if cfg!(target_arch = "wasm32") { self.quit = true; }
             }
             Action::Versus | Action::Wave if host => {
                 for s in std::mem::take(&mut self.start_seats) { self.world.set_bot(s, false); }
