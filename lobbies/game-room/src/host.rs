@@ -95,6 +95,9 @@ pub struct Host {
     pub demo: bool,
     /// No jukebox in the room (the browser can't steer the OS's music).
     pub no_jukebox: bool,
+    /// The online switch (where the jukebox is not): Public, or Friends
+    /// only. The browser host starts on Public.
+    pub public: bool,
     pub time: f32,
     pub shelf_offset: usize,
     /// /api/player-links.
@@ -456,6 +459,10 @@ impl Host {
             let playing = self.party["now_playing"]["playing"].as_bool().unwrap_or(false);
             return Some(Station { id: "music1".into(), kind: "music".into(), label: if playing { "Pause music" } else { "Play music" }.into(),
                 action: "play_pause".into(), enabled: true, extra: "LB previous RB next".into(), ..Default::default() });
+        }
+        if self.no_jukebox && (x - l::JUKEBOX).abs() <= 0.85 {
+            return Some(Station { id: "privacy".into(), kind: "privacy".into(), label: if self.public { "Make it friends only" } else { "Make it public" }.into(),
+                action: "toggle_public".into(), enabled: true, ..Default::default() });
         }
         let id = player?;
         if (x - l::EXIT_DOOR).abs() <= 0.6 {

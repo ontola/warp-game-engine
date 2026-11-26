@@ -384,6 +384,17 @@ impl Lobby {
         self.use_station_as(Some(id), station, queue);
     }
 
+    /// Throw the online switch: Public lets strangers find the room, Friends
+    /// only keeps it to people with the code or QR.
+    pub(crate) fn set_public(&mut self, public: bool) {
+        if self.host.public == public { return; }
+        self.host.public = public;
+        self.screens_dirty = true;
+        self.command(json!({"type": "set_public", "public": public}));
+        if public { self.toast("Public: strangers can join this room.", GREEN); }
+        else { self.toast("Friends only: only people with the code can join.", GREEN); }
+    }
+
     /// Use `station` for a player, or for the mouse (None), which is nobody:
     /// it never leaves the party or picks up a profile.
     pub(crate) fn use_station_as(&mut self, id: Option<&str>, station: Station, queue: bool) {
@@ -447,6 +458,7 @@ impl Lobby {
                 }
             }
             "music" => self.command(json!({"type": "media_control", "action": station.action})),
+            "privacy" => self.set_public(!self.host.public),
             "exit" => {
                 let Some(id) = id else { return };
                 // The last one out quits Splitscreen Club (Y twice).
@@ -845,6 +857,8 @@ impl Lobby {
             vec![("LB", "Previous", true), ("Y", if playing { "Pause" } else { "Play" }, true), ("RB", "Next", true)]
         } else { vec![("Y", "Play", true)] };
         self.set_prompt("music", &music, true, occupied.contains_key("music1"));
+        let privacy = if self.host.public { "Friends only" } else { "Public" };
+        self.set_prompt("privacy", &[("Y", privacy, true)], true, occupied.contains_key("privacy"));
         let exit = if mouse_only.as_deref() == Some("exit") { if self.mouse_quit_armed() { "Click again to quit" } else { "Quit Splitscreen Club" } }
             else if self.last_one_out() { if self.mouse_quit_armed() { "Press again to quit" } else { "Quit Splitscreen Club" } } else { "Leave" };
         self.set_prompt("exit", &[("Y", exit, true)], true, occupied.contains_key("exit"));

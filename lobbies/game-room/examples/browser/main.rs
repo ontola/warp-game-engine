@@ -742,6 +742,8 @@ pub(crate) mod page {
                     #[cfg(target_arch = "wasm32")]
                     if let (Some(code), Some(w)) = (msg["code"].as_str(), web_sys::window()) { let _ = w.navigator().clipboard().write_text(code); }
                 }
+                // The online switch (Public / Friends only).
+                "set_public" => super::online::set_public(msg["public"].as_bool().unwrap_or(true)),
                 "room_pickup" => {
                     let seat = msg["player_id"].as_str().and_then(|p| with(|h| seat_of(h, p)));
                     if let (Some(pending), Some(seat)) = (msg["pending"].as_str(), seat) { super::cloud::pickup(pending.to_string(), seat); }
@@ -1212,6 +1214,7 @@ pub(crate) mod page {
         let mut lobby = Lobby::new(options, players, 0)?;
         lobby.outbox = Some(vec![]);
         lobby.host.no_jukebox = true;
+        lobby.host.public = true;
         lobby.remember_view();
         app::web::log(&format!("Game Room built in {:.0} ms", t0.elapsed().as_secs_f32() * 1000.0));
         // The demo party, with this page's games, no phones and nothing loading.

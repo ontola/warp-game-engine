@@ -79,6 +79,8 @@ pub struct Show {
     pub profile_colors: Vec<String>,
     pub now_playing: Option<Track>,
     pub room_code: String,
+    /// The online switch is on Public.
+    pub public: bool,
     /// The room QR code's dark modules, 0..1 (qr.rs).
     pub qr: Vec<[f32; 4]>,
     pub bumper_presses: [f32; 2],
@@ -487,6 +489,21 @@ pub fn plaque(c: &mut Canvas, show: &Show) {
     c.text(faces().wordmark, [0.0, h - 16.0], code, TextAlign::Center, w, 52.0, TEXT);
 }
 
+/// The online switch's sign: PUBLIC on the left, FRIENDS ONLY on the right,
+/// the one it is on lit in a green pill (green: state, DESIGN.md).
+pub fn privacy(c: &mut Canvas, show: &Show) {
+    let [w, h] = c.size;
+    c.rect([0.0, 0.0, w, h], Color::hex("0d1020"));
+    let half = w / 2.0;
+    for (i, word) in ["PUBLIC", "FRIENDS ONLY"].into_iter().enumerate() {
+        let on = (i == 0) == show.public;
+        let x = i as f32 * half;
+        if on { c.style_box([x + 8.0, 10.0, half - 16.0, h - 20.0], [(h - 20.0) / 2.0; 4], GREEN.with_alpha(0.22), Some((3.0, GREEN))); }
+        let size = fit(word, 40.0, half - 40.0, 20.0);
+        c.text(faces().wordmark, [x, h / 2.0 + size * 0.36], word, TextAlign::Center, half, size, if on { TEXT } else { DIM });
+    }
+}
+
 /// The one floating panel (DESIGN.md "Panel"): bg at 88 %, 1 px edge,
 /// radius 18 and a soft shadow 8 px under it, all at `scale` (1 at 1080p).
 pub fn panel(c: &mut Canvas, r: [f32; 4], scale: f32) { panel_with(c, r, scale, crate::room::PANEL, crate::room::LINE); }
@@ -768,6 +785,7 @@ pub fn paint(c: &mut Canvas, name: &str, show: &Show, prompts: &std::collections
         "queue_titles" => queue_titles(c, show),
         "jukebox" => jukebox(c, show),
         "plaque" => plaque(c, show),
+        "privacy" => privacy(c, show),
         "bumper_LB" => shelf_bumper(c, show, false),
         "bumper_RB" => shelf_bumper(c, show, true),
         _ if name.starts_with("music_icon") => music_icon(c, name["music_icon".len()..].parse().unwrap_or(0)),

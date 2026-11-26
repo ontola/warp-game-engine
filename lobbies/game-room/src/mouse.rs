@@ -20,7 +20,7 @@ const IDLE: f32 = 5.0;
 const PROMPT_PX: f32 = 0.0042 * crate::live::PROMPT_SCALE;
 /// Stations the mouse can work. The doors are somebody's: picking up a
 /// profile needs a controller. The exit quits Splitscreen Club for the mouse.
-const STATIONS: [&str; 5] = ["tv", "shelf", "queue", "music", "exit"];
+const STATIONS: [&str; 6] = ["tv", "shelf", "queue", "music", "privacy", "exit"];
 /// Seconds a first click on the exit's Quit waits for the second.
 const QUIT_CONFIRM: f32 = 3.0;
 

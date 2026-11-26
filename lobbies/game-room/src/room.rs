@@ -213,6 +213,11 @@ pub struct RoomBuild {
     pub pads: Vec<(String, Vec3, f32, usize)>,
     /// The jukebox's instances (the browser host has no music to steer).
     pub jukebox: std::ops::Range<usize>,
+    /// The online switch's instances (only the browser host shows it, where
+    /// the jukebox would stand).
+    pub switch: std::ops::Range<usize>,
+    /// Where the switch's lever is: 0 Public (left), 1 Friends only.
+    switch_at: f32,
     /// Instance shapes, for run-time copies (spines, items).
     pub shapes: Vec<Shape>,
     /// Each pad's pose as last posed.
@@ -250,6 +255,8 @@ impl RoomBuild {
             pad_pose: vec![],
             pad_parts: vec![],
             jukebox: 0..0,
+            switch: 0..0,
+            switch_at: 0.0,
             meshes: HashMap::new(),
             group: String::new(),
             rng: Pcg::new(1),
@@ -454,6 +461,11 @@ pub fn build() -> RoomBuild {
     jukebox(&mut r);
     r.jukebox = first..r.dump.instances.len();
     exit_door(&mut r);
+    let first = r.dump.instances.len();
+    switch(&mut r);
+    r.switch = first..r.dump.instances.len();
+    r.hidden.extend(r.switch.clone());
+    r.prompt("privacy", &[("Y", "Friends only")], Vec3::new(l::JUKEBOX as f32, 2.75, BACK + 1.2));
     r.prompt("music", &[("LB", "Previous"), ("Y", "Pause"), ("RB", "Next")], Vec3::new(l::JUKEBOX as f32, 3.35, BACK + 1.2));
     r.prompt("exit", &[("Y", "Leave")], Vec3::new(l::EXIT_DOOR as f32, 3.0, BACK + 0.4));
     for (i, x) in l::PROFILE_DOORS.iter().map(|&x| x as f32).enumerate() {
@@ -944,6 +956,34 @@ fn plaque(r: &mut RoomBuild) {
     r.quad(Vec2::new(2.2, 2.63), c + Vec3::new(0.0, 0.0, 0.04), &material);
 }
 
+/// Where the online switch stands: the jukebox's place, on the floor.
+const SWITCH_Z: f32 = BACK + 0.75;
+/// How far the lever travels either side of the middle.
+const SWITCH_THROW: f32 = 0.5;
+
+/// The online switch (Joep, 26 November 2026): a big lever on the floor,
+/// thrown left for Public, right for Friends only, both words on the sign
+/// above it. Built hidden; the browser host shows it instead of the jukebox.
+fn switch(r: &mut RoomBuild) {
+    let x = l::JUKEBOX as f32;
+    let z = SWITCH_Z;
+    let dark = mm(Color::hex("221d30"), 0.4, 0.6);
+    r.box_(Vec3::new(1.6, 0.24, 0.6), Vec3::new(x, 0.12, z), &dark);
+    r.box_flat(Vec3::new(1.24, 0.02, 0.14), Vec3::new(x, 0.245, z), &m(Color::hex("0d1020"), 1.0));
+    r.group = "switch_lever".into();
+    r.cylinder(0.055, 0.55, Vec3::new(x - SWITCH_THROW, 0.52, z), &mm(Color::hex("d8d4e8"), 0.15, 0.9));
+    r.sphere(0.17, Vec3::new(x - SWITCH_THROW, 0.84, z), &glow(GREEN, 0.3, GREEN, 1.6));
+    r.group.clear();
+    for sx in [-1.0f32, 1.0] {
+        r.box_(Vec3::new(0.06, 1.4, 0.06), Vec3::new(x + sx * 0.86, 0.95, z - 0.2), &dark);
+    }
+    r.box_(Vec3::new(1.9, 0.56, 0.06), Vec3::new(x, 1.88, z - 0.2), &dark);
+    let texture = r.screen("privacy", [400, 112], false);
+    let mut material = RoomBuild::screen_material(texture, 1.2);
+    material.filter = 0;
+    r.quad(Vec2::new(1.82, 0.5), Vec3::new(x, 1.88, z - 0.165), &material);
+}
+
 /// Where a moving head points at `time` (room.gd's `_process`).
 pub fn mover_target(side: f32, time: f32) -> Vec3 {
     let t = time * 0.35 + if side < 0.0 { 0.0 } else { PI };
@@ -1148,11 +1188,13 @@ pub struct Mood {
     /// Each table pad's height above its spot (falling in); None: not on
     /// the table (see pads.rs).
     pub pad_drop: [Option<f32>; crate::pads::MAX],
+    /// The online switch is on Public (browser host).
+    pub public: bool,
 }
 
 impl Default for Mood {
     fn default() -> Self {
-        Mood { music_playing: false, color: VIOLET, pad_hop: 99.0, pad_activity: 0.0, pad_drop: [None; crate::pads::MAX] }
+        Mood { music_playing: false, color: VIOLET, pad_hop: 99.0, pad_activity: 0.0, pad_drop: [None; crate::pads::MAX], public: true }
     }
 }
 
@@ -1173,6 +1215,7 @@ impl RoomBuild {
         let mut names: Vec<String> = vec!["mover0".into(), "mover1".into(), "disco".into()];
         names.extend((0..7).map(|i| format!("eq{i}")));
         names.extend(self.pads.iter().map(|p| p.0.clone()));
+        names.push("switch_lever".into());
         let mut instances: Vec<usize> = names.iter().flat_map(|n| self.find(n)).collect();
         instances.sort();
         instances.dedup();
@@ -1217,6 +1260,14 @@ impl RoomBuild {
             let wire = matches!(self.shapes[k], Shape::Cylinder { top, .. } if top == 0.01);
             let offset = if wire { Vec3::new(0.0, 0.45, 0.0) } else { Vec3::ZERO };
             set_transform(&mut self.dump.instances[k].transform, disco * Affine3A::from_translation(offset));
+        }
+        // The lever eases over when the switch is thrown.
+        let want = if mood.public { 0.0 } else { 1.0 };
+        self.switch_at += (want - self.switch_at) * (delta * 10.0).min(1.0);
+        let lever_x = l::JUKEBOX as f32 + SWITCH_THROW * (self.switch_at * 2.0 - 1.0);
+        for k in self.find("switch_lever") {
+            let ball = matches!(self.shapes[k], Shape::Sphere { .. });
+            set_transform(&mut self.dump.instances[k].transform, Affine3A::from_translation(Vec3::new(lever_x, if ball { 0.84 } else { 0.52 }, SWITCH_Z)));
         }
         let light = self.light("disco");
         self.dump.lights[light]["transform"] = json!(glam::Mat4::from(disco * Affine3A::from_translation(Vec3::new(0.0, -0.8, 0.5))).to_cols_array());

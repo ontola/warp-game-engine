@@ -359,8 +359,10 @@ impl Lobby {
         let gone = if self.host.no_jukebox { self.build.jukebox.clone() } else { 0..0 };
         if self.host.no_jukebox && !self.jukebox_gone {
             self.jukebox_gone = true;
-            for k in gone.clone() {
-                if let Some(i) = room.sync_instance(&mut self.stage.scene, k, false) {
+            // The online switch stands in its place.
+            let swap = gone.clone().map(|k| (k, false)).chain(self.build.switch.clone().map(|k| (k, true)));
+            for (k, show) in swap {
+                if let Some(i) = room.sync_instance(&mut self.stage.scene, k, show) {
                     dirty = Some(dirty.map_or((i, i + 1), |(a, b)| (a.min(i), b.max(i + 1))));
                 }
             }
@@ -368,7 +370,8 @@ impl Lobby {
         }
         for &k in instances {
             room.dump.instances[k].transform = self.build.dump.instances[k].transform;
-            if let Some(i) = room.sync_instance(&mut self.stage.scene, k, !gone.contains(&k)) {
+            let shown = !gone.contains(&k) && (self.host.no_jukebox || !self.build.switch.contains(&k));
+            if let Some(i) = room.sync_instance(&mut self.stage.scene, k, shown) {
                 dirty = Some(dirty.map_or((i, i + 1), |(a, b)| (a.min(i), b.max(i + 1))));
             }
         }
@@ -629,6 +632,8 @@ impl Lobby {
             if artist.is_empty() { artist = get(t, "source", ""); }
             Track { title: get(t, "title", ""), artist, playing: t["playing"].as_bool().unwrap_or(false) }
         });
+        show.public = h.public;
+        self.mood.public = h.public;
         self.mood.music_playing = show.now_playing.as_ref().is_some_and(|t| t.playing);
         // The TV light leans towards the next game's colour.
         let next = h.current_game().or_else(|| upcoming.first().and_then(|e| h.game_meta(&e.game).cloned()));
