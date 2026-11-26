@@ -4,6 +4,18 @@ Updated 6 November 2026. **This is the single authoritative checklist.**
 Older reports and `engine/docs/log/handoff.md` contain supporting history, not separate
 plans. Architecture first; no interactive playtest until requested.
 
+## Baking species for a fixed forest
+
+Warp Theft Auto grows its Jeffrey pines and Norway spruces with `plant_growth`. Its birch and broadleaf trees use the engine's `plant_species` recipes. The offline `bake_woodland_tree` example takes a species, seed, age, target height, trunk radius and two triangle budgets. Both meshes use the same source branches and foliage samples. On the standard tier, the cooker groups growth samples into tapered sprays along each limb. On the phone tier, it fits a small number of closed surfaces to the crown. Both tiers preserve the bends in the largest stems. The game chooses a budget for each species and keeps its planting map and trunk collision dimensions.
+
+To regenerate the shared stands, roadside groups and urban trees, run the following from the repository root.
+
+```sh
+python games/warp-theft-auto/scripts/bake_forest.py
+```
+
+The game loads the resulting static glTF assets on desktop and phone. Each stand shares one mesh per species across its placements. This path has no in-game tree growth, articulated wind or per-camera vegetation streaming cost. The separate `plants.grow` API remains available to games that need to generate or inspect living specimens at runtime.
+
 ## Where we are
 
 **Overall status: incomplete.** GPU incremental complete-cut selection, bounded

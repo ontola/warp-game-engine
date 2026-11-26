@@ -1,4 +1,4 @@
-"""Bake the street tree and border from reusable opaque shoots. All dimensions are metres."""
+"""Bake the shrub border and write grouped glTF meshes used by the woodland cook."""
 import json
 import math
 import random
@@ -47,52 +47,6 @@ class Geometry:
         p.extend(points)
         n.extend(normals)
         ix.extend(start + i for triangle in triangles for i in triangle)
-
-
-def crown_envelope(mesh, points, tone, sides):
-    """Fit a small closed crown to the source leaves of a branch or whorl."""
-    low = [min(p[i] for p in points) for i in range(3)]
-    high = [max(p[i] for p in points) for i in range(3)]
-    cx, _, cz = between(low, high, .5)
-    height = high[1] - low[1]
-    # The crown top can lean away from the base. Keep the extremities at the
-    # source heights, with their centres taken from actual foliage at that level.
-    def pole(y):
-        near = [p for p in points if abs(p[1]-y) <= .15*height]
-        return (sum(p[0] for p in near)/len(near), y, sum(p[2] for p in near)/len(near))
-    vertices = [pole(high[1]), pole(low[1])]
-    faces = []
-    # Orient the polygon toward the longest spray and sample its outer contour.
-    tip = max(points, key=lambda p: math.hypot(p[0]-cx, p[2]-cz))
-    heading = math.atan2(tip[2]-cz, tip[0]-cx)
-    for i in range(sides):
-        a = heading + i*TAU/sides
-        x, z = math.cos(a), math.sin(a)
-        def support(p):
-            dx, dz = p[0]-cx, p[2]-cz
-            return dx*x+dz*z - .35*abs(dz*x-dx*z)
-        edge = max(points, key=support)
-        radius = max(.01, support(edge))
-        y = max(low[1]+.12*height, min(high[1]-.12*height, edge[1]))
-        vertices.append((cx+radius*x,y,cz+radius*z))
-        j, k = 2+i, 2+(i+1)%sides
-        faces.extend(((0,k,j), (1,j,k)))
-    normals = [(0,0,0)] * len(vertices)
-    for face in faces:
-        a,b,c = [vertices[i] for i in face]
-        normal = cross(add(b,scale(a,-1)),add(c,scale(a,-1)))
-        for i in face:
-            normals[i] = add(normals[i], normal)
-    mesh.patch(tone, vertices, [unit(n) for n in normals], faces)
-
-
-def placed_points(points, node):
-    """Apply the same glTF scale, quaternion and translation as Model.place."""
-    q = node["rotation"][:3]
-    for local in points:
-        p = tuple(v*s for v,s in zip(local,node["scale"]))
-        t = scale(cross(q,p),2)
-        yield add(node["translation"],add(p,add(scale(t,node["rotation"][3]),cross(q,t))))
 
 
 def shoot(mesh, points, radii, sides=6, tone="bark"):
@@ -214,7 +168,7 @@ class Model:
         self.nodes.append({"mesh":part, "translation":[round(v,4) for v in at],
                            "rotation":[round(v,6) for v in q], "scale":[round(v,4) for v in size]})
 
-    def save(self, name, size, closed=False):
+    def save(self, name, size, vegetation=None):
         # The same GLB v2 chunk layout as bake_cape.py. Repeated sprigs refer
         # to one mesh; Warp's glTF importer merges all nodes for a single placement.
         blob, views, accessors, meshes, tones = bytearray(), [], [], [], []
@@ -248,58 +202,21 @@ class Model:
                 attr,idx = attributes[key]
                 prims.append({"attributes":attr,"indices":idx,"material":tones.index(tone)})
             meshes.append({"primitives":prims})
-        mats = [{"name":t,"doubleSided":not closed and t in ("sun leaf","deep leaf","sage","flower"),
+        mats = [{"name":t,"doubleSided":t in ("sun leaf","deep leaf","sage","flower"),
                  "pbrMetallicRoughness":{"baseColorFactor":[*TONES[t],1],"roughnessFactor":.91,"metallicFactor":0}}
                 for t in tones]
         doc = {"asset":{"version":"2.0","generator":"Warp bake_plants.py"},"scene":0,
                "scenes":[{"nodes":[len(self.nodes)]}],
                "nodes":[*self.nodes,{"children":list(range(len(self.nodes))),"scale":size}],"meshes":meshes,
                "bufferViews":views,"accessors":accessors,"materials":mats,"buffers":[{"byteLength":len(blob)}]}
+        if vegetation:
+            doc["asset"]["generator"] = "Warp Vegetation / bake_woodland_tree"
+            doc["asset"]["extras"] = {"warpVegetation": vegetation}
         head = json.dumps(doc,separators=(",",":")).encode()
         head += b" " * (-len(head)%4)
         blob.extend(bytes(-len(blob)%4))
         chunks = struct.pack("<I4s",len(head),b"JSON")+head+struct.pack("<I4s",len(blob),b"BIN\0")+blob
         (OUT/(name+".glb")).write_bytes(struct.pack("<4sII",b"glTF",2,12+len(chunks))+chunks)
-
-
-def tree(low=False):
-    m, wood = Model(), Geometry()
-    soil(wood,1.12,1.12)
-    trunk = [(0,0,0),(.04,1.15,-.03),(-.06,2.18,-.06),(.02,2.95,.04),(.1,3.7,.12),
-             (.02,4.38,.09),(-.16,5.1,.02),(-.18,5.70,-.10),(-.13,6.16,-.12)]
-    if low:
-        shoot(wood,[trunk[i] for i in (0,3,8)],[.21,.12,.018],5)
-    else:
-        shoot(wood,trunk,[.21,.17,.14,.12,.10,.075,.052,.034,.018],8)
-    m.place(m.part(wood),(0,0,0))
-    sprays = Model() if low else m
-    leaf = sprays.part(spray(35,"deep leaf"))
-    foliage = [leaf,sprays.recolor(leaf,"deep leaf","sun leaf")]
-    rng = random.Random(1958)
-    for i in range(11):
-        base = trunk[2+i//2]
-        a = .26+i*2.4
-        spread = [.95,1.10,1.32,1.04,1.32,1.13,1.16,.93,1.08,.67,.57][i]
-        arm = (math.sin(a),0,math.cos(a))
-        fork = add(add(base,scale(arm,spread*.43)),(0,.42,0))
-        tip = add(add(base,scale(arm,spread)),(0,rng.uniform(.82,1.27),0))
-        base_radius = max(.031,.098-i*.006)
-        if low:
-            shoot(wood,[base,tip],[base_radius,.017],3)
-        else:
-            shoot(wood,[base,fork,tip],[base_radius,.053,.017],6)
-        leaves = []
-        for j in range(6):
-            direction = a+(j-2.5)*.56+rng.uniform(-.16,.16)
-            at = between(fork,tip,.20 + .74*((j*3)%7)/6)
-            size = rng.uniform(.78,1.05)
-            sprays.place(foliage[(i+j//2)%2],at,direction,rng.uniform(-.08,.72),rng.uniform(-.85,.85),
-                    (size*1.18,size,size*1.13))
-            if low:
-                leaves.extend(placed_points(sprays.meshes[leaf].groups["deep leaf"][0], sprays.nodes[-1]))
-        if low:
-            crown_envelope(wood, leaves, "sun leaf" if i%2 else "deep leaf", 6)
-    return m
 
 
 def bed():
@@ -324,6 +241,4 @@ def bed():
 
 if __name__ == "__main__":
     OUT.mkdir(parents=True,exist_ok=True)
-    tree().save("street-tree",(.90,.875,.90))
-    tree(low=True).save("street-tree-low",(.90,.875,.90),closed=True)
     bed().save("shrub-bed",(1,.80,.84))

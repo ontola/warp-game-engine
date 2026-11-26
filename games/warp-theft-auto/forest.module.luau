@@ -14,8 +14,9 @@ local roots = {
 local trailRoots = {
     {2,-5.1,-.60}, {6,-1.7,.88}, {3,2.1,-.77}, {13,5.7,.48},
 }
-local radius = {pine=.32, fir=.29, birch=.22}
-local height = {pine=10.95, fir=12.2, birch=9.77}
+local radius = {pine=.32, fir=.29, birch=.22, street=.20}
+local height = {pine=10.95, fir=12.2, birch=9.77, street=6.2}
+forest.streetRadius,forest.streetHeight=radius.street,height.street
 forest.count = #roots
 
 function forest.options(x, y, z, yaw, scale)

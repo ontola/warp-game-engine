@@ -300,7 +300,7 @@ local function populate(c,seed,limit)
                         local k=1.22+.78*noise(i,j,n+13)
                         stage(c,slopeMesh,{pos=v(tx,y-.04,tz),rot=v(0,yaw+n*2.4,0),
                             size=v(k,k,k),solid=false,tag="woodland-tree"})
-                        trunk(tx,tz,.20*k,y+6.2*k,y-.04)
+                        trunk(tx,tz,forest.streetRadius*k,y+forest.streetHeight*k,y-.04)
                         c.slopeTrees+=1
                     end
                 end
