@@ -25,9 +25,9 @@ on:
 permissions:
   contents: write
 concurrency:
-  # A newer push replaces a candidate still building; a dispatched commit builds on its own.
+  # A running candidate always finishes (with the browser smoke test it takes about half an hour, and main moves faster); newer pushes wait, and only the newest waiting one runs next.
   group: play-release-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.commit || 'main' }}
-  cancel-in-progress: ${{ github.event_name == 'push' }}
+  cancel-in-progress: false
 jobs:
   release:
     runs-on: ubuntu-24.04
