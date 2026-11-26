@@ -798,11 +798,14 @@ impl Lobby {
         // And on which keys: one layout, or None when the halves are mixed.
         let mut halves: HashMap<String, Option<u8>> = HashMap::new();
         let ids: Vec<String> = self.world.players.iter().map(|p| p.id.clone()).collect();
+        // The browser host without any controller: whoever plays, plays on
+        // the keyboard or mouse, so prompts never show pad buttons.
+        let no_pads = !matches!(self.join_with, crate::live::JoinWith::Pad);
         for id in &ids {
             if self.menus.contains_key(id) { continue; }
             if let Some(station) = self.station_for(id) {
                 let k = keys.entry(crate::mouse::prompt_name(&station).to_string()).or_insert(true);
-                *k = *k && self.on_keyboard(id);
+                *k = *k && (self.on_keyboard(id) || no_pads);
                 let half = self.keyboard_half(id).unwrap_or(0);
                 // Two keyboard halves at one place: the first player's keys
                 // (a keyboard player never sees a pad button).
@@ -815,7 +818,8 @@ impl Lobby {
         let everyone_keys: Option<u8> = {
             let mut it = ids.iter().map(|id| self.keyboard_half(id));
             match it.next().flatten() { Some(h) if it.all(|x| x == Some(h)) => Some(h), _ => None }
-        };
+        }.or_else(|| no_pads.then_some(0));
+        // (No controller connected at all: the keyboard's keys.)
         // The mouse lights what it points at, as if someone stood there;
         // where no player stands, the buttons show the mouse instead of Y/X.
         let mut mouse_only = None;

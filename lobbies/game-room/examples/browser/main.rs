@@ -742,7 +742,7 @@ pub(crate) mod page {
                 // A click on the room's QR code (mouse.rs): the code to the clipboard.
                 "copy_room_code" => {
                     #[cfg(target_arch = "wasm32")]
-                    if let (Some(code), Some(w)) = (msg["code"].as_str(), web_sys::window()) { let _ = w.navigator().clipboard().write_text(code); }
+                    if let (Some(text), Some(w)) = (msg["url"].as_str().or(msg["code"].as_str()), web_sys::window()) { let _ = w.navigator().clipboard().write_text(text); }
                 }
                 // The online switch (Public / Private).
                 "set_public" => super::online::set_public(msg["public"].as_bool().unwrap_or(true)),

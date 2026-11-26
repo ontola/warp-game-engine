@@ -156,6 +156,17 @@ pub fn draw(lobby: &Lobby, size: [u32; 2], _alpha: f32) -> HudDrawList {
         let (at, fs) = mouse_menu_at(size);
         menu(lobby, &mut c, crate::mouse::MOUSE, at, fs);
     }
+    // The mouse over the room's QR code (a browser host): a click copies
+    // the room's link.
+    if let Some(m) = lobby.mouse.at.filter(|m| lobby.outbox.is_some() && !lobby.show.room_code.is_empty() && !lobby.catalog_open() && lobby.plaque_at(*m, size)) {
+        c.over();
+        let fs = (20.0 * scale).floor();
+        let label = "Click to copy link";
+        let bw = width(label, fs) + 40.0 * scale;
+        let r = [(m[0] - bw / 2.0).clamp(8.0, w - bw - 8.0), m[1] + 28.0 * scale, bw, fs + 24.0 * scale];
+        crate::paint::panel_solid(&mut c, r, scale);
+        text(&mut c, label, [r[0] + 20.0 * scale, r[1] + r[3] / 2.0 + fs * 0.36], fs, TEXT);
+    }
     c.over();
     back_panel(lobby, &mut c, view_proj, size, scale);
     c.over();
