@@ -61,6 +61,7 @@ export function spawnGame(folder, players) {
     if (data.type === 'loaded') game.phase = 'loaded';
     else if (data.type === 'first-frame') game.phase = 'ready';
     else if (data.type === 'exit') game.exit = data.why;
+    else if (data.type === 'capture') { game.capture = data.on; return; }
     else if (data.type === 'error') { game.phase = 'error'; game.error = data.error; }
   };
   worker.onerror = e => { game.phase = 'error'; game.error = e.message || 'worker failed'; };
@@ -84,6 +85,12 @@ export function gameState(id) {
   const g = games.get(id);
   if (!g) return 'error: gone';
   return g.phase === 'error' ? 'error: ' + g.error : g.phase;
+}
+
+/// What the game wants of the mouse lock: 1 locked, 0 free, -1 the player's choice.
+export function gameCapture(id) {
+  const c = games.get(id)?.capture;
+  return c === true ? 1 : c === false ? 0 : -1;
 }
 
 /// "back", "quit" or "" (once each).

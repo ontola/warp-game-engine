@@ -57,6 +57,8 @@ extern "C" {
     fn spawn_game(folder: &str, players: u32) -> u32;
     #[wasm_bindgen(js_name = gameState)]
     fn game_state(id: u32) -> String;
+    #[wasm_bindgen(js_name = gameCapture)]
+    fn game_capture(id: u32) -> i32;
     #[wasm_bindgen(js_name = takeExit)]
     fn take_exit(id: u32) -> String;
     #[wasm_bindgen(js_name = gameControls)]
@@ -153,7 +155,12 @@ impl Game for WorkerGame {
             self.quit = true;
         }
     }
-    fn mouse_capture(&self) -> Option<bool> { Some(false) }
+    /// The worker's game decides (a shooter locks the mouse for aiming);
+    /// the page's shell locks it, and the mouse look reaches the worker
+    /// as each player's `look`.
+    fn mouse_capture(&self) -> Option<bool> {
+        match game_capture(self.id) { 1 => Some(true), 0 => Some(false), _ => None }
+    }
     fn draw(&mut self, frame: &mut app::Frame) -> Result<app::Draw, String> {
         Ok(app::Draw { cameras: Vec::new(), light: Default::default(), hud: render::hud::HudDrawList::new(frame.size) })
     }

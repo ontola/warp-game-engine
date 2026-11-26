@@ -68,6 +68,8 @@ struct Live {
     started: Instant,
     frames: u64,
     quit: bool,
+    /// What the game last said of the mouse lock ([`Game::mouse_capture`]), posted to the page.
+    capture: Option<bool>,
 }
 
 /// Run `game` in `canvas` until the worker ends. Returns once the GPU is
@@ -87,7 +89,7 @@ pub async fn run(canvas: web_sys::OffscreenCanvas, cfg: crate::Config, game: Box
     });
     gpu.device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| super::web::log(&format!("worker GPU error: {e}"))));
     let out = Output::new(&gpu, config.format.add_srgb_suffix())?;
-    let live = Rc::new(RefCell::new(Live { surface, config, gpu, out, renderer: None, game, tick: 1.0 / cfg.tick_hz, acc: 0.0, last: Instant::now(), started, frames: 0, quit: false }));
+    let live = Rc::new(RefCell::new(Live { surface, config, gpu, out, renderer: None, game, tick: 1.0 / cfg.tick_hz, acc: 0.0, last: Instant::now(), started, frames: 0, quit: false, capture: None }));
     schedule(live);
     Ok(())
 }
@@ -141,6 +143,12 @@ fn frame(live: &Rc<RefCell<Live>>) -> Result<(), String> {
         l.game.tick(&controls);
         if l.game.quit() && !std::mem::replace(&mut l.quit, true) { post(&serde_json::json!({"type": "exit", "why": "quit"})); }
         if l.game.take_back() { post(&serde_json::json!({"type": "exit", "why": "back"})); }
+    }
+    // Whether the game wants the mouse locked: the page locks it (a click).
+    let capture = l.game.mouse_capture();
+    if capture != l.capture {
+        l.capture = capture;
+        post(&serde_json::json!({"type": "capture", "on": capture}));
     }
     if steps == 6 { l.acc = 0.0; }
     let size = [l.config.width, l.config.height];

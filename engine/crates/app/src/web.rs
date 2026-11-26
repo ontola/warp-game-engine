@@ -696,6 +696,13 @@ impl Shell {
             self.devices.reset_mouse();
         }
         self.lock_seen = locked;
+        // The game wants the cursor (a menu, a card pick): let go of the lock.
+        // Taking it again waits for a click (browsers allow no other way).
+        if self.devices.mouse_captured && self.game.mouse_capture() == Some(false) {
+            if let Some(w) = &self.window { let _ = w.set_cursor_grab(CursorGrabMode::None); w.set_cursor_visible(true); }
+            self.devices.mouse_captured = false;
+            self.devices.reset_mouse();
+        }
         self.devices.poll();
         let t_tick = Instant::now();
         while self.acc >= step && steps < 6 {
@@ -948,7 +955,10 @@ impl ApplicationHandler for Shell {
                 winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
             }),
             WindowEvent::MouseInput { state, button, .. } => {
-                if button == MouseButton::Left && state == ElementState::Pressed && !self.devices.mouse_captured && self.cfg.keyboard && self.game.mouse_capture().is_none() {
+                // A page locks the pointer only on a click: one click captures
+                // for a game that wants the mouse now (Some(true)) or leaves it
+                // to the player (None).
+                if button == MouseButton::Left && state == ElementState::Pressed && !self.devices.mouse_captured && self.cfg.keyboard && self.game.mouse_capture() != Some(false) {
                     self.capture_mouse(true);
                     return;
                 }
