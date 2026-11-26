@@ -44,7 +44,9 @@ async function session() {
   try {
     const library = await window.clubGameLibrary();
     if (generation !== token || library.some(g => g.web_entry && g.id === game)) return;
-    const base = './games/' + game + '/';
+    // The page names the game by its store id; its files sit under its folder (neon-trails-warp is in neon-trails/).
+    const folder = library.find(g => g.id === game || g.folder === game)?.folder || game;
+    const base = './games/' + folder + '/';
     const files = await (await fetch(base + 'files.json')).json();
     if (!files.includes('stories.json')) return;
     const entries = await (await fetch(base + 'stories.json')).json();
