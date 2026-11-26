@@ -88,17 +88,20 @@ pub(crate) fn poll(quiet: Option<usize>) {
     if let Some(folder) = WANTED.with(|w| w.borrow().clone()) { warm(&folder, players); }
 }
 
-/// Warming the next game in a worker: on by default in Chrome and Edge on
-/// a computer (tested there), `?warm=worker` elsewhere, `?warm=off` never.
-/// Not on phones (two engines' memory). With another couch online the
-/// game loads on the page instead (main.rs), where the link is.
+/// Warming the next game in a worker: on by default only in Chrome and
+/// Edge on a Mac (tested there: ready 62 ms after Play). Elsewhere the
+/// second GPU device lost the whole GPU process: Edge on Windows ("A valid
+/// external Instance reference no longer exists") and Chromium's software
+/// GPU in the release check. `?warm=worker` tries it on any computer,
+/// `?warm=off` never. Not on phones (two engines' memory). With another
+/// couch online the game loads on the page instead (main.rs).
 pub(crate) fn enabled() -> bool {
     match app::web::query_param("warm").as_deref() {
         Some("off") => false,
         Some("worker") => !app::web::mobile(),
         _ => {
             let ua = web_sys::window().and_then(|w| w.navigator().user_agent().ok()).unwrap_or_default();
-            !app::web::mobile() && (ua.contains("Chrome/") || ua.contains("Edg/")) && !ua.contains("Android")
+            !app::web::mobile() && ua.contains("Macintosh") && (ua.contains("Chrome/") || ua.contains("Edg/"))
         }
     }
 }

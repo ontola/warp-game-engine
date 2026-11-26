@@ -282,8 +282,10 @@ stop. Its sound renders in the worker 60 ms ahead and goes over a
 `MessageChannel` straight to an AudioWorklet node (`audio::device` in a
 worker). Measured on an M5 Pro in Chrome: "ready 62 ms after Play".
 
-- On by default in Chrome and Edge on a computer; `?warm=worker` forces it,
-  `?warm=off` turns it off. Not on phones (two engines in memory).
+- On by default only in Chrome and Edge on a Mac. Edge on Windows and
+  Chromium's software GPU lost the whole GPU process with the second device
+  ("A valid external Instance reference no longer exists"). `?warm=worker`
+  forces it, `?warm=off` turns it off. Not on phones (two engines in memory).
 - A worker that is not ready, failed, or was built for another player
   count is dropped and the game loads on the page as before; so does a game
   while another couch is online (the WebRTC link lives on the page).
