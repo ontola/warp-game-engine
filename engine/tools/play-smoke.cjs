@@ -99,7 +99,8 @@ function colours(png) {
   const shaders = new Map();
   const t0 = Date.now(), log = [], problems = [];
   const stamp = () => ((Date.now() - t0) / 1000).toFixed(1);
-  page.on('console', m => {
+  // Games warmed in a Web Worker (game-worker.js) draw and log there.
+  const onConsole = m => {
     const text = m.text();
     if (text.startsWith('WARP_WGSL ')) {
       try { const s = JSON.parse(text.slice(10)); if (!shaders.has(s.code)) shaders.set(s.code, s.label); } catch {}
@@ -109,6 +110,11 @@ function colours(png) {
     log.push(text);
     console.log(`${stamp()} ${m.type() === 'log' ? '' : m.type() + ' '}${text.slice(0, 400)}`);
     if ((m.type() === 'error' || FATAL.test(text)) && !BENIGN.test(text)) problems.push(text.slice(0, 600));
+  };
+  page.on('console', onConsole);
+  page.on('worker', w => {
+    w.on('console', onConsole);
+    w.on('error', e => problems.push('worker error: ' + (e.message || e)));
   });
   page.on('pageerror', e => { problems.push('page error: ' + e.message); console.log(`${stamp()} PAGE ERROR ${e.message}`); });
   page.on('crash', () => problems.push('the page crashed'));

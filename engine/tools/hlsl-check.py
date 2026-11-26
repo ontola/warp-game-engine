@@ -48,7 +48,9 @@ def main():
                 continue
             failures = []
             for stage, name in entries:
-                out = subprocess.run([args.dxc, '-T', f'{PROFILE[stage]}_{args.shader_model}', '-E', name, str(hlsl), '-Fo', str(Path(tmp) / 'out.dxil')],
+                # The arguments wgpu-hal's DX12 backend gives DXC (dx12/shader_compilation.rs): HLSL 2018, strict.
+                out = subprocess.run([args.dxc, '-T', f'{PROFILE[stage]}_{args.shader_model}', '-E', name, '-HV', '2018', '-no-warnings', '-Ges',
+                                      str(hlsl), '-Fo', str(Path(tmp) / 'out.dxil')],
                                      capture_output=True, text=True)
                 if out.returncode != 0:
                     failures.append(f'{stage} {name}: ' + (out.stderr or out.stdout).strip()[-1200:])

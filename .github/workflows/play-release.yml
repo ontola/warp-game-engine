@@ -70,7 +70,7 @@ jobs:
       - name: Browser smoke test tools (Playwright Chromium, naga-cli, DXC)
         if: steps.exists.outputs.found == 'false'
         run: |
-          npm install --no-save --no-package-lock playwright@1.57.0
+          npm install --no-save --no-package-lock playwright@1.63.0
           npx playwright install --with-deps chromium
           naga=$(grep -A1 '^name = "naga"$' Cargo.lock | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)
           cargo install naga-cli --version "$naga" --locked
