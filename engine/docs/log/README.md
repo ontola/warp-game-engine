@@ -19,6 +19,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
   the guide or [status](../status.md) instead.
 - When a change alters how something works, update the guide for that part
   in the same commit. The log is not a substitute for that.
+- [Grown tree species on the Mariner Wood rally route](2026-11-26-wta-warp-forest.md)
 - [Apache missing from the public game](2026-11-26-wta-apache-release.md)
 - [Sedan headlight cutoff while reversing](2026-11-26-wta-reverse-headlight.md)
 - [Mariner Wood on phones](2026-11-26-wta-phone-woodland.md)
