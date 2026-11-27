@@ -282,7 +282,7 @@ impl Characters {
             Ok::<_, String>(model)
         }).collect::<Result<Vec<_>, _>>()?;
         let locomotion = Locomotion::bind(models.first().ok_or("empty player roster")?)?;
-        println!("characters: {count} seeded Warp Humans, roster seed {seed}, {} triangles each", models[0].triangles);
+        crate::say(&format!("characters: {count} seeded Warp Humans, roster seed {seed}, {} triangles each", models[0].triangles));
         Ok(Self { locomotion, animation: crate::hand_animation::HandAnimation::load()?, rigid_meshes: vec![None; count], pieces: Vec::new(), rigid_frame: Vec::new(), models, actors: Vec::new(), lava: Vec::new(), hands: Vec::new() })
     }
 
