@@ -45,7 +45,7 @@ fn signal_room(code: &str) -> String { format!("club-{}", code.to_ascii_uppercas
 fn off() -> bool { warp::web::param("online").as_deref() == Some("off") }
 
 /// At the page's start: `?follow=CODE` follows that room (its games); this
-/// page hosts once its first Luau game loads. `?online=off` keeps it local.
+/// page hosts once its room has a code. `?online=off` keeps it local.
 pub(crate) fn start() {
     if off() { return; }
     if let Some(code) = warp::web::param("follow") {
@@ -205,6 +205,13 @@ pub(crate) fn on_screen(on: bool) {
 }
 
 fn tick() {
+    // Open the room to other couches as soon as it has a code, also while
+    // it sits in the lobby: a follower ("Play on this screen") then joins
+    // and waits for the next game instead of finding nobody to follow.
+    if PAGE.with(|p| matches!(*p.borrow(), Page::Off)) && !off() {
+        let code = super::page::with(|h| h.cloud.room_code().to_string());
+        ensure_host(&code);
+    }
     let mut start = None;
     let mut own = None;
     PAGE.with(|p| match &mut *p.borrow_mut() {

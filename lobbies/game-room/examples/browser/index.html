@@ -79,7 +79,7 @@ html:not([data-opening]) #warp-progress.later #warp-join{display:none}
   #warp-progress:not(.later) #warp-game{grid-area:game}
   #warp-progress:not(.later) .loader{grid-area:loader;width:min(360px,42vw);align-self:start}
   #warp-progress:not(.later) #warp-join{grid-area:join;align-self:center;max-width:min(380px,44vw)}
-  #warp-progress:not(.later) .hints{grid-area:hints;justify-content:flex-start}
+  #warp-progress:not(.later) .hints{display:none}
   #warp-progress:not(.later) #warp-install{grid-area:install;text-align:left;max-width:min(380px,44vw);font-size:13px}
   .brand img{width:64px;height:64px;border-radius:16px}
   .wordmark{font-size:clamp(24px,4.6vw,44px)}
@@ -114,6 +114,11 @@ kbd{display:inline-grid;place-items:center;min-width:1.6em;height:1.6em;padding:
 kbd.pill{background:#30303f;color:var(--text);border:1.5px solid #b4b2c8;border-radius:999px;box-shadow:none;padding:0 .7em}
 #back-hint>kbd,#key-hint>kbd,#join-hint>kbd{font-size:.95em;height:1.7em;min-width:1.7em}
 #back-hint span,#key-hint span,#join-hint span{color:var(--muted)}
+/* A key with nobody on the keyboard: a controller first, the keyboard second. */
+#key-hint svg{flex:none;width:44px;height:44px}
+#key-hint strong{display:block;font-weight:800;font-size:clamp(17px,2vw,22px)}
+#key-hint span{display:block;font-size:clamp(14px,1.6vw,17px)}
+#key-hint kbd{font-size:.8em}
 #club-notice kbd{font-size:.75em}
 /* Someone plays on the keyboard and mouse (the engine sets html[data-kb-nudge] while
    the room is on screen): the club is made for controllers, A on one takes that
@@ -173,8 +178,29 @@ html[data-windowed][data-calm] #fullscreen{opacity:.35}
 /* The browser could not build part of the picture. */
 #warp-gpu-problem{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:4;max-width:calc(100vw - 32px);box-sizing:border-box;padding:12px 18px;border-radius:18px;background:var(--panel);border:1px solid var(--line);color:var(--text);font-size:14px}
 /* A controller seen while loading. */
-#pad-hint.found{border-color:rgba(255,180,84,.5)}
-#pad-hint.ready{border-color:rgba(80,220,140,.6);background:rgba(80,220,140,.12)}
+/* The loading screen's controller card (DESIGN.md: one panel, kicker amber):
+   big in the bottom-left corner, so a controller reads as the way to play.
+   Phones and short screens get it in the column, smaller. */
+#pad-hint{position:absolute;left:clamp(16px,4vw,48px);bottom:clamp(16px,4vh,48px);display:flex;align-items:center;gap:22px;padding:22px 28px 22px 22px;
+  border-radius:24px;background:rgba(13,16,32,.88);border:1px solid rgba(255,255,255,.1);box-shadow:0 12px 36px rgba(0,0,0,.45);max-width:min(480px,calc(100vw - 32px));box-sizing:border-box}
+#pad-hint svg{flex:none;width:clamp(96px,11vw,150px);height:auto;animation:bob 2.4s ease-in-out infinite}
+#pad-hint small{display:block;color:var(--amber);font-weight:800;font-size:13px;letter-spacing:.04em;text-transform:uppercase}
+#pad-hint strong{display:block;font-weight:800;font-size:clamp(20px,2.4vw,28px);margin:2px 0 4px;white-space:nowrap}
+#pad-hint span{display:block;color:var(--muted);font-size:15px}
+#pad-hint.found{border-color:rgba(255,180,84,.6)}
+#pad-hint.ready{border-color:rgba(61,220,151,.7);background:rgba(20,48,40,.9)}
+#warp-progress.later #pad-hint,#warp-progress.direct-games #pad-hint{display:none}
+@media (max-width:900px),(max-height:700px){
+  #pad-hint{position:static;padding:14px 20px 14px 14px;gap:14px;border-radius:18px}
+  #pad-hint svg{width:72px}
+  #pad-hint strong{font-size:20px}
+  #pad-hint span{font-size:14px}
+}
+@media (max-height:560px) and (min-aspect-ratio:4/3){
+  #warp-progress:not(.later) #pad-hint{grid-area:hints;padding:10px 16px 10px 10px}
+  #pad-hint svg{width:52px}
+  #pad-hint small{display:none}
+}
 #warp-log{display:none;position:fixed;left:8px;bottom:8px;white-space:pre-wrap;max-width:90vw;max-height:40vh;overflow:hidden;pointer-events:none;font:12px monospace;color:#ddd;text-shadow:0 0 3px #000;z-index:3}
 #warp-games{display:none!important}
 body.debug #warp-log{display:block}
@@ -199,9 +225,13 @@ body.debug #warp-games{display:flex!important}
     <nav id="web-game-links" aria-label="Play a game directly" hidden></nav>
   </div>
   <ul class="hints">
-    <li id="pad-hint"><b>Controller</b> <span>press A to join</span></li>
     <li class="phone"><b>Phone</b> scan the code on the wall</li>
   </ul>
+  <aside id="pad-hint">
+    <svg viewBox="0 0 48 48" aria-hidden="true"><rect x="4" y="12" width="40" height="22" rx="10" fill="#ffb454"/><circle cx="12" cy="30" r="9" fill="#ffb454"/><circle cx="36" cy="30" r="9" fill="#ffb454"/>
+    <rect x="9" y="21" width="10" height="3.5" rx="1.75" fill="#0d1020"/><rect x="12.25" y="17.75" width="3.5" height="10" rx="1.75" fill="#0d1020"/><circle cx="33" cy="19.5" r="2.6" fill="#0d1020"/><circle cx="38" cy="24.5" r="2.6" fill="#0d1020"/></svg>
+    <div><small>Best with a controller</small><strong>Grab a controller</strong><span id="pad-hint-text">Connect one to join, the best way to play</span></div>
+  </aside>
   <div id="warp-join" hidden><div id="warp-qr"></div><div><strong>Join with your phone</strong><span>Scan the code, or open <b id="warp-host"></b> and enter <b id="warp-code"></b></span></div></div>
   <p id="warp-install">This is the browser version, with a few games. <a id="warp-install-link" href="https://splitscreen.club/#download">Download Splitscreen Club</a> for every game at full speed.</p>
 </div>
@@ -219,7 +249,11 @@ body.debug #warp-games{display:flex!important}
   <div><small id="kb-nudge-who">Keyboard &amp; mouse · Player 1</small><strong>Splitscreen Club is made for controllers</strong><span class="no-pad">Connect one to take over your player</span><span class="with-pad">Press <i class="pad-a">A</i> on your controller to take over your player</span><span class="kb-share">Two on one keyboard? The second player presses <kbd>G</kbd></span></div>
   <button type="button" id="kb-nudge-hide" aria-label="Hide"><kbd>X</kbd>Hide</button>
 </div>
-<div id="key-hint" role="status"><kbd>Enter</kbd><div>Play with the keyboard</div></div>
+<div id="key-hint" role="status">
+  <svg viewBox="0 0 48 48" aria-hidden="true"><rect x="4" y="12" width="40" height="22" rx="10" fill="#ffb454"/><circle cx="12" cy="30" r="9" fill="#ffb454"/><circle cx="36" cy="30" r="9" fill="#ffb454"/>
+    <rect x="9" y="21" width="10" height="3.5" rx="1.75" fill="#0d1020"/><rect x="12.25" y="17.75" width="3.5" height="10" rx="1.75" fill="#0d1020"/><circle cx="33" cy="19.5" r="2.6" fill="#0d1020"/><circle cx="38" cy="24.5" r="2.6" fill="#0d1020"/></svg>
+  <div><strong><b class="no-pad">Connect a controller to play</b><b class="with-pad">Press <i class="pad-a">A</i> on your controller</b></strong><span>Or press <kbd>Enter</kbd> to play on the keyboard</span></div>
+</div>
 <link rel="stylesheet" href="stories/editor.css">
 <button type="button" id="open-stories" hidden>Luau stories · F2</button>
 <dialog id="story-editor" aria-labelledby="story-title">
@@ -430,7 +464,8 @@ window.warpGpuProblem = message => {
 // early_pads via window.splitscreenEarlyPads).
 window.splitscreenEarlyPads = [];
 {
-  const pill = document.getElementById('pad-hint'), text = pill.querySelector('span');
+  const pill = document.getElementById('pad-hint'), text = document.getElementById('pad-hint-text'), title = pill.querySelector('strong');
+  const A = '<i class="pad-a">A</i>';
   const watch = () => {
     if (box.classList.contains('later') || box.hidden) return;
     const pads = [...(navigator.getGamepads?.() || [])].filter(p => p && p.connected);
@@ -438,8 +473,11 @@ window.splitscreenEarlyPads = [];
     const ready = window.splitscreenEarlyPads.length;
     pill.classList.toggle('found', pads.length > 0 && !ready);
     pill.classList.toggle('ready', ready > 0);
-    text.textContent = ready ? (ready === 1 ? '1 player ready' : ready + ' players ready') + ', joins when the room opens'
-      : pads.length ? 'found: press A to join' : 'press A to join';
+    // Glyph only once a controller is there (nothing to press A on before).
+    const [t, line] = ready ? [(ready === 1 ? '1 player' : ready + ' players') + ' ready', 'You join when the room opens']
+      : pads.length ? ['Controller found', 'Press ' + A + ' to join'] : ['Grab a controller', 'Connect one to join, the best way to play'];
+    if (title.textContent !== t) title.textContent = t;
+    if (text.innerHTML !== line) text.innerHTML = line;
     requestAnimationFrame(watch);
   };
   requestAnimationFrame(watch);
