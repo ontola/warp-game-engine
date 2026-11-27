@@ -289,10 +289,12 @@ name = "assets"
 version = "0.1.0"
 dependencies = [
  "app",
+ "bytemuck",
  "glam 0.31.1",
  "gltf",
  "image",
  "kern",
+ "meshopt",
  "render",
  "serde",
  "serde_json",

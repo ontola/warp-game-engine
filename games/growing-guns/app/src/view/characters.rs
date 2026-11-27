@@ -183,6 +183,17 @@ mod tests {
     }
 
     #[test]
+    fn simplified_humans_keep_their_skin_and_cost_less() {
+        for (keep, error) in [(0.5, 0.004), (0.25, 0.006), (0.15, 0.01), (0.1, 0.02)] {
+            let mut model = preview_model(3).unwrap();
+            let full = model.triangles;
+            let left = model.simplify(keep, error);
+            println!("keep {keep} error {error}: {left} of {full} triangles");
+            assert!(left * 10 > full / 10 && left < full);
+        }
+    }
+
+    #[test]
     fn rigid_pieces_are_a_fraction_of_the_model_and_follow_real_joints() {
         for name in [3, 52] {
             let model = preview_model(name).unwrap();
@@ -265,10 +276,13 @@ impl Characters {
         let models = (0..count).map(|slot| {
             let profile = colors.get(slot).copied().unwrap_or_default();
             let person = super::pov_arms::roster_person(seed, slot, profile);
-            rig.warp_human_player(&person, profile.skin)
+            let mut model = rig.warp_human_player(&person, profile.skin)?;
+            let g = crate::graphics::get();
+            if g.character_keep < 1.0 { model.simplify(g.character_keep, g.character_error); }
+            Ok::<_, String>(model)
         }).collect::<Result<Vec<_>, _>>()?;
         let locomotion = Locomotion::bind(models.first().ok_or("empty player roster")?)?;
-        println!("characters: {count} seeded Warp Humans, roster seed {seed}");
+        println!("characters: {count} seeded Warp Humans, roster seed {seed}, {} triangles each", models[0].triangles);
         Ok(Self { locomotion, animation: crate::hand_animation::HandAnimation::load()?, rigid_meshes: vec![None; count], pieces: Vec::new(), rigid_frame: Vec::new(), models, actors: Vec::new(), lava: Vec::new(), hands: Vec::new() })
     }
 

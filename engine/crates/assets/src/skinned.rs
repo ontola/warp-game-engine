@@ -632,6 +632,36 @@ impl Character {
     }
 
     /// Register or reuse the scene materials for every surface of this character.
+    /// A cheaper level of detail of this skinned character, in place:
+    /// meshoptimizer collapses each surface to about `keep` of its triangles
+    /// (0..1), moving no vertex further than `error` metres from the full
+    /// mesh, so texture seams, UVs and skin weights stay those of the kept
+    /// vertices. It stays one skinned mesh with the same joints, clips and
+    /// materials: the caller draws and poses it exactly like the full one.
+    /// Returns the triangles left (also in `triangles`).
+    pub fn simplify(&mut self, keep: f32, error: f32) -> usize {
+        for surface in &mut self.surfaces {
+            if surface.indices.len() < 3 * 64 { continue; }
+            let Ok(adapter) = meshopt::VertexDataAdapter::new(bytemuck::cast_slice(&surface.vertices), std::mem::size_of::<Vertex>(), 0) else { continue };
+            let target = ((surface.indices.len() / 3) as f32 * keep.clamp(0.0, 1.0)) as usize * 3;
+            let indices = meshopt::simplify(&surface.indices, &adapter, target, error,
+                meshopt::SimplifyOptions::ErrorAbsolute | meshopt::SimplifyOptions::LockBorder, None);
+            if indices.len() < 3 { continue; }
+            // Drop the vertices no triangle uses any more.
+            let mut remap = vec![u32::MAX; surface.vertices.len()];
+            let mut keep_vertices = Vec::new();
+            surface.indices = indices.iter().map(|&i| {
+                let r = &mut remap[i as usize];
+                if *r == u32::MAX { *r = keep_vertices.len() as u32; keep_vertices.push(i as usize); }
+                *r
+            }).collect();
+            surface.vertices = keep_vertices.iter().map(|&i| surface.vertices[i]).collect();
+            surface.influences = keep_vertices.iter().map(|&i| surface.influences[i].clone()).collect();
+        }
+        self.triangles = self.surfaces.iter().map(|s| s.indices.len() / 3).sum();
+        self.triangles
+    }
+
     /// The model cut into one piece per joint: each triangle goes to the joint
     /// that moves it most, and vertices within `cell` metres merge, which is
     /// what makes it cheap. Pieces in the same place do not share vertices,

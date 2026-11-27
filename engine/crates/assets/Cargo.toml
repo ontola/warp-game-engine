@@ -14,6 +14,8 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 gltf = { version = "1.4", default-features = false, features = ["utils", "names", "extras", "KHR_texture_transform", "allow_empty_texture", "extensions"] }
 serde.workspace = true
 serde_json.workspace = true
+meshopt = "0.7"
+bytemuck = "1"
 
 [dev-dependencies]
 app = { path = "../app" }

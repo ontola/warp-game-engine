@@ -21,6 +21,11 @@ pub struct Graphics {
     /// The character models as rigid pieces per bone: animated without the
     /// skinning the minimum renderer lacks.
     pub rigid_characters: bool,
+    /// Level of detail for the skinned Warp Humans (`Character::simplify`):
+    /// about this share of their triangles, within `character_error` metres.
+    /// 1 is the full mesh.
+    pub character_keep: f32,
+    pub character_error: f32,
     pub debris_capacity: usize,
     pub debris_divisor: u32,
     pub debris_size: f32,
@@ -28,8 +33,8 @@ pub struct Graphics {
     pub lod_pixels: f32,
 }
 impl Graphics {
-    pub const FULL: Self=Self {minimal_forward:false,characters:true,stadium:true,sky_occlusion:true,simple_blocks:false,simple_guns:false,simple_lighting:false,stone_detail:false,rigid_characters:false,debris_capacity:4096,debris_divisor:1,debris_size:1.0,particles:768,lod_pixels:1.0};
-    pub const LOW: Self=Self {minimal_forward:false,characters:true,stadium:false,sky_occlusion:false,simple_blocks:true,simple_guns:true,simple_lighting:true,stone_detail:false,rigid_characters:false,debris_capacity:128,debris_divisor:16,debris_size:1.6,particles:128,lod_pixels:4.0};
+    pub const FULL: Self=Self {minimal_forward:false,characters:true,stadium:true,sky_occlusion:true,simple_blocks:false,simple_guns:false,simple_lighting:false,stone_detail:false,rigid_characters:false,character_keep:0.5,character_error:0.004,debris_capacity:4096,debris_divisor:1,debris_size:1.0,particles:768,lod_pixels:1.0};
+    pub const LOW: Self=Self {minimal_forward:false,characters:true,stadium:false,sky_occlusion:false,simple_blocks:true,simple_guns:true,simple_lighting:true,stone_detail:false,rigid_characters:false,character_keep:0.2,character_error:0.008,debris_capacity:128,debris_divisor:16,debris_size:1.6,particles:128,lod_pixels:4.0};
     pub const MINIMUM:Self=Self {minimal_forward:true,characters:false,stone_detail:true,rigid_characters:true,debris_capacity:0,particles:32,lod_pixels:16.0,..Self::LOW};
     /// A profile name, optionally with switches for measuring one part at a
     /// time: `full:sky_occlusion=0,stadium=1`.
