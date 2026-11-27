@@ -188,17 +188,16 @@ fn new_rooms_show_where_to_start_and_where_scanned_profiles_wait() {
     let p = lobby.world.player_mut("p0").unwrap();
     p.x = -9.0;
     for _ in 0..30 { tick(&mut lobby); }
-    run_until(&mut lobby, |l| l.nudges.contains("tv") && l.nudges.contains("door0"));
+    run_until(&mut lobby, |l| l.nudges.contains("door0"));
     assert_eq!(lobby.prompts["tv"].items[0].1, "Play");
-    assert!(lobby.prompt_active["tv"], "before the first game, Play hops at the TV for nobody in particular");
+    assert!(!lobby.prompt_active["tv"], "the TV's Play shows only to someone standing there");
     assert!(lobby.prompt_active["door0"] && lobby.prompts["door0"].enabled, "a scanned profile's door shows Pick up");
     assert!(!lobby.nudges.contains("door1"), "only doors with a profile waiting");
-    assert_eq!(lobby.prompts["tv"].conceal, 1.0, "from afar the nudge shows only its words");
 
-    // Walking up to the TV pops its button in and stops the hop.
+    // Walking up to the TV shows its button.
     lobby.world.player_mut("p0").unwrap().x = 0.0;
-    run_until(&mut lobby, |l| { tick(l); l.prompts["tv"].conceal == 0.0 });
-    assert!(!lobby.nudges.contains("tv") && lobby.prompt_active["tv"]);
+    run_until(&mut lobby, |l| { tick(l); l.prompt_active["tv"] });
+    assert_eq!(lobby.prompts["tv"].conceal, 0.0);
 
     // Once everyone has a profile, the doors stop hopping.
     lobby.set_links(json!({"room": {"pending": [{"id": "w1", "profile": {"display_name": "Sanne"}}]}, "linked": ["p0"]}));

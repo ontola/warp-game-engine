@@ -860,11 +860,9 @@ impl Lobby {
             if !occupied.contains_key(&station.id) { mouse_only = Some(crate::mouse::prompt_name(&station).to_string()); }
             if !occupied.contains_key(&station.id) || station.enabled { occupied.insert(station.id.clone(), station); }
         }
-        // Onboarding, once someone has joined: until the first game, the TV's
-        // Play hops for everyone to see where a night starts; a profile
-        // someone scanned in hops at its door until it is picked up.
+        // Onboarding: a profile someone scanned in hops at its door until it
+        // is picked up.
         self.nudges.clear();
-        let joined = !self.world.players.is_empty();
         // Pick up only nudges while someone still plays without a profile.
         let unlinked = self.world.players.iter().any(|p| !self.host.is_linked(&p.id) && !self.claims.contains_key(&p.id));
         if self.host.current_game().is_some() { self.started_once = true; }
@@ -877,11 +875,9 @@ impl Lobby {
         if on { tv_items.insert(0, ("LB", "Previous", true)); }
         let more = self.host.upcoming().len() > if self.host.current_game().is_some() { 0 } else { 1 };
         if on && more { tv_items.push(("RB", "Next", true)); }
-        let tv_nudge = joined && !self.started_once && tv.enabled && !occupied.contains_key("tv");
-        if tv_nudge { self.nudges.insert("tv".into()); }
-        let was = self.prompt_active.get("tv").copied().unwrap_or(false);
-        self.set_prompt("tv", &tv_items, tv.enabled, occupied.contains_key("tv") || tv_nudge);
-        self.tuck_prompt("tv", tv_nudge, was);
+        // No hop from afar (Joep, 2026-11-27: "F Play" over the TV read as
+        // a key that works from anywhere; it works only standing there).
+        self.set_prompt("tv", &tv_items, tv.enabled, occupied.contains_key("tv"));
         let q = self.host.queue_station();
         self.set_prompt("queue", &[("Y", &q.short, !q.loading), ("X", "Skip", true)], q.enabled, occupied.contains_key("queue"));
         let shelf_live = !self.host.shelf_games().is_empty();
