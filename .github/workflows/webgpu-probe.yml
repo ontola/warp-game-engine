@@ -1,0 +1,29 @@
+# By hand only: can a GitHub runner give a page a WebGPU device in WebKit or
+# Safari? Decides whether the /play/ release smoke test (play-smoke.cjs) can
+# get a Safari leg (engine/docs/play-release.md). The repository is public, so
+# macOS runners cost nothing.
+name: WebGPU probe
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Browsers
+        run: |
+          sw_vers
+          system_profiler SPDisplaysDataType || true
+          npm install --no-save --no-package-lock playwright@1.63.0 selenium-webdriver@4
+          npx playwright install webkit chromium
+          sudo safaridriver --enable || true
+          /Applications/Safari.app/Contents/MacOS/Safari --version 2>/dev/null || defaults read /Applications/Safari.app/Contents/Info CFBundleShortVersionString
+      - name: Probe
+        run: node engine/tools/webgpu-probe.cjs webkit safari chromium
