@@ -70,7 +70,11 @@ impl ShadeFeatures {
         let low_surface_detail = scene.graphics.low_surface_detail;
         if crate::switches::SHADE_FEATURES.is("all") { return Self { low_surface_detail, ..Self::ALL }; }
         let any = |mask: u32| scene.materials.iter().any(|m| m.flags & mask != 0);
-        Self {
+        // KERN_SHADE_FEATURES=-foliage,-procedural,...: compile those out even
+        // where the scene has such materials (to time what each one costs).
+        let off = crate::switches::SHADE_FEATURES.get().unwrap_or_default();
+        let off = |name: &str| off.split(',').any(|f| f.trim() == format!("-{name}"));
+        let mut features = Self {
             low_surface_detail,
             cars: !scene.car_materials.is_empty() || any(CAR_MASK),
             grass: any(GRASS),
@@ -86,7 +90,13 @@ impl ShadeFeatures {
             field_regions: field_style_blocks(scene).iter().any(|&b| scene.materials.get(b + REGION_WORD).is_some_and(|m| m.roughness >= 0.5)),
             field_roads: field_style_blocks(scene).iter().any(|&b| scene.materials.get(b + ROAD_WORD).is_some_and(|m| m.metal >= 0.5)),
             skin_hair: any(SKIN | HAIR),
-        }
+        };
+        if off("cars") { features.cars = false; }
+        if off("foliage") { features.foliage = false; }
+        if off("procedural") { features.procedural = false; }
+        if off("skin_hair") { features.skin_hair = false; }
+        if off("irradiance") { features.irradiance = false; }
+        features
     }
 
     /// Pipeline constants for the shade module, with the two existing ones.

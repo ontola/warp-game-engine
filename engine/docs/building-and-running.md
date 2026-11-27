@@ -151,6 +151,7 @@ renders slightly differently, so compare like with like.
 | `KERN_ADAPTER` | GPU adapter choice, see above. |
 | `KERN_SHADER_DIR` | Read the shading chain's `.wgsl` files from this directory instead of the built-in copies (normally `engine/crates/render/src/shaders`). Missing files fall back to the built-in ones. `Renderer::reload_shaders` reloads them without a rebuild. |
 | `KERN_SHADE_FEATURES=all` | Compile every shading path instead of only those the scene's materials reach. For checking that specialisation does not change images. |
+| `KERN_SHADE_FEATURES=-foliage,-procedural` | Compile those paths out even where the scene's materials reach them (`cars`, `foliage`, `procedural`, `skin_hair`, `irradiance`), to time what each costs. Images change. |
 | `KERN_STARTUP_PROFILE=1` | CPU attribution of renderer construction. |
 | `KERN_CPU_SPANS=1` | Average CPU time per frame for each phase of frame output. |
 | `WARP_HDR=1` | HDR output on an HDR screen, for games on the `app` shell (`0` refuses it). See [Exposure and HDR output](hdr-and-exposure.md). |
