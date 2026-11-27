@@ -131,6 +131,9 @@ impl Cloud {
 /// Where the cloud room lives: this page's origin, `?cloud=URL`, or
 /// none with `?cloud=off`.
 fn cloud_origin() -> Option<String> {
+    // A page that follows another room (`?follow=CODE`, Play on this
+    // screen) plays in that room: it never registers one of its own.
+    if warp::web::param("follow").is_some() { return None; }
     match warp::web::param("cloud") {
         Some(o) if o == "off" => None,
         Some(o) => Some(o.trim_end_matches('/').to_string()),

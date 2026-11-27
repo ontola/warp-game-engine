@@ -301,7 +301,16 @@ window.splitscreenSetRoom = code => {
   u.searchParams.set('r', code);
   history.replaceState(history.state, '', u);
 };
-window.splitscreenRoom = cloudParam === 'off' || joining ? Promise.resolve(null) : (async () => {
+// Following another room (?follow=CODE, Play on this screen): this page
+// plays in that room and never registers its own, so the address bar
+// carries that one code only.
+const following = new URLSearchParams(location.search).has('follow');
+if (following && new URLSearchParams(location.search).has('r')) {
+  const u = new URL(location.href);
+  u.searchParams.delete('r');
+  history.replaceState(history.state, '', u);
+}
+window.splitscreenRoom = cloudParam === 'off' || joining || following ? Promise.resolve(null) : (async () => {
   try {
     const origin = (cloudParam || location.origin).replace(/\/+$/, '');
     let device = null;
