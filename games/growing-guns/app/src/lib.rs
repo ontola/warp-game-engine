@@ -42,6 +42,14 @@ mod music;
 mod view;
 pub mod web;
 
+/// A line for the log: stderr, or the page's console in a browser.
+pub(crate) fn say(line: &str) {
+    #[cfg(target_arch = "wasm32")]
+    app::web::log(line);
+    #[cfg(not(target_arch = "wasm32"))]
+    eprintln!("{line}");
+}
+
 /// Run `job` on its own thread; in a browser (one thread) right away.
 pub(crate) fn background(job: impl FnOnce() + Send + 'static) {
     #[cfg(not(target_arch = "wasm32"))]

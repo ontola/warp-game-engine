@@ -836,7 +836,7 @@ impl StadiumVisuals {
         scene.aux[offset..offset + words.len()].copy_from_slice(&words);
         self.sky_sun = None;
         self.sky_dirty = true;
-        eprintln!("stadium sky cache: {} boxes, {} probes, {:.1} ms bake", self.sky_boxes.len(), self.sky_probes.len(), bake.ms);
+        crate::say(&format!("stadium sky cache: {} boxes, {} probes, {:.1} ms bake", self.sky_boxes.len(), self.sky_probes.len(), bake.ms));
     }
 
     /// On a running renderer, keep drawing with the last complete light volume until
@@ -904,7 +904,7 @@ impl StadiumVisuals {
                     let upload=if let Some(emission)=emission {
                         SunUpload::Packed(render::irradiance_volume::pack_sky_emission(&grid,&probes,&emission,&planes)?)
                     } else { SunUpload::Probes(probes) };
-                    eprintln!("stadium sun return: {:.1} ms bake+pack",start.elapsed().as_secs_f64()*1000.0);
+                    crate::say(&format!("stadium sun return: {:.1} ms bake+pack",start.elapsed().as_secs_f64()*1000.0));
                     Ok(upload)
                 };
                 if self.bake_in_background && !self.needs_initial_lighting {

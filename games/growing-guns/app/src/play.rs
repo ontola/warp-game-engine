@@ -753,7 +753,7 @@ impl Gg {
     /// Between rounds: build the views anew if the Settings choice (or an
     /// automatic downgrade) changed the graphics profile.
     fn apply_graphics_choice(&mut self) {
-        if crate::graphics::fixed() || self.replay.is_some() || self.settings_file.is_none() { return; }
+        if crate::graphics::fixed() || self.replay.is_some() || (self.settings_file.is_none() && !cfg!(target_arch = "wasm32")) { return; }
         let want = self.wanted_graphics();
         if want != crate::graphics::get() { self.use_graphics(want); }
     }
@@ -769,7 +769,7 @@ impl Gg {
     /// Switch the graphics profile now, building every view anew.
     fn use_graphics(&mut self, want: crate::graphics::Graphics) {
         crate::graphics::switch(want);
-        println!("graphics: {}", want.name());
+        crate::say(&format!("graphics: {}", want.name()));
         self.refresh_visuals();
     }
 
@@ -1003,10 +1003,11 @@ impl app::Game for Gg {
     /// automatically to MINIMUM (the headset's look). A manual Settings
     /// choice is left alone.
     fn content_too_heavy(&mut self) {
-        if crate::graphics::fixed() || self.replay.is_some() || self.settings_file.is_none() || self.ui.graphics != "auto" { return; }
+        // (A browser page has no settings file, and still steps down.)
+        if crate::graphics::fixed() || self.replay.is_some() || (self.settings_file.is_none() && !cfg!(target_arch = "wasm32")) || self.ui.graphics != "auto" { return; }
         let Some(lower) = self.wanted_graphics().lower().filter(|g| *g != crate::graphics::Graphics::MINIMUM) else { return };
         self.ui.graphics_lowered = Some(lower.name());
-        println!("graphics: too slow, {} from the next round", lower.name());
+        crate::say(&format!("graphics: too slow, {} from the next round", lower.name()));
         self.hud.announce(format!("Graphics lowered to {} for speed (Settings)", lower.name().to_uppercase()), 4.0, 0.0);
     }
 
