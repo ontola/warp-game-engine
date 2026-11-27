@@ -267,6 +267,9 @@ override SHADE_DIAGNOSTICS: bool = true;
 // (`shade`) stops at 2 after triangle and normal, 3 after the material
 // (textures, weathering, wounds, car paint, game surfaces), 4 after the sun
 // shadow, 5 after direct, indirect and specular light; 0 the whole pass.
+// Inside the light stage (after 4): 6 + sky visibility, 7 + screen-space AO
+// and contact rays, 8 + reflected visibility, 9 + ambient and irradiance
+// volume, 10 + reflection probes, traced reflections and sun.
 // For the simple/compact pass: 1 the visibility
 // and depth reads, 2 + triangle and normal, 3 + material, surfaces and sun,
 // 4 + albedo texture and ambient/GI, 5 + local lights, 6 + the game's light
@@ -3753,6 +3756,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     // The triangle normal is only for intersection and texture derivatives.
     let visibility_n = surface_n;
     let sky_vis = sky_visibility(p, visibility_n);
+    if SHADE_PROBE == 6u { textureStore(out_hdr,px,vec4<f32>(min(base*(0.2+sun*shadow)*sky_vis,vec3<f32>(65504.0)),1.0)); return; }
     var meadow_edge=vec2<f32>(1.0);
     if FEATURE_MEADOW && (m.flags&6u)!=0u {meadow_edge=meadow_edge_visibility(p,surface_n,l);}
     // A projected spray already includes the overlap of its source needles.
@@ -3763,11 +3767,13 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     let refl = reflect(dir, n);
     let ssao = screen_space_ao(px, size, p, visibility_n, dist);
     let contact = contact_visibility(p + visibility_n * 0.025, visibility_n, refl, vis.x) * vec2<f32>(ssao, mix(1.0, ssao, 0.65));
+    if SHADE_PROBE == 7u { textureStore(out_hdr,px,vec4<f32>(min(base*(0.2+sun*shadow)*sky_vis*contact.x,vec3<f32>(65504.0)),1.0)); return; }
     let bounce = gi.bounce.rgb * (gi.bounce.w * sky_vis + light.sun_dir.w * max(light.sun_dir.y, 0.0) * shadow);
     var reflection_vis = sky_vis;
     if coat > 0.0 || rough < 0.55 {
         reflection_vis = reflected_visibility(p, visibility_n, refl);
     }
+    if SHADE_PROBE == 8u { textureStore(out_hdr,px,vec4<f32>(min(base*(0.2+sun*shadow)*sky_vis*contact.x*reflection_vis,vec3<f32>(65504.0)),1.0)); return; }
     var direct:vec3<f32>;
     var indirect:vec3<f32>;
     var specular:vec3<f32>;
@@ -3820,6 +3826,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
             env=mix(env,irradiance_volume(p+visibility_n*0.05,refl).rgb/PI*spec_contact,room.w);
           }
         }
+        if SHADE_PROBE == 9u { textureStore(out_hdr,px,vec4<f32>(min(diffuse*ambient+env,vec3<f32>(65504.0)),1.0)); return; }
         // Traced reflections replace the environment where they hit. Under
         // a clear coat only the coat traces (below): it shows the reflection.
         let stochastic = sssr_on() && coat <= 0.0 && rough < gi.trace.y;
@@ -3840,6 +3847,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
             env = mix(env, traced.rgb, traced.a);
         }
         direct=diffuse*sun_e*sun+sun_e*back/PI+sun_e*ggx(n,v,l,rough,f0);
+        if SHADE_PROBE == 10u { textureStore(out_hdr,px,vec4<f32>(min(diffuse*ambient+env+direct,vec3<f32>(65504.0)),1.0)); return; }
         if FEATURE_SKIN_HAIR && skin + hair > 0.0 {
             // Unshadowed sun: skin bleeds red into the shadow's edge and
             // light passes through ears; the shadow is applied inside.
