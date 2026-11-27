@@ -271,7 +271,8 @@ override SHADE_DIAGNOSTICS: bool = true;
 // and contact rays, 8 + reflected visibility, 9 + ambient and irradiance
 // volume, 10 + reflection probes, traced reflections and sun. 11: the whole
 // pass with SSAO, contact rays and the irradiance volume replaced by
-// constants (what a pass that reads them from a prepass would cost).
+// constants (what a pass that reads them from a prepass would cost). 12:
+// the whole pass without the material stage's work.
 // For the simple/compact pass: 1 the visibility
 // and depth reads, 2 + triangle and normal, 3 + material, surfaces and sun,
 // 4 + albedo texture and ambient/GI, 5 + local lights, 6 + the game's light
@@ -3295,7 +3296,10 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     sun_receiver_tri[0]=p0;sun_receiver_tri[1]=p1;sun_receiver_tri[2]=p2;
     sun_receiver_tri_set=true;
     sun_receiver_error=cl.own_error*inst.scale;
-    let m = material(cl.material);
+    var m = material(cl.material);
+    // Probe 12: no material work (textures, procedural, surfaces, weather), as a
+    // light pass reading the surface from a prepass would run.
+    if SHADE_PROBE == 12u { m.layer = -1; m.flags = (m.flags & 0xc0000009u) | 1024u; }
     skin_facet_slack = 0.0;
     skin_facet_reach = 0.0;
     if FEATURE_SKIN_HAIR && (m.flags & 0x40000000u) != 0u {
