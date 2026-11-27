@@ -269,7 +269,9 @@ override SHADE_DIAGNOSTICS: bool = true;
 // shadow, 5 after direct, indirect and specular light; 0 the whole pass.
 // Inside the light stage (after 4): 6 + sky visibility, 7 + screen-space AO
 // and contact rays, 8 + reflected visibility, 9 + ambient and irradiance
-// volume, 10 + reflection probes, traced reflections and sun.
+// volume, 10 + reflection probes, traced reflections and sun. 11: the whole
+// pass with SSAO, contact rays and the irradiance volume replaced by
+// constants (what a pass that reads them from a prepass would cost).
 // For the simple/compact pass: 1 the visibility
 // and depth reads, 2 + triangle and normal, 3 + material, surfaces and sun,
 // 4 + albedo texture and ambient/GI, 5 + local lights, 6 + the game's light
@@ -3765,8 +3767,11 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     if procedural_leaf {shadow*=brush_sun;}
     let sun_e = light.sun_color.rgb * light.sun_dir.w * shadow * meadow_edge.y * field_sun;
     let refl = reflect(dir, n);
-    let ssao = screen_space_ao(px, size, p, visibility_n, dist);
-    let contact = contact_visibility(p + visibility_n * 0.025, visibility_n, refl, vis.x) * vec2<f32>(ssao, mix(1.0, ssao, 0.65));
+    var contact = vec2<f32>(0.8, 0.9);
+    if SHADE_PROBE != 11u {
+        let ssao = screen_space_ao(px, size, p, visibility_n, dist);
+        contact = contact_visibility(p + visibility_n * 0.025, visibility_n, refl, vis.x) * vec2<f32>(ssao, mix(1.0, ssao, 0.65));
+    }
     if SHADE_PROBE == 7u { textureStore(out_hdr,px,vec4<f32>(min(base*(0.2+sun*shadow)*sky_vis*contact.x,vec3<f32>(65504.0)),1.0)); return; }
     let bounce = gi.bounce.rgb * (gi.bounce.w * sky_vis + light.sun_dir.w * max(light.sun_dir.y, 0.0) * shadow);
     var reflection_vis = sky_vis;
@@ -3801,7 +3806,8 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         let spec_contact=mix(contact.y,contact.x,smoothstep(0.08,0.6,rough));
         var env=mix(bounce/PI,environment(refl,rough,bounce),reflection_vis)*spec_contact;
         // Inside an indoor irradiance volume its probes replace sky and bounce.
-        let cached=jittered_irradiance(p+visibility_n*0.05,px,visibility_n,n);
+        var cached=IrradianceSample(vec4<f32>(0.5,0.5,0.0,0.0),vec3<f32>(0.0));
+        if SHADE_PROBE != 11u { cached=jittered_irradiance(p+visibility_n*0.05,px,visibility_n,n); }
         let room=cached.value;
         if FEATURE_IRRADIANCE && room.w>0.0 {
           if aux_word(u32(gi.params.w)+7u) >= 1u {
