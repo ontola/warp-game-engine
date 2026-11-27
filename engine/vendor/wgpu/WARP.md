@@ -22,6 +22,12 @@ Change, which only matters on wasm32 (the WebGPU backend):
   them, then build it for real: the same pipelines come from the browser's
   cache. The browser host's "Preparing graphics" (app::web).
 
+- A buffer mapped at creation also gets COPY_DST (unless it is MAP_READ or
+  MAP_WRITE) and keeps the device's queue. When the browser hands back an
+  empty ArrayBuffer for its mapping (WebKit 26.6 in Playwright on macOS 26,
+  "spatial instance group bounds"), `get_mapped_range` writes into an
+  ArrayBuffer of its own and `unmap` copies it in with `writeBuffer`.
+
 - `WebBuffer::get_mapped_range` panics with the asked range, the mapped
   range and the ArrayBuffer's length instead of WebKit's bare RangeError
   ("Length out of range of buffer", which stopped the room in WebKit).

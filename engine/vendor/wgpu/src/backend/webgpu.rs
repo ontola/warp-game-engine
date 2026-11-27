@@ -1395,6 +1395,9 @@ struct WebBufferMapState {
     pub mapped_buffer: Option<js_sys::ArrayBuffer>,
     /// The total range which has been mapped in the buffer overall.
     pub range: Range<wgt::BufferAddress>,
+    /// WARP: `mapped_buffer` is our own ArrayBuffer, not the browser's
+    /// mapping (see `get_mapped_range`); unmap writes it with the queue.
+    pub scratch: bool,
 }
 
 /// Stores the state of a GPU buffer and a reference to its mapped `ArrayBuffer` (if any).
@@ -1409,6 +1412,10 @@ pub struct WebBuffer {
     mapping: Rc<RefCell<WebBufferMapState>>,
     /// Unique identifier for this Buffer.
     ident: crate::cmp::Identifier,
+    /// WARP: the device's queue for a buffer mapped at creation (with
+    /// COPY_DST added), so a mapping the browser returns empty can still
+    /// reach the buffer.
+    queue: Option<webgpu_sys::GpuQueue>,
 }
 
 impl WebBuffer {
@@ -1419,8 +1426,10 @@ impl WebBuffer {
             mapping: Rc::new(RefCell::new(WebBufferMapState {
                 mapped_buffer: None,
                 range: 0..desc.size,
+                scratch: false,
             })),
             ident: crate::cmp::Identifier::create(),
+            queue: None,
         }
     }
 
@@ -1440,6 +1449,18 @@ impl WebBuffer {
                 )
                 .map_err(|e| crate::MapRangeError(format!("{e:?}")))?;
             mapping.mapped_buffer = Some(buffer);
+        }
+        // WARP: WebKit 26 (Playwright, macOS 26) can return a 0-byte
+        // ArrayBuffer for a buffer mapped at creation. Write into our own
+        // ArrayBuffer then, which unmap copies in with the queue.
+        let short = u64::from(mapping.mapped_buffer.as_ref().unwrap().byte_length()) < range.end - range.start;
+        if short && !mapping.scratch && self.queue.is_some() && sub_range.start >= range.start && sub_range.end <= range.end {
+            static SAID: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+            if !SAID.swap(true, core::sync::atomic::Ordering::Relaxed) {
+                web_sys::console::warn_1(&format!("wgpu: the browser mapped {:?} ({} bytes) as an empty ArrayBuffer; writing it with the queue instead", self.inner.label(), self.inner.size()).into());
+            }
+            mapping.mapped_buffer = Some(js_sys::ArrayBuffer::new((range.end - range.start) as u32));
+            mapping.scratch = true;
         }
         let array_buffer = mapping.mapped_buffer.as_ref().unwrap();
         // WARP: a view past the mapped ArrayBuffer throws a bare RangeError
@@ -2556,13 +2577,23 @@ impl dispatch::DeviceInterface for WebDevice {
     }
 
     fn create_buffer(&self, desc: &crate::BufferDescriptor<'_>) -> dispatch::DispatchBuffer {
+        // WARP: a buffer mapped at creation also takes COPY_DST (where its
+        // usage allows), for the empty-mapping fallback in get_mapped_range.
+        let writable_at_creation = desc.mapped_at_creation
+            && !desc.usage.intersects(wgt::BufferUsages::MAP_READ | wgt::BufferUsages::MAP_WRITE)
+            && desc.size % 4 == 0;
+        let usage = if writable_at_creation { desc.usage | wgt::BufferUsages::COPY_DST } else { desc.usage };
         let mapped_desc =
-            webgpu_sys::GpuBufferDescriptor::new_with_f64(desc.size as f64, desc.usage.bits());
+            webgpu_sys::GpuBufferDescriptor::new_with_f64(desc.size as f64, usage.bits());
         mapped_desc.set_mapped_at_creation(desc.mapped_at_creation);
         if let Some(label) = desc.label {
             mapped_desc.set_label(label);
         }
-        WebBuffer::new(self.inner.create_buffer(&mapped_desc).unwrap(), desc).into()
+        let mut buffer = WebBuffer::new(self.inner.create_buffer(&mapped_desc).unwrap(), desc);
+        if writable_at_creation {
+            buffer.queue = Some(self.inner.queue());
+        }
+        buffer.into()
     }
 
     fn create_texture(&self, desc: &crate::TextureDescriptor<'_>) -> dispatch::DispatchTexture {
@@ -3071,7 +3102,14 @@ impl dispatch::BufferInterface for WebBuffer {
 
     fn unmap(&self) {
         self.inner.unmap();
-        self.mapping.borrow_mut().mapped_buffer = None;
+        let mut mapping = self.mapping.borrow_mut();
+        if mapping.scratch {
+            mapping.scratch = false;
+            if let (Some(queue), Some(data)) = (&self.queue, &mapping.mapped_buffer) {
+                let _ = queue.write_buffer_with_f64_and_buffer_source(&self.inner, mapping.range.start as f64, data);
+            }
+        }
+        mapping.mapped_buffer = None;
     }
 
     fn destroy(&self) {
