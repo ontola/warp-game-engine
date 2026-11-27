@@ -82,6 +82,13 @@ fn probe_refresh() {
 /// The frame rate adaptive quality chases for a game: its own target, but
 /// never above the screen's refresh (a game asking 120 on a 60 Hz screen
 /// would lower its resolution for nothing). None stays None (60).
+/// The screen's refresh for a game without its own target to chase, as
+/// natively (up to 120 fps): a computer only, a phone keeps 60.
+fn screen_hz(mobile: bool) -> Option<f64> {
+    if mobile { return None; }
+    REFRESH.with(|r| r.get().0).map(f64::from)
+}
+
 fn chase(target: Option<f32>) -> Option<f32> {
     let hz = REFRESH.with(|r| r.get().0);
     target.map(|t| hz.map_or(t, |hz| t.min(hz)))
@@ -748,7 +755,7 @@ impl Shell {
             self.times.clear();
             if let Some(b) = &mut self.bench { b.restart(); }
             // Each game starts at full resolution, chasing its own target.
-            if let Some(q) = &mut self.quality { q.set_enabled(false); q.set_enabled(true); q.idle(); q.set_target_fps(chase(self.game.target_fps()), None); }
+            if let Some(q) = &mut self.quality { q.set_enabled(false); q.set_enabled(true); q.idle(); q.set_target_fps(chase(self.game.target_fps()), screen_hz(self.mobile)); }
             if let Some(w) = &self.window {
                 w.set_title(&self.cfg.title);
                 // The next game (or the room) starts with a free, visible
@@ -916,9 +923,9 @@ impl Shell {
         // Waiting for a free canvas image is the GPU's time, not the CPU's.
         let wait_ms = ms(t_out);
         let view = texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(live.config.format.add_srgb_suffix()), ..Default::default() });
-        let quality = self.quality.get_or_insert_with(|| crate::quality::AdaptiveQuality::new(chase(self.game.target_fps()), None, Instant::now()).unwrap_or_else(|| unreachable!()));
+        let quality = self.quality.get_or_insert_with(|| crate::quality::AdaptiveQuality::new(chase(self.game.target_fps()), screen_hz(self.mobile), Instant::now()).unwrap_or_else(|| unreachable!()));
         // The refresh rate just became known: chase what the screen can show.
-        if REFRESH.with(|r| { let (hz, used) = r.get(); r.set((hz, true)); hz.is_some() && !used }) { quality.set_target_fps(chase(self.game.target_fps()), None); }
+        if REFRESH.with(|r| { let (hz, used) = r.get(); r.set((hz, true)); hz.is_some() && !used }) { quality.set_target_fps(chase(self.game.target_fps()), screen_hz(self.mobile)); }
         // As natively: a large canvas starts from 1440 lines, 0 is native,
         // and the controller scales down from there.
         // A phone starts lower (`?render=H` is its start, not a fixed cap).
