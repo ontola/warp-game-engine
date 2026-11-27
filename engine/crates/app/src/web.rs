@@ -852,7 +852,10 @@ impl Shell {
         if live.renderer.is_none() && page_holds() { return Ok(()); }
         // Compile the new game's pipelines in parallel first (see `prewarm`).
         if live.renderer.is_none() && PREPARED.with(|p| p.replace(false)) { WARM.with(|w| *w.borrow_mut() = Warm::Idle); }
-        else if live.renderer.is_none() && prewarm() {
+        // Only the page's first game (the room): a game may keep its own
+        // "scene built" state and expect the renderer it made to stay
+        // (Spellstorm: "no renderer" after a stand-in first frame).
+        else if live.renderer.is_none() && self.frames == 0 && prewarm() {
             let generation = PRESENTATION.with(|p| p.get());
             let state = WARM.with(|w| match &*w.borrow() { Warm::Idle => 0, Warm::Compiling(g) if *g == generation => 1, Warm::Ready(g, _) if *g == generation => 2, _ => 0 });
             if state == 0 {

@@ -333,8 +333,9 @@ room's longest pause while Dead Miles loaded was 3 to 6 s there (SwiftShader
 compiles on the same CPU cores the room draws with). Real GPUs still to be
 measured.
 
-Any other game (the Rust ones, the room at boot) is prewarmed in its first
-frame instead. In Chrome and Edge the browser host builds such a renderer twice
+The page's first game (the room at boot) is prewarmed in its first frame
+instead. Other games are not: a game may keep its own "scene built" state
+(Spellstorm then had "no renderer"). In Chrome and Edge the browser host builds such a renderer twice
 (`app::web` `prewarm`): first with every pipeline made through
 createXPipelineAsync, which the browser compiles in parallel on worker
 threads, and invalid stand-ins handed back (that renderer is dropped); once

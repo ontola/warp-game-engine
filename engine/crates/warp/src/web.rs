@@ -230,7 +230,12 @@ pub async fn load(name: &str, players: Option<usize>) -> Result<(app::Config, cr
         app::web::yield_to_browser().await;
         let t2 = web_time::Instant::now();
         render::startup_profile::force(true);
-        let renderer = render::Renderer::with_generated_streaming(&gpu, &scene, &light, true);
+        // In an error scope, as the first frame made it with a surface.wgsl
+        // (game.rs `self.surface.apply(|| render::validated(..))`): a browser
+        // answers the scope later, so its errors are dropped there too.
+        // Warp Theft Auto's "meadow aggregate draw" layout wants 18 sampled
+        // textures in the vertex stage, over a 16-texture device's limit.
+        let renderer = render::validated(&gpu, || render::Renderer::with_generated_streaming(&gpu, &scene, &light, true))?;
         render::startup_profile::force(false);
         drop(kept);
         if let Some(p) = renderer.startup_profile() { app::web::log(&format!("{name}: renderer made ahead in {:.0} ms: {}", t2.elapsed().as_secs_f32() * 1000.0, p.slowest(6))); }
