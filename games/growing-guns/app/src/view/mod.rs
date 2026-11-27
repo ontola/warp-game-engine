@@ -125,6 +125,7 @@ impl Visuals {
         scene.graphics.minimal_forward=crate::graphics::get().minimal_forward;
         scene.graphics.stone_detail=crate::graphics::get().stone_detail;
         scene.graphics.simple_lighting=crate::graphics::get().simple_lighting;
+        scene.graphics.compact_shade=crate::graphics::get().compact_shade;
         scene.graphics.simple_mesh_culling=crate::graphics::get().simple_blocks;
         scene.sky = Some(sky());
         // Godot's lava noise texture, for the lava shader.

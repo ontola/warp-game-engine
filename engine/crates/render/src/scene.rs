@@ -545,6 +545,11 @@ pub struct Graphics {
     pub stone_detail: bool,
     /// Textured diffuse sun/sky lighting, without procedural relief, GI or shadows.
     pub simple_lighting: bool,
+    /// The compact shade pass (simple lighting plus game surfaces and sun
+    /// shadows), also where the GPU could bind the full one: the full kernel's
+    /// size costs about three times as much on Apple and Adreno GPUs
+    /// (graphics-tiers.md). `KERN_COMPACT_SHADE` (1 or 0) overrides.
+    pub compact_shade: bool,
     /// Compile game-authored materials with their inexpensive detail path.
     pub low_surface_detail: bool,
     /// One lane per mesh owner. For plain mesh scenes without wind, vegetation

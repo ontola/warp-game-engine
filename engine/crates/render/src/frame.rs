@@ -2394,7 +2394,8 @@ impl Renderer {
             anisotropy_clamp: 16,
             ..Default::default()
         });
-        let compact_shade = gpu.limits.max_sampled_textures_per_shader_stage < shade_sampled_textures() || crate::switches::COMPACT_SHADE.on();
+        let compact_shade = gpu.limits.max_sampled_textures_per_shader_stage < shade_sampled_textures() || crate::switches::COMPACT_SHADE.on()
+            || (scene.graphics.compact_shade && !crate::switches::COMPACT_SHADE.off());
         let scene_bindings = scene_layout_bindings();
         let compact_scene_layout = compact_shade.then(|| layout(gpu, "compact material lighting",
             &shade_subset(&scene_bindings, true, COMPACT_SHADE_SCENE)));
