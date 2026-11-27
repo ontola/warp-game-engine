@@ -21,7 +21,9 @@ const fn p(x0: f64, x1: f64, top: f64, depth: f64) -> Platform {
     Platform { x0, x1, top, depth }
 }
 
-pub const TV_CONSOLE: Platform = p(-3.3, 3.3, 0.9, -1.8);
+/// Players on it stand in front of the Up next cabinet beside it (its
+/// titles are at z -1.64): never hidden behind it (Joep, 2026-11-27).
+pub const TV_CONSOLE: Platform = p(-3.3, 3.3, 0.9, -1.45);
 
 pub const PLATFORMS: [Platform; 16] = [
     // Game bookcase and the display stand.
