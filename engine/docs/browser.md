@@ -345,6 +345,8 @@ forces it in other browsers. Default on in Chrome, Edge and desktop Safari. The 
 and "compiled in X ms". `?shader_salt=N` renames every shader entry point
 (`NAME_wsN`), so the browser's caches miss and every pipeline compiles
 cold, as on the first visit after a release; a new N gives a new cold run.
+Safari's cache ignores entry-point names (Safari 27.2: still warm with a
+new salt), so there it does not give a cold run.
 
 ## What the browser needs
 
