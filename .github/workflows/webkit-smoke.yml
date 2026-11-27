@@ -1,0 +1,47 @@
+# By hand: the /play/ smoke test in WebKit (Safari's engine, WebGPU on Metal)
+# on a macOS runner, against a published candidate (play-<12 hex>), with
+# play-smoke.cjs from the chosen ref. For debugging Safari without a full
+# release run; the release workflow's webkit job does the same per candidate.
+name: WebKit smoke test
+on:
+  workflow_dispatch:
+    inputs:
+      candidate:
+        description: 'Release tag, e.g. play-8a0ed9353d73'
+        required: true
+      games:
+        description: 'Only these games (comma separated), empty for all'
+        required: false
+      query:
+        description: 'Extra URL query for the page, e.g. trees=1'
+        required: false
+permissions:
+  contents: read
+jobs:
+  webkit:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download '${{ github.event.inputs.candidate }}' -p warp-web.tar.gz -D build
+          tar xzf build/warp-web.tar.gz -C build && mv build/warp-web build/web
+      - name: WebKit smoke test
+        run: |
+          npm install --no-save --no-package-lock playwright@1.63.0
+          npx playwright install webkit
+          args=()
+          [ -n '${{ github.event.inputs.games }}' ] && args+=(--games '${{ github.event.inputs.games }}')
+          [ -n '${{ github.event.inputs.query }}' ] && args+=(--query '${{ github.event.inputs.query }}')
+          node engine/tools/play-smoke.cjs build/web --browser webkit --game-timeout 600 --report build/smoke-webkit.json --shots build/shots-webkit "${args[@]}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: webkit-smoke
+          path: |
+            build/smoke-webkit.json
+            build/shots-webkit
+          if-no-files-found: ignore
