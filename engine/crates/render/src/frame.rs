@@ -39,6 +39,15 @@ struct SplitFullShade {
     terms: Option<(wgpu::ComputePipeline, wgpu::BindGroupLayout)>,
 }
 
+/// KERN_SPLIT_FULL_SHADE: 0 one kernel, 1 surface + light, 2 (native
+/// default) surface + terms + light: on an M5 Pro at 1440p FULL 2 was
+/// 2.1 ms faster GPU median and 7.7 ms at p95 (27 November 2026). The
+/// browser keeps one kernel until it is measured on WebGPU.
+fn split_full_shade_mode() -> u32 {
+    let sw = &crate::switches::SPLIT_FULL_SHADE;
+    if sw.off() { 0 } else if sw.on() { 1 } else if sw.is("2") { 2 } else if cfg!(target_arch = "wasm32") { 0 } else { 2 }
+}
+
 #[derive(Default)]
 struct FrameResources {
     split_target: Option<(wgpu::Texture, wgpu::TextureView)>,
@@ -2964,8 +2973,8 @@ impl Renderer {
         });
         let split_full_shade = (!compact_shade && !simple_lighting && !sky_tiles && !voxel_surface && !shade_classes
             && !shade_features.cars && !shade_features.terrain && !shade_features.grass && !shade_features.tracks && !shade_features.meadow
-            && (crate::switches::SPLIT_FULL_SHADE.on() || crate::switches::SPLIT_FULL_SHADE.is("2"))).then(|| {
-            let with_terms = crate::switches::SPLIT_FULL_SHADE.is("2");
+            && split_full_shade_mode() > 0).then(|| {
+            let with_terms = split_full_shade_mode() == 2;
             let write_layout = layout(gpu, "shade full surface out", &[
                 (33, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba32Uint, view_dimension: wgpu::TextureViewDimension::D2 }),
                 (37, wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None })]);

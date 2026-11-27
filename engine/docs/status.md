@@ -187,6 +187,12 @@ Owned by the foliage work; its working checklist is
   (fog off); next: temporal moments per pixel (SVGF) for the box instead
   of this frame's noisy 3x3, then more reuse samples where few rays hit
   ([log](log/2026-11-14-shade-grain-ssr.md)).
+- **Split full shade pass** (native default, [plan](shade-split-plan.md)):
+  material, sun shadow with contact/SSAO, then light as three kernels
+  (`KERN_SPLIT_FULL_SHADE`). Growing Guns FULL 1440p on an M5 Pro: GPU
+  median 20.2 to 18.1 ms, p95 32.4 to 24.8 ms. Open: the browser keeps
+  one kernel until measured on WebGPU; scenes with cars, terrain, grass,
+  tracks or meadow still use one kernel.
 - **Opt-in static/dynamic sun split:** retains GPU source and voxel tree
   casters; exact split/full depth oracle covers still, wind, removal and
   restoration. Does not yet skip forest cull/splat work on unchanged pages.

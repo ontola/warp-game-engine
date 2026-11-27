@@ -65,3 +65,8 @@ M5 Pro A/B at 1e8f068f (2560x1440, FULL, 300 frames): `=1` gives shade
 against 3168 B. No win: both halves still spill. `KERN_SPLIT_FULL_SHADE=2`
 moves the sun shadow and contact/SSAO out of the light half into
 `shade terms` (SHADE_SPLIT 3, a vec2<u32> buffer at 39/40), to measure next.
+
+M5 Pro A/B at 0ce3c3c4 (same setup): `=2` shade 5.89 + surface 1.09 +
+terms 2.46 ms, GPU median/p95 18.10/24.75 against 20.18/32.41 for one
+kernel; spill 1728 + 1296 + 208 B. Screenshot RMSE 0.039 %. `2` is now the
+native default; the browser stays on one kernel until measured there.
