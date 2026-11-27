@@ -263,7 +263,11 @@ override VOXEL_PASS: bool = false;
 override SHADE_CLASS: u32 = 0u;
 override SHADE_DIAGNOSTICS: bool = true;
 // KERN_SHADE_PROBE=N (frame.rs): the simple/compact pass stops after stage N
-// and stores what it has, to time each stage on a device. 1 the visibility
+// and stores what it has, to time each stage on a device. The full pass
+// (`shade`) stops at 2 after triangle and normal, 3 after the material
+// (textures, weathering, wounds, car paint, game surfaces), 4 after the sun
+// shadow, 5 after direct, indirect and specular light; 0 the whole pass.
+// For the simple/compact pass: 1 the visibility
 // and depth reads, 2 + triangle and normal, 3 + material, surfaces and sun,
 // 4 + albedo texture and ambient/GI, 5 + local lights, 6 + the game's light
 // styling. 0 the whole pass (6 + flash, glow and fog).
@@ -3318,6 +3322,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     fp.dy *= mip_scale;
     let duv_x = uv_at(fp.dx, e1, e2, vi) ;
     let duv_y = uv_at(fp.dy, e1, e2, vi);
+    if SHADE_PROBE == 2u { textureStore(out_hdr,px,vec4<f32>(n*0.5+0.5,1.0)); return; }
     var base = m.tint;
     // Albedo alpha of an opaque textured material: SKIN|HAIR reads it as
     // the texel's skin and hair shares (skin_hair_shares).
@@ -3661,6 +3666,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
             }
         }
     }
+    if SHADE_PROBE == 3u { textureStore(out_hdr,px,vec4<f32>(min(base,vec3<f32>(65504.0)),1.0)); return; }
     // Skin and hair shares of this point (SKIN 1<<30, HAIR 1<<31).
     var skin = 0.0;
     var hair = 0.0;
@@ -3729,6 +3735,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     let cloud_shadow = cloud_sun_transmittance(p, l, light.clouds, light.cloud_motion);
     shadow *= cloud_shadow;
     far_shadow *= cloud_shadow;
+    if SHADE_PROBE == 4u { textureStore(out_hdr,px,vec4<f32>(min(base*(0.2+sun*shadow),vec3<f32>(65504.0)),1.0)); return; }
     // Base layer: Lambert plus GGX, metals tint their reflection.
     let v = -dir;
     let ndv = max(dot(n, v), 1e-4);
@@ -3883,6 +3890,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         direct += clustered_radiance(p,n,v,diffuse,rough,f0);
     }
     var rad = direct + indirect + specular;
+    if SHADE_PROBE == 5u { textureStore(out_hdr,px,vec4<f32>(min(rad,vec3<f32>(65504.0)),1.0)); return; }
     // Emission is scaled by Lighting::emissive_scale (exposure compensation).
     let emit = light.anim.y;
     if FEATURE_CARS { rad += car_lamp_emission(m.flags, base, inst, p) * emit; }
