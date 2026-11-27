@@ -194,7 +194,8 @@ pub async fn load(name: &str, players: Option<usize>) -> Result<(app::Config, cr
         app::android::off_thread_low(move || crate::LuaGame::load_with_storage(&dir, &over, sound, crate::storage::Location::Memory).map(Fresh)).await?.0
     };
     #[cfg(not(target_os = "android"))]
-    let game = crate::LuaGame::load_with_storage(&dir, &over, sound(), crate::storage::Location::Memory)?;
+    #[allow(unused_mut)]
+    let mut game = crate::LuaGame::load_with_storage(&dir, &over, sound(), crate::storage::Location::Memory)?;
     app::web::log(&format!("{name}: scripts loaded and init ran in {:.0} ms", t1.elapsed().as_secs_f32() * 1000.0));
     // On a phone the renderer (pipelines, buffers, texture arrays: seconds
     // on a tablet) is made on a helper thread, so the room keeps moving;
@@ -213,6 +214,26 @@ pub async fn load(name: &str, players: Option<usize>) -> Result<(app::Config, cr
         }).await;
         if let Some(p) = renderer.startup_profile() { app::web::log(&format!("{name}: renderer made ahead in {:.0} ms: {}", t2.elapsed().as_secs_f32() * 1000.0, p.slowest(6))); }
         game.set_renderer_ahead(renderer, scene);
+    }
+    // In a browser the pipelines compile in parallel while the room keeps
+    // moving (app::web::prewarm_with), and the renderer is made here, before
+    // the switch: the game's first frame only draws.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "android")))]
+    if app::web::prewarm() && let Some(gpu) = app::web::gpu() {
+        app::web::progress(Some(0.88), &format!("{name}: preparing the graphics"));
+        app::web::yield_to_browser().await;
+        game.surface_ahead();
+        let (scene, light) = game.scene_for_renderer(u64::from(gpu.limits.max_storage_buffer_binding_size))?;
+        let kept = app::web::prewarm_with(&gpu, name, || render::Renderer::with_generated_streaming(&gpu, &scene, &light, true)).await;
+        app::web::yield_to_browser().await;
+        let t2 = web_time::Instant::now();
+        render::startup_profile::force(true);
+        let renderer = render::Renderer::with_generated_streaming(&gpu, &scene, &light, true);
+        render::startup_profile::force(false);
+        drop(kept);
+        if let Some(p) = renderer.startup_profile() { app::web::log(&format!("{name}: renderer made ahead in {:.0} ms: {}", t2.elapsed().as_secs_f32() * 1000.0, p.slowest(6))); }
+        game.set_renderer_ahead(renderer, scene);
+        app::web::prepared();
     }
     let cfg = app::Config { title: game.cfg.title.clone(), size: game.cfg.size, tick_hz: game.cfg.tick_rate, keyboard: true, pointer: false, ..Default::default() };
     Ok((cfg, game))

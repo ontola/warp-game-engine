@@ -312,6 +312,37 @@ It leaves out the device id, room code, address query and cookies (ids,
 codes and queries are scrubbed from the text too), and asks Sentry not to
 keep the IP address (`sdk.settings.infer_ip: never`; checked: `user.ip` stays empty).
 
+## Preparing graphics: pipelines compile in parallel
+
+Measured in the release check (run 35, 26 November 2026, software GPU): the
+room's scene builds on the page in about 1 s; the rest of "Preparing
+graphics" (15 s there) is the browser compiling about 40 pipelines after the
+first submit, one after the other. Each game's first frame logs both
+("scene built here in ... ms", "first frame completed in ... ms (... ms of it
+the GPU)"), plus the renderer's slowest sections.
+
+A Luau game started from the room does this while it loads
+(`warp::web::load`): the pipelines compile in parallel while the room keeps
+drawing, then the real renderer is made ahead (`LuaGame::set_renderer_ahead`,
+which needs the game's surface.wgsl in first and init's looks counted as part
+of the scene), so its first frame only draws. Joep, 27 November 2026: the
+room must never freeze while a game prepares. On CI's software GPU (one run
+each, Dead Miles): the game's first frame after the switch went from 41 s to
+22 s and the room's own first frame from 23 s to 4 s of GPU time; the
+room's longest pause while Dead Miles loaded was 3 to 6 s there (SwiftShader
+compiles on the same CPU cores the room draws with). Real GPUs still to be
+measured.
+
+Any other game (the Rust ones, the room at boot) is prewarmed in its first
+frame instead. In Chrome and Edge the browser host builds such a renderer twice
+(`app::web` `prewarm`): first with every pipeline made through
+createXPipelineAsync, which the browser compiles in parallel on worker
+threads, and invalid stand-ins handed back (that renderer is dropped); once
+those settle, for real, when the same pipelines come from the browser's
+pipeline cache. `?prewarm=off` builds once, the plain way; `?prewarm=on`
+forces it in other browsers. The log says "N pipelines compiling in parallel"
+and "compiled in X ms".
+
 ## What the browser needs
 
 - Engine rule (Joep, 6 November 2026): every pass fits 8 storage buffers

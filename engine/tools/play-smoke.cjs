@@ -6,7 +6,7 @@
 // console error, the crash or GPU-problem notice, a game whose first frame
 // never comes, or a picture that is all one colour.
 //
-//   node engine/tools/play-smoke.cjs build/web [--browser chromium|firefox] [--games a,b] [--report out.json] [--shots DIR] [--shaders DIR]
+//   node engine/tools/play-smoke.cjs build/web [--browser chromium|firefox] [--games a,b] [--report out.json] [--shots DIR] [--shaders DIR] [--query a=b&c=d]
 //
 // --browser firefox runs Playwright's Firefox with WebGPU switched on
 // (dom.webgpu.enabled): the wgpu and naga that Firefox and Zen use, here on
@@ -33,7 +33,7 @@ try { playwright = require('playwright'); } catch { console.error('play-smoke: n
 const args = process.argv.slice(2);
 const opt = (name, dflt) => { const i = args.indexOf(name); return i >= 0 ? args.splice(i, 2)[1] : dflt; };
 const browserName = opt('--browser', 'chromium');
-const report = opt('--report'), shots = opt('--shots'), only = opt('--games'), shaderDir = opt('--shaders');
+const report = opt('--report'), shots = opt('--shots'), only = opt('--games'), shaderDir = opt('--shaders'), query = opt('--query');
 const roomTimeout = +opt('--room-timeout', 240) * 1000, gameTimeout = +opt('--game-timeout', 300) * 1000;
 const dir = path.resolve(args[0] || 'build/web');
 const library = JSON.parse(fs.readFileSync(path.join(dir, 'games/library.json'), 'utf8')).filter(g => !g.web_entry);
@@ -95,7 +95,7 @@ function colours(png) {
 
 (async () => {
   await new Promise(ok => server.listen(0, '127.0.0.1', ok));
-  const url = `http://127.0.0.1:${server.address().port}/?cloud=off&players=2&render=180`;
+  const url = `http://127.0.0.1:${server.address().port}/?cloud=off&players=2&render=180${query ? '&' + query : ''}`;
   const browser = browserName === 'firefox'
     ? await playwright.firefox.launch({
       headless: false,
@@ -110,6 +110,17 @@ function colours(png) {
   console.log(`${browserName} ${browser.version()}`);
   const page = await browser.newPage({ viewport: { width: 640, height: 360 } });
   await page.addInitScript(CAPTURE);
+  // The page's longest pause between animation frames since the last reset:
+  // the room must keep moving while a game loads (Joep, 27 November 2026).
+  await page.addInitScript(() => {
+    window.__warpGap = 0; window.__warpReady = 0; let last = 0;
+    // Until the game is ready to switch to ("ready N ms after Play"): after
+    // that its own first frame is on screen.
+    const log = console.log;
+    console.log = (...a) => { if (!window.__warpReady && String(a[0]).includes('ms after Play')) window.__warpReady = performance.now(); return log.apply(console, a); };
+    const tick = t => { if (last && !window.__warpReady) window.__warpGap = Math.max(window.__warpGap, t - last); last = t; requestAnimationFrame(tick); };
+    requestAnimationFrame(tick);
+  });
   const shaders = new Map();
   const t0 = Date.now(), log = [], problems = [];
   const stamp = () => ((Date.now() - t0) / 1000).toFixed(1);
@@ -182,8 +193,11 @@ function colours(png) {
     for (const g of games) {
       started = Date.now();
       const from = log.length;
+      await page.evaluate(() => { window.__warpGap = 0; window.__warpReady = 0; }).catch(() => {});
       await within(page.evaluate(name => window.warp.switch_game(name), g.folder), 120000).catch(e => problems.push('switch_game: ' + e.message));
       let r = await ready(from, gameTimeout, t => t !== roomTitle);
+      const gap = await page.evaluate(() => Math.round(window.__warpGap)).catch(() => -1);
+      console.log(`${g.folder}: longest pause between the room's frames while it loaded: ${gap} ms`);
       if (!r.error) {
         await settle(5000);
         const n = await look(g.folder).catch(() => -1);

@@ -37,6 +37,12 @@ thread_local! {
     /// Whether the page shows later loading itself ([`quiet_progress`]),
     /// and whether that is in effect (from the first frame on).
     static QUIET: std::cell::Cell<(bool, bool)> = const { std::cell::Cell::new((false, false)) };
+    /// The parallel pipeline compile before a game's first frame ([`prewarm`]).
+    static WARM: RefCell<Warm> = const { RefCell::new(Warm::Idle) };
+    /// The page's GPU, once made ([`gpu`]).
+    static GPU: RefCell<Option<render::Gpu>> = const { RefCell::new(None) };
+    /// The next game's pipelines were compiled while it loaded ([`prewarm_with`]).
+    static PREPARED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Changes as soon as a switch is requested. Only that scene's first GPU
     /// completion may dismiss the loading card.
     static PRESENTATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -400,6 +406,58 @@ pub fn mobile() -> bool {
 }
 
 /// Safari, or any browser on iOS: WebKit's WebGPU, not Chrome's or Firefox's.
+/// The page's GPU, once the device is made.
+pub fn gpu() -> Option<render::Gpu> { GPU.with(|g| g.borrow().clone()) }
+
+/// Compile the pipelines `build` makes in parallel, while the page keeps
+/// drawing (the room), before a game is switched to: `build` runs once with
+/// stand-in pipelines (see `wgpu::webgpu::set_prewarm`; what it returns is
+/// dropped), then this waits for the browser. Make the real ones right after:
+/// they come from the browser's cache. False when the browser does not do
+/// this ([`prewarm`]); the game's first frame then compiles them.
+pub async fn prewarm_with<T>(gpu: &render::Gpu, name: &str, build: impl FnOnce() -> T) -> Option<wasm_bindgen::JsValue> {
+    if !prewarm() { return None; }
+    let t = Instant::now();
+    wgpu::webgpu::set_prewarm(true);
+    let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+    drop(build());
+    drop(scope.pop());
+    wgpu::webgpu::set_prewarm(false);
+    let (all, n) = wgpu::webgpu::prewarm_take();
+    log(&format!("{name}: {n} pipelines compiling in parallel (stand-ins made in {:.0} ms)", t.elapsed().as_secs_f32() * 1000.0));
+    let t = Instant::now();
+    let kept = wasm_bindgen_futures::JsFuture::from(all).await.unwrap_or(wasm_bindgen::JsValue::UNDEFINED);
+    log(&format!("{name}: {n} pipelines compiled in {:.0} ms", t.elapsed().as_secs_f32() * 1000.0));
+    Some(kept)
+}
+
+/// The next game's renderer is ready (made while it loaded): its first frame
+/// skips the parallel compile.
+pub fn prepared() { PREPARED.with(|p| p.set(true)); }
+
+/// Where a game's pipelines are compiled before its first frame.
+enum Warm {
+    Idle,
+    /// Compiling in parallel for this presentation.
+    Compiling(u64),
+    /// Compiled: the settled pipelines, kept alive until the real ones exist
+    /// (the browser forgets a cached pipeline with its last user).
+    Ready(u64, wasm_bindgen::JsValue),
+}
+
+/// Compile a new game's pipelines in parallel before its first frame
+/// (Chrome and Edge: a pipeline made the plain way compiles alone, one after
+/// the other, in the GPU process; createXPipelineAsync runs them on worker
+/// threads, and the same pipeline made again comes from its cache).
+/// `?prewarm=off` builds the plain way.
+pub fn prewarm() -> bool {
+    match query_param("prewarm").as_deref() {
+        Some("off") => false,
+        Some("on") => true,
+        _ => web_sys::window().and_then(|w| w.navigator().user_agent().ok()).is_some_and(|ua| ua.contains("Chrome/")),
+    }
+}
+
 fn windows() -> bool {
     web_sys::window().and_then(|w| w.navigator().user_agent().ok()).is_some_and(|ua| ua.contains("Windows"))
 }
@@ -651,6 +709,7 @@ impl Shell {
                     log_pinned(&line);
                     let glass = render::portable::glass_sampled_textures();
                     if !render::portable::needed(&limits) && textures < glass { log_pinned(&format!("no glass: transparent surfaces need {glass} sampled textures per stage")); }
+                    GPU.with(|g| *g.borrow_mut() = Some(l.gpu.clone()));
                     *live.borrow_mut() = Some(l);
                     window.request_redraw();
                 }
@@ -791,6 +850,35 @@ impl Shell {
         // page while the window grows, leaving its new edges unpainted
         // (white) for seconds. Wait until the page says it has repainted.
         if live.renderer.is_none() && page_holds() { return Ok(()); }
+        // Compile the new game's pipelines in parallel first (see `prewarm`).
+        if live.renderer.is_none() && PREPARED.with(|p| p.replace(false)) { WARM.with(|w| *w.borrow_mut() = Warm::Idle); }
+        else if live.renderer.is_none() && prewarm() {
+            let generation = PRESENTATION.with(|p| p.get());
+            let state = WARM.with(|w| match &*w.borrow() { Warm::Idle => 0, Warm::Compiling(g) if *g == generation => 1, Warm::Ready(g, _) if *g == generation => 2, _ => 0 });
+            if state == 0 {
+                let t = Instant::now();
+                wgpu::webgpu::set_prewarm(true);
+                let scope = live.gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+                let mut stand_in = None;
+                let mut frame = Frame { gpu: &live.gpu, size, dt, alpha, split, scene_fps: 0.0, scene_worst_ms: 0.0, focused: true, hdr: None, stream_generated_textures: true, renderer: &mut stand_in };
+                let built = self.game.draw(&mut frame).map(|_| ());
+                drop(stand_in);
+                drop(scope.pop());
+                wgpu::webgpu::set_prewarm(false);
+                let (all, n) = wgpu::webgpu::prewarm_take();
+                let title = self.cfg.title.clone();
+                log(&format!("{title}: {n} pipelines compiling in parallel (stand-in scene built in {:.0} ms{})", ms(t), built.err().map(|e| format!(", {e}")).unwrap_or_default()));
+                WARM.with(|w| *w.borrow_mut() = Warm::Compiling(generation));
+                let t = Instant::now();
+                spawn(async move {
+                    let kept = wasm_bindgen_futures::JsFuture::from(all).await.unwrap_or(wasm_bindgen::JsValue::UNDEFINED);
+                    log(&format!("{title}: {n} pipelines compiled in {:.0} ms", t.elapsed().as_secs_f32() * 1000.0));
+                    WARM.with(|w| { let mut w = w.borrow_mut(); if matches!(*w, Warm::Compiling(g) if g == generation) { *w = Warm::Ready(generation, kept); } });
+                });
+                return Ok(());
+            }
+            if state == 1 { return Ok(()); }
+        }
         let fresh = live.renderer.is_none();
         let made = wgpu::webgpu::created();
         // The renderer's own sections (textures, buffers, pipelines) for the
@@ -856,6 +944,8 @@ impl Shell {
             if let Some(p) = live.renderer.as_ref().and_then(|r| r.startup_profile()) { log(&format!("{}: renderer {}", self.cfg.title, p.slowest(8))); }
         }
         if fresh { render::startup_profile::force(false); }
+        // The real pipelines are made: the compiled ones can go.
+        if fresh && live.renderer.is_some() { WARM.with(|w| *w.borrow_mut() = Warm::Idle); }
         if self.switched.is_none() && benching.is_none() && (self.render_height.is_none() || self.mobile) {
             if quality.frame(f64::from(dt) * 1000.0, Instant::now()) {
                 let next = quality.render_height(base(self.cfg.max_render_height));

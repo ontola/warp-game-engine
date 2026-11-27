@@ -35,12 +35,53 @@ use crate::{
 
 use defined_non_null_js_value::DefinedNonNullJsValue;
 
+/// Warp: while on, pipelines are compiled with createXPipelineAsync (in
+/// parallel on the browser's GPU worker threads) and the pipeline handed back
+/// is an invalid stand-in (an unknown entry point, no compile). A renderer
+/// built in this mode is thrown away; once [`prewarm_take`] resolves, the
+/// same pipelines made again come from the browser's pipeline cache instead
+/// of compiling one by one.
+static PREWARM: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+const PREWARM_LIST: &str = "__warpPrewarm";
+
+/// Warp: see [`PREWARM`].
+pub fn set_prewarm(on: bool) { PREWARM.store(on, core::sync::atomic::Ordering::Relaxed); }
+
+fn prewarm_on() -> bool { PREWARM.load(core::sync::atomic::Ordering::Relaxed) }
+
+fn prewarm_push(promise: JsValue) {
+    let global = js_sys::global();
+    let list = js_sys::Reflect::get(&global, &JsValue::from_str(PREWARM_LIST)).ok().and_then(|l| l.dyn_into::<js_sys::Array>().ok())
+        .unwrap_or_else(|| { let l = js_sys::Array::new(); let _ = js_sys::Reflect::set(&global, &JsValue::from_str(PREWARM_LIST), &l); l });
+    list.push(&promise);
+}
+
+/// Warp: the pipelines asked for in prewarm mode, settled
+/// (`Promise.allSettled`; keep the result alive until the real pipelines are
+/// made: the browser drops a pipeline from its cache with its last user),
+/// and how many there are.
+pub fn prewarm_take() -> (js_sys::Promise, u32) {
+    let global = js_sys::global();
+    let list = js_sys::Reflect::get(&global, &JsValue::from_str(PREWARM_LIST)).ok().and_then(|l| l.dyn_into::<js_sys::Array>().ok()).unwrap_or_default();
+    let _ = js_sys::Reflect::set(&global, &JsValue::from_str(PREWARM_LIST), &js_sys::Array::new());
+    (js_sys::Promise::all_settled(&list), list.length())
+}
+
 /// Warp: what the page asked the browser to compile, for the startup log
 /// (shader modules, render pipelines, compute pipelines, and the time spent
 /// in those calls on this thread in ms). The browser compiles in its GPU
 /// process, so most of the cost shows up later, at the first submit.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct Created { pub modules: u32, pub render: u32, pub compute: u32, pub call_ms: f64 }
+pub struct Created {
+    /// Shader modules.
+    pub modules: u32,
+    /// Render pipelines.
+    pub render: u32,
+    /// Compute pipelines.
+    pub compute: u32,
+    /// Time spent in those calls on this thread.
+    pub call_ms: f64,
+}
 
 static CREATED_MODULES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 static CREATED_RENDER: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
@@ -2434,6 +2475,10 @@ impl dispatch::DeviceInterface for WebDevice {
         let mapped_primitive = map_primitive_state(&desc.primitive);
         mapped_desc.set_primitive(&mapped_primitive);
 
+        if prewarm_on() {
+            prewarm_push(self.inner.create_render_pipeline_async(&mapped_desc).into());
+            mapped_vertex_state.set_entry_point("warp_prewarm_stand_in");
+        }
         let at = now_ms();
         let render_pipeline = self.inner.create_render_pipeline(&mapped_desc).unwrap();
         count(at, &CREATED_RENDER);
@@ -2477,6 +2522,10 @@ impl dispatch::DeviceInterface for WebDevice {
             mapped_desc.set_label(label);
         }
 
+        if prewarm_on() {
+            prewarm_push(self.inner.create_compute_pipeline_async(&mapped_desc).into());
+            mapped_compute_stage.set_entry_point("warp_prewarm_stand_in");
+        }
         let at = now_ms();
         let compute_pipeline = self.inner.create_compute_pipeline(&mapped_desc);
         count(at, &CREATED_COMPUTE);

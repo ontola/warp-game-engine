@@ -871,7 +871,16 @@ impl LuaGame {
         if !c.humans.is_empty() && !c.humans.attached() && c.humans.error().is_none()
             && let Err(e) = c.humans.attach(&mut c.world.scene, max_storage_binding) { c.humans.set_error(Some(format!("humans: {e}"))); }
         if c.rooms.enabled { crate::room_scene::prepare(&mut c.world.scene)?; }
+        // Looks made in init are in this scene: not "new looks" that would
+        // make the first frame throw the renderer made ahead away.
+        c.world.added.clear();
         Ok((std::mem::take(&mut c.world.scene), light))
+    }
+
+    /// Before a renderer made ahead: the game's surface.wgsl goes in (a
+    /// browser reports its compile errors later, on the device's handler).
+    pub fn surface_ahead(&mut self) {
+        if let Some(line) = self.surface.apply(|| Ok(())) { self.say(line); }
     }
 
     /// The renderer made from [`LuaGame::scene_for_renderer`]'s scene, and

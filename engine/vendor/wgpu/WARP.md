@@ -16,5 +16,10 @@ Change, which only matters on wasm32 (the WebGPU backend):
 - `wgpu::webgpu::created()` (Warp addition): how many shader modules and
   render/compute pipelines the page created and the time spent in those
   calls, for the browser host's startup log ("Preparing graphics").
+- `wgpu::webgpu::{set_prewarm, prewarm_take}` (Warp addition): build a
+  renderer once with every pipeline compiled through createXPipelineAsync
+  (in parallel in the browser) and invalid stand-ins handed back, await
+  them, then build it for real: the same pipelines come from the browser's
+  cache. The browser host's "Preparing graphics" (app::web).
 
 Drop this copy when a wgpu release handles GPUInternalError.
