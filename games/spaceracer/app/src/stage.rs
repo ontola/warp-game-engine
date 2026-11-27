@@ -328,7 +328,7 @@ impl Stage {
         let mut tree_xf = Vec::new();
         if race.biome == "forest" {
             // Baked Warp Vegetation trees (tools/bake_trees.py): closed opaque
-            // crowns, ~900 triangles, or ~320 on a phone. Index = "tree<k>".
+            // crowns, ~900 triangles, or ~480 on a phone. Index = "tree<k>".
             let tier = if crate::phone() { "-low" } else { "" };
             for name in TREE_MODELS {
                 let model = assets::gltf::load(scene, &root.join(format!("trees/{name}{tier}.glb")))?;

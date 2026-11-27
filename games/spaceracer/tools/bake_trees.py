@@ -28,10 +28,10 @@ OUT = GAME / "assets/trees"
 # The stage scales every tree to its own height, so only proportions matter.
 # Order is the stage's model index: "tree0".."tree3" in rules/stages.luau.
 TREES = {
-    "spruce-a": ("spruce", "fir", 553, 15, 12.2, .29, 900, 320),
-    "birch-a": ("birch", "birch", 142, 14, 9.77, .22, 900, 320),
-    "spruce-b": ("spruce", "fir", 911, 16, 12.8, .30, 900, 320),
-    "birch-b": ("birch", "birch", 377, 13, 9.4, .21, 900, 320),
+    "spruce-a": ("spruce", "fir", 553, 15, 12.2, .29, 900, 480),
+    "birch-a": ("birch", "birch", 142, 14, 9.77, .22, 900, 480),
+    "spruce-b": ("spruce", "fir", 911, 16, 12.8, .30, 900, 480),
+    "birch-b": ("birch", "birch", 377, 13, 9.4, .21, 900, 480),
 }
 
 
