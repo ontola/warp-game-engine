@@ -947,9 +947,16 @@ impl Shell {
         // The real pipelines are made: the compiled ones can go.
         if fresh && live.renderer.is_some() { WARM.with(|w| *w.borrow_mut() = Warm::Idle); }
         if self.switched.is_none() && benching.is_none() && (self.render_height.is_none() || self.mobile) {
+            quality.resolution_only = self.game.adaptive_resolution_only();
             if quality.frame(f64::from(dt) * 1000.0, Instant::now()) {
                 let next = quality.render_height(base(self.cfg.max_render_height));
                 log(&format!("{}: 3D view now {} lines high (chasing {:.0} fps)", self.cfg.title, next.min(size[1]), quality.target_fps()));
+            }
+            // As natively: resolution is spent and frames still miss badly,
+            // so the game cuts content (Growing Guns: a cheaper profile next round).
+            if quality.content_too_heavy(Instant::now()) {
+                log(&format!("{}: content too heavy at {}", self.cfg.title, quality.label()));
+                self.game.content_too_heavy();
             }
         }
         if self.switched.is_none() && let Some(b) = &mut self.bench {
