@@ -81,6 +81,13 @@ jobs:
       - name: Build and check
         if: steps.exists.outputs.found == 'false'
         run: python3 engine/tools/play-release.py build --native-tests --browser --hlsl --firefox
+      - name: Bundle for the WebKit job
+        if: always() && steps.exists.outputs.found == 'false' && hashFiles('build/web/index.html') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: warp-web
+          path: build/web
+          retention-days: 3
       - name: Smoke test screenshots and reports
         if: always() && steps.exists.outputs.found == 'false'
         uses: actions/upload-artifact@v4
@@ -131,3 +138,48 @@ jobs:
         run: |
           gh release list --limit 200 --json tagName,createdAt --jq '[.[] | select(.tagName | startswith("play-"))] | sort_by(.createdAt) | reverse | .[15:] | .[].tagName' |
             while read -r tag; do gh release delete "$tag" --yes --cleanup-tag || true; done
+  # Safari's engine on a Mac (Playwright's WebKit has WebGPU on Metal; on
+  # Linux it has none): the room and every game, as the Chromium and Firefox
+  # checks. Not blocking yet: it reports, the candidate is published without
+  # it. It becomes a required check once it has passed reliably.
+  webkit:
+    needs: release
+    if: always() && needs.release.result != 'skipped'
+    runs-on: macos-26
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.commit || github.sha }}
+      - uses: actions/download-artifact@v4
+        id: bundle
+        continue-on-error: true
+        with:
+          name: warp-web
+          path: build/web
+      - name: WebKit smoke test
+        if: steps.bundle.outcome == 'success'
+        run: |
+          npm install --no-save --no-package-lock playwright@1.63.0
+          npx playwright install webkit
+          node engine/tools/play-smoke.cjs build/web --browser webkit --game-timeout 600 --report build/smoke-webkit.json --shots build/shots-webkit
+      - name: Report
+        if: always() && steps.bundle.outcome == 'success'
+        run: |
+          [ -f build/smoke-webkit.json ] || exit 0
+          python3 - >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          import json
+          r = json.load(open('build/smoke-webkit.json'))
+          print('### WebKit (Safari engine, macOS) smoke test, not blocking yet\n')
+          for c in r['results']:
+              print(f"- {'ok' if c['ok'] else '**FAIL**'} `webkit:{c['name']}`: {(c['detail'] or '').splitlines()[0] if c['detail'] else ''}")
+          EOF
+      - if: always() && steps.bundle.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: play-smoke-webkit
+          path: |
+            build/smoke-webkit.json
+            build/shots-webkit
+          if-no-files-found: ignore

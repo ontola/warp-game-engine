@@ -6,13 +6,15 @@
 // console error, the crash or GPU-problem notice, a game whose first frame
 // never comes, or a picture that is all one colour.
 //
-//   node engine/tools/play-smoke.cjs build/web [--browser chromium|firefox] [--games a,b] [--report out.json] [--shots DIR] [--shaders DIR] [--query a=b&c=d]
+//   node engine/tools/play-smoke.cjs build/web [--browser chromium|firefox|webkit] [--games a,b] [--report out.json] [--shots DIR] [--shaders DIR] [--query a=b&c=d]
 //
 // --browser firefox runs Playwright's Firefox with WebGPU switched on
 // (dom.webgpu.enabled): the wgpu and naga that Firefox and Zen use, here on
 // Vulkan (Mesa's lavapipe, also on the CPU). Chrome's Tint and Firefox's naga
 // accept different WGSL and the two WebGPU APIs differ in details, so a
-// bundle that runs in Chrome can stay grey in Zen.
+// bundle that runs in Chrome can stay grey in Zen. --browser webkit is
+// Playwright's WebKit, Safari's engine; it has WebGPU on a Mac (Metal), so it
+// runs on a macOS runner (the release workflow's webkit job), not on Linux.
 //
 // --shaders DIR writes every WGSL module the page and its game workers
 // compiled (one .wgsl per distinct source) for engine/tools/hlsl-check.py,
@@ -102,6 +104,8 @@ function colours(png) {
       firefoxUserPrefs: { 'dom.webgpu.enabled': true, 'dom.webgpu.workers.enabled': true, 'gfx.webgpu.ignore-blocklist': true,
         'media.autoplay.default': 0, 'media.autoplay.blocking_policy': 0 },
     })
+    : browserName === 'webkit'
+    ? await playwright.webkit.launch({ headless: false })
     : await playwright.chromium.launch({
       headless: false,
       args: ['--enable-unsafe-webgpu', '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-webgpu-adapter=swiftshader',
