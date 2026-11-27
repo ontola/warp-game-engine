@@ -89,6 +89,7 @@ jobs:
           path: |
             build/play-release/shots
             build/play-release/smoke.json
+            build/play-release/follow.json
             build/play-release/shots-firefox
             build/play-release/smoke-firefox.json
             build/play-release/hlsl.json

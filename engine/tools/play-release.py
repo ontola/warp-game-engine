@@ -37,6 +37,11 @@ The checks, each in release.json:
   display): the Game Room, then every game on the shelf and back, failing
   on a panic, GPU error, console error, missing first frame or a blank
   picture.
+- follow:host, follow:follow (--browser): engine/tools/follow-smoke.cjs,
+  "Play on this screen" against a stand-in cloud: a host registers one
+  room and opens it to followers while in the lobby; a page opened with
+  ?follow=CODE&r=OTHER follows that room without registering its own,
+  keeps one code in the address bar and is not sent back to /app/.
 - firefox:<name> (--firefox): the same smoke test in Playwright's Firefox
   with WebGPU on (dom.webgpu.enabled), on Mesa's lavapipe Vulkan: the
   wgpu and naga of Firefox and Zen instead of Chrome's Dawn and Tint.
@@ -216,6 +221,18 @@ def browser_smoke(browser='chromium'):
     return [{'name': f'{prefix}:' + r['name'], 'ok': r['ok'], 'detail': r['detail'] or ''} for r in json.loads(smoke.read_text())['results']]
 
 
+def follow_smoke():
+    out = OUT / 'follow.json'
+    out.unlink(missing_ok=True)
+    command = ['node', str(ROOT / 'engine/tools/follow-smoke.cjs'), str(WEB), '--report', str(out)]
+    if not os.environ.get('DISPLAY'):
+        command = ['xvfb-run', '-a', '-s', '-screen 0 1280x800x24'] + command
+    run = subprocess.run(command, cwd=ROOT)
+    if not out.is_file():
+        return [{'name': 'follow:host', 'ok': False, 'detail': f'follow-smoke.cjs stopped (exit {run.returncode}) without a report'}]
+    return [{'name': 'follow:' + r['name'], 'ok': r['ok'], 'detail': r['detail'] or ''} for r in json.loads(out.read_text())['results']]
+
+
 def hlsl_check():
     # The tools must still reject the shader that broke Zen on 26 November.
     tools = ['--naga', os.environ.get('NAGA', 'naga'), '--dxc', os.environ.get('DXC', 'dxc')]
@@ -292,6 +309,7 @@ def main():
         results += native_tests()
     if args.browser and all(r['ok'] for r in results):
         results += browser_smoke()
+        results += follow_smoke()
         if args.hlsl:
             results += hlsl_check()
     if args.firefox and all(r['ok'] for r in results):
