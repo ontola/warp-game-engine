@@ -205,10 +205,25 @@ pub fn speakers(layout: Option<&str>, music: Option<&crate::music::Shared>) -> R
         made = Some((tx, crowd));
         let mut sum: Vec<Box<dyn audio::Source>> = vec![Box::new(mix), Box::new(cmix)];
         if let Some(m) = music { crate::music::lock(m).set_sample_rate(rate as f32); sum.push(Box::new(crate::music::Player::new(m))); }
-        Box::new(audio::Sum::limited(sum, -0.3))
+        let mixed: Box<dyn audio::Source> = Box::new(audio::Sum::limited(sum, -0.3));
+        // In a browser the game can wait paused behind the room: silent, and
+        // its voices wait too (not rendered) until it is back.
+        #[cfg(target_arch = "wasm32")]
+        let mixed: Box<dyn audio::Source> = Box::new(Hushable(mixed));
+        mixed
     })?;
     let (tx, crowd) = made.expect("built in open");
     Ok((speaker, tx, crowd))
+}
+
+#[cfg(target_arch = "wasm32")]
+struct Hushable(Box<dyn audio::Source>);
+
+#[cfg(target_arch = "wasm32")]
+impl audio::Source for Hushable {
+    fn render(&mut self, out: &mut [f32], channels: usize) {
+        if app::sound::hushed() { out.fill(0.0); } else { self.0.render(out, channels); }
+    }
 }
 
 /// The same pair offline at 48 kHz stereo, for scripted runs.

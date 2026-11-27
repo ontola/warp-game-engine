@@ -203,7 +203,10 @@ def browser_smoke(browser='chromium'):
     smoke = OUT / ('smoke.json' if browser == 'chromium' else f'smoke-{browser}.json')
     OUT.mkdir(parents=True, exist_ok=True)
     smoke.unlink(missing_ok=True)
-    command = ['node', str(ROOT / 'engine/tools/play-smoke.cjs'), str(WEB), '--browser', browser, '--report', str(smoke)]
+    # SwiftShader draws Growing Guns' first frame in 200 to over 300 s on a CI
+    # runner (the match itself builds in 48 s): wait up to 10 minutes a game.
+    command = ['node', str(ROOT / 'engine/tools/play-smoke.cjs'), str(WEB), '--browser', browser, '--report', str(smoke),
+               '--game-timeout', '600']
     command += ['--shots', str(OUT / 'shots'), '--shaders', str(OUT / 'wgsl')] if browser == 'chromium' else ['--shots', str(OUT / f'shots-{browser}')]
     if not os.environ.get('DISPLAY'):
         command = ['xvfb-run', '-a', '-s', '-screen 0 1280x800x24'] + command

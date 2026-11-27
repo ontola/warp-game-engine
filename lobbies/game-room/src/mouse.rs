@@ -91,6 +91,7 @@ impl Lobby {
             return;
         }
         let Some(at) = p.position else { self.mouse.hover = None; return };
+        self.sync_visit();
         // A click on a player opens what the room can do with them.
         if p.pressed {
             // The visit field over the QR code: a click types into it, a
@@ -246,16 +247,15 @@ impl Lobby {
     /// Whether `at` is on the plaque with the room's QR code and code.
     pub fn plaque_at(&self, at: [f32; 2], size: [u32; 2]) -> bool { self.plaque_rect(size).is_some_and(|r| inside(r, at)) }
 
-    /// The visit-a-room field (visit.rs), just over the plaque, as wide as it.
+    /// The visit-a-room screen over the plaque (visit.rs), on screen.
     pub fn visit_rect(&self, size: [u32; 2]) -> Option<[f32; 4]> {
         if self.catalog_open() { return None; }
-        let p = self.plaque_rect(size)?;
-        let scale = crate::hud::ui(size[1] as f32);
-        // A kicker over four 44 px slots (hud.rs `visit_field`).
-        let h = (102.0 * scale).floor();
-        let w = p[2].max(232.0 * scale);
-        let x = (p[0] + p[2] / 2.0 - w / 2.0).min(size[0] as f32 - w - 8.0 * scale);
-        Some([x, (p[1] - h - 14.0 * scale).max(8.0 * scale), w, h])
+        let view_proj = crate::hud::view_proj(&self.stage.room.camera, size);
+        let c = Vec3::from(crate::room::VISIT_CENTER) + Vec3::new(0.0, 0.0, 0.04);
+        let [w, h] = crate::room::VISIT_SIZE;
+        let corner = |dx: f32, dy: f32| crate::hud::to_screen(view_proj, size, c + Vec3::new(dx * w / 2.0, dy * h / 2.0, 0.0));
+        let (Some(a), Some(b)) = (corner(-1.0, 1.0), corner(1.0, -1.0)) else { return None };
+        Some([a[0].min(b[0]), a[1].min(b[1]), (b[0] - a[0]).abs(), (b[1] - a[1]).abs()])
     }
 
     /// Whether `at` is on the visit field.

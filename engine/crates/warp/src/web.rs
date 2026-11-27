@@ -106,6 +106,8 @@ pub fn sound() -> Option<audio::synth::SoundSender> {
 /// the game (`Some(false)`), or end every voice of a game that quit
 /// (`None`). Opens nothing when no game made a sound yet.
 pub fn hush(paused: Option<bool>) {
+    // Rust games with their own speakers (Growing Guns) listen to this.
+    app::sound::set_hushed(paused == Some(true));
     SOUND.with(|s| if let Some((_, tx)) = s.borrow().as_ref() {
         match paused {
             Some(p) => tx.volume(if p { 0.0 } else { 1.0 }),

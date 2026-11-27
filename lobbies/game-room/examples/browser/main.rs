@@ -78,7 +78,7 @@ pub(crate) mod page {
         base: usize,
         /// The device on each seat; None: free (the next device pressing a
         /// button takes it).
-        bound: Vec<Option<Device>>,
+        pub(crate) bound: Vec<Option<Device>>,
         /// Seats of players who play on their phone alone (the cloud's
         /// "phone seat"): no device takes them.
         pub(crate) phone: Vec<bool>,
@@ -137,6 +137,22 @@ pub(crate) mod page {
     pub(crate) fn fits(party: &Value, game: &str, players: usize) -> bool {
         let bots = game_meta(party, game).and_then(|g| g["bots"].as_u64()).unwrap_or(0) as usize;
         players >= 1 && players + bots >= min_players(party, game) && input_fits(party, game)
+    }
+
+    /// Why `players` people can't start `game` now, for phones (the room
+    /// poll's `failure`; the app shows it instead of Add to queue), or None
+    /// when they can.
+    pub(crate) fn unfit_reason(party: &Value, game: &str, players: usize) -> Option<String> {
+        let max = game_meta(party, game).and_then(|g| g["max_players"].as_u64()).unwrap_or(8) as usize;
+        let bots = game_meta(party, game).and_then(|g| g["bots"].as_u64()).unwrap_or(0) as usize;
+        let min = min_players(party, game);
+        if players == 0 { return Some("Nobody at the table yet".into()); }
+        if players + bots < min { return Some(format!("Needs {min} players")); }
+        if players > max { return Some(format!("Up to {max} players")); }
+        if !input_fits(party, game) {
+            return Some(if players >= 2 { "Not for two on one keyboard".into() } else { "Plays with a controller".into() });
+        }
+        None
     }
 
     /// Whether the input at hand plays `game` (as the room's host.rs
@@ -1277,6 +1293,11 @@ pub(crate) mod page {
         // otherwise: the first key, mouse look or A on a pad claims it.
         let players = warp::web::param("players").and_then(|p| p.parse().ok())
             .unwrap_or(if warp::web::param("game").is_some() || own.is_some() { 1 } else { 0usize }).min(MAX_SEATS);
+        // A reload keeps the table: the seats of a moment ago come back
+        // (cloud.rs restored_seats), so the profiles on them stay put and
+        // the first key or pad takes its seat again (Joep refreshed /play/
+        // and lost his place). Not with an explicit `?players=`.
+        let players = if warp::web::param("players").is_some() { players } else { players.max(super::cloud::restored_seats().len()).min(MAX_SEATS) };
         // The room's QR code on the loading screen while the room is built.
         super::cloud::register_early();
         app::web::progress(Some(0.2), "Building the Game Room");

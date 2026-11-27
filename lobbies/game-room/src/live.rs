@@ -165,6 +165,7 @@ pub struct Lobby {
     pub(crate) table: crate::pads::TablePads,
     /// The jukebox was taken out of the scene (host.no_jukebox).
     jukebox_gone: bool,
+    visit_shown: bool,
     pub(crate) holds: HashMap<String, (String, f32)>,
     pub(crate) station_cooldown: HashMap<String, f64>,
     pub(crate) pickup_cooldown: f64,
@@ -308,7 +309,7 @@ impl Lobby {
             next_order: 0, sheets_dirty: true, screen: None, show: Show::default(), prompts: HashMap::new(), prompt_active: HashMap::new(), nudges: Default::default(), started_once: false, prompt_glow: HashMap::new(),
             mood: Mood::default(), animated, time: 0.0, since_paint: 0.0, screens_dirty: true, local: vec![], bots: HashMap::new(), rng: Pcg::new(42), uploaded: false,
             props: props.expect("props"), board: board.expect("board"), events: vec![], controllers: HashMap::new(), held: HashMap::new(), input_blocked: HashSet::new(), menus: HashMap::new(),
-            bench: vec![], phones: vec![], lost_since: HashMap::new(), toasts: vec![], unjoined: HashMap::new(), table: Default::default(), jukebox_gone: false, holds: HashMap::new(), station_cooldown: HashMap::new(),
+            bench: vec![], phones: vec![], lost_since: HashMap::new(), toasts: vec![], unjoined: HashMap::new(), table: Default::default(), jukebox_gone: false, visit_shown: false, holds: HashMap::new(), station_cooldown: HashMap::new(),
             pickup_cooldown: 0.0, item_presses: HashMap::new(), pressed_flash: HashMap::new(), claims: HashMap::new(), pop_box: None, featured_visible: false,
             bumpers_visible: false, display_active: None, display_at: web_time::Instant::now(), quit: false, web_tx, web_rx, links_due: 0.0, last_queue: vec![], featured, bumpers, key_dips: vec![0.0; keyboard.len()], keyboard, key_hop: 99.0, keyboard_shown: false, join_with: JoinWith::Pad, key_activity: 0.0, deeper, catalog: Default::default(), visit: Default::default(), hud_size: [1920, 1080], mouse: Default::default(), outbox: None,
         };
@@ -369,6 +370,15 @@ impl Lobby {
                 }
             }
             if let Some(light) = self.build.dump.lights.iter_mut().find(|l| l["name"] == "jukebox_light") { light["energy"] = serde_json::json!(0.0); }
+        }
+        // The visit-a-room screen over the QR code (built hidden for Godot).
+        if !self.visit_shown {
+            self.visit_shown = true;
+            for k in self.build.visit.clone() {
+                if let Some(i) = room.sync_instance(&mut self.stage.scene, k, true) {
+                    dirty = Some(dirty.map_or((i, i + 1), |(a, b)| (a.min(i), b.max(i + 1))));
+                }
+            }
         }
         for &k in instances {
             room.dump.instances[k].transform = self.build.dump.instances[k].transform;

@@ -39,6 +39,49 @@ pub(crate) struct Cloud {
     heard: Vec<web_time::Instant>,
     /// The device's main profile went to the only player once ([`main_player`]).
     main_claimed: bool,
+    /// Seats kept over a page reload wait this long for a device; then the
+    /// ones nobody took leave, and their profiles go back to the doors.
+    restored_until: Option<web_time::Instant>,
+}
+
+/// Where the page keeps its seats, for a reload ([`restored_seats`]).
+const SEATS_KEY: &str = "splitscreen-club-seats";
+/// How old kept seats may be: the cloud keeps a room's profiles on its seats
+/// over a re-register for 5 minutes (relay.rs SEATS_RESTORE_SECONDS).
+const SEATS_KEPT_MS: u64 = 4 * 60 * 1000;
+/// How long kept seats wait for someone to take them.
+const RESTORED_CLAIM_S: u64 = 120;
+
+fn now_ms() -> u64 {
+    web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+}
+
+/// The seats this page had just before a reload (each its index, player id
+/// and revision, as the cloud knows them), when they are recent enough for
+/// the cloud to still have their profiles.
+pub(crate) fn restored_seats() -> Vec<Value> {
+    let Some(kept) = app::web::stored(SEATS_KEY).and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { return vec![] };
+    if now_ms().saturating_sub(kept["at"].as_u64().unwrap_or(0)) > SEATS_KEPT_MS { return vec![]; }
+    kept["seats"].as_array().cloned().unwrap_or_default().into_iter().take(8).collect()
+}
+
+/// Keep this page's seats for a reload (every poll, with the time).
+fn keep_seats(h: &Host) {
+    app::web::store(SEATS_KEY, &json!({"at": now_ms(), "seats": h.cloud.seats}).to_string());
+}
+
+/// Seats kept over a reload that no device took in time leave the table.
+fn drop_unclaimed(h: &mut Host) {
+    let Some(until) = h.cloud.restored_until else { return };
+    if web_time::Instant::now() < until { return; }
+    h.cloud.restored_until = None;
+    let idle: Vec<String> = (0..h.bound.len()).filter(|&i| h.bound[i].is_none() && h.phone.get(i) != Some(&true))
+        .filter_map(|i| h.party["players"][i]["id"].as_str().map(String::from)).collect();
+    // From the back, so the seats before each stay where they are.
+    for id in idle.into_iter().rev() {
+        app::web::log(&format!("cloud room: kept seat of {id} was not taken again; it leaves"));
+        super::page::leave_party(h, &id);
+    }
 }
 
 impl Cloud {
@@ -180,7 +223,12 @@ pub(crate) fn start(players: usize) {
     let Some(origin) = cloud_origin() else { return };
     with(|h| {
         h.cloud.origin = origin;
-        h.cloud.seats = (0..players).map(|i| json!({"index": i, "player": random_hex(16), "revision": 1})).collect();
+        let restored = if warp::web::param("players").is_some() { vec![] } else { restored_seats() };
+        h.cloud.seats = (0..players).map(|i| restored.get(i).cloned().unwrap_or_else(|| json!({"index": i, "player": random_hex(16), "revision": 1}))).collect();
+        if !restored.is_empty() {
+            app::web::log(&format!("cloud room: {} seat(s) kept over the reload", restored.len().min(players)));
+            h.cloud.restored_until = Some(web_time::Instant::now() + std::time::Duration::from_secs(RESTORED_CLAIM_S));
+        }
         h.cloud.applied = vec![None; players];
         h.cloud.heard = vec![web_time::Instant::now(); players];
     });
@@ -317,7 +365,7 @@ async fn poll() -> Result<(), String> {
             token
         }
     };
-    let body = with(|h| snapshot(h)).to_string();
+    let body = with(|h| { drop_unclaimed(h); keep_seats(h); snapshot(h) }).to_string();
     let (status, reply) = app::web::request("POST", &format!("{origin}/v1/lobbies/poll"), &[("authorization", &format!("Bearer {token}"))], Some(&body)).await?;
     if status == 401 {
         // The cloud forgot the room (a restart, or it expired): register again.
@@ -338,9 +386,16 @@ fn snapshot(h: &Host) -> Value {
     let people = h.cloud.seats.len() as u64;
     let session = party["active_session"].as_object().map(|s| s["game"].clone()).unwrap_or(Value::Null);
     let games: Vec<Value> = party["library"].as_array().into_iter().flatten().map(|g| {
-        let fits = super::page::fits(party, g["id"].as_str().unwrap_or_default(), people as usize) && people <= g["max_players"].as_u64().unwrap_or(8);
+        let id = g["id"].as_str().unwrap_or_default();
+        let fits = super::page::fits(party, id, people as usize) && people <= g["max_players"].as_u64().unwrap_or(8);
         let state = if session == g["id"] { "playing" } else if h.loading.as_deref() == g["id"].as_str() { "loading" } else if fits { "available" } else { "unavailable" };
-        json!({"id": g["id"], "selectable": fits, "state": state})
+        // Why not, in words (Joep: the app said 'Not on this Splitscreen
+        // Club' for games this page has but that wanted a controller).
+        let why = if fits { None } else { super::page::unfit_reason(party, id, people as usize) };
+        match why {
+            Some(why) => json!({"id": g["id"], "selectable": fits, "state": state, "failure": why}),
+            None => json!({"id": g["id"], "selectable": fits, "state": state}),
+        }
     }).collect();
     let current = if session.is_null() { h.loading.clone().map(Value::from).unwrap_or(Value::Null) } else { session.clone() };
     let next = party["playlist"]["entries"].get(0).map(|e| e["game"].clone()).unwrap_or(Value::Null);

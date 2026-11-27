@@ -90,6 +90,21 @@ pub struct Show {
     pub shots: std::collections::HashMap<String, Cover>,
     /// A bug just reported at the table (Back + Y): where to describe it.
     pub bug: Option<BugNote>,
+    /// The visit-a-room screen (visit.rs).
+    pub visit: VisitShow,
+}
+
+/// What the visit-a-room screen over the QR code shows.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct VisitShow {
+    /// Taking the code: the next slot is lit.
+    pub open: bool,
+    /// The code typed so far.
+    pub code: String,
+    /// A pad spelling it: the letter its stick is on.
+    pub pick: Option<char>,
+    /// The mouse is over it.
+    pub hover: bool,
 }
 
 /// The bug panel (hud.rs `bug_panel`): a bug reported at the table and
@@ -510,6 +525,35 @@ pub fn plaque(c: &mut Canvas, show: &Show) {
     c.text(faces().wordmark, [0.0, h - 16.0], code, TextAlign::Center, w, 52.0, TEXT);
 }
 
+/// The visit-a-room screen (visit.rs): a kicker, the code's slots and
+/// what to do, lit in violet (interaction, DESIGN.md) while it takes a code.
+pub fn visit(c: &mut Canvas, v: &VisitShow) {
+    let [w, h] = c.size;
+    c.rect([0.0, 0.0, w, h], Color::hex("0c0a16"));
+    let lilac = crate::room::NIGHT_LILAC;
+    c.text(faces().bold, [0.0, 40.0], "VISIT A ROOM", TextAlign::Center, w, 26.0, AMBER);
+    let n = crate::visit::LEN;
+    let (side, gap) = (64.0, 12.0);
+    let x0 = (w - (n as f32 * (side + gap) - gap)) / 2.0;
+    let y = 64.0;
+    for i in 0..n {
+        let r = [x0 + i as f32 * (side + gap), y, side, side];
+        let focus = v.open && i == v.code.len();
+        let ring = if focus { (4.0, lilac) } else if v.hover { (2.0, lilac.with_alpha(0.7)) } else { (2.0, Color::hex("3a3f5c")) };
+        c.style_box(r, [10.0; 4], Color::hex("1a1e36"), Some(ring));
+        let (ch, color) = match v.code.chars().nth(i) {
+            Some(ch) => (ch.to_string(), TEXT),
+            None if focus && v.pick.is_some() => (v.pick.unwrap().to_string(), lilac),
+            None => ("·".into(), DIM),
+        };
+        c.text(faces().bold, [r[0], r[1] + side / 2.0 + 14.0], &ch, TextAlign::Center, side, 40.0, color);
+    }
+    let line = if !v.open { "Click here to enter a room code" }
+        else if v.pick.is_some() { "Stick picks · A types · B deletes" }
+        else { "Type the code · Enter to go · Esc cancels" };
+    text(c, line, [0.0, h - 20.0], 26.0, if v.open { TEXT } else { DIM }, w, TextAlign::Center);
+}
+
 /// The online switch's sign: PUBLIC on the left, FRIENDS ONLY on the right,
 /// the one it is on lit in a green pill (green: state, DESIGN.md).
 pub fn privacy(c: &mut Canvas, show: &Show) {
@@ -803,6 +847,7 @@ pub fn paint(c: &mut Canvas, name: &str, show: &Show, prompts: &std::collections
         "queue_titles" => queue_titles(c, show),
         "jukebox" => jukebox(c, show),
         "plaque" => plaque(c, show),
+        "visit" => visit(c, &show.visit),
         "privacy" => privacy(c, show),
         "bumper_LB" => shelf_bumper(c, show, false),
         "bumper_RB" => shelf_bumper(c, show, true),
