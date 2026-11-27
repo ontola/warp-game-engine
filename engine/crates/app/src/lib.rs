@@ -32,6 +32,7 @@ pub mod startup;
 pub mod screenshot;
 pub mod feedback;
 pub mod quality;
+pub mod graphics;
 pub mod emulate;
 mod frame_log;
 pub mod profile;

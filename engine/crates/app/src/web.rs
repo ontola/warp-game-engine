@@ -399,15 +399,17 @@ pub fn short_side_dp() -> Option<f32> {
 }
 
 /// Phones get a cheaper preset: an Android, iPhone or iPad browser, or
-/// `?quality=mobile` anywhere (`?quality=full` turns it off). Adaptive
+/// `?graphics=medium|low` anywhere (`?graphics=high` turns it off; the older
+/// `?quality=mobile|full` reads too). Adaptive
 /// quality then starts from [`MOBILE_BASE_HEIGHT`] lines (or `?render=H`)
 /// instead of 1440 and lowers from there, and the frame drops the passes
 /// that cost a phone GPU most.
 pub fn mobile() -> bool {
-    match query_param("quality").as_deref() {
-        Some("mobile" | "low") => true,
-        Some("full" | "high") => false,
-        _ => web_sys::window().and_then(|w| w.navigator().user_agent().ok())
+    // `?graphics=high` (or the older `?quality=full`) is the full renderer;
+    // medium and low are this preset (crate::graphics).
+    match crate::graphics::chosen() {
+        Some(level) => level < crate::graphics::Level::High,
+        None => web_sys::window().and_then(|w| w.navigator().user_agent().ok())
             .is_some_and(|ua| ["Android", "iPhone", "iPad", "Mobile"].iter().any(|k| ua.contains(k))),
     }
 }

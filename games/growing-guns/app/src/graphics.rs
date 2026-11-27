@@ -1,5 +1,6 @@
 //! Shared graphics modifiers: the simulation and collision do not change.
-//! PC: --graphics full|low|minimum (or GG_GRAPHICS), else the Settings choice
+//! PC: --graphics full|low|minimum (or GG_GRAPHICS), or Warp's graphics level
+//! (WARP_GRAPHICS / ?graphics=high|medium|low, see app::graphics), else the Settings choice
 //! (`graphics_choice` in settings.json), else AUTO: what a start-menu probe
 //! measured on this machine, screen and build (`graphics-probe.json`), else
 //! by chip until the probe has run. Quest selects minimum. Without
@@ -47,6 +48,11 @@ impl Graphics {
     pub fn debris_count(self,count:u32)->u32 {count.div_ceil(self.debris_divisor).min(self.debris_capacity as u32)}
     pub fn name(self)->&'static str {if self==Self::FULL {"full"} else if self==Self::LOW {"low"} else {"minimum"}}
     /// One step cheaper, if there is one.
+    /// The profile for Warp's graphics level (app::graphics): high FULL,
+    /// medium LOW, low MINIMUM.
+    pub fn for_level(level:app::graphics::Level)->Self {
+        match level {app::graphics::Level::High=>Self::FULL,app::graphics::Level::Medium=>Self::LOW,app::graphics::Level::Low=>Self::MINIMUM}
+    }
     pub fn lower(self)->Option<Self> {if self==Self::FULL {Some(Self::LOW)} else if self==Self::LOW {Some(Self::MINIMUM)} else {None}}
 }
 static GRAPHICS:Mutex<Option<Graphics>>=Mutex::new(None);
@@ -63,13 +69,14 @@ pub fn configure(profile:Graphics)->Result<(),String> {
 pub fn get()->Graphics {*GRAPHICS.lock().unwrap().get_or_insert_with(initial)}
 /// Whether --graphics or GG_GRAPHICS set the profile (Settings and the
 /// automatic downgrade then leave it alone).
-pub fn fixed()->bool {*FIXED.get_or_init(||std::env::var("GG_GRAPHICS").is_ok_and(|s|Graphics::parse(&s).is_ok()))}
+pub fn fixed()->bool {*FIXED.get_or_init(||std::env::var("GG_GRAPHICS").is_ok_and(|s|Graphics::parse(&s).is_ok()) || app::graphics::chosen().is_some())}
 /// Change the profile; the caller rebuilds every view that read the old one.
 pub fn switch(profile:Graphics) {*GRAPHICS.lock().unwrap()=Some(profile);}
 /// The Settings choice: "auto" (by chip) or a profile name.
 pub fn chosen(choice:&str)->Graphics {Graphics::parse(choice).unwrap_or_else(|_|auto())}
 fn initial()->Graphics {
     if let Some(p)=std::env::var("GG_GRAPHICS").ok().and_then(|s|Graphics::parse(&s).ok()) {return p;}
+    if let Some(level)=app::graphics::chosen() {return Graphics::for_level(level);}
     saved_choice().map_or_else(auto,|c|chosen(&c))
 }
 /// `graphics_choice` from settings.json, read before the menus load it so

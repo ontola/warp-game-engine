@@ -416,7 +416,7 @@ pub fn short_side_dp() -> Option<f32> {
     Some(w.min(h) as f32)
 }
 
-pub fn mobile() -> bool { !matches!(query_param("quality").as_deref(), Some("full" | "high")) }
+pub fn mobile() -> bool { crate::graphics::chosen().is_none_or(|l| l < crate::graphics::Level::High) }
 
 const MOBILE_BASE_HEIGHT: u32 = 1080;
 

@@ -64,9 +64,13 @@ mod page {
         let total = humans.max(4);
         let bots: Vec<bool> = (0..total).map(|i| i >= humans).collect();
         let world = growing_guns::World::new(seed, &bots);
-        // `?gg_graphics=full|low|minimum`: this profile for the page's session (measuring).
-        if let Some(p) = app::web::query_param("gg_graphics").and_then(|p| crate::graphics::Graphics::parse(&p).ok()) {
-            if crate::graphics::configure(p).is_err() { crate::graphics::switch(p); }
+        // Warp's graphics level (`?graphics=high|medium|low`) picks the profile
+        // and keeps it; without one a phone starts on LOW, a desktop on FULL,
+        // and a match that cannot keep up steps down a profile next round.
+        match app::graphics::chosen() {
+            Some(level) => { let p = crate::graphics::Graphics::for_level(level); if crate::graphics::configure(p).is_err() { crate::graphics::switch(p); } }
+            None if app::web::mobile() => crate::graphics::switch(crate::graphics::Graphics::LOW),
+            None => {}
         }
         app::web::log(&format!("growing-guns: graphics {}", crate::graphics::get().name()));
         let mut game = crate::play::Gg::new(world, crate::session::Session::Local, (0..humans).collect());

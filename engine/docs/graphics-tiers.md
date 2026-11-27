@@ -24,6 +24,17 @@ Measured on a Samsung Tab S9+ (Adreno 740, 120 Hz), Game Room, 25 November
 2026: the medium tier 722 lines, GPU 14 ms, 60 fps; the low tier 1172 lines,
 GPU 7.7 ms, about 104 fps.
 
+## The graphics level
+
+`app::graphics::chosen()` is the player's or tester's choice of level for a
+run: `WARP_GRAPHICS=high|medium|low` (or `3|2|1`) natively, `?graphics=` in
+the browser and on the Android host (the older `?quality=full|mobile|low`
+reads too). `None` means nobody chose; the host then picks from the device.
+medium and low turn on the browser's phone preset (`app::web::mobile()`). A
+game maps the level onto its own content switches instead of adding a
+parameter of its own: Growing Guns plays FULL on high, LOW on medium and
+MINIMUM on low (`Graphics::for_level`).
+
 ## Why the low tier is cheap
 
 A phone or tablet GPU draws the frame in small tiles in fast on-chip
