@@ -34,6 +34,9 @@ struct SplitFullShade {
     light: wgpu::ComputePipeline,
     write_layout: wgpu::BindGroupLayout,
     read_layout: wgpu::BindGroupLayout,
+    /// KERN_SPLIT_FULL_SHADE=2: sun shadow and contact/SSAO in a pass of
+    /// their own (`shade_full_terms`) between surface and light.
+    terms: Option<(wgpu::ComputePipeline, wgpu::BindGroupLayout)>,
 }
 
 #[derive(Default)]
@@ -41,6 +44,7 @@ struct FrameResources {
     split_target: Option<(wgpu::Texture, wgpu::TextureView)>,
     split_ambient: Option<(wgpu::Texture, wgpu::TextureView)>,
     split_emit: Option<wgpu::Buffer>,
+    split_terms: Option<wgpu::Buffer>,
     split_bind: resource_cache::BindGroups<4>,
     style_input: Option<(wgpu::Texture, wgpu::TextureView)>,
     style_bind: resource_cache::BindGroups<1>,
@@ -2960,13 +2964,18 @@ impl Renderer {
         });
         let split_full_shade = (!compact_shade && !simple_lighting && !sky_tiles && !voxel_surface && !shade_classes
             && !shade_features.cars && !shade_features.terrain && !shade_features.grass && !shade_features.tracks && !shade_features.meadow
-            && crate::switches::SPLIT_FULL_SHADE.on()).then(|| {
+            && (crate::switches::SPLIT_FULL_SHADE.on() || crate::switches::SPLIT_FULL_SHADE.is("2"))).then(|| {
+            let with_terms = crate::switches::SPLIT_FULL_SHADE.is("2");
             let write_layout = layout(gpu, "shade full surface out", &[
                 (33, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba32Uint, view_dimension: wgpu::TextureViewDimension::D2 }),
                 (37, wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None })]);
-            let read_layout = layout(gpu, "shade full surface in", &[
-                (34, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
-                (38, wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None })]);
+            let surface_in = (34, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false });
+            let buffer = |read_only| wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only }, has_dynamic_offset: false, min_binding_size: None };
+            let read_layout = if with_terms {
+                layout(gpu, "shade full light in", &[surface_in, (38, buffer(true)), (40, buffer(true))])
+            } else {
+                layout(gpu, "shade full surface in", &[surface_in, (38, buffer(true))])
+            };
             let make = |label: &str, entry: &str, group3: &wgpu::BindGroupLayout, split: f64| {
                 let constants: Vec<(&str, f64)> = shade_constants.iter().copied().chain([("SHADE_SPLIT", split)]).collect();
                 gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -2974,8 +2983,12 @@ impl Renderer {
                     compilation_options: wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() }, cache: gpu.pipeline_cache(),
                 })
             };
+            let terms = with_terms.then(|| {
+                let terms_layout = layout(gpu, "shade full terms", &[surface_in, (38, buffer(true)), (39, buffer(false))]);
+                (make("shade terms", "shade_full_terms", &terms_layout, 3.0), terms_layout)
+            });
             SplitFullShade { surface: make("shade surface", "shade_full_surface", &write_layout, 1.0),
-                light: make("shade", "shade_full_light", &read_layout, 2.0), write_layout, read_layout }
+                light: make("shade", if with_terms { "shade_full_light_terms" } else { "shade_full_light" }, &read_layout, 2.0), write_layout, read_layout, terms }
         });
         // The live bounce of clustered lights (rsm.wgsl), before shade.
         let rsm_pipe = |entry: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -6415,14 +6428,27 @@ impl Renderer {
                 if resources.split_emit.as_ref().is_none_or(|b| b.size() != emit_size) {
                     resources.split_emit = Some(gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("shade emission"), size: emit_size, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false }));
                 }
+                if split.terms.is_some() && resources.split_terms.as_ref().is_none_or(|b| b.size() != emit_size) {
+                    resources.split_terms = Some(gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("shade terms"), size: emit_size, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false }));
+                }
                 let (surface_v, emit) = (&resources.split_target.as_ref().unwrap().1, resources.split_emit.as_ref().unwrap());
                 let write = resources.split_bind.get(gpu, &split.write_layout, "shade full surface out", &[(33, wgpu::BindingResource::TextureView(surface_v)), (37, emit.as_entire_binding())]);
-                let read = resources.split_bind.get(gpu, &split.read_layout, "shade full surface in", &[(34, wgpu::BindingResource::TextureView(surface_v)), (38, emit.as_entire_binding())]);
-                (split, write, read)
+                let (read, terms) = match (&split.terms, resources.split_terms.as_ref()) {
+                    (Some((pipe, terms_layout)), Some(t)) => {
+                        let terms = resources.split_bind.get(gpu, terms_layout, "shade full terms", &[(34, wgpu::BindingResource::TextureView(surface_v)), (38, emit.as_entire_binding()), (39, t.as_entire_binding())]);
+                        let read = resources.split_bind.get(gpu, &split.read_layout, "shade full light in", &[(34, wgpu::BindingResource::TextureView(surface_v)), (38, emit.as_entire_binding()), (40, t.as_entire_binding())]);
+                        (read, Some((pipe, terms)))
+                    }
+                    _ => (resources.split_bind.get(gpu, &split.read_layout, "shade full surface in", &[(34, wgpu::BindingResource::TextureView(surface_v)), (38, emit.as_entire_binding())]), None),
+                };
+                (split, write, read, terms)
             });
             let shade_scene = self.compact_shade_scene.as_ref().unwrap_or(&self.scene_bind);
-            if let Some((split, write, read)) = &split_full {
+            if let Some((split, write, read, terms)) = &split_full {
                 passes.push(("shade surface", &split.surface, vec![shade_scene, &shade_bind, &self.clustered.bind, write]));
+                if let Some((pipe, bind)) = terms {
+                    passes.push(("shade terms", *pipe, vec![shade_scene, &shade_bind, &self.clustered.bind, bind]));
+                }
                 passes.push(("shade", &split.light, vec![shade_scene, &shade_bind, &self.clustered.bind, read]));
             } else if let Some((split, write, read, ambient)) = &split {
                 passes.push(("shade surface", &split.surface, vec![shade_scene, &shade_bind, &self.clustered.bind, write]));

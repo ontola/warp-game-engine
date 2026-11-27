@@ -3216,6 +3216,13 @@ var<private> split_emit: vec3<f32>;
 // The emission as a buffer, not a fifth storage texture (WebGPU allows 4).
 @group(3) @binding(37) var<storage, read_write> split_emit_out: array<vec2<u32>>;
 @group(3) @binding(38) var<storage, read> split_emit_in: array<vec2<u32>>;
+// KERN_SPLIT_FULL_SHADE=2: SHADE_SPLIT 3 (`shade_full_terms`) works out the
+// sun shadow and contact/SSAO terms between the two passes; the light pass
+// reads them (sun and far shadow, contact x/y as halves).
+@group(3) @binding(39) var<storage, read_write> split_terms_out: array<vec2<u32>>;
+@group(3) @binding(40) var<storage, read> split_terms_in: array<vec2<u32>>;
+var<private> split_terms: vec2<u32>;
+var<private> split_has_terms: bool;
 
 @compute @workgroup_size(8, 8)
 fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(local_invocation_index) local:u32) {
@@ -3232,14 +3239,39 @@ fn shade_full_surface(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invo
     }
 }
 
-@compute @workgroup_size(8, 8)
-fn shade_full_light(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(local_invocation_index) local:u32) {
+fn load_split_surface(wid: vec3<u32>, lid: vec3<u32>) {
     let px = vec2<i32>(wid.xy * 8u + lid.xy);
     if all(px < vec2<i32>(view.size.xy)) {
         split_words = textureLoad(surface_in, px, 0);
         let e = split_emit_in[u32(px.y) * u32(view.size.x) + u32(px.x)];
         split_emit = vec3<f32>(unpack2x16float(e.x), unpack2x16float(e.y).x);
     }
+}
+
+@compute @workgroup_size(8, 8)
+fn shade_full_terms(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(local_invocation_index) local:u32) {
+    load_split_surface(wid, lid);
+    shade_full(wid, lid, local);
+    if split_ok {
+        let px = vec2<u32>(wid.xy * 8u + lid.xy);
+        split_terms_out[px.y * u32(view.size.x) + px.x] = split_terms;
+    }
+}
+
+@compute @workgroup_size(8, 8)
+fn shade_full_light_terms(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(local_invocation_index) local:u32) {
+    load_split_surface(wid, lid);
+    let px = vec2<u32>(wid.xy * 8u + lid.xy);
+    if all(px < vec2<u32>(view.size.xy)) {
+        split_terms = split_terms_in[px.y * u32(view.size.x) + px.x];
+        split_has_terms = true;
+    }
+    shade_full(wid, lid, local);
+}
+
+@compute @workgroup_size(8, 8)
+fn shade_full_light(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(local_invocation_index) local:u32) {
+    load_split_surface(wid, lid);
     shade_full(wid, lid, local);
 }
 
@@ -3378,7 +3410,7 @@ fn shade_full(wid: vec3<u32>, lid: vec3<u32>, local: u32) {
     // The material's own branches: none of them in the split light pass.
     var mat_flags = m.flags;
     var mat_layer = m.layer;
-    if SHADE_SPLIT == 2u { mat_flags = (m.flags & 0xc0000009u) | 1024u; mat_layer = -1; }
+    if SHADE_SPLIT >= 2u { mat_flags = (m.flags & 0xc0000009u) | 1024u; mat_layer = -1; }
     var tex_alpha = 1.0;
     var nn = n; // the normal after normal maps
     var orm = vec3<f32>(1.0); // material map: occlusion, roughness, metalness
@@ -3667,7 +3699,7 @@ fn shade_full(wid: vec3<u32>, lid: vec3<u32>, local: u32) {
     // Wounds (instance bits 27..31): wet blood stains in the body's own
     // space, spreading from a few blotches to most of it.
     let wounds = f32(inst.flags >> 27u) / 31.0;
-    if wounds > 0.0 && SHADE_SPLIT != 2u {
+    if wounds > 0.0 && SHADE_SPLIT < 2u {
         let o = (pos_of(vi[0]) * b0 + pos_of(vi[1]) * b1 + pos_of(vi[2]) * b2) * inst.scale;
         let blot = 0.5 * vnoise(o.xy * 3.1 + o.z * 1.7) + 0.5 * vnoise(o.zy * 3.3 - o.x * 1.9 + 7.0);
         let fleck = vnoise(o.xz * 17.0 + o.y * 11.0);
@@ -3728,7 +3760,7 @@ fn shade_full(wid: vec3<u32>, lid: vec3<u32>, local: u32) {
         split_emit = surface_emit;
         return;
     }
-    if SHADE_SPLIT == 2u {
+    if SHADE_SPLIT >= 2u {
         let b = vec4<f32>(unpack2x16float(split_words.x), unpack2x16float(split_words.y));
         base = b.xyz;
         tex_alpha = b.w;
@@ -3785,6 +3817,11 @@ fn shade_full(wid: vec3<u32>, lid: vec3<u32>, local: u32) {
     var shadow = 1.0;
     // Sun visibility past the fine sun maps round p (skin_hair_direct).
     var far_shadow = 1.0;
+    if SHADE_SPLIT == 2u && split_has_terms {
+        let s = unpack2x16float(split_terms.x);
+        shadow = s.x;
+        far_shadow = s.y;
+    } else {
     if FEATURE_SKIN_HAIR && skin > 0.0 && sun_visibility_required() {
         if light.near_levels.y < 0.5 {
             far_shadow = shadow_filter(shadow_tex, light.shadow_view_proj, light.sky.w, p + light.sun_dir.xyz * 3.0, surface_n, geo_n);
@@ -3811,6 +3848,7 @@ fn shade_full(wid: vec3<u32>, lid: vec3<u32>, local: u32) {
     let cloud_shadow = cloud_sun_transmittance(p, l, light.clouds, light.cloud_motion);
     shadow *= cloud_shadow;
     far_shadow *= cloud_shadow;
+    }
     if SHADE_PROBE == 4u { textureStore(out_hdr,px,vec4<f32>(min(base*(0.2+sun*shadow),vec3<f32>(65504.0)),1.0)); return; }
     // Base layer: Lambert plus GGX, metals tint their reflection.
     let v = -dir;
@@ -3839,9 +3877,18 @@ fn shade_full(wid: vec3<u32>, lid: vec3<u32>, local: u32) {
     let sun_e = light.sun_color.rgb * light.sun_dir.w * shadow * meadow_edge.y * field_sun;
     let refl = reflect(dir, n);
     var contact = vec2<f32>(0.8, 0.9);
-    if SHADE_PROBE != 11u {
+    if SHADE_SPLIT == 2u && split_has_terms {
+        contact = unpack2x16float(split_terms.y);
+    } else if SHADE_PROBE != 11u {
         let ssao = screen_space_ao(px, size, p, visibility_n, dist);
         contact = contact_visibility(p + visibility_n * 0.025, visibility_n, refl, vis.x) * vec2<f32>(ssao, mix(1.0, ssao, 0.65));
+    }
+    if SHADE_SPLIT == 3u {
+        // The brush factor above is the light pass's own: store the shadow without it.
+        let raw_shadow = select(shadow, shadow / brush_sun, procedural_leaf && brush_sun > 0.0);
+        split_ok = true;
+        split_terms = vec2<u32>(pack2x16float(vec2<f32>(raw_shadow, far_shadow)), pack2x16float(contact));
+        return;
     }
     if SHADE_PROBE == 7u { textureStore(out_hdr,px,vec4<f32>(min(base*(0.2+sun*shadow)*sky_vis*contact.x,vec3<f32>(65504.0)),1.0)); return; }
     let bounce = gi.bounce.rgb * (gi.bounce.w * sky_vis + light.sun_dir.w * max(light.sun_dir.y, 0.0) * shadow);

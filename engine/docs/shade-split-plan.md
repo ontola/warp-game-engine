@@ -59,3 +59,9 @@ normal, roughness/metal/ao/gloss) and the emission in a storage buffer
 4 per stage. Headless llvmpipe at 640x360: max difference 1/255 against
 the single kernel. Off by default until the Mac A/B (shade ms, GPU ms,
 spill bytes, screenshots) shows it is faster.
+
+M5 Pro A/B at 1e8f068f (2560x1440, FULL, 300 frames): `=1` gives shade
+9.14 + surface 1.09 ms against 9.98 ms in one pass; spill 1888 + 1296 B
+against 3168 B. No win: both halves still spill. `KERN_SPLIT_FULL_SHADE=2`
+moves the sun shadow and contact/SSAO out of the light half into
+`shade terms` (SHADE_SPLIT 3, a vec2<u32> buffer at 39/40), to measure next.
