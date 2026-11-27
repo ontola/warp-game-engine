@@ -1,6 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/ontola/gamepad-party/main/catalog/schema.json",
   "id": "relay-keepers",
+  "beta": true,
   "title": "Relay Keepers",
   "tagline": "Leap from a partner, pass the signal and cross between two eras.",
   "developer": "Joep Meindertsma",
