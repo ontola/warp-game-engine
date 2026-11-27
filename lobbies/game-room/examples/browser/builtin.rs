@@ -24,3 +24,11 @@ pub(crate) async fn load(folder: &str, players: usize) -> Option<Loaded> {
         }
     }
 }
+
+/// The page's background worker (job-worker.js, app::web_jobs): a built-in
+/// game's job by name, such as Growing Guns' lighting bakes.
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn worker_job(name: &str, input: &[u8]) -> Result<Vec<u8>, wasm_bindgen::JsValue> {
+    let out = if name.starts_with("growing-guns/") { growing_guns_app::web::job(name, input) } else { Err(format!("unknown job {name}")) };
+    out.map_err(|e| wasm_bindgen::JsValue::from_str(&e))
+}

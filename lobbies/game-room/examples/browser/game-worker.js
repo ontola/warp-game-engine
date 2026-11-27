@@ -8,6 +8,9 @@ self.onmessage = async ({data}) => {
   // The page's sound node: the game's sound goes straight there (audio device_worker.rs).
   if (data.audio) { self.warpAudioPort = data.audio; return; }
   if (data.canvas) {
+    // Background jobs (app web_jobs.rs) start the same module in their own worker.
+    self.warpWasmModule = data.module;
+    self.warpVersion = data.version;
     try {
       const glue = new URL('./pkg/browser.js', import.meta.url);
       glue.searchParams.set('v', data.version);

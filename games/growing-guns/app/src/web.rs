@@ -18,6 +18,11 @@ pub(crate) fn served(rel: &str) -> Option<std::path::PathBuf> {
     vfs::is_dir(&dir).then_some(dir)
 }
 
+/// The page's background worker runs job `name` (app::web_jobs): the
+/// stadium's lighting bakes.
+#[cfg(target_arch = "wasm32")]
+pub fn job(name: &str, input: &[u8]) -> Result<Vec<u8>, String> { crate::stadium::bake_jobs::run(name, input) }
+
 #[cfg(target_arch = "wasm32")]
 pub use page::*;
 
@@ -60,7 +65,8 @@ mod page {
         let bots: Vec<bool> = (0..total).map(|i| i >= humans).collect();
         let world = growing_guns::World::new(seed, &bots);
         let mut game = crate::play::Gg::new(world, crate::session::Session::Local, (0..humans).collect());
-        game.vis.stadium.bake_in_background = false;
+        // Later arenas bake their light in the page's background worker; the first in place.
+        game.vis.stadium.bake_in_background = true;
         game.ui.player_name = format!("Player_{}", seed % 1000);
         game.set_sky(crate::sky::SkyChoice::Godot)?;
         app::web::progress(Some(0.85), "Tuning the speakers");

@@ -187,6 +187,18 @@ fn bake_sun_cached(grid: render::irradiance_volume::Grid, boxes: &[Affine3A], sk
     Ok(probes)
 }
 
+/// The sun's bounce on a sky bake, packed with the lava's glow when there is one.
+fn bake_sun_return(grid: render::irradiance_volume::Grid, boxes: &[Affine3A], sky: &[render::irradiance_volume::Probe], reflectance: f32, sun: Vec3,
+    emission: Option<&[render::irradiance_volume::Probe]>, planes: &[[f32; 4]]) -> Result<SunUpload, String> {
+    let start=web_time::Instant::now();
+    let probes=bake_sun_cached(grid,boxes,sky,reflectance,sun)?;
+    let upload=if let Some(emission)=emission {
+        SunUpload::Packed(render::irradiance_volume::pack_sky_emission(&grid,&probes,emission,planes)?)
+    } else { SunUpload::Probes(probes) };
+    crate::say(&format!("stadium sun return: {:.1} ms bake+pack",start.elapsed().as_secs_f64()*1000.0));
+    Ok(upload)
+}
+
 fn bake_sky(grid: render::irradiance_volume::Grid, boxes: &[Affine3A], reflectance: f32, half: f32) -> SkyBake {
     let start = web_time::Instant::now();
     static CACHE: std::sync::OnceLock<std::sync::Mutex<BakeCache<SkyBake>>> = std::sync::OnceLock::new();
@@ -546,11 +558,15 @@ impl StadiumVisuals {
             if sky_boxes != self.sky_boxes || reflectance != self.sky_reflectance {
                 self.sky_reflectance=reflectance;
                 self.sky_boxes = sky_boxes;
-                if self.bake_in_background {
+                // (A browser bakes the first arena in place: nothing waits for a worker then.)
+                if self.bake_in_background && !(cfg!(target_arch = "wasm32") && self.needs_initial_lighting) {
                     let (tx, rx) = std::sync::mpsc::channel();
                     let boxes = self.sky_boxes.clone();
                     let half=world.arena.size*0.5;
+                    #[cfg(not(target_arch = "wasm32"))]
                     std::thread::spawn(move || { let _ = tx.send(bake_sky(grid, &boxes, reflectance, half)); });
+                    #[cfg(target_arch = "wasm32")]
+                    bake_jobs::sky(grid, boxes, reflectance, half, tx);
                     // A newer arena replaces a bake still running.
                     self.sky_job = Some(rx);
                 } else {
@@ -898,21 +914,16 @@ impl StadiumVisuals {
                 // operations. Finish it in the worker, not on the draw thread.
                 let emission=(std::env::var("GG_LAVA_BOUNCE").as_deref()!=Ok("0")).then(||self.sky_emission.clone());
                 let planes=self.sky_planes.clone();
-                let bake = move || -> Result<SunUpload,String> {
-                    let start=web_time::Instant::now();
-                    let probes=bake_sun_cached(grid,&boxes,&sky,reflectance,sun)?;
-                    let upload=if let Some(emission)=emission {
-                        SunUpload::Packed(render::irradiance_volume::pack_sky_emission(&grid,&probes,&emission,&planes)?)
-                    } else { SunUpload::Probes(probes) };
-                    crate::say(&format!("stadium sun return: {:.1} ms bake+pack",start.elapsed().as_secs_f64()*1000.0));
-                    Ok(upload)
-                };
                 if self.bake_in_background && !self.needs_initial_lighting {
                     let (tx, rx) = std::sync::mpsc::channel();
-                    std::thread::spawn(move || { let _ = tx.send(bake()); });
+                    #[cfg(not(target_arch = "wasm32"))]
+                    std::thread::spawn(move || { let _ = tx.send(bake_sun_return(grid, &boxes, &sky, reflectance, sun, emission.as_deref(), &planes)); });
+                    // A browser: the page's background worker (bake_jobs).
+                    #[cfg(target_arch = "wasm32")]
+                    bake_jobs::sun(grid, boxes, sky, reflectance, sun, emission, planes, tx);
                     self.sun_job = Some((sun, rx));
                 } else {
-                    self.upload_sun(gpu, renderer, bake()?)?;
+                    self.upload_sun(gpu, renderer, bake_sun_return(grid, &boxes, &sky, reflectance, sun, emission.as_deref(), &planes)?)?;
                     self.sky_sun = Some(sun);
                 }
             }
@@ -1117,5 +1128,92 @@ mod mark_tests {
             for i in 0..3 {if i!=axis{assert!(p[i].abs()+r<=half[i]+1e-5);}}
         }
         assert!(stain_mesh(0).vertices.iter().all(|v|v.pos[1]==0.0));
+    }
+}
+
+/// A browser's stadium bakes in the page's background worker
+/// (app::web_jobs): on the page thread they stalled every new round
+/// 1.6-2.3 s (M5 Pro, 2026-11-27). Inputs and results go as little-endian
+/// words; a job that cannot run bakes in place as before.
+#[cfg(target_arch = "wasm32")]
+pub(crate) mod bake_jobs {
+    use super::{bake_sky, bake_sun_return, SkyBake, SunUpload};
+    use glam::{Affine3A, Vec3};
+    use render::irradiance_volume::{Grid, Probe};
+    use std::sync::mpsc::Sender;
+
+    #[derive(Default)]
+    struct W(Vec<u8>);
+    impl W {
+        fn u(&mut self, v: u32) { self.0.extend_from_slice(&v.to_le_bytes()); }
+        fn f(&mut self, v: f32) { self.u(v.to_bits()); }
+        fn grid(&mut self, g: Grid) { for v in g.origin.to_array() { self.f(v); } self.f(g.cell); for d in g.dims { self.u(d); } }
+        fn boxes(&mut self, b: &[Affine3A]) { self.u(b.len() as u32); for x in b { for v in x.to_cols_array() { self.f(v); } } }
+        fn probes(&mut self, p: &[Probe]) { self.u(p.len() as u32); for x in p { for a in x.axes { for v in a.to_array() { self.f(v); } } } }
+        fn planes(&mut self, p: &[[f32; 4]]) { self.u(p.len() as u32); for x in p { for v in x { self.f(*v); } } }
+    }
+    struct R<'a>(&'a [u8]);
+    impl R<'_> {
+        fn u(&mut self) -> Result<u32, String> {
+            let (h, t) = self.0.split_at_checked(4).ok_or("bake job: short input")?;
+            self.0 = t;
+            Ok(u32::from_le_bytes(h.try_into().unwrap()))
+        }
+        fn f(&mut self) -> Result<f32, String> { Ok(f32::from_bits(self.u()?)) }
+        fn v3(&mut self) -> Result<Vec3, String> { Ok(Vec3::new(self.f()?, self.f()?, self.f()?)) }
+        fn grid(&mut self) -> Result<Grid, String> { Ok(Grid { origin: self.v3()?, cell: self.f()?, dims: [self.u()?, self.u()?, self.u()?] }) }
+        fn boxes(&mut self) -> Result<Vec<Affine3A>, String> {
+            (0..self.u()?).map(|_| { let mut c = [0.0; 12]; for v in &mut c { *v = self.f()?; } Ok(Affine3A::from_cols_array(&c)) }).collect()
+        }
+        fn probes(&mut self) -> Result<Vec<Probe>, String> {
+            (0..self.u()?).map(|_| { let mut axes = [Vec3::ZERO; 6]; for a in &mut axes { *a = self.v3()?; } Ok(Probe { axes }) }).collect()
+        }
+        fn planes(&mut self) -> Result<Vec<[f32; 4]>, String> { (0..self.u()?).map(|_| Ok([self.f()?, self.f()?, self.f()?, self.f()?])).collect() }
+    }
+
+    /// The worker's side: run job `name` on its encoded input.
+    pub(crate) fn run(name: &str, input: &[u8]) -> Result<Vec<u8>, String> {
+        let mut r = R(input);
+        let mut w = W::default();
+        match name {
+            "growing-guns/sky" => {
+                let (grid, reflectance, half, boxes) = (r.grid()?, r.f()?, r.f()?, r.boxes()?);
+                let bake = bake_sky(grid, &boxes, reflectance, half);
+                w.probes(&bake.probes); w.probes(&bake.emission); w.planes(&bake.planes); w.f(bake.ms as f32);
+            }
+            "growing-guns/sun" => {
+                let (grid, reflectance, sun, glow, boxes, sky, emission, planes) = (r.grid()?, r.f()?, r.v3()?, r.u()?, r.boxes()?, r.probes()?, r.probes()?, r.planes()?);
+                match bake_sun_return(grid, &boxes, &sky, reflectance, sun, (glow == 1).then_some(&emission[..]), &planes)? {
+                    SunUpload::Packed(words) => { w.u(0); w.u(words.len() as u32); for x in words { w.u(x); } }
+                    SunUpload::Probes(p) => { w.u(1); w.probes(&p); }
+                }
+            }
+            _ => return Err(format!("unknown job {name}")),
+        }
+        Ok(w.0)
+    }
+
+    pub(super) fn sky(grid: Grid, boxes: Vec<Affine3A>, reflectance: f32, half: f32, tx: Sender<SkyBake>) {
+        let mut w = W::default();
+        w.grid(grid); w.f(reflectance); w.f(half); w.boxes(&boxes);
+        app::web_jobs::job("growing-guns/sky", w.0, move |out| {
+            let bake = out.and_then(|b| { let mut r = R(&b); Ok(SkyBake { probes: r.probes()?, emission: r.probes()?, planes: r.planes()?, ms: r.f()? as f64 }) })
+                .unwrap_or_else(|e| { crate::say(&format!("stadium sky bake here: {e}")); bake_sky(grid, &boxes, reflectance, half) });
+            let _ = tx.send(bake);
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn sun(grid: Grid, boxes: Vec<Affine3A>, sky: Vec<Probe>, reflectance: f32, sun: Vec3, emission: Option<Vec<Probe>>, planes: Vec<[f32; 4]>, tx: Sender<Result<SunUpload, String>>) {
+        let mut w = W::default();
+        w.grid(grid); w.f(reflectance); for v in sun.to_array() { w.f(v); } w.u(emission.is_some() as u32);
+        w.boxes(&boxes); w.probes(&sky); w.probes(emission.as_deref().unwrap_or(&[])); w.planes(&planes);
+        app::web_jobs::job("growing-guns/sun", w.0, move |out| {
+            let upload = out.and_then(|b| {
+                let mut r = R(&b);
+                Ok(match r.u()? { 0 => SunUpload::Packed((0..r.u()?).map(|_| r.u()).collect::<Result<_, _>>()?), _ => SunUpload::Probes(r.probes()?) })
+            }).or_else(|e| { crate::say(&format!("stadium sun bake here: {e}")); bake_sun_return(grid, &boxes, &sky, reflectance, sun, emission.as_deref(), &planes) });
+            let _ = tx.send(upload);
+        });
     }
 }

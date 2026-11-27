@@ -43,6 +43,8 @@ pub mod web;
 /// A game in a Web Worker with its own canvas (the browser's warm game).
 #[cfg(target_arch = "wasm32")]
 pub mod web_offscreen;
+#[cfg(target_arch = "wasm32")]
+pub mod web_jobs;
 
 /// A host in this program takes the game back to its lobby (a browser page
 /// with its room, [`web::on_exit`]): games offer "Back to lobby" then.
