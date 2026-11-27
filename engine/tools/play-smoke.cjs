@@ -145,7 +145,11 @@ function colours(png) {
     w.on('console', onConsole);
     w.on('error', e => problems.push('worker error: ' + (e.message || e)));
   });
-  page.on('pageerror', e => { problems.push('page error: ' + e.message); console.log(`${stamp()} PAGE ERROR ${e.message}`); });
+  page.on('pageerror', e => {
+    const where = (e.stack || '').split('\n').slice(0, 12).join('\n');
+    problems.push('page error: ' + e.message + (where ? '\n' + where : ''));
+    console.log(`${stamp()} PAGE ERROR ${e.message}\n${where}`);
+  });
   page.on('crash', () => problems.push('the page crashed'));
   page.on('requestfailed', r => problems.push(`request failed: ${r.url()} (${r.failure()?.errorText})`));
   page.on('response', r => { if (r.status() >= 400) problems.push(`HTTP ${r.status()}: ${r.url()}`); });
