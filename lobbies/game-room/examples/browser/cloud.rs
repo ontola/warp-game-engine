@@ -39,6 +39,49 @@ pub(crate) struct Cloud {
     heard: Vec<web_time::Instant>,
     /// The device's main profile went to the only player once ([`main_player`]).
     main_claimed: bool,
+    /// Seats kept over a page reload wait this long for a device; then the
+    /// ones nobody took leave, and their profiles go back to the doors.
+    restored_until: Option<web_time::Instant>,
+}
+
+/// Where the page keeps its seats, for a reload ([`restored_seats`]).
+const SEATS_KEY: &str = "splitscreen-club-seats";
+/// How old kept seats may be: the cloud keeps a room's profiles on its seats
+/// over a re-register for 5 minutes (relay.rs SEATS_RESTORE_SECONDS).
+const SEATS_KEPT_MS: u64 = 4 * 60 * 1000;
+/// How long kept seats wait for someone to take them.
+const RESTORED_CLAIM_S: u64 = 120;
+
+fn now_ms() -> u64 {
+    web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+}
+
+/// The seats this page had just before a reload (each its index, player id
+/// and revision, as the cloud knows them), when they are recent enough for
+/// the cloud to still have their profiles.
+pub(crate) fn restored_seats() -> Vec<Value> {
+    let Some(kept) = app::web::stored(SEATS_KEY).and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { return vec![] };
+    if now_ms().saturating_sub(kept["at"].as_u64().unwrap_or(0)) > SEATS_KEPT_MS { return vec![]; }
+    kept["seats"].as_array().cloned().unwrap_or_default().into_iter().take(8).collect()
+}
+
+/// Keep this page's seats for a reload (every poll, with the time).
+fn keep_seats(h: &Host) {
+    app::web::store(SEATS_KEY, &json!({"at": now_ms(), "seats": h.cloud.seats}).to_string());
+}
+
+/// Seats kept over a reload that no device took in time leave the table.
+fn drop_unclaimed(h: &mut Host) {
+    let Some(until) = h.cloud.restored_until else { return };
+    if web_time::Instant::now() < until { return; }
+    h.cloud.restored_until = None;
+    let idle: Vec<String> = (0..h.bound.len()).filter(|&i| h.bound[i].is_none() && h.phone.get(i) != Some(&true))
+        .filter_map(|i| h.party["players"][i]["id"].as_str().map(String::from)).collect();
+    // From the back, so the seats before each stay where they are.
+    for id in idle.into_iter().rev() {
+        app::web::log(&format!("cloud room: kept seat of {id} was not taken again; it leaves"));
+        super::page::leave_party(h, &id);
+    }
 }
 
 impl Cloud {
@@ -180,7 +223,12 @@ pub(crate) fn start(players: usize) {
     let Some(origin) = cloud_origin() else { return };
     with(|h| {
         h.cloud.origin = origin;
-        h.cloud.seats = (0..players).map(|i| json!({"index": i, "player": random_hex(16), "revision": 1})).collect();
+        let restored = if warp::web::param("players").is_some() { vec![] } else { restored_seats() };
+        h.cloud.seats = (0..players).map(|i| restored.get(i).cloned().unwrap_or_else(|| json!({"index": i, "player": random_hex(16), "revision": 1}))).collect();
+        if !restored.is_empty() {
+            app::web::log(&format!("cloud room: {} seat(s) kept over the reload", restored.len().min(players)));
+            h.cloud.restored_until = Some(web_time::Instant::now() + std::time::Duration::from_secs(RESTORED_CLAIM_S));
+        }
         h.cloud.applied = vec![None; players];
         h.cloud.heard = vec![web_time::Instant::now(); players];
     });
@@ -317,7 +365,7 @@ async fn poll() -> Result<(), String> {
             token
         }
     };
-    let body = with(|h| snapshot(h)).to_string();
+    let body = with(|h| { drop_unclaimed(h); keep_seats(h); snapshot(h) }).to_string();
     let (status, reply) = app::web::request("POST", &format!("{origin}/v1/lobbies/poll"), &[("authorization", &format!("Bearer {token}"))], Some(&body)).await?;
     if status == 401 {
         // The cloud forgot the room (a restart, or it expired): register again.

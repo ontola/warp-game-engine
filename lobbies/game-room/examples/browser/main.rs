@@ -78,7 +78,7 @@ pub(crate) mod page {
         base: usize,
         /// The device on each seat; None: free (the next device pressing a
         /// button takes it).
-        bound: Vec<Option<Device>>,
+        pub(crate) bound: Vec<Option<Device>>,
         /// Seats of players who play on their phone alone (the cloud's
         /// "phone seat"): no device takes them.
         pub(crate) phone: Vec<bool>,
@@ -1293,6 +1293,11 @@ pub(crate) mod page {
         // otherwise: the first key, mouse look or A on a pad claims it.
         let players = warp::web::param("players").and_then(|p| p.parse().ok())
             .unwrap_or(if warp::web::param("game").is_some() || own.is_some() { 1 } else { 0usize }).min(MAX_SEATS);
+        // A reload keeps the table: the seats of a moment ago come back
+        // (cloud.rs restored_seats), so the profiles on them stay put and
+        // the first key or pad takes its seat again (Joep refreshed /play/
+        // and lost his place). Not with an explicit `?players=`.
+        let players = if warp::web::param("players").is_some() { players } else { players.max(super::cloud::restored_seats().len()).min(MAX_SEATS) };
         // The room's QR code on the loading screen while the room is built.
         super::cloud::register_early();
         app::web::progress(Some(0.2), "Building the Game Room");
