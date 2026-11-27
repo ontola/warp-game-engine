@@ -349,7 +349,7 @@ pub mod webgpu {
         GpuBuffer, GpuDevice, GpuQueue, GpuTexture, GpuTextureView,
     };
     pub use crate::backend::webgpu::DropCallback;
-    pub use crate::backend::webgpu::{created, prewarm_take, set_prewarm, Created};
+    pub use crate::backend::webgpu::{created, prewarm_take, set_prewarm, set_shader_salt, Created};
 }
 
 #[doc(hidden)]

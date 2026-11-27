@@ -22,6 +22,10 @@ Change, which only matters on wasm32 (the WebGPU backend):
   them, then build it for real: the same pipelines come from the browser's
   cache. The browser host's "Preparing graphics" (app::web).
 
+- `wgpu::webgpu::set_shader_salt(n)` (Warp addition): renames every WGSL
+  entry point to `NAME_wsN` and asks pipelines for that name, so the
+  browser's shader caches miss (`?shader_salt=N` in the browser host).
+
 - A buffer mapped at creation also gets COPY_DST (unless it is MAP_READ or
   MAP_WRITE) and keeps the device's queue. When the browser hands back an
   empty ArrayBuffer for its mapping (WebKit 26.6 in Playwright on macOS 26,

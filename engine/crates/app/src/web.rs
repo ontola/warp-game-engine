@@ -1043,6 +1043,9 @@ async fn setup(window: Arc<Window>) -> Result<Live, String> {
     let instance = render::gpu::instance();
     let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
     let size = window.inner_size();
+    // `?shader_salt=N`: entry points renamed, so the browser compiles every
+    // shader cold (measuring the first visit after a release).
+    if let Some(n) = query_param("shader_salt").and_then(|v| v.parse::<u32>().ok()) { wgpu::webgpu::set_shader_salt(n); }
     let (gpu, mut config, _adapter) = Gpu::for_surface_async(&instance, &surface, size.width.max(1), size.height.max(1)).await?;
     // The canvas can be copied from ([`capture_frame`]).
     config.usage |= wgpu::TextureUsages::COPY_SRC;

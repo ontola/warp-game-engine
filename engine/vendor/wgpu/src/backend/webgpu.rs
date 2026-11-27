@@ -95,6 +95,35 @@ pub fn created() -> Created {
     Created { modules: CREATED_MODULES.load(Relaxed), render: CREATED_RENDER.load(Relaxed), compute: CREATED_COMPUTE.load(Relaxed), call_ms: CREATED_US.load(Relaxed) as f64 / 1000.0 }
 }
 
+static SALT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// Warp: a salt above 0 renames every WGSL entry point to `NAME_wsN` (and
+/// the pipelines ask for that name), so the browser's shader caches miss:
+/// a cold compile on demand (`?shader_salt=N` in the browser host).
+pub fn set_shader_salt(salt: u32) { SALT.store(salt, core::sync::atomic::Ordering::Relaxed); }
+
+fn salted(entry: &str) -> alloc::borrow::Cow<'_, str> {
+    match SALT.load(core::sync::atomic::Ordering::Relaxed) {
+        0 => entry.into(),
+        n => format!("{entry}_ws{n}").into(),
+    }
+}
+
+/// Renames the entry points of `code` the way [`salted`] names them.
+fn salt_wgsl(code: &str) -> alloc::borrow::Cow<'_, str> {
+    if SALT.load(core::sync::atomic::Ordering::Relaxed) == 0 { return code.into(); }
+    let mut out = String::with_capacity(code.len() + 256);
+    let mut rest = code;
+    while let Some(at) = ["@compute", "@vertex", "@fragment"].iter().filter_map(|k| rest.find(k)).min() {
+        let Some(f) = rest[at..].find("fn ").map(|f| at + f + 3) else { break };
+        let name_len = rest[f..].find(|c: char| !(c.is_alphanumeric() || c == '_')).unwrap_or(rest.len() - f);
+        out.push_str(&rest[..f]);
+        out.push_str(&salted(&rest[f..f + name_len]));
+        rest = &rest[f + name_len..];
+    }
+    out.push_str(rest);
+    out.into()
+}
+
 fn now_ms() -> f64 {
     let perf = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("performance")).ok();
     perf.and_then(|p| {
@@ -2077,7 +2106,7 @@ impl dispatch::DeviceInterface for WebDevice {
             }
             #[cfg(feature = "wgsl")]
             crate::ShaderSource::Wgsl(ref code) => {
-                let shader_module = webgpu_sys::GpuShaderModuleDescriptor::new(code);
+                let shader_module = webgpu_sys::GpuShaderModuleDescriptor::new(&salt_wgsl(code));
                 Ok((
                     shader_module,
                     WebShaderCompilationInfo::Wgsl {
@@ -2411,7 +2440,7 @@ impl dispatch::DeviceInterface for WebDevice {
             desc.vertex.compilation_options.constants,
         );
         if let Some(ep) = desc.vertex.entry_point {
-            mapped_vertex_state.set_entry_point(ep);
+            mapped_vertex_state.set_entry_point(&salted(ep));
         }
 
         let buffers = desc
@@ -2489,7 +2518,7 @@ impl dispatch::DeviceInterface for WebDevice {
             let mapped_fragment_desc = webgpu_sys::GpuFragmentState::new(&module.module, &targets);
             insert_constants_map(&mapped_fragment_desc, frag.compilation_options.constants);
             if let Some(ep) = frag.entry_point {
-                mapped_fragment_desc.set_entry_point(ep);
+                mapped_fragment_desc.set_entry_point(&salted(ep));
             }
             mapped_desc.set_fragment(&mapped_fragment_desc);
         }
@@ -2534,7 +2563,7 @@ impl dispatch::DeviceInterface for WebDevice {
         let mapped_compute_stage = webgpu_sys::GpuProgrammableStage::new(&shader_module.module);
         insert_constants_map(&mapped_compute_stage, desc.compilation_options.constants);
         if let Some(ep) = desc.entry_point {
-            mapped_compute_stage.set_entry_point(ep);
+            mapped_compute_stage.set_entry_point(&salted(ep));
         }
         let mapped_desc = match desc.layout {
             Some(layout) => webgpu_sys::GpuComputePipelineDescriptor::new(
