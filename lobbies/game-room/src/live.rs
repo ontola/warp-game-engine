@@ -785,12 +785,15 @@ impl Lobby {
 impl Game for Lobby {
     fn local_players(&self) -> usize { self.local.len() }
 
-    /// Phones and tablets: 60 fps at (nearly) full resolution. Chasing 120
-    /// dropped the room to 722 of 1200 lines and read blurry (Joep's Xiaomi,
-    /// 25 November); a lobby gains little from 120 and sharpness shows.
+    /// 60 fps at (nearly) full resolution in a browser and on a phone.
+    /// Chasing 120 dropped the room to 722 of 1200 lines and read blurry
+    /// (Joep's Xiaomi, 25 November); on a 120 Hz Mac the browser room chased
+    /// 120 too and read low-res (Joep, 27 November). A lobby gains little
+    /// from 120 and sharpness shows.
     fn target_fps(&self) -> Option<f32> {
         #[cfg(any(target_arch = "wasm32", target_os = "android"))]
-        { if app::web::mobile() { return Some(60.0); } }
+        { return Some(60.0); }
+        #[allow(unreachable_code)]
         None
     }
 

@@ -884,7 +884,11 @@ pub(crate) mod page {
     }
 
     fn room_config() -> Config {
-        Config { title: "Splitscreen Club".into(), size: [1600, 900], keyboard: true, pointer: true, ..Default::default() }
+        // From native resolution, as the desktop room (src/main.rs): text and
+        // pixel art read soft upscaled from the browser's default 1440 lines
+        // (Joep, 27 November: "the lobby still renders in a pretty low res").
+        // Adaptive quality still lowers it when the GPU can't keep 60 fps.
+        Config { title: "Splitscreen Club".into(), size: [1600, 900], keyboard: true, pointer: true, max_render_height: Some(0), ..Default::default() }
     }
 
     /// Load `game` (its store id or folder; fetching its files the first
