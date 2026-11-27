@@ -341,7 +341,7 @@ createXPipelineAsync, which the browser compiles in parallel on worker
 threads, and invalid stand-ins handed back (that renderer is dropped); once
 those settle, for real, when the same pipelines come from the browser's
 pipeline cache. `?prewarm=off` builds once, the plain way; `?prewarm=on`
-forces it in other browsers. The log says "N pipelines compiling in parallel"
+forces it in other browsers. Default on in Chrome, Edge and desktop Safari. The log says "N pipelines compiling in parallel"
 and "compiled in X ms". `?shader_salt=N` renames every shader entry point
 (`NAME_wsN`), so the browser's caches miss and every pipeline compiles
 cold, as on the first visit after a release; a new N gives a new cold run.

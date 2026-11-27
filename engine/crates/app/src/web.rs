@@ -455,7 +455,7 @@ enum Warm {
 }
 
 /// Compile a new game's pipelines in parallel before its first frame
-/// (Chrome and Edge: a pipeline made the plain way compiles alone, one after
+/// (Chrome, Edge and desktop Safari: a pipeline made the plain way compiles alone, one after
 /// the other, in the GPU process; createXPipelineAsync runs them on worker
 /// threads, and the same pipeline made again comes from its cache).
 /// `?prewarm=off` builds the plain way.
@@ -463,7 +463,11 @@ pub fn prewarm() -> bool {
     match query_param("prewarm").as_deref() {
         Some("off") => false,
         Some("on") => true,
-        _ => web_sys::window().and_then(|w| w.navigator().user_agent().ok()).is_some_and(|ua| ua.contains("Chrome/")),
+        // Desktop Safari too: warm it switches in 103 ms against 301 plain;
+        // cold it froze the room 4.4 s against a 7.6 s shade compile plain
+        // (M5 Pro, Safari 27.2, Neon Siege, 27 November 2026).
+        _ => web_sys::window().and_then(|w| w.navigator().user_agent().ok()).is_some_and(|ua| ua.contains("Chrome/")
+            || (ua.contains("Safari/") && ua.contains("Version/") && !ua.contains("Mobile"))),
     }
 }
 
@@ -1045,7 +1049,10 @@ async fn setup(window: Arc<Window>) -> Result<Live, String> {
     let size = window.inner_size();
     // `?shader_salt=N`: entry points renamed, so the browser compiles every
     // shader cold (measuring the first visit after a release).
-    if let Some(n) = query_param("shader_salt").and_then(|v| v.parse::<u32>().ok()) { wgpu::webgpu::set_shader_salt(n); }
+    if let Some(n) = query_param("shader_salt").and_then(|v| v.parse::<u32>().ok()) {
+        wgpu::webgpu::set_shader_salt(n);
+        log(&format!("shader_salt={n} applied: entry points renamed (shade -> shade_ws{n})"));
+    }
     let (gpu, mut config, _adapter) = Gpu::for_surface_async(&instance, &surface, size.width.max(1), size.height.max(1)).await?;
     // The canvas can be copied from ([`capture_frame`]).
     config.usage |= wgpu::TextureUsages::COPY_SRC;
