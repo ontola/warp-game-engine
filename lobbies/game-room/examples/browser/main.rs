@@ -139,6 +139,22 @@ pub(crate) mod page {
         players >= 1 && players + bots >= min_players(party, game) && input_fits(party, game)
     }
 
+    /// Why `players` people can't start `game` now, for phones (the room
+    /// poll's `failure`; the app shows it instead of Add to queue), or None
+    /// when they can.
+    pub(crate) fn unfit_reason(party: &Value, game: &str, players: usize) -> Option<String> {
+        let max = game_meta(party, game).and_then(|g| g["max_players"].as_u64()).unwrap_or(8) as usize;
+        let bots = game_meta(party, game).and_then(|g| g["bots"].as_u64()).unwrap_or(0) as usize;
+        let min = min_players(party, game);
+        if players == 0 { return Some("Nobody at the table yet".into()); }
+        if players + bots < min { return Some(format!("Needs {min} players")); }
+        if players > max { return Some(format!("Up to {max} players")); }
+        if !input_fits(party, game) {
+            return Some(if players >= 2 { "Not for two on one keyboard".into() } else { "Plays with a controller".into() });
+        }
+        None
+    }
+
     /// Whether the input at hand plays `game` (as the room's host.rs
     /// input_fits): with only keyboards seated, the game must take keys,
     /// and two on one keyboard only a game with `shared_keyboard` 2.

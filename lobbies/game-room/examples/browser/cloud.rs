@@ -338,9 +338,16 @@ fn snapshot(h: &Host) -> Value {
     let people = h.cloud.seats.len() as u64;
     let session = party["active_session"].as_object().map(|s| s["game"].clone()).unwrap_or(Value::Null);
     let games: Vec<Value> = party["library"].as_array().into_iter().flatten().map(|g| {
-        let fits = super::page::fits(party, g["id"].as_str().unwrap_or_default(), people as usize) && people <= g["max_players"].as_u64().unwrap_or(8);
+        let id = g["id"].as_str().unwrap_or_default();
+        let fits = super::page::fits(party, id, people as usize) && people <= g["max_players"].as_u64().unwrap_or(8);
         let state = if session == g["id"] { "playing" } else if h.loading.as_deref() == g["id"].as_str() { "loading" } else if fits { "available" } else { "unavailable" };
-        json!({"id": g["id"], "selectable": fits, "state": state})
+        // Why not, in words (Joep: the app said 'Not on this Splitscreen
+        // Club' for games this page has but that wanted a controller).
+        let why = if fits { None } else { super::page::unfit_reason(party, id, people as usize) };
+        match why {
+            Some(why) => json!({"id": g["id"], "selectable": fits, "state": state, "failure": why}),
+            None => json!({"id": g["id"], "selectable": fits, "state": state}),
+        }
     }).collect();
     let current = if session.is_null() { h.loading.clone().map(Value::from).unwrap_or(Value::Null) } else { session.clone() };
     let next = party["playlist"]["entries"].get(0).map(|e| e["game"].clone()).unwrap_or(Value::Null);
