@@ -595,6 +595,7 @@ impl Lobby {
                 let action = h.tv_station();
                 banner.detail = if action.enabled { format!("Y at TV: {}", action.label) } else { "This game needs a different player count".into() };
             }
+            if game["beta"] == true && banner.loading.is_none() { banner.kicker.push_str(" · BETA"); }
             tv = Some((game_of(&game), banner));
         } else if let Some(first) = upcoming.first() {
             let meta = h.game_meta(&first.game).cloned().unwrap_or_else(|| serde_json::json!({"id": first.game, "title": first.title}));
@@ -614,6 +615,12 @@ impl Lobby {
             } else if warm.is_object() && get(warm, "game", "") == id && warm["phase"] == "ready" {
                 banner.kicker = "UP NEXT · READY".into();
                 banner.color = crate::lobby::GREEN;
+            }
+            // An open beta: say so before it starts, and that the table is
+            // asked afterwards.
+            if meta["beta"] == true && issue.is_empty() && banner.loading.is_none() {
+                banner.kicker.push_str(" · BETA");
+                banner.detail = "A beta: tell the maker afterwards how it was".into();
             }
             tv = Some((game_of(&meta), banner));
         }

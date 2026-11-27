@@ -295,6 +295,54 @@ pub(crate) fn report_bug(game: Option<String>, title: Option<String>, shot: Opti
     });
 }
 
+/// An open beta was just played here (gamenight.json "beta"): the cloud
+/// room (`/v1/lobbies/beta-played`) asks every seated phone in the app
+/// and gives a no-account link; the room shows it with its QR code, so
+/// guests without a phone in the app can answer too.
+pub(crate) fn beta_played(game: String, title: String, version: String) {
+    let body = json!({"game": game, "title": title, "version": version}).to_string();
+    app::web::spawn(async move {
+        let Some((origin, token)) = with(|h| Some((h.cloud.origin.clone(), h.cloud.token.clone()?))) else {
+            app::web::log("beta feedback: no cloud room, nobody asked");
+            return;
+        };
+        match app::web::request("POST", &format!("{origin}/v1/lobbies/beta-played"), &[("authorization", &format!("Bearer {token}"))], Some(&body)).await {
+            Ok((status, reply)) if (200..300).contains(&status) => {
+                let reply: Value = serde_json::from_slice(&reply).unwrap_or_default();
+                app::web::log(&format!("beta feedback: asked {} phone(s) about {game}", reply["asked"].as_u64().unwrap_or(0)));
+                with(|h| beta_panel(h, &origin, &game, &title, &reply));
+            }
+            Ok((status, _)) => app::web::log(&format!("beta feedback: HTTP {status}")),
+            Err(e) => app::web::log(&format!("beta feedback: {e}")),
+        }
+    });
+}
+
+/// The room's panel after a beta: "How was X?" and the answer link's QR code.
+fn beta_panel(h: &mut Host, origin: &str, game: &str, title: &str, reply: &Value) {
+    let Some(path) = reply["link"].as_str().filter(|p| p.starts_with('/')) else { return };
+    let url = format!("{origin}{path}");
+    let short = url.split_once("://").map_or(url.as_str(), |(_, rest)| rest).to_string();
+    let phones = reply["asked"].as_u64().unwrap_or(0) > 0;
+    let tap = cfg!(target_os = "android");
+    let line = match (phones, tap) {
+        (true, true) => "A beta: tell its maker in the Splitscreen Club app, scan the code with any phone, or tap the screen",
+        (true, false) => "A beta: tell its maker in the Splitscreen Club app, or scan the code with any phone",
+        (false, true) => "A beta: scan the code with any phone or tap the screen to tell its maker · no account needed",
+        (false, false) => "A beta: scan the code with any phone to tell its maker · no account needed",
+    };
+    app::web::tap_opens(Some(&url), game_room::paint::BUG_SECONDS);
+    h.links["bug"] = json!({
+        "id": format!("beta:{game}:{path}"),
+        "kicker": "BETA FEEDBACK",
+        "title": format!("How was {title}?"),
+        "line": line,
+        "link": short,
+        "qr_svg": qr_svg(&url),
+    });
+    h.links_dirty = true;
+}
+
 /// The room's bug panel for the cloud's answer to a bug report: who to ask
 /// (`asked` phones in the app) and the describe link's QR code.
 fn bug_panel(h: &mut Host, origin: &str, id: &str, title: Option<&str>, reply: &Value) {

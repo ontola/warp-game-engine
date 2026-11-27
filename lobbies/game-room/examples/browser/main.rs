@@ -118,7 +118,15 @@ pub(crate) mod page {
         shots: Vec<(String, Vec<u8>)>,
         /// Pads connected that play for nobody: on the room's table.
         idle_pads: usize,
+        /// The open beta on screen and since when (the table is asked about
+        /// it once it was played a while, [`BETA_PLAY`]).
+        beta_started: Option<(String, web_time::Instant)>,
+        /// Betas this page already asked the table about.
+        beta_asked: Vec<String>,
     }
+
+    /// How long a beta is played before the table is asked how it was.
+    const BETA_PLAY: std::time::Duration = std::time::Duration::from_secs(60);
 
     thread_local! { static HOST: RefCell<Host> = RefCell::new(Host::default()); }
 
@@ -1009,6 +1017,11 @@ pub(crate) mod page {
                 note(h, "game_started", &text, Some(&game));
                 empty_room(false);
                 back_hint();
+                // An open beta: say so as it starts (Joep, 27 November 2026).
+                if game_meta(&h.party, &game).is_some_and(|m| m["beta"] == true) {
+                    h.beta_started = Some((game.clone(), web_time::Instant::now()));
+                    show_hint("✓", &format!("{} is a beta", title(&h.party, &game)), "Afterwards the table is asked how it was");
+                }
                 // After the Back hint (the first game's 7 s) in the same place.
                 h.kb_hint = Some((game.clone(), web_time::Instant::now() + std::time::Duration::from_secs_f32(if h.played.len() == 1 { 7.5 } else { 1.0 })));
             });
@@ -1217,6 +1230,13 @@ pub(crate) mod page {
             // Back + Y or F4 in the game: report a bug with its last frame.
             let bug = why == app::web::Exit::ReportBug && bug_allowed(h);
             if bug { bug_noted(h, Some(&game)); }
+            // Out of an open beta played a while: ask the table how it was,
+            // once per page (cloud.rs `beta_played`).
+            let beta = h.beta_started.take_if(|(g, _)| *g == game).is_some_and(|(_, at)| at.elapsed() >= BETA_PLAY);
+            if beta && !bug && !h.beta_asked.contains(&game) && let Some(meta) = game_meta(&h.party, &game) {
+                h.beta_asked.push(game.clone());
+                super::cloud::beta_played(game.clone(), title(&h.party, &game), meta["version"].as_str().unwrap_or("").to_string());
+            }
             let html = game_meta(&h.party, &game).is_some_and(|m| m["web_entry"].is_string());
             // (A phone host whose driver cannot copy its screen: no screenshot.)
             if bug && (html || !keep || !app::web::can_capture()) {
@@ -1330,6 +1350,10 @@ pub(crate) mod page {
             seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17;
             entries.swap(i, (seed % (i as u64 + 1)) as usize);
         }
+        // One open beta (gamenight.json "beta") is suggested up front, so a
+        // group gets to try it and tell its maker how it was.
+        let beta = |id: &Value| library.iter().any(|g| g["id"] == *id && g["beta"] == true);
+        if let Some(i) = entries.iter().position(|e| beta(&e["game"])) { let e = entries.remove(i); entries.insert(0, e); }
         // Your own game goes first in the queue.
         if let Some(id) = &own {
             if let Some(i) = entries.iter().position(|e| e["game"] == id.as_str()) { let e = entries.remove(i); entries.insert(0, e); }

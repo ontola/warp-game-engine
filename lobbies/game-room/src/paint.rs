@@ -111,6 +111,9 @@ pub struct VisitShow {
 /// the QR code of its describe page, for whoever has no linked phone.
 #[derive(Clone, Debug, Default)]
 pub struct BugNote {
+    /// The amber line above it: "BUG REPORTED" when empty, "BETA FEEDBACK"
+    /// after an open beta.
+    pub kicker: String,
     /// "What went wrong in Dead Miles?"
     pub title: String,
     /// What to do: scan, the app, or tap the screen.

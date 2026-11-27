@@ -451,7 +451,8 @@ fn bug_panel(lobby: &Lobby, c: &mut Canvas, scale: f32) {
     let r = [32.0 * scale, 32.0 * scale, pw, ph];
     crate::paint::panel_solid(c, r, scale);
     let x = r[0] + pad[1];
-    c.text(bold(), [x, r[1] + y], "BUG REPORTED", TextAlign::Left, -1.0, kicker, AMBER);
+    let label = if bug.kicker.is_empty() || bug.kicker == "<null>" { "BUG REPORTED" } else { bug.kicker.as_str() };
+    c.text(bold(), [x, r[1] + y], label, TextAlign::Left, -1.0, kicker, AMBER);
     c.text(bold(), [x, r[1] + title_y], &bug.title, TextAlign::Left, -1.0, title_fs, TEXT);
     for (i, l) in lines.iter().enumerate() {
         y = lines_y + (i as f32 + 0.8) * body * 1.4;

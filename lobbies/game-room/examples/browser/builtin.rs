@@ -17,6 +17,8 @@ pub(crate) async fn load(folder: &str, players: usize) -> Option<Loaded> {
     match folder {
         "spellstorm" => Some(spellstorm_app::web::load(players, seed).await),
         "spaceracer" => Some(spaceracer_app::web::load(players, seed).await),
+        // Only in the page (a wasm32 dependency); not in the Android host.
+        #[cfg(target_arch = "wasm32")]
         "growing-guns" => Some(growing_guns_app::web::load(players, seed).await),
         _ => {
             render::clear_game_hooks();
@@ -27,6 +29,7 @@ pub(crate) async fn load(folder: &str, players: usize) -> Option<Loaded> {
 
 /// The page's background worker (job-worker.js, app::web_jobs): a built-in
 /// game's job by name, such as Growing Guns' lighting bakes.
+#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn worker_job(name: &str, input: &[u8]) -> Result<Vec<u8>, wasm_bindgen::JsValue> {
     let out = if name.starts_with("growing-guns/") { growing_guns_app::web::job(name, input) } else { Err(format!("unknown job {name}")) };

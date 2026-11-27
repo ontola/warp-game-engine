@@ -243,6 +243,8 @@ def copy_games(names):
                          # tells a keyboard player when a game is made for controllers.
                          'keyboard': players.get('keyboard') is True, 'mouse': players.get('mouse') is True, 'shared_keyboard': players.get('shared_keyboard', 1),
                          # Bots the game brings itself (game.toml): they fill seats people leave empty.
+                         # An open beta (gamenight.json "beta": true): the room labels it and asks the table for feedback afterwards.
+                         'beta': meta.get('beta') is True, 'version': str(meta.get('version', '')),
                          'bots': tomllib.loads((src / 'game.toml').read_text()).get('bots', 0) if (src / 'game.toml').exists() else 0})
     for name, game in ({} if args.luau_only else RUST_GAMES).items():
         # A Rust game built into the engine (examples/browser/builtin.rs):
@@ -266,7 +268,8 @@ def copy_games(names):
         lo, hi = players.get('min', 1), players.get('max', 4)
         library.append({'id': meta.get('id', name), 'folder': name, 'title': meta.get('title', name), 'tagline': meta.get('tagline', ''),
                          'players': f'{lo}-{hi}' if lo != hi else str(lo), 'min_players': lo, 'max_players': hi, 'has_cover': cover.exists(), 'has_screenshot': shot.exists(), 'bots': 0, 'builtin': True,
-                         'keyboard': players.get('keyboard') is True, 'mouse': players.get('mouse') is True, 'shared_keyboard': players.get('shared_keyboard', 1)})
+                         'keyboard': players.get('keyboard') is True, 'mouse': players.get('mouse') is True, 'shared_keyboard': players.get('shared_keyboard', 1),
+                         'beta': meta.get('beta') is True, 'version': str(meta.get('version', ''))})
     for meta, relative, cover in browser_games:
         game_id = meta['id']
         if any(g['id'] == game_id or g['folder'] == game_id for g in library):

@@ -519,6 +519,16 @@ pub fn draw(lobby: &Lobby, c: &mut Canvas, size: [u32; 2]) {
             c.rect(band, crate::room::PANEL_SOLID.with_alpha(0.85 * fade));
             c.text(faces.bold, [open[0], band[1] + band[3] / 2.0 + fs * 0.36], &reason, TextAlign::Center, open[2], fs, TEXT.with_alpha(fade));
         }
+        // An open beta (gamenight.json "beta"): an amber BETA tag top left,
+        // under the reason band when there is one.
+        if games.get(i).is_some_and(|g| g["beta"] == true) {
+            let fs = (18.0 * scale).floor();
+            let top = if reason.is_empty() { 0.0 } else { (22.0 * scale).floor() * 2.4 };
+            let tw = render::hud::measure("BETA", faces.bold, fs)[0] + fs * 0.9;
+            let tag = [r[0] + 10.0 * scale, r[1] + top + 10.0 * scale, tw, fs * 1.5];
+            c.style_box(tag, [8.0 * scale; 4], crate::lobby::AMBER.with_alpha(0.92 * fade), None);
+            c.text(faces.bold, [tag[0], tag[1] + tag[3] / 2.0 + fs * 0.36], "BETA", TextAlign::Center, tag[2], fs, rgba(0.08, 0.06, 0.02, fade));
+        }
         // A quiet tag top right (DESIGN.md "Playlist"): the game on now gets
         // a pause or play sign, a queued game its place, "02" as in the list.
         let place = queue.iter().position(|e| &e.game == game);

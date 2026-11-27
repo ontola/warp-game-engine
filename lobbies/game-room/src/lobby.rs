@@ -775,6 +775,7 @@ impl Lobby {
             true => {
                 let svg = get(bug, "qr_svg", "");
                 Some(crate::paint::BugNote {
+                    kicker: get(bug, "kicker", ""),
                     title: get(bug, "title", ""),
                     line: get(bug, "line", ""),
                     link: get(bug, "link", ""),
