@@ -3202,8 +3202,48 @@ fn classify(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invoca
     textureStore(out_hdr, vec2<i32>(gid.xy), vec4<f32>(visible_background_radiance(dir), 1.0));
 }
 
+// KERN_SPLIT_FULL_SHADE (shade-split-plan.md): the full pass as two
+// kernels from this one function. SHADE_SPLIT 1 (`shade_full_surface`)
+// stops after the material and leaves its result in split_words and
+// split_emit; 2 (`shade_full_light`) skips the material's work and takes
+// them from the surface pass instead. One kernel spilled 3 KiB of
+// registers a thread on an M5 Pro (27 November 2026).
+override SHADE_SPLIT: u32 = 0u;
+var<private> split_ok: bool;
+var<private> split_px: vec2<i32>;
+var<private> split_words: vec4<u32>;
+var<private> split_emit: vec3<f32>;
+// The emission as a buffer, not a fifth storage texture (WebGPU allows 4).
+@group(3) @binding(37) var<storage, read_write> split_emit_out: array<vec2<u32>>;
+@group(3) @binding(38) var<storage, read> split_emit_in: array<vec2<u32>>;
+
 @compute @workgroup_size(8, 8)
 fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(local_invocation_index) local:u32) {
+    shade_full(wid, lid, local);
+}
+
+@compute @workgroup_size(8, 8)
+fn shade_full_surface(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(local_invocation_index) local:u32) {
+    shade_full(wid, lid, local);
+    if split_ok {
+        textureStore(surface_out, split_px, split_words);
+        let e = min(split_emit, vec3<f32>(65504.0));
+        split_emit_out[u32(split_px.y) * u32(view.size.x) + u32(split_px.x)] = vec2<u32>(pack2x16float(e.rg), pack2x16float(vec2<f32>(e.b, 0.0)));
+    }
+}
+
+@compute @workgroup_size(8, 8)
+fn shade_full_light(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(local_invocation_index) local:u32) {
+    let px = vec2<i32>(wid.xy * 8u + lid.xy);
+    if all(px < vec2<i32>(view.size.xy)) {
+        split_words = textureLoad(surface_in, px, 0);
+        let e = split_emit_in[u32(px.y) * u32(view.size.x) + u32(px.x)];
+        split_emit = vec3<f32>(unpack2x16float(e.x), unpack2x16float(e.y).x);
+    }
+    shade_full(wid, lid, local);
+}
+
+fn shade_full(wid: vec3<u32>, lid: vec3<u32>, local: u32) {
     let size = vec2<u32>(view.size.xy);
     // With sky tiles the dispatch walks the list of tiles with geometry.
     var tile = wid.xy;
@@ -3335,6 +3375,10 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     var base = m.tint;
     // Albedo alpha of an opaque textured material: SKIN|HAIR reads it as
     // the texel's skin and hair shares (skin_hair_shares).
+    // The material's own branches: none of them in the split light pass.
+    var mat_flags = m.flags;
+    var mat_layer = m.layer;
+    if SHADE_SPLIT == 2u { mat_flags = (m.flags & 0xc0000009u) | 1024u; mat_layer = -1; }
     var tex_alpha = 1.0;
     var nn = n; // the normal after normal maps
     var orm = vec3<f32>(1.0); // material map: occlusion, roughness, metalness
@@ -3343,10 +3387,10 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     var gloss = 1.0;
     var meadow_ground_sky = 1.0;
     field_sun = 1.0;
-    if FEATURE_TERRAIN && (m.flags & 2u) != 0u && (m.flags & 32768u) == 0u {
+    if FEATURE_TERRAIN && (mat_flags & 2u) != 0u && (mat_flags & 32768u) == 0u {
         // Terrain (src/shaders/terrain.gdshader): moss, needles, a grassy
         // verge, bare ground beside the road and rock where it is steep.
-        // uv.x is metres from the road edge. Layers m.layer .. m.layer+4.
+        // uv.x is metres from the road edge. Layers mat_layer .. mat_layer+4.
         let wuv = p.xz;
         let mapping = terrain_mapping(p);
         // uv.y=1+macro-up separates broad geology from micro-relief normals.
@@ -3357,10 +3401,10 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         // A fully exposed rock face has no soil contribution. Reusing the
         // terrain material must not also sample four invisible soil layers.
         if m_rock < 1.0 {
-            let moss = terrain_layer(m.layer, wuv, 3.2, mapping) * vec3<f32>(0.78, 0.86, 0.7);
-            let needles = terrain_layer(m.layer + 1, wuv, 2.8, mapping) * vec3<f32>(0.72, 0.66, 0.6);
-            let verge = terrain_layer(m.layer + 2, wuv, 2.6, mapping) * vec3<f32>(0.68, 0.94, 0.70);
-            let ground = terrain_layer(m.layer + 3, wuv, 3.0, mapping) * vec3<f32>(0.85, 0.8, 0.75);
+            let moss = terrain_layer(mat_layer, wuv, 3.2, mapping) * vec3<f32>(0.78, 0.86, 0.7);
+            let needles = terrain_layer(mat_layer + 1, wuv, 2.8, mapping) * vec3<f32>(0.72, 0.66, 0.6);
+            let verge = terrain_layer(mat_layer + 2, wuv, 2.6, mapping) * vec3<f32>(0.68, 0.94, 0.70);
+            let ground = terrain_layer(mat_layer + 3, wuv, 3.0, mapping) * vec3<f32>(0.85, 0.8, 0.75);
             let road_d = clamp(uv.x / 14.0, 0.0, 1.0);
             let m_needles = smoothstep(0.48, 0.62, fbm(wuv / 11.0 + 7.0));
             // Grass on the verge, thinning into the wood, patchy in clearings.
@@ -3370,9 +3414,9 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
             c = mix(moss, needles, m_needles);
             c = mix(c, verge, m_verge);
             c = mix(c, ground, m_bare);
-            var nt = mix(terrain_layer_normal(m.layer, wuv, 3.2, mapping), terrain_layer_normal(m.layer + 1, wuv, 2.8, mapping), m_needles);
-            nt = mix(nt, terrain_layer_normal(m.layer + 2, wuv, 2.6, mapping), m_verge);
-            nt = mix(nt, terrain_layer_normal(m.layer + 3, wuv, 3.0, mapping), m_bare);
+            var nt = mix(terrain_layer_normal(mat_layer, wuv, 3.2, mapping), terrain_layer_normal(mat_layer + 1, wuv, 2.8, mapping), m_needles);
+            nt = mix(nt, terrain_layer_normal(mat_layer + 2, wuv, 2.6, mapping), m_verge);
+            nt = mix(nt, terrain_layer_normal(mat_layer + 3, wuv, 3.0, mapping), m_bare);
             nn = perturb_xz(n, nt);
             c *= 0.78 + 0.34 * fbm(wuv / 31.0);
             let contact_strength=bitcast<f32>(meadow_substrate.control.w);
@@ -3424,7 +3468,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
             var tw = pow(abs(n), vec3<f32>(4.0));
             tw /= tw.x + tw.y + tw.z;
             let rp = p.xz + p.yy * 0.7;
-            let rl = m.layer + 4;
+            let rl = mat_layer + 4;
             let sampled = rock_surface(rl, p, n, tw);
             var rock = sampled.color * vec3<f32>(0.62, 0.63, 0.62);
             // Restrained continuous weathering, never alternating rock types
@@ -3435,11 +3479,11 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         }
         let join = 1.0 - smoothstep(1.0, 2.2, uv.x + (vnoise(wuv / 1.1) - 0.5) * 0.18);
         if join > 0.0 {
-            c = mix(c, shoulder_soil(m.layer + 3, p, mapping), join);
-            nn = safe_normalize(mix(nn, perturb_xz(n, terrain_layer_normal(m.layer + 3, wuv, 3.0, mapping)), join));
+            c = mix(c, shoulder_soil(mat_layer + 3, p, mapping), join);
+            nn = safe_normalize(mix(nn, perturb_xz(n, terrain_layer_normal(mat_layer + 3, wuv, 3.0, mapping)), join));
         }
         base = c * mix(1.0, 0.7, light.fog.w) * m.tint;
-    } else if (m.flags & 4u) != 0u {
+    } else if (mat_flags & 4u) != 0u {
         // Road (src/shaders/road.gdshader): uv = (across -1..1, metres
         // along); aux holds the surface per 2 m row (3 earth, 5 asphalt, 6 mud).
         var wuv = p.xz;
@@ -3457,12 +3501,12 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         let edge = smoothstep(0.62, 0.95, a + (vnoise(wuv / 2.0) - 0.5) * 0.25);
         let shoulder = smoothstep(1.0, 1.2, a);
         let aggregate = mix(2.6, 0.65, asphalt);
-        var gr = tex_xz(m.layer, wuv / aggregate, aggregate).rgb;
-        let g2 = tex_xz(m.layer, wuv / 11.0, 11.0).rgb;
+        var gr = tex_xz(mat_layer, wuv / aggregate, aggregate).rgb;
+        let g2 = tex_xz(mat_layer, wuv / 11.0, 11.0).rgb;
         gr = mix(gr, g2, 0.3);
         let far_d = smoothstep(10.0, 45.0, dist);
-        gr = mix(gr, tex(m.layer, wuv / 2.6, 9.0).rgb, far_d * 0.7);
-        let lo = tex_xz(m.layer + 1, wuv / 2.2, 2.2).rgb;
+        gr = mix(gr, tex(mat_layer, wuv / 2.6, 9.0).rgb, far_d * 0.7);
+        let lo = tex_xz(mat_layer + 1, wuv / 2.2, 2.2).rgb;
         var c = gr * vec3<f32>(0.66, 0.62, 0.56);
         c = mix(c, c * 0.72, rut * 0.75);
         c = mix(c, mix(gr * vec3<f32>(0.7, 0.66, 0.6), lo * 0.8, 0.5), edge);
@@ -3474,7 +3518,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         c *= 0.85 + 0.3 * smoothstep(0.3, 0.7, vnoise(wuv / 23.0 + 4.0));
         let smear = vnoise(vec2<f32>(uv.x * 70.0, uv.y * 0.6)) * 0.6 + vnoise(vec2<f32>(uv.x * 140.0, uv.y * 1.3)) * 0.4;
         let worn = clamp(rut * (0.65 + 0.35 * smear), 0.0, 1.0);
-        let fines = tex(m.layer, wuv / 2.6, 6.0).rgb * vec3<f32>(0.66, 0.6, 0.52);
+        let fines = tex(mat_layer, wuv / 2.6, 6.0).rgb * vec3<f32>(0.66, 0.6, 0.52);
         var mud = mix(fines, lo * vec3<f32>(0.5, 0.44, 0.36), 0.35) * (0.82 + 0.3 * smear);
         mud *= mix(1.0, 0.7, road_wet);
         c = mix(c, mud, worn * 0.85);
@@ -3487,8 +3531,8 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         c = mix(c, asphalt_col, asphalt);
         base = c * m.tint;
         // Gravel relief, fading with distance; mud and asphalt are smoother.
-        var rn = mix(nrm_xz(m.layer, wuv / aggregate, aggregate), nrm_xz(m.layer, wuv / 11.0, 11.0), 0.3);
-        rn = mix(rn, nrm_xz(m.layer + 1, wuv / 2.2, 2.2), max(edge, shoulder));
+        var rn = mix(nrm_xz(mat_layer, wuv / aggregate, aggregate), nrm_xz(mat_layer, wuv / 11.0, 11.0), 0.3);
+        rn = mix(rn, nrm_xz(mat_layer + 1, wuv / 2.2, 2.2), max(edge, shoulder));
         rn *= (1.0 - far_d * 0.6) * (1.0 - worn * 0.7) * (1.0 - asphalt * 0.6) * (1.0 - max(earth, muddy) * 0.4);
         nn = perturb_xz(n, rn);
         let join_noise = (vnoise(wuv / 1.1) - 0.5) * 0.08 * (1.0 - smoothstep(1.0, 1.2, a));
@@ -3497,54 +3541,54 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
             let mapping = terrain_mapping(p);
             // m.tint boosts the driving lane, but must not boost only one
             // side of an otherwise identical terrain/shoulder junction.
-            base = mix(base, shoulder_soil(m.layer + 1, p, mapping) * mix(1.0, 0.7, light.fog.w), join);
-            nn = safe_normalize(mix(nn, perturb_xz(n, terrain_layer_normal(m.layer + 1, wuv, 3.0, mapping)), join));
+            base = mix(base, shoulder_soil(mat_layer + 1, p, mapping) * mix(1.0, 0.7, light.fog.w), join);
+            nn = safe_normalize(mix(nn, perturb_xz(n, terrain_layer_normal(mat_layer + 1, wuv, 3.0, mapping)), join));
         }
-    } else if FEATURE_GRASS && (m.flags & 64u) != 0u {
+    } else if FEATURE_GRASS && (mat_flags & 64u) != 0u {
         // grass_cards.gdshader: the photograph supplies blade colour, the
         // authored upward normal stays the same on both card sides.
         let height = clamp((p.y - inst.r1.w) / max(inst.scale * 0.5, 1e-4), 0.0, 1.0);
-        let k = albedo_grad(m.layer, duv_x, duv_y);
-        base = textureSampleGrad(albedo, plant_samp, uv, m.layer, duv_x * k, duv_y * k).rgb * m.tint;
+        let k = albedo_grad(mat_layer, duv_x, duv_y);
+        base = textureSampleGrad(albedo, plant_samp, uv, mat_layer, duv_x * k, duv_y * k).rgb * m.tint;
         base *= mix(0.8, 1.0, height) * 1.25 * (1.0 - light.fog.w * 0.25);
         nn = vec3<f32>(0.0, 1.0, 0.0);
-    } else if (m.flags & 16u) != 0u && m.layer >= 0 {
+    } else if (mat_flags & 16u) != 0u && mat_layer >= 0 {
         var tw = pow(abs(n), vec3<f32>(4.0));
         tw /= tw.x + tw.y + tw.z;
-        base = triplanar(m.layer, p, tw, m.scale, mat2x2<f32>(1.0, 0.0, 0.0, 1.0), 0.0) * m.tint;
-        nn = triplanar_n(m.layer, p, n, tw, m.scale, mat2x2<f32>(1.0, 0.0, 0.0, 1.0), 0.0);
-        orm = triplanar_orm(m.layer, p, tw, m.scale);
-    } else if m.layer >= 0 && (m.flags & 16384u) != 0u {
+        base = triplanar(mat_layer, p, tw, m.scale, mat2x2<f32>(1.0, 0.0, 0.0, 1.0), 0.0) * m.tint;
+        nn = triplanar_n(mat_layer, p, n, tw, m.scale, mat2x2<f32>(1.0, 0.0, 0.0, 1.0), 0.0);
+        orm = triplanar_orm(mat_layer, p, tw, m.scale);
+    } else if mat_layer >= 0 && (mat_flags & 16384u) != 0u {
         // LIVE_SCREEN writes mip 2 (512 square) and below. Never sample the
         // uninitialized higher-resolution levels or the unrelated normal map.
         let footprint = max(length(duv_x), length(duv_y)) * f32(textureDimensions(albedo).x);
-        base = textureSampleLevel(albedo, samp, uv, m.layer, max(2.0, log2(max(footprint, 1.0)))).rgb * m.tint;
-    } else if m.layer >= 0 && (m.flags & 2048u) == 0u {
+        base = textureSampleLevel(albedo, samp, uv, mat_layer, max(2.0, log2(max(footprint, 1.0)))).rgb * m.tint;
+    } else if mat_layer >= 0 && (mat_flags & 2048u) == 0u {
         // PIXEL_ART samples the top mip: hard source pixels, no blur.
-        let sharp = select(1.0, 0.0, (m.flags & 8192u) != 0u);
-        let texel = tex_w(m.layer, uv, duv_x * sharp, duv_y * sharp);
+        let sharp = select(1.0, 0.0, (mat_flags & 8192u) != 0u);
+        let texel = tex_w(mat_layer, uv, duv_x * sharp, duv_y * sharp);
         base = texel.rgb * m.tint;
         tex_alpha = texel.a;
-        orm = orm_w(m.layer, uv, duv_x * sharp, duv_y * sharp);
+        orm = orm_w(mat_layer, uv, duv_x * sharp, duv_y * sharp);
         var frame = uv_frame(e1, e2, vi);
         if dot(geo_n, n) < 0.0 {
             // The far side of a two-sided card: its relief is the mirror image.
             frame[0] = -frame[0];
             frame[1] = -frame[1];
         }
-        let relief = nrm_a(m.layer, uv, duv_x, duv_y);
+        let relief = nrm_a(mat_layer, uv, duv_x, duv_y);
         nn = perturb(n, relief.xy, frame[0], frame[1]);
-        if FEATURE_SKIN_HAIR && (m.flags & 0x40000000u) != 0u { gloss = relief.z; }
+        if FEATURE_SKIN_HAIR && (mat_flags & 0x40000000u) != 0u { gloss = relief.z; }
     }
     n = nn;
     // Car parts get a procedural surface (car_material.wgsl): flags bits
     // 16.. hold 1 + their index in car_materials. Others keep the material.
-    let car = (m.flags >> 16u) & 0x3fffu;
+    let car = (mat_flags >> 16u) & 0x3fffu;
     var rough_m = m.roughness * orm.y;
     // Procedural bark (scene.rs BARK_LAYER): scale is the plate size in metres.
     // Not a game surface: their layer -2 - kind is -3 for kind 1.
     var bark_ao = 1.0;
-    if m.layer == -3 && (m.flags & (4608u | 32768u)) == 0u {
+    if mat_layer == -3 && (mat_flags & (4608u | 32768u)) == 0u {
         let rest = pos_of(vi[0]) * b0 + pos_of(vi[1]) * b1 + pos_of(vi[2]) * b2;
         let b = posed_bark(rest, authored_normal, inst, gust, n, m.scale);
         base = b.albedo;
@@ -3552,7 +3596,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         n = b.normal;
         bark_ao = b.ao;
     }
-    if FEATURE_TRACKS && (m.flags & 6u)!=0u {
+    if FEATURE_TRACKS && (mat_flags & 6u)!=0u {
         let tracks=track_material(p);
         // Compacted mineral soil retains its texture and real illumination;
         // rubber appears only under actual asphalt slip. No final-color or
@@ -3562,10 +3606,10 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         rough_m=mix(rough_m,max(rough_m-0.13,0.55),tracks.x);
         rough_m=mix(rough_m,0.72,tracks.y*0.65);
     }
-    if FEATURE_PROCEDURAL && (m.flags & 2048u) != 0u {
+    if FEATURE_PROCEDURAL && (mat_flags & 2048u) != 0u {
         var rs: ProcRock;
-        if m.layer >= 0 {
-            rs = textured_rock(inst, vis.x, p, n, m.tint, m.scale, m.roughness, m.layer, fp.dx, fp.dy);
+        if mat_layer >= 0 {
+            rs = textured_rock(inst, vis.x, p, n, m.tint, m.scale, m.roughness, mat_layer, fp.dx, fp.dy);
         } else {
             rs = proc_rock(inst, p, n, m.tint, m.scale, max(length(fp.dx), length(fp.dy)));
         }
@@ -3580,25 +3624,25 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         }
     }
     var metal = m.metal * orm.z;
-    var coat = select(0.0, 1.0, (m.flags & 32u) != 0u);
+    var coat = select(0.0, 1.0, (mat_flags & 32u) != 0u);
     var coat_rough = 0.04;
     var coat_n = n;
     var glint = vec3<f32>(0.0);
     var car_debug = vec3<f32>(0.0);
     var surface_emit = vec3<f32>(0.0);
-    if (m.flags & 32768u) != 0u {
+    if (mat_flags & 32768u) != 0u {
         var local = vec3<f32>(0.0);
         for (var k = 0u; k < 3u; k++) { local += pos_of(vi[k]) * w[k]; }
         let corner = array<vec2<f32>, 3>(vec2<f32>(vertex_f32(vi[0] + 6u), vertex_f32(vi[0] + 7u)),
             vec2<f32>(vertex_f32(vi[1] + 6u), vertex_f32(vi[1] + 7u)), vec2<f32>(vertex_f32(vi[2] + 6u), vertex_f32(vi[2] + 7u)));
-        let si = SurfaceIn(u32(max(-2 - source_layer(m.layer), 0)), vis.x, p, local, n, dir, vec3<f32>(b0, b1, b2),
+        let si = SurfaceIn(u32(max(-2 - source_layer(mat_layer), 0)), vis.x, p, local, n, dir, vec3<f32>(b0, b1, b2),
             corner[0], corner[1], corner[2], fp.dx, fp.dy, m.tint, rough_m, metal, m.scale, light.anim.x);
         // TERRAIN + SURFACE: the engine's procedural terrain, not the game's.
         var so: SurfaceOut;
-        if SHADE_CLASS != 2u && (m.flags & 2u) != 0u {
+        if SHADE_CLASS != 2u && (mat_flags & 2u) != 0u {
             var coarse: CoarseSurface;
             if TERRAIN_COARSE && max(length(fp.dx), length(fp.dy)) > COARSE_FOOTPRINT_M && !far_forest_full_res(si) { coarse = coarse_surface(px, depth); }
-            if coarse.ok { so = coarse.so; field_sun = coarse.sun; } else { so = field_surface(si, m.layer); }
+            if coarse.ok { so = coarse.so; field_sun = coarse.sun; } else { so = field_surface(si, mat_layer); }
             if FAR_TREE_SHADOWS && near_sharp_cover(p) < 1.0 { far_tree_shadow = far_tree_cast(si); }
         } else { so = game_surface(si); }
         base = so.albedo;
@@ -3623,7 +3667,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     // Wounds (instance bits 27..31): wet blood stains in the body's own
     // space, spreading from a few blotches to most of it.
     let wounds = f32(inst.flags >> 27u) / 31.0;
-    if wounds > 0.0 {
+    if wounds > 0.0 && SHADE_SPLIT != 2u {
         let o = (pos_of(vi[0]) * b0 + pos_of(vi[1]) * b1 + pos_of(vi[2]) * b2) * inst.scale;
         let blot = 0.5 * vnoise(o.xy * 3.1 + o.z * 1.7) + 0.5 * vnoise(o.zy * 3.3 - o.x * 1.9 + 7.0);
         let fleck = vnoise(o.xz * 17.0 + o.y * 11.0);
@@ -3638,10 +3682,10 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     // Weathering layers (material_maps.rs): moss always, wet and snow by
     // Lighting::wetness and Lighting::snow. Roads and verges keep their own wet look;
     // cars, skin, hair, lava and emissive surfaces take none.
-    if (m.flags & (4u | 1024u | 4096u | 0xc0000000u)) == 0u && car == 0u {
+    if (mat_flags & (4u | 1024u | 4096u | 0xc0000000u)) == 0u && car == 0u {
         let wx = material_weather(cl.material);
         // The road-side terrain (TERRAIN without SURFACE) has its own wet look.
-        let wet = select(light.fog.w * wx.x, 0.0, (m.flags & 32770u) == 2u);
+        let wet = select(light.fog.w * wx.x, 0.0, (mat_flags & 32770u) == 2u);
         let snow = light.sh[0].w * wx.y;
         if wx.z > 0.0 || wet > 0.0 || snow > 0.0 {
             let up = surface_n.y;
@@ -3676,6 +3720,29 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         }
     }
     if SHADE_PROBE == 3u { textureStore(out_hdr,px,vec4<f32>(min(base,vec3<f32>(65504.0)),1.0)); return; }
+    if SHADE_SPLIT == 1u {
+        split_ok = true;
+        split_px = px;
+        split_words = vec4<u32>(pack2x16float(base.rg), pack2x16float(vec2<f32>(base.b, tex_alpha)),
+            pack2x16snorm(oct_encode(n)), pack4x8unorm(vec4<f32>(rough_m, metal, orm.x * bark_ao, gloss)));
+        split_emit = surface_emit;
+        return;
+    }
+    if SHADE_SPLIT == 2u {
+        let b = vec4<f32>(unpack2x16float(split_words.x), unpack2x16float(split_words.y));
+        base = b.xyz;
+        tex_alpha = b.w;
+        n = oct_decode(unpack2x16snorm(split_words.z));
+        coat_n = n;
+        let r = unpack4x8unorm(split_words.w);
+        rough_m = r.x;
+        metal = r.y;
+        orm.x = r.z;
+        bark_ao = 1.0;
+        gloss = r.w;
+        surface_emit = split_emit;
+        coat = select(0.0, 1.0, (m.flags & 32u) != 0u);
+    }
     // Skin and hair shares of this point (SKIN 1<<30, HAIR 1<<31).
     var skin = 0.0;
     var hair = 0.0;

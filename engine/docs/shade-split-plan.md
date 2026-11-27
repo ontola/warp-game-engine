@@ -48,3 +48,14 @@ would not fit, and Growing Guns, the lobby and Spellstorm have none.
 
 Switch: KERN_SPLIT_FULL_SHADE=1 while measuring; on by default only after
 a Mac A/B shows it faster and the images match (`shot` frames compared).
+
+## Status 27 November 2026
+
+`KERN_SPLIT_FULL_SHADE=1` runs the full pass as `shade surface`
+(material, `SHADE_SPLIT=1`) and `shade` (light, `SHADE_SPLIT=2`). The
+surface result goes in `split_target` (rgba32uint: base, alpha, octahedral
+normal, roughness/metal/ao/gloss) and the emission in a storage buffer
+(binding 37/38), because a fifth storage texture breaks WebGPU's limit of
+4 per stage. Headless llvmpipe at 640x360: max difference 1/255 against
+the single kernel. Off by default until the Mac A/B (shade ms, GPU ms,
+spill bytes, screenshots) shows it is faster.

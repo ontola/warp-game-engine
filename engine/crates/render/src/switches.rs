@@ -130,6 +130,7 @@ pub const LIGHT_TILES: Switch = Switch::new("KERN_LIGHT_TILES");
 pub const FOOTPRINT_LOD: Switch = Switch::new("KERN_FOOTPRINT_LOD");
 pub const ALBEDO_LOD_BIAS: Switch = Switch::new("KERN_ALBEDO_LOD_BIAS");
 pub const SPLIT_SHADE: Switch = Switch::new("KERN_SPLIT_SHADE");
+pub const SPLIT_FULL_SHADE: Switch = Switch::new("KERN_SPLIT_FULL_SHADE");
 /// The low tier: the forward renderer (forward.rs) for plain mesh scenes,
 /// whatever the game asked for (1 on, 0 off; `auto`, the Android host's
 /// default: on when the scene has no terrain and its game surface compiles there).
@@ -293,6 +294,7 @@ pub const ALL: &[&Switch] = &[
     &FOOTPRINT_LOD,
     &ALBEDO_LOD_BIAS,
     &SPLIT_SHADE,
+    &SPLIT_FULL_SHADE,
     &FORWARD,
     &SHADOW_DISTANCE_LOD,
     &SHADOW_REACH,
