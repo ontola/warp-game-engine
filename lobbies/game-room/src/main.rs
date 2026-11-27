@@ -148,6 +148,7 @@ fn run() -> Result<(), String> {
             lobby.open_visit(pad);
             lobby.visit.code = code.to_ascii_uppercase();
             lobby.visit.pick = 7;
+            lobby.sync_visit();
         }
         let ticks = numf("--ticks", 180.0) as u32;
         let mut rgba = headless.frame(&mut lobby)?;

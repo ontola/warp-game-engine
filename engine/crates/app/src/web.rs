@@ -1044,6 +1044,27 @@ impl ApplicationHandler for Shell {
                     if !self.game.escape() { self.capture_mouse(false); }
                     return;
                 }
+                // Text entry (as the desktop shell, lib.rs): while the game
+                // has a field focused, typed text and editing keys go to it
+                // instead of the controls.
+                if self.game.text_input() && event.state == ElementState::Pressed {
+                    use crate::TextEvent as T;
+                    let ev = match code {
+                        Enter | NumpadEnter if !event.repeat => Some(T::Enter),
+                        Backspace => Some(T::Backspace),
+                        Delete => Some(T::Delete),
+                        ArrowLeft => Some(T::Left),
+                        ArrowRight => Some(T::Right),
+                        Home => Some(T::Home),
+                        End => Some(T::End),
+                        ArrowUp | ArrowDown | Tab => None,
+                        _ => {
+                            if let Some(t) = event.text.as_ref().filter(|t| t.chars().any(|c| !c.is_control())) { self.game.text(T::Insert(t.to_string())); }
+                            return;
+                        }
+                    };
+                    if let Some(ev) = ev { self.game.text(ev); return; }
+                }
                 self.devices.key(code, event.state, event.repeat);
             }
             WindowEvent::RedrawRequested => {

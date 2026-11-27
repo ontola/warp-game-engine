@@ -218,6 +218,9 @@ pub struct RoomBuild {
     /// The online switch's instances (only the browser host shows it, where
     /// the jukebox would stand).
     pub switch: std::ops::Range<usize>,
+    /// The visit-a-room screen over the QR code (visit.rs): built hidden so
+    /// Godot's room listing is unchanged, shown by the live lobby.
+    pub visit: std::ops::Range<usize>,
     /// Where the switch's lever is: 0 Public (left), 1 Private.
     switch_at: f32,
     /// Instance shapes, for run-time copies (spines, items).
@@ -258,6 +261,7 @@ impl RoomBuild {
             pad_parts: vec![],
             jukebox: 0..0,
             switch: 0..0,
+            visit: 0..0,
             switch_at: 0.0,
             meshes: HashMap::new(),
             group: String::new(),
@@ -474,6 +478,10 @@ pub fn build() -> RoomBuild {
         r.prompt(&format!("door{i}"), &[("Y", "Pick up")], Vec3::new(x, 3.15, BACK + 0.4));
     }
     plaque(&mut r);
+    let first = r.dump.instances.len();
+    visit_screen(&mut r);
+    r.visit = first..r.dump.instances.len();
+    r.hidden.extend(r.visit.clone());
     ceiling_lights(&mut r);
     foreground(&mut r);
     string_lights(&mut r);
@@ -956,6 +964,23 @@ fn plaque(r: &mut RoomBuild) {
     let mut material = RoomBuild::screen_material(texture, 1.6);
     material.filter = 0;
     r.quad(Vec2::new(2.2, 2.63), c + Vec3::new(0.0, 0.0, 0.04), &material);
+}
+
+/// The visit-a-room screen's centre and its picture's size (m): on the
+/// wall over the QR code plaque, standing on the high ledge above it.
+pub const VISIT_CENTER: [f32; 3] = [l::PLAQUE_CENTER[0] as f32, 7.3, l::PLAQUE_CENTER[2] as f32];
+pub const VISIT_SIZE: [f32; 2] = [2.4, 1.0];
+
+/// Visit another room (Joep, 27 November 2026: part of the room, not an
+/// overlay): a dark frame like the plaque's with a screen in it, the code
+/// slots painted on it (paint.rs `visit`).
+fn visit_screen(r: &mut RoomBuild) {
+    let c = Vec3::from(VISIT_CENTER);
+    r.box_(Vec3::new(VISIT_SIZE[0] + 0.1, VISIT_SIZE[1] + 0.12, 0.1), c + Vec3::new(0.0, 0.0, -0.02), &m(Color::hex("0e0c18"), 0.4));
+    let texture = r.screen("visit", [528, 220], false);
+    let mut material = RoomBuild::screen_material(texture, 1.6);
+    material.filter = 0;
+    r.quad(Vec2::new(VISIT_SIZE[0], VISIT_SIZE[1]), c + Vec3::new(0.0, 0.0, 0.04), &material);
 }
 
 /// Where the online switch stands: the jukebox's place, on the floor.
