@@ -22,4 +22,8 @@ Change, which only matters on wasm32 (the WebGPU backend):
   them, then build it for real: the same pipelines come from the browser's
   cache. The browser host's "Preparing graphics" (app::web).
 
+- `WebBuffer::get_mapped_range` panics with the asked range, the mapped
+  range and the ArrayBuffer's length instead of WebKit's bare RangeError
+  ("Length out of range of buffer", which stopped the room in WebKit).
+
 Drop this copy when a wgpu release handles GPUInternalError.

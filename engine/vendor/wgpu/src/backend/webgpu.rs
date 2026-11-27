@@ -1442,6 +1442,14 @@ impl WebBuffer {
             mapping.mapped_buffer = Some(buffer);
         }
         let array_buffer = mapping.mapped_buffer.as_ref().unwrap();
+        // WARP: a view past the mapped ArrayBuffer throws a bare RangeError
+        // ("Length out of range of buffer" in WebKit) with no hint of which
+        // buffer; say what was asked of what instead.
+        let have = u64::from(array_buffer.byte_length());
+        if sub_range.end - range.start > have || sub_range.start < range.start {
+            panic!("get_mapped_range {:?} of a buffer mapped at {:?} whose mapped ArrayBuffer has {have} bytes (label {:?}, size {})",
+                sub_range, range, self.inner.label(), self.inner.size());
+        }
         Ok(js_sys::Uint8Array::new_with_byte_offset_and_length(
             array_buffer,
             (sub_range.start - range.start) as u32,
