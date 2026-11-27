@@ -64,6 +64,11 @@ mod page {
         let total = humans.max(4);
         let bots: Vec<bool> = (0..total).map(|i| i >= humans).collect();
         let world = growing_guns::World::new(seed, &bots);
+        // `?gg_graphics=full|low|minimum`: this profile for the page's session (measuring).
+        if let Some(p) = app::web::query_param("gg_graphics").and_then(|p| crate::graphics::Graphics::parse(&p).ok()) {
+            if crate::graphics::configure(p).is_err() { crate::graphics::switch(p); }
+        }
+        app::web::log(&format!("growing-guns: graphics {}", crate::graphics::get().name()));
         let mut game = crate::play::Gg::new(world, crate::session::Session::Local, (0..humans).collect());
         // Later arenas bake their light in the page's background worker; the first in place.
         game.vis.stadium.bake_in_background = true;
