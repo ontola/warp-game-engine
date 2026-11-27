@@ -174,7 +174,8 @@ local function forest(ctx)
         if p.y<ctx.water+2 then continue end
         local rotation=V(0,R(0,TAU),0);local size=V(R(.92,1.08),1,R(.92,1.08))*h
         if not tree_clear(variant,p,size,rotation) then continue end
-        put("tree"..variant,"tree",p-U*.5,size,rotation,true)
+        -- Alternating grid cells use the second baked model of the species (no extra random draws).
+        put("tree"..(variant+2*((x+z)%2)),"tree",p-U*.5,size,rotation,true)
         for plant=1,integer(3,8) do
             local angle=plant*TAU/5+random();local spot=p+V(math.cos(angle),0,math.sin(angle))*h*.065
             spot=V(spot.x,ground(spot.x,spot.z)-.15,spot.z);local s=R(2,18)

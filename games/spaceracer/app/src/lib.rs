@@ -1040,6 +1040,16 @@ fn menu_entropy() -> u32 {
     std::collections::hash_map::RandomState::new().build_hasher().finish() as u32
 }
 /// SpaceRacer's vehicle surface and mask shaders, before any renderer exists.
+/// A phone or tablet host: the browser or Android shell's phone preset
+/// (`?graphics=high` turns it off). `WARP_PHONE=1` pretends on a desktop.
+/// Same rule as `warp::phone()`.
+pub fn phone() -> bool {
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+    { app::web::mobile() }
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    { std::env::var("WARP_PHONE").is_ok_and(|v| v == "1") }
+}
+
 pub fn install_shaders(no_reflections: bool) {
     let mut surface = include_str!("../shaders/surfaces.wgsl").to_owned();
     // Diagnostic omission only; never persisted as a player quality setting.

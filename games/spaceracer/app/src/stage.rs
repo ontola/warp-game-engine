@@ -9,7 +9,7 @@ use render::{
     Scene,
     headlights::LocalLight,
     primitives::Primitive,
-    scene::{ALPHA_TEST, EMISSIVE, Material, THIN_FOLIAGE},
+    scene::{EMISSIVE, Material},
     slots::{SlotId, Slots},
 };
 use script::{
@@ -165,6 +165,9 @@ fn vec(v: mlua::Vector) -> Vec3 {
 fn lv(v: Vec3) -> mlua::Vector {
     mlua::Vector::new(v.x, v.y, v.z)
 }
+/// Forest tree models in stage order: rules/stages.luau puts "tree0".."tree3".
+const TREE_MODELS: [&str; 4] = ["spruce-a", "birch-a", "spruce-b", "birch-b"];
+
 fn xf(p: mlua::Vector, s: mlua::Vector, r: mlua::Vector) -> Affine3A {
     let r = vec(r);
     Affine3A::from_scale_rotation_translation(
@@ -324,11 +327,11 @@ impl Stage {
         let mut models = Vec::new();
         let mut tree_xf = Vec::new();
         if race.biome == "forest" {
-            for name in ["pine-tree-1", "birch-tree-1"] {
-                let model = assets::gltf::load(
-                    scene,
-                    &root.join(format!("source/assets/forest/authored/{name}/scene.gltf")),
-                )?;
+            // Baked Warp Vegetation trees (tools/bake_trees.py): closed opaque
+            // crowns, ~900 triangles, or ~320 on a phone. Index = "tree<k>".
+            let tier = if crate::phone() { "-low" } else { "" };
+            for name in TREE_MODELS {
+                let model = assets::gltf::load(scene, &root.join(format!("trees/{name}{tier}.glb")))?;
                 let h = (model.max.y - model.min.y).max(0.01);
                 let center = (model.min + model.max) * 0.5;
                 tree_xf.push(
@@ -339,12 +342,6 @@ impl Stage {
                     let m = &mut scene.materials[id as usize];
                     m.metal = 0.;
                     m.roughness = 0.95;
-                    if m.flags & ALPHA_TEST != 0 {
-                        m.flags |= THIN_FOLIAGE;
-                        if name.starts_with("pine") {
-                            m.tint = [0.55, 0.72, 0.48];
-                        }
-                    }
                 }
                 models.push(model);
             }
@@ -1302,7 +1299,7 @@ mod tests {
                     assert_eq!(scene.aux[0], 0x53524143);
                 }
                 "forest" => {
-                    assert!(count("tree0") + count("tree1") > 400);
+                    assert!((0..4).map(|k| count(&format!("tree{k}"))).sum::<usize>() > 400);
                     assert!(count("fern") > 500);
                 }
                 "cell" => {
