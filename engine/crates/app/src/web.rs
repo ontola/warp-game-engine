@@ -414,6 +414,19 @@ pub fn mobile() -> bool {
     }
 }
 
+/// The level a game starts on when nobody chose one ([`crate::graphics::chosen`]):
+/// High on a computer with an NVIDIA or AMD GPU (the browser names only the
+/// vendor), Medium elsewhere (integrated GPUs, Apple, phones). Joep's
+/// Mancave (RTX 5070 Ti) started Growing Guns on its cheap preset.
+pub fn device_level() -> crate::graphics::Level {
+    if let Some(level) = crate::graphics::chosen() { return level; }
+    let discrete = gpu().is_some_and(|g| {
+        let name = g.info.name.to_ascii_lowercase();
+        ["nvidia", "amd", "radeon", "geforce"].iter().any(|v| name.contains(v))
+    });
+    if discrete && !mobile() { crate::graphics::Level::High } else { crate::graphics::Level::Medium }
+}
+
 /// Safari, or any browser on iOS: WebKit's WebGPU, not Chrome's or Firefox's.
 /// The page's GPU, once the device is made.
 pub fn gpu() -> Option<render::Gpu> { GPU.with(|g| g.borrow().clone()) }

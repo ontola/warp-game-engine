@@ -65,12 +65,13 @@ mod page {
         let bots: Vec<bool> = (0..total).map(|i| i >= humans).collect();
         let world = growing_guns::World::new(seed, &bots);
         // Warp's graphics level (`?graphics=high|medium|low`) picks the profile
-        // and keeps it. Without one the browser starts on LOW (medium): FULL
-        // ran 13-15 ms GPU on an M5 Pro at 1600x900, LOW a flat 6.9 ms at
-        // 144 Hz (27 November); a match that cannot keep up steps down again.
+        // and keeps it. Without one the device does (app::web::device_level):
+        // FULL on an NVIDIA or AMD GPU, LOW (medium) elsewhere: FULL ran
+        // 13-15 ms GPU on an M5 Pro at 1600x900, LOW a flat 6.9 ms at 144 Hz
+        // (27 November); a match that cannot keep up steps down again.
         match app::graphics::chosen() {
             Some(level) => { let p = crate::graphics::Graphics::for_level(level); if crate::graphics::configure(p).is_err() { crate::graphics::switch(p); } }
-            None => crate::graphics::switch(crate::graphics::Graphics::LOW),
+            None => crate::graphics::switch(crate::graphics::Graphics::for_level(app::web::device_level())),
         }
         app::web::log(&format!("growing-guns: graphics {}", crate::graphics::get().name()));
         let mut game = crate::play::Gg::new(world, crate::session::Session::Local, (0..humans).collect());
