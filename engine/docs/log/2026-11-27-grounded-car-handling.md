@@ -110,8 +110,10 @@ Plot: project file `handling/handling-voor-na.png`. Raw results:
   instrumented, not fully ISO-compliant tests (Hall, MPhil thesis, TU
   Dublin 2014, abstract). The compact's 1.3 is in line with it; its full
   mass properties were not readable from the cloud.
-- No measured data yet for rally tyres on gravel, or for grass and loose
-  gravel. Sideways on gravel now uses road-tyre ratios (0.61 g on the
+- Grass is now measured (28 November): Cenek's locked-wheel braking of a car
+  on rye-grass, 0.37 dry and 0.225 wet; wet grass now loses grip. Its peak
+  still uses gravel's sliding/peak ratio. No measured data yet for rally
+  tyres on gravel or for loose gravel. Sideways on gravel now uses road-tyre ratios (0.61 g on the
   skidpad), which is likely below a Rally2 car on gravel tyres.
 - The Rally2 car spins under full throttle and full lock on gravel and does
   not recover while the throttle stays down (AWD with locked centre and

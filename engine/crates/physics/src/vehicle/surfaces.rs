@@ -13,8 +13,13 @@
 //! - Bosch Automotive Handbook, 4th ed. 1996, p. 335 (wet road at 50 km/h, new
 //!   tyre: dry 0.85, wet 0.65, puddles 0.50) and p. 330 (rolling: asphalt
 //!   0.013, rolled gravel 0.02, unpaved road 0.05, field 0.10-0.35).
-//! Loose gravel and grass have no sourced friction value yet; they keep the
-//! ratios of the earlier table (marked below) and gravel's sliding level.
+//! - P.D. Cenek, N.J. Jamieson, M.W. McLarin, "Frictional characteristics of
+//!   roadside grass types" (Opus, NZ), Table 4: locked-wheel braking of a car
+//!   (non-ABS Hyundai Sonata) from 35-45 km/h on rye-grass: 0.36-0.38 dry,
+//!   0.21-0.24 wet; white clover 0.21 dry, 0.17 wet.
+//! Loose gravel has no sourced friction value yet; it keeps the ratio of the
+//! earlier table (marked below). Grass's peak is not measured either: it
+//! takes gravel's sliding/peak ratio over the measured sliding friction.
 
 use serde::{Deserialize, Serialize};
 
@@ -66,11 +71,16 @@ const fn g(mu: f64, sliding: f64, rolling: f64, drag: f64) -> Grip {
 
 /// Dry asphalt's peak friction in the source tables, the reference for `mu`.
 const DRY: f64 = 0.85;
+/// Gravel's sliding over peak friction (Wong), used for loose surfaces.
+const LOOSE_RATIO: f64 = 0.55 / 0.60;
+/// Locked-wheel friction on rye-grass, dry and wet (Cenek, mean of long and short).
+const GRASS_SLIDE: f64 = 0.37;
+const WET_GRASS_SLIDE: f64 = 0.225;
 
 pub const TABLE: [Grip; 7] = [
     g(0.60 / DRY, 0.55 / 0.60, 0.020, 0.0),   // gravel (Wong), rolled gravel (Bosch)
     g(0.52 / DRY, 0.55 / 0.60, 0.050, 0.0),   // loose gravel: earlier ratio to gravel (0.86), unsourced; unpaved road
-    g(0.42 / DRY, 0.55 / 0.60, 0.100, 120.0), // grass: earlier ratio to gravel (0.70), unsourced; field, low end (Bosch)
+    g(GRASS_SLIDE / LOOSE_RATIO / DRY, LOOSE_RATIO, 0.100, 120.0), // dry rye-grass, sliding 0.37 (Cenek); field, low end (Bosch)
     g(0.68 / DRY, 0.65 / 0.68, 0.050, 200.0), // dry earth road (Wong); unpaved road (Bosch)
     g(0.50 / DRY, 0.525 / 0.60, 0.050, 0.0),  // standing water, 2 mm puddles (Bosch); wet asphalt's sliding level
     g(1.0, 0.75 / DRY, 0.013, 0.0),           // dry asphalt (Wong); asphalt (Bosch)
@@ -88,7 +98,7 @@ impl Surfaces {
         &self.table[s as usize]
     }
 
-    /// Wet asphalt and mud lose grip; the authored table stays untouched.
+    /// Wet asphalt, grass and mud lose grip; the authored table stays untouched.
     /// Wet asphalt is Bosch's wet road (0.65 of 0.85) with 20% more rolling
     /// resistance and Wong's wet sliding level; wet mud keeps the earlier ratio
     /// (0.8), unsourced, with Wong's low end of wet earth sliding (0.40).
@@ -98,6 +108,9 @@ impl Surfaces {
         let l = |x: f64, y: f64| x + (y - x) * a;
         let asph = Surface::Asphalt as usize;
         let mud = Surface::Mud as usize;
+        let grass = Surface::Grass as usize;
+        // Wet rye-grass: Cenek's measured locked-wheel friction.
+        s.table[grass].mu = l(base.table[grass].mu, base.table[grass].mu * WET_GRASS_SLIDE / GRASS_SLIDE);
         s.table[asph].mu = l(base.table[asph].mu, 0.65 / DRY);
         s.table[asph].sliding = l(base.table[asph].sliding, 0.525 / 0.60);
         s.table[asph].rolling = l(base.table[asph].rolling, base.table[asph].rolling * 1.2);
