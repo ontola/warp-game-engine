@@ -72,6 +72,10 @@ pub struct Gg {
     since_snap: f32,
     since_poll: u32,
     rebuild: bool,
+    /// Draws left before the match runs again after a graphics switch: the
+    /// rebuild can take seconds (the browser), and no player should come
+    /// back into a round that went on without them.
+    settling: u32,
     /// Prepared, not reported ready yet: ready waits for the first frame with
     /// the match's scene built (a cold pipeline cache takes ~30 s on Windows),
     /// so the host keeps its loading screen up instead of showing nothing.
@@ -156,7 +160,7 @@ impl Gg {
         let mut vis = view::Visuals::build(&world);
         vis.hide_own_bodies(&slots);
         Gg { recorder: Default::default(), replay: None, replay_size: [1600, 900], replay_alpha: 1.0, prev: view::Pose::all(&world), stepped: true, xr_gun: None, xr_aim: None, xr_stereo: false, vis, light: view::lighting(),
-            hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, ready_due: false, environment_dirty: false, split_hint_left: 0.0, inferno: false, sounds: None, crowd_tx: None, crowd_audible: true, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), party_colors: Vec::new(), roster_seed, aim_synced: Vec::new(), live: None,
+            hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, settling: 0, ready_due: false, environment_dirty: false, split_hint_left: 0.0, inferno: false, sounds: None, crowd_tx: None, crowd_audible: true, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), party_colors: Vec::new(), roster_seed, aim_synced: Vec::new(), live: None,
             sky: crate::sky::Sky::new(crate::sky::SkyChoice::Godot), sky_upload: None, before_blackout: None, light_overrides: Vec::new(), scatter: Default::default(),
             split: false, binding: Vec::new(), connected: Vec::new(), last_pad: None, pad_last: false, joined_now: Vec::new(), player_menu: None, joining: None, saved_name: String::new(), probe_tries: Vec::new(), lan: false, lan_hosts: None, lan_beacon: None, xr_head: None, explosions:crate::explosion_editor::ExplosionEditor::new(), debug: Default::default(), speaker: None }
             .with_split()
@@ -769,6 +773,7 @@ impl Gg {
     /// Switch the graphics profile now, building every view anew.
     fn use_graphics(&mut self, want: crate::graphics::Graphics) {
         crate::graphics::switch(want);
+        self.settling = 2;
         crate::say(&format!("graphics: {}", want.name()));
         self.refresh_visuals();
     }
@@ -1178,6 +1183,8 @@ impl app::Game for Gg {
             self.stepped = true;
             return;
         }
+        // A graphics switch is rebuilding the views: hold the match.
+        if self.settling > 0 { return; }
         let mut inputs = vec![Input::default(); self.world.players.len()];
         for (k, &s) in self.slots.iter().enumerate() { if let Some(i) = local.get(k) { inputs[s] = *i; } }
         self.session.poll(&mut self.world);
@@ -1255,6 +1262,8 @@ impl app::Game for Gg {
         else if self.sky.live.is_some() { self.cycle_sky(); }
         self.sync_atmosphere();
         let t = web_time::Instant::now();
+        let rebuilding = self.rebuild || frame.renderer().is_none();
+        if !rebuilding { self.settling = self.settling.saturating_sub(1); }
         if std::mem::take(&mut self.rebuild) || frame.renderer().is_none() {
             frame.set_scene(&self.vis.scene, &self.light);
             let effects_started = web_time::Instant::now();

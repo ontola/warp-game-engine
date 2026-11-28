@@ -414,6 +414,64 @@ pub fn mobile() -> bool {
     }
 }
 
+/// The level a game starts on when nobody chose one ([`crate::graphics::chosen`]):
+/// High on a computer with an NVIDIA or AMD GPU (the browser names only the
+/// vendor), Medium elsewhere (integrated GPUs, Apple, phones). Joep's
+/// Mancave (RTX 5070 Ti) started Growing Guns on its cheap preset.
+pub fn device_level() -> crate::graphics::Level {
+    if let Some(level) = crate::graphics::chosen() { return level; }
+    let discrete = gpu().is_some_and(|g| {
+        let name = g.info.name.to_ascii_lowercase();
+        ["nvidia", "amd", "radeon", "geforce"].iter().any(|v| name.contains(v))
+    });
+    // Firefox names no GPU at all: the room keeping up is the evidence then.
+    if (discrete || room_headroom() == Some(true)) && !mobile() { crate::graphics::Level::High } else { crate::graphics::Level::Medium }
+}
+
+thread_local! {
+    /// The room's recent frame intervals (ms), on its top rung, and what
+    /// they last said ([`room_headroom`]).
+    static ROOM_FRAMES: RefCell<Vec<f64>> = const { RefCell::new(Vec::new()) };
+    static HEADROOM: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+/// Frames the room must draw on one rung before [`room_headroom`] answers.
+const HEADROOM_FRAMES: usize = 90;
+
+/// Whether this page's GPU has room to spare, from the Game Room (the page's
+/// first game, drawn while nobody plays): Some(true) when it holds the
+/// screen's refresh at its full resolution on adaptive quality's top rung,
+/// Some(false) when it needs a lower rung or misses the refresh, None
+/// until it has drawn [`HEADROOM_FRAMES`] steady frames. Frames while a
+/// game loads don't count, Some(true) stays, and the last answer stays
+/// while a game runs. A strong GPU the browser doesn't name (Firefox)
+/// still gets [`device_level`] High (Joep's RTX 5070 Ti, 28 November).
+pub fn room_headroom() -> Option<bool> { HEADROOM.with(std::cell::Cell::get) }
+
+/// One frame of the room: `level` is its adaptive rung (0 the top).
+fn room_frame(dt_ms: f64, level: usize) {
+    let Some(hz) = REFRESH.with(|r| r.get().0) else { return };
+    // A game loading beside the room slows it for another reason; and once
+    // it kept up, this GPU can (a later slow spell is a load, not the GPU).
+    if !dt_ms.is_finite() || dt_ms <= 0.0 || loading().0.is_some() || room_headroom() == Some(true) { return; }
+    // A rung change, or a frame over a quarter second (shaders compiling):
+    // start counting again.
+    let answer = ROOM_FRAMES.with(|f| {
+        let mut f = f.borrow_mut();
+        if level > 0 { f.clear(); return Some(false); }
+        if dt_ms > 250.0 { f.clear(); return None; }
+        if f.len() == HEADROOM_FRAMES { f.remove(0); }
+        f.push(dt_ms);
+        if f.len() < HEADROOM_FRAMES { return None; }
+        let mut sorted = f.clone();
+        sorted.sort_by(f64::total_cmp);
+        Some(sorted[sorted.len() / 2] <= 1000.0 / f64::from(hz) * 1.12)
+    });
+    let Some(answer) = answer else { return };
+    if HEADROOM.with(|h| h.replace(Some(answer))) != Some(answer) {
+        log(&format!("room headroom: {} (refresh {hz:.0} Hz)", if answer { "keeps up at full resolution" } else { "needs a lower rung or misses the refresh" }));
+    }
+}
+
 /// Safari, or any browser on iOS: WebKit's WebGPU, not Chrome's or Firefox's.
 /// The page's GPU, once the device is made.
 pub fn gpu() -> Option<render::Gpu> { GPU.with(|g| g.borrow().clone()) }
@@ -964,6 +1022,7 @@ impl Shell {
         if fresh && live.renderer.is_some() { WARM.with(|w| *w.borrow_mut() = Warm::Idle); }
         if self.switched.is_none() && benching.is_none() && (self.render_height.is_none() || self.mobile) {
             quality.resolution_only = self.game.adaptive_resolution_only();
+            if !IN_GAME.with(std::cell::Cell::get) && !fresh { room_frame(f64::from(dt) * 1000.0, quality.level()); }
             if quality.frame(f64::from(dt) * 1000.0, Instant::now()) {
                 let next = quality.render_height(base(self.cfg.max_render_height));
                 log(&format!("{}: 3D view now {} lines high (chasing {:.0} fps)", self.cfg.title, next.min(size[1]), quality.target_fps()));
