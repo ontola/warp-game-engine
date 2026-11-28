@@ -105,8 +105,11 @@ Plot: project file `handling/handling-voor-na.png`. Raw results:
   with less than half this cornering stiffness per load, so its budget does
   not carry over. What is left is the car itself: weight split (55% front
   here), roll stiffness split and K&C taken from population ranges rather
-  than one measured car. Next: one measured car (mass properties, K&C and
-  its measured understeer gradient) to check the whole budget.
+  than one measured car. One named front-drive car with an open measured
+  value: a Ford Mondeo (2.0 V6, 1312 kg) measured about 1 deg/g in
+  instrumented, not fully ISO-compliant tests (Hall, MPhil thesis, TU
+  Dublin 2014, abstract). The compact's 1.3 is in line with it; its full
+  mass properties were not readable from the cloud.
 - No measured data yet for rally tyres on gravel, or for grass and loose
   gravel. Sideways on gravel now uses road-tyre ratios (0.61 g on the
   skidpad), which is likely below a Rally2 car on gravel tyres.
