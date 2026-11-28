@@ -402,66 +402,6 @@
       "bytes": 4670598
     },
     {
-      "path": "source/assets/forest/authored/birch-tree-1/scene.bin",
-      "sha256": "3ef4ea90839f6dddadece67612bf5743d5a2b140b6099d139a4ac5a16905c16b",
-      "bytes": 1503640
-    },
-    {
-      "path": "source/assets/forest/authored/birch-tree-1/scene.gltf",
-      "sha256": "d32a9d93b5a8c97254ccc2e33992d557c700b5bde11cc90c8bffae6c0513bffc",
-      "bytes": 6279
-    },
-    {
-      "path": "source/assets/forest/authored/birch-tree-1/textures/Leaves_diffuse.png",
-      "sha256": "6625dbb685d42a12cff85490652e23831b826026556f3890a6a8e0c26c49433e",
-      "bytes": 335152
-    },
-    {
-      "path": "source/assets/forest/authored/birch-tree-1/textures/Material.002_diffuse.png",
-      "sha256": "367a2b449efa1a27c96705886c9f48bdfd8042f69f95736f5d4fca0d6e2d166b",
-      "bytes": 1368058
-    },
-    {
-      "path": "source/assets/forest/authored/pine-tree-1/scene.bin",
-      "sha256": "0f92fc387df765db08cae65f55d17f834974eeec1f96198d8526bfdec61a653e",
-      "bytes": 259620
-    },
-    {
-      "path": "source/assets/forest/authored/pine-tree-1/scene.gltf",
-      "sha256": "511506e3925f9d6b4046f1e647b604f5a17905d50cc455f1a9e847f52abc370e",
-      "bytes": 7803
-    },
-    {
-      "path": "source/assets/forest/authored/pine-tree-1/textures/Tree_0Mat_baseColor.png",
-      "sha256": "a12894d4509728f3242c4077005051b9bdbcae3b26d62f691d8ff220ab77db66",
-      "bytes": 712347
-    },
-    {
-      "path": "source/assets/forest/authored/pine-tree-1/textures/Tree_0Mat_metallicRoughness.png",
-      "sha256": "21c48a84eb9b5b1f2cdc4bdfe16318d0e76c2608389e380509b685dd58e7d491",
-      "bytes": 247292
-    },
-    {
-      "path": "source/assets/forest/authored/pine-tree-1/textures/Tree_0Mat_normal.png",
-      "sha256": "521d61a8c79e67fb89b6674c1856c2a314414d999a2750644fee99a5ffba2ead",
-      "bytes": 919457
-    },
-    {
-      "path": "source/assets/forest/authored/pine-tree-1/textures/Tree_1Mat_baseColor.png",
-      "sha256": "b2c077d2e2ff3f83e45349d07fb6164cd0272cc506ef77cc2fea7d59779a2831",
-      "bytes": 647939
-    },
-    {
-      "path": "source/assets/forest/authored/pine-tree-1/textures/Tree_1Mat_metallicRoughness.png",
-      "sha256": "cb2d4639e70838e38a6b404857ae5e4ed84bc9aa2b1e4045dff2b40a8261de61",
-      "bytes": 289108
-    },
-    {
-      "path": "source/assets/forest/authored/pine-tree-1/textures/Tree_1Mat_normal.png",
-      "sha256": "f275fe21b0070a0f90f1bbf3c225e082ed941ea29d1c4a82bed7a06f585c6446",
-      "bytes": 1174693
-    },
-    {
       "path": "source/assets/gamenight/cover.png",
       "sha256": "1871afb984dee4185e51ce0b2a3287a6496d19c709f559b9d03088133d5fa920",
       "bytes": 122684
