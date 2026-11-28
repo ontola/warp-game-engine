@@ -41,6 +41,13 @@ pub struct CarSpec {
     pub torque_steer: [f64; 2],
     #[serde(default)]
     pub roll_steer: [f64; 2],
+    /// Camber against the ground per degree of body roll (the wheels lean
+    /// with the body, out of the corner), and per kN of lateral force
+    /// (leaning away from the force), front and rear.
+    #[serde(default)]
+    pub roll_camber: [f64; 2],
+    #[serde(default)]
+    pub force_camber: [f64; 2],
     pub brake: [f64; 2],
     /// Anti-lock brakes (every road car since 2004 in the EU; banned in rally).
     #[serde(default)]
@@ -108,7 +115,8 @@ impl CarSpec {
             rebound: [4800., 4200.], arb: [9000., 6000.], max_steer_deg: 35.,
             tyre_grip_scale: 1.0, lateral_peak_scale: 1.0, brake: [1650., 1050.], abs: true,
             // K&C: the middle of the measured passenger-car ranges (Lee 2018, see docs/physics.md).
-            force_steer: [0.19, -0.10], torque_steer: [1.0, -0.125], roll_steer: [0.05, 0.035], traction_control: true, esc: true, handbrake: 2600.,
+            force_steer: [0.19, -0.10], torque_steer: [1.0, -0.125], roll_steer: [0.05, 0.035],
+            roll_camber: [0.745, 0.43], force_camber: [0.495, 0.51], traction_control: true, esc: true, handbrake: 2600.,
             drive: [1.0, 0.0], centre_lock: 0., diff_preload: [0., 0.], diff_ramp: [0., 0.],
             idle_rpm: 950., limit_rpm: 7100., engine_inertia: 0.16,
             torque: vec![[1000., 130.], [2500., 240.], [4500., 300.], [6000., 260.], [7100., 180.], [7600., 0.]],

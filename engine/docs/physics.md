@@ -91,8 +91,14 @@ measurements", after Bundorf and Leffert, SAE 760713): front 0.19 deg/kN,
 1.0 deg/100 Nm, 0.05 deg/deg; rear -0.10, -0.125, 0.035. Rally cars and
 Sideways' cars stay rigid (zero) for lack of data. Measured understeer
 gradients of road cars at 0.15 g run 0.7 to 8.2 deg/g (front-wheel drive,
-average 4.2); the compact measures 1.2. Roll camber, the largest K&C term in
-Bundorf's budget, needs camber thrust data the tyre file does not give.
+average 4.2); the compact measures 1.3. `roll_camber` (deg of camber per deg
+of roll, leaning with the body) and `force_camber` (deg/kN, leaning away
+from the force) tilt the wheels; the tyre turns camber into thrust with the
+property file's camber terms (PHY3, PVY3, PVY4: 1.14 x load per radian at
+3000 N, 6% of the cornering stiffness). The compact uses Lee's middle
+values, front 0.745 and 0.495, rear 0.43 and 0.51. With a modern radial
+tyre this adds only 0.07 deg/g. The handling lab prints the skidpad's
+understeer budget (axle slip angles, roll, toe and camber per g).
 
 `cargo run --release -p physics --example handling_lab -- out.json` runs the
 standard objective tests headless and prints the results: 30.5 m skidpad

@@ -96,10 +96,17 @@ Plot: project file `handling/handling-voor-na.png`. Raw results:
 
 ## Open
 
-- Understeer is at the low end of real cars. Roll camber, the largest K&C
-  term in Bundorf's budget, needs camber thrust data the tyre file does not
-  give. The compact also carries only 55% of its weight on the front axle;
-  front-drive compacts usually carry more (not yet checked against data).
+- Understeer is at the low end of real cars. Roll and force camber are in
+  (28 November), with the camber thrust from the tyre file's own camber
+  terms, but add only 0.07 deg/g (1.23 to 1.30): this radial tyre's camber
+  stiffness is 6% of its cornering stiffness. The skidpad budget per g:
+  front slip 3.73 deg, rear 3.52, front toe -1.39 (out of the corner),
+  roll 3.2 deg, front camber 4.1 deg. Bundorf's 1976 example car had tyres
+  with less than half this cornering stiffness per load, so its budget does
+  not carry over. What is left is the car itself: weight split (55% front
+  here), roll stiffness split and K&C taken from population ranges rather
+  than one measured car. Next: one measured car (mass properties, K&C and
+  its measured understeer gradient) to check the whole budget.
 - No measured data yet for rally tyres on gravel, or for grass and loose
   gravel. Sideways on gravel now uses road-tyre ratios (0.61 g on the
   skidpad), which is likely below a Rally2 car on gravel tyres.

@@ -91,6 +91,9 @@ pub struct Wheel {
     pub tcs: f64,
     /// Compliance and roll steer (rad), added to `steer`.
     pub toe: f64,
+    /// Camber against the ground (rad), positive with the top leaning to
+    /// the wheel's right.
+    pub camber: f64,
     /// ESC: brake torque (Nm) the stability control puts on this wheel.
     pub esc: f64,
 }
@@ -186,6 +189,7 @@ impl Car {
                     abs: 1.0,
                     tcs: 0.0,
                     toe: 0.0,
+                    camber: 0.0,
                     esc: 0.0,
                 });
             }
@@ -612,11 +616,15 @@ impl Car {
                 let w = &mut self.wheels[k];
                 if !w.contact {
                     w.toe = 0.0;
+                    w.camber = 0.0;
                     continue;
                 }
                 let mz = super::tyre::trail(w.tan_alpha.atan(), w.load) * w.fy;
                 let deg = s.force_steer[axle] * w.fy / 1000.0 + s.torque_steer[axle] * mz / 100.0 - s.roll_steer[axle] * roll.to_degrees();
                 w.toe = align * deg.to_radians();
+                // The wheel leans with the body by the roll camber, and away
+                // from its lateral force by the force compliance camber.
+                w.camber = (s.roll_camber[axle] * roll.to_degrees() - s.force_camber[axle] * w.fy / 1000.0).to_radians();
             }
         }
     }
@@ -765,7 +773,9 @@ fn tyre(w: &Wheel, surfaces: &Surfaces, grip_scale: f64, lateral_peak_scale: f64
     }
     let surf = surfaces.get(w.surface);
     let scale = Scale { mu: surf.mu * grip_scale, sliding: surf.sliding, kx: 1.0, ky: 1.0 / lateral_peak_scale };
-    let (fx, fy) = super::tyre::force(w.kappa, w.tan_alpha.atan(), w.load, scale);
+    // A wheel leaning right pushes right like a negative slip angle would.
+    let alpha = w.tan_alpha.atan() - super::tyre::camber_slip(w.load) * w.camber;
+    let (fx, fy) = super::tyre::force(w.kappa, alpha, w.load, scale);
     (fx, -fy)
 }
 

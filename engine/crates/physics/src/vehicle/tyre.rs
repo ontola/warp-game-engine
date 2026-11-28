@@ -35,6 +35,10 @@ const PDY1: f64 = 1.0283;
 const PDY2: f64 = -0.16758;
 const PKY1: f64 = -20.505;
 const PKY2: f64 = 2.0284;
+// Camber: horizontal and vertical shifts of the lateral curve.
+const PHY3: f64 = 0.039251;
+const PVY3: f64 = -0.41389;
+const PVY4: f64 = -0.048038;
 // Pneumatic trail (aligning torque) from the same file.
 const R0: f64 = 0.3185;
 const QBZ1: f64 = 19.588;
@@ -144,6 +148,18 @@ pub fn force(kappa: f64, alpha: f64, fz: f64, s: Scale) -> (f64, f64) {
     (kn / n * mf(bx, c, dx, ex, n * km), an / n * mf(by, c, dy, ey, n * am))
 }
 
+/// Camber thrust as an equivalent slip angle per radian of camber at load
+/// `fz`: the file's SHy = PHY3 gamma plus SVy = Fz (PVY3 + PVY4 dfz) gamma
+/// divided by the cornering stiffness. A wheel leaning one way pushes that
+/// way; adding this times the camber to the slip angle lets the camber
+/// thrust share the friction like slip does. 0.059 at 3000 N (camber
+/// stiffness 1.14 x load per radian, 6% of the cornering stiffness).
+pub fn camber_slip(fz: f64) -> f64 {
+    let (_, ky) = lateral(fz);
+    let dfz = (fz.clamp(FZMIN, FZMAX) - FNOMIN) / FNOMIN;
+    PHY3 - (PVY3 + PVY4 * dfz) / ky
+}
+
 /// Pneumatic trail (m): how far behind the contact centre the lateral force
 /// acts, so the aligning torque is -trail x Fy. MF 5.2 form
 /// t = Dt cos(Ct atan(Bt a - Et (Bt a - atan Bt a))) cos a with the file's
@@ -179,6 +195,17 @@ mod tests {
         let locked = force(-1.0, 0.0, fz, dry).0.abs() / fx;
         let side = force(0.0, std::f64::consts::FRAC_PI_2, fz, dry).1 / fy;
         assert!((0.88..0.95).contains(&locked) && (0.88..0.95).contains(&side), "{locked} {side}");
+    }
+
+    #[test]
+    fn camber_thrust_matches_the_property_file() {
+        // Fy per radian of camber at 3000 N: Ky PHY3 + Fz (PVY3 + PVY4 dfz).
+        let ky = 19.22 * 3000.0;
+        let file = ky * PHY3 - 3000.0 * (PVY3 + PVY4 * (3000.0 - FNOMIN) / FNOMIN);
+        let g = 0.02;
+        let model = force(0.0, camber_slip(3000.0) * g, 3000.0, Scale::DRY).1 / g;
+        assert!((model / file - 1.0).abs() < 0.01, "{model} {file}");
+        assert!((file / 3000.0 - 1.14).abs() < 0.01);
     }
 
     #[test]

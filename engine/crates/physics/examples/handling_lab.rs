@@ -209,7 +209,12 @@ fn skidpad(spec: &CarSpec, surface: Surface) -> Value {
             let d_m = window.iter().map(|w| w.2).sum::<f64>() / n;
             let v_m = window.iter().map(|w| w.3).sum::<f64>() / n;
             if (t * 4.0).fract() < DT * 4.0 {
-                trace.push(json!({"t": t, "ay_g": ay_m / G, "steer_deg": d_m.to_degrees(), "v": v_m, "err": e_m, "beta": rig.beta_deg()}));
+                let w = &rig.car.wheels;
+                let slip = |i: usize| w[i].tan_alpha.atan().abs().to_degrees();
+                let roll = ((w[1].compression - w[0].compression) / spec.track).to_degrees().abs();
+                trace.push(json!({"t": t, "ay_g": ay_m / G, "steer_deg": d_m.to_degrees(), "v": v_m, "err": e_m, "beta": rig.beta_deg(),
+                    "front_slip_deg": (slip(0) + slip(1)) / 2.0, "rear_slip_deg": (slip(2) + slip(3)) / 2.0, "roll_deg": roll,
+                    "front_toe_deg": (w[0].toe + w[1].toe).to_degrees() / 2.0, "front_camber_deg": (w[0].camber + w[1].camber).to_degrees() / 2.0}));
             }
             if e_m < 0.5 {
                 best = best.max(ay_m);
@@ -231,7 +236,17 @@ fn skidpad(spec: &CarSpec, surface: Surface) -> Value {
         })
         .collect();
     let k = slope(&pts);
-    json!({"radius_m": radius, "max_lat_g": best / G, "understeer_deg_per_g": k,
+    // The same fit for the parts of the budget: axle slip angles and roll.
+    let fit = |key: &str| {
+        let pts: Vec<(f64, f64)> = trace.iter().filter_map(|p| {
+            let g = p["ay_g"].as_f64()?;
+            (g > 0.1 && g < 0.4 && p["err"].as_f64()? < 0.5).then(|| (g, p[key].as_f64().unwrap()))
+        }).collect();
+        slope(&pts)
+    };
+    let budget = json!({"front_slip": fit("front_slip_deg"), "rear_slip": fit("rear_slip_deg"), "roll": fit("roll_deg"), "front_toe": fit("front_toe_deg"), "front_camber": fit("front_camber_deg")});
+    eprintln!("  skidpad budget (deg/g): {budget}");
+    json!({"radius_m": radius, "max_lat_g": best / G, "understeer_deg_per_g": k, "budget": budget,
            "ackermann_deg": (spec.wheelbase / radius).to_degrees(), "trace": trace})
 }
 
@@ -385,6 +400,8 @@ fn rally2() -> CarSpec {
     s.force_steer = [0.0; 2];
     s.torque_steer = [0.0; 2];
     s.roll_steer = [0.0; 2];
+    s.roll_camber = [0.0; 2];
+    s.force_camber = [0.0; 2];
     s.drive = [0.5, 0.5];
     s.centre_lock = 900.0;
     s.diff_preload = [80.0, 120.0];
