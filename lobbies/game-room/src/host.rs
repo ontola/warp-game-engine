@@ -176,7 +176,13 @@ impl Host {
         let mut start = if playlist.get("current").is_none_or(Value::is_null) { 0 } else { int(&playlist["current"]) + 1 };
         let next_index = if self.party.get("next_game_index").is_some_and(|v| !v.is_null()) { int(&self.party["next_game_index"]) } else { -1 };
         let empty = Value::Object(Default::default());
-        let fits = |game: &str| self.fits_party(self.game_meta(game).unwrap_or(&empty));
+        // Nobody seated yet: as for one person, so the TV doesn't offer a
+        // game for two before anyone joined (Joep, 28 November 2026).
+        let alone = self.human_count() == 0;
+        let fits = |game: &str| {
+            let meta = self.game_meta(game).unwrap_or(&empty);
+            self.fits_party(meta) && (!alone || self.fits_one(meta))
+        };
         let authoritative = next_index >= 0 && (next_index as usize) < entries.len() && fits(&s(&entries[next_index as usize]["game"]));
         if authoritative { start = next_index; }
         // The host may skip an incompatible entry or honour an explicit next pick.
@@ -195,12 +201,27 @@ impl Host {
         if start as usize >= entries.len() { start = 0; }
         let quitting = self.quitting_game();
         let mut result = vec![];
-        for (index, entry) in entries.iter().enumerate().skip(start as usize) {
+        // From `start` round to the entries before it: a next game picked
+        // from the end of the queue (the browser host moves what it starts
+        // to the back) left Up next nearly empty until it had been played
+        // (Joep, 28 November 2026). The playing entry itself stays out.
+        let current = if playlist.get("current").is_none_or(Value::is_null) { -1 } else { int(&playlist["current"]) };
+        let order = (start as usize..entries.len()).chain(0..start as usize);
+        for index in order {
+            let entry = &entries[index];
             let game = s(&entry["game"]);
-            if game == self.lobby_id || game == quitting || !fits(&game) { continue; }
+            if index as i64 == current && index < start as usize { continue; }
+            if game == self.lobby_id || game == quitting || !fits(&game) || result.iter().any(|e: &Entry| e.game == game) { continue; }
             result.push(Entry { index, game, title: get(entry, "title", "Game") });
         }
         result
+    }
+
+    /// Whether one person (with the bots `game` brings) is enough for it.
+    fn fits_one(&self, game: &Value) -> bool {
+        let low = if game.get("min_players").is_none_or(Value::is_null) { 1 } else { int(&game["min_players"]).max(1) };
+        let bots = if game.get("bots").is_some_and(|v| !v.is_null()) { int(&game["bots"]).max(0) } else { 0 };
+        1 + bots >= low
     }
 
     pub fn human_count(&self) -> usize {
@@ -577,6 +598,24 @@ mod tests {
         assert_eq!(h.tv_station().label, "Play Party");
         assert!(h.cabinet_queue().is_empty());
         assert_eq!(h.queue_station().label, "Queue is empty");
+    }
+
+    #[test]
+    fn up_next_wraps_round_from_the_warming_game_and_waits_for_players_before_duos() {
+        // The browser host moved the game it warms to the back: Up next showed
+        // only that one until it had been played (28 November 2026).
+        let lib = json!([{"id": "duo", "title": "Duo", "min_players": 2}, {"id": "a", "title": "Alpha"}, {"id": "b", "title": "Beta"}, {"id": "gg", "title": "GG"}]);
+        let list = json!({"entries": [{"game": "duo"}, {"game": "a"}, {"game": "b"}, {"game": "gg"}], "current": null});
+        let ids = |h: &Host| h.upcoming().into_iter().map(|e| e.game).collect::<Vec<_>>();
+        // Nobody here: not the game for two.
+        let h = host(json!({"seats": seats(0), "library": lib, "playlist": list, "warm_session": {"game": "gg", "phase": "preparing"}}));
+        assert_eq!(ids(&h), ["gg", "a", "b"]);
+        // Two people: everything, from the warming game round.
+        let h = host(json!({"seats": seats(2), "library": lib, "playlist": list, "warm_session": {"game": "gg", "phase": "preparing"}}));
+        assert_eq!(ids(&h), ["gg", "duo", "a", "b"]);
+        // A playing entry doesn't come round again.
+        let h = host(json!({"seats": seats(2), "library": lib, "playlist": {"entries": list["entries"], "current": 1}}));
+        assert_eq!(ids(&h), ["b", "gg", "duo"]);
     }
 
     #[test]
