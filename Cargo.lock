@@ -5047,6 +5047,7 @@ dependencies = [
  "kern",
  "meshopt",
  "naga",
+ "physics",
  "png 0.18.1",
  "pollster",
  "postcard",

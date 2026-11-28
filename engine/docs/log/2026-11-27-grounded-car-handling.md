@@ -94,6 +94,31 @@ Plot: project file `handling/handling-voor-na.png`. Raw results:
   ran wide out of a corner only because the old car slid; it now meets a
   parked car across the lane.
 
+## Wheel debris and sand (28 November)
+
+The wheel debris emitter moved from Sideways into the engine
+(`physics::vehicle::wheel_fx`) and `Fleet` now feeds it, so Warp Theft Auto
+and every Luau game with cars get it. The spray follows the tread: under
+wheelspin material leaves 5 to 45 degrees behind the contact at 35 to 80%
+of the tread speed relative to the hub; braking ploughs it ahead; drifting
+pushes it sideways. Rates scale with slip speed times load; before this a
+spinning wheel made about 45 particles a second and was nearly invisible,
+now about 600. Grass blades have fresh and yellowed greens and let sunlight
+through; gravel is a mix of grey, buff, brown and dark stones.
+
+Sand is a new surface. No measured road-tyre friction on sand was found.
+Its grip uses the shear strength of measured dry medium sand (Agarwal et
+al. 2019, arXiv 1901.10667: friction angle 34 degrees, cohesion 1.5 kPa),
+which bounds the thrust any tyre gets: tan 34 + c A / W = 0.68. Loose sand
+has no peak in its shear curve, so sliding keeps that level. Rolling
+resistance 0.06 is the middle of "car tyre on solid sand, 0.04-0.08" in the
+Engineering ToolBox table (loose sand 0.2-0.4); that table cites no primary
+source. Sand sprays as speckled clumps of grains with light dust.
+
+The compact has traction control, so flooring it on grass gives almost no
+wheelspin and so little roost (a fleet test checks it is under a third of
+the same car without traction control).
+
 ## Open
 
 - Understeer is at the low end of real cars. Roll and force camber are in

@@ -98,7 +98,29 @@ pub struct Fleet {
     acc: f64,
     /// Strongest hard contact per vehicle across this game tick's fixed steps.
     impacts: BTreeMap<u32, (Vec3, f32)>,
+    debris: Debris,
 }
+
+/// Wheel debris (gravel, grass, sand, dust, smoke) for the cars that throw
+/// any, sampled after every fixed step. Purely visual: it never feeds back.
+struct Debris {
+    emitter: super::wheel_fx::Emitter,
+    tick: u64,
+    /// Emitter slots (4 wheels each) and the car holding each, with its last position.
+    slots: [Option<(u32, V3)>; super::wheel_fx::MAX_WHEELS / 4],
+    births: Vec<(f64, super::wheel_fx::Spawn)>,
+    reset: bool,
+    wetness: f32,
+}
+
+impl Default for Debris {
+    fn default() -> Self {
+        Debris { emitter: super::wheel_fx::Emitter::new(0x5eed_d1e7), tick: 0, slots: [None; 4], births: Vec::new(), reset: true, wetness: 0.0 }
+    }
+}
+
+/// Unread births older than this are dropped; no particle lives this long.
+const DEBRIS_KEEP: f64 = 4.0;
 
 impl Fleet {
     pub fn new(boxes: impl Iterator<Item = YawBox>) -> Self {
@@ -106,7 +128,7 @@ impl Fleet {
         world.gravity = V3::new(0., -9.8, 0.);
         world.integration_parameters.dt = (1. / HZ) as f32;
         for b in boxes { world.colliders.insert(Self::box_collider(b)); }
-        Self { world, cars: BTreeMap::new(), contact_profiles: BTreeMap::new(), crush_grids: BTreeMap::new(), dent_templates:BTreeMap::new(), panel_surfaces:BTreeMap::new(), surfaces: Surfaces::default(), ground: FleetGround::default(), static_regions: BTreeMap::new(), next: 1, acc: 0., impacts: BTreeMap::new() }
+        Self { world, cars: BTreeMap::new(), contact_profiles: BTreeMap::new(), crush_grids: BTreeMap::new(), dent_templates:BTreeMap::new(), panel_surfaces:BTreeMap::new(), surfaces: Surfaces::default(), ground: FleetGround::default(), static_regions: BTreeMap::new(), next: 1, acc: 0., impacts: BTreeMap::new(), debris: Debris::default() }
     }
 
     fn box_collider(b: YawBox) -> Collider {
@@ -225,8 +247,58 @@ impl Fleet {
             }
             self.world.step();
             self.record_impacts();
+            self.emit_debris();
             self.acc -= step;
         }
+    }
+
+    /// Hand wheel debris over to the renderer: `(reset, simulation time, births)`.
+    /// `reset` is true on the first call for this fleet, when the renderer's
+    /// particle clock must restart. Births carry their own birth time.
+    pub fn take_wheel_debris(&mut self) -> (bool, f64, Vec<(f64, super::wheel_fx::Spawn)>) {
+        let d = &mut self.debris;
+        (std::mem::take(&mut d.reset), d.tick as f64 / HZ, std::mem::take(&mut d.births))
+    }
+
+    /// Rain: dry dust and tyre smoke fade, material darkens (0 dry, 1 soaked).
+    pub fn set_wetness(&mut self, wetness: f32) { self.debris.wetness = wetness; }
+
+    fn emit_debris(&mut self) {
+        use super::wheel_fx::{Contact, MAX_WHEELS};
+        let d = &mut self.debris;
+        d.tick += 1;
+        // Cars throwing anything this tick: off asphalt and moving, or sliding.
+        let busy = |car: &Car| car.wheels.iter().any(|w| w.contact
+            && (w.omega * w.radius - w.vx).hypot(w.vy) + if w.surface == Surface::Asphalt { 0.0 } else { w.vx.abs() } > 3.0);
+        for slot in d.slots.iter_mut() {
+            if slot.is_some_and(|(id, _)| !self.cars.get(&id).is_some_and(|e| busy(&e.car))) { *slot = None; }
+        }
+        for (&id, entry) in &self.cars {
+            if d.slots.iter().flatten().any(|s| s.0 == id) || !busy(&entry.car) { continue; }
+            let Some(free) = d.slots.iter().position(Option::is_none) else { break };
+            for w in 0..4 { d.emitter.reset_wheel((free * 4 + w) as u8); }
+            d.slots[free] = Some((id, self.world.bodies[entry.car.body].position().translation));
+        }
+        let mut contacts = Vec::with_capacity(MAX_WHEELS);
+        for (slot, held) in d.slots.iter_mut().enumerate() {
+            let Some((id, last)) = held else { continue };
+            let car = &self.cars[id].car;
+            let body = &self.world.bodies[car.body];
+            let (pos, v, w, com) = (body.position().translation, body.linvel(), body.angvel(), body.center_of_mass());
+            // A teleport (relocate, respawn) is a cut, not a long smear of debris.
+            let jumped = pos.distance(*last) > v.length() / HZ as f32 + 0.5;
+            *last = pos;
+            for (i, wheel) in car.wheels.iter().take(4).enumerate() {
+                if jumped { d.emitter.reset_wheel((slot * 4 + i) as u8); continue; }
+                let pv = v + w.cross(wheel.point - com);
+                contacts.push(Contact::from_wheel((slot * 4 + i) as u8, wheel, [pv.x, pv.y, pv.z]));
+            }
+        }
+        let now = d.tick as f64 / HZ;
+        let births = d.emitter.tick(d.tick, &contacts, d.wetness);
+        d.births.extend(births.iter().map(|b| (now, *b)));
+        // Nobody reading: keep only what could still be alive.
+        if d.births.first().is_some_and(|b| now - b.0 > DEBRIS_KEEP) { d.births.retain(|b| now - b.0 <= DEBRIS_KEEP); }
     }
 
     /// Report the shared contact anchor and normal change in speed (m/s).
@@ -449,6 +521,35 @@ mod tests {
         assert!(previous.0.z < -1.0);
         fleet.remove(id);
         assert!(fleet.chassis_contact(id, None).is_none());
+    }
+
+    #[test]
+    fn launching_on_grass_or_sand_throws_debris_and_asphalt_cruising_does_not() {
+        let run = |surface, throttle: f64, traction_control| {
+            let grid = crate::terrain::HeightGrid::new(2, 400., &[0.; 4], surface, &[]).unwrap();
+            let mut fleet = Fleet::new(std::iter::empty());
+            fleet.add_heightfield(crate::terrain::PlacedGrid::new(Arc::new(grid), Rotation::IDENTITY, Vec3::ZERO));
+            let id = fleet.spawn(CarSpec { traction_control, ..CarSpec::compact() }, Vec3::ZERO, 0.);
+            fleet.drive(id, Some(Pedals { throttle, ..Default::default() }));
+            let (mut kinds, mut reset, mut last) = (Vec::new(), false, 0.);
+            for _ in 0..120 {
+                fleet.step(1. / 60.);
+                let (r, now, births) = fleet.take_wheel_debris();
+                reset |= r;
+                assert!(now >= last && births.iter().all(|b| b.0 <= now));
+                last = now;
+                kinds.extend(births.iter().map(|b| b.1.kind));
+            }
+            assert!(reset && !fleet.take_wheel_debris().0, "only the first read restarts the clock");
+            kinds
+        };
+        use super::super::wheel_fx::Kind;
+        let blades = |kinds: Vec<Kind>| kinds.iter().filter(|k| **k == Kind::GrassBlade).count();
+        // Wheelspin digs: without traction control a roost, with it far less.
+        let (spin, held) = (blades(run(Surface::Grass, 1., false)), blades(run(Surface::Grass, 1., true)));
+        assert!(spin > 100 && held * 3 < spin, "{spin} {held}");
+        assert!(run(Surface::Sand, 1., false).contains(&Kind::Sand));
+        assert!(run(Surface::Asphalt, 0.3, true).is_empty());
     }
 
     #[test]

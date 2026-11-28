@@ -561,7 +561,7 @@ matter, because the listeners follow them.
 
 `world.heightfield({origin=vector.create(x,y,z), spacing=32, columns=20, heights=samples, tag="city", grip="grass", roads=routes})` creates a collision entity and returns its ID. Each row of samples runs along +X, successive rows along +Z. Heights are metres above the origin. The triangle diagonal connects the +X and +Z corners of each grid cell. Render the matching terrain separately.
 
-Walkers, world rays and overlap queries use the grid. Call `vehicles.reset("city")` after installing the static terrain to include it in the fleet's collision snapshot. Each optional road has `points={{worldX,worldZ}, ...}`, a total `width` in metres, and a `grip` such as `"gravel"` or `"asphalt"`. The first matching road supplies tyre grip. Other terrain uses the base grip.
+Walkers, world rays and overlap queries use the grid. Call `vehicles.reset("city")` after installing the static terrain to include it in the fleet's collision snapshot. Each optional road has `points={{worldX,worldZ}, ...}`, a total `width` in metres, and a `grip` such as `"gravel"` or `"asphalt"`. The first matching road supplies tyre grip. Other terrain uses the base grip. Grip names are `asphalt`, `gravel`, `loose`, `dirt`, `grass`, `mud`, `sand` and `water`; each also sets what the wheels throw up when they spin or slide (stones, clods, grass blades, sand, dust or tyre smoke), drawn by the engine for every car.
 
 ### Your own shader
 

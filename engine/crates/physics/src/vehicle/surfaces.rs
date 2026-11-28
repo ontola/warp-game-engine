@@ -17,6 +17,15 @@
 //!   roadside grass types" (Opus, NZ), Table 4: locked-wheel braking of a car
 //!   (non-ABS Hyundai Sonata) from 35-45 km/h on rye-grass: 0.36-0.38 dry,
 //!   0.21-0.24 wet; white clover 0.21 dry, 0.17 wet.
+//! - Sand: Agarwal et al., "Modeling of the interaction of rigid wheels with
+//!   dry granular media" (arXiv 1901.10667, 2019), Table 1, measured medium
+//!   sand: internal friction angle 34 deg, cohesion 1.5 kPa. A tyre's thrust on
+//!   sand is bounded by the sand's shear strength, c*A + W*tan(phi) (Bekker,
+//!   Janosi-Hanamoto), so peak = tan 34 deg + 1.5 kPa * ~0.02 m^2 / 3000 N
+//!   = 0.68. Loose dry sand has no peak in its shear curve, so sliding keeps
+//!   the peak. Rolling: car tyre on solid sand 0.04-0.08, loose sand 0.2-0.4
+//!   (Engineering ToolBox rolling friction table, no primary source given);
+//!   the table takes firm sand, mid range.
 //! Loose gravel has no sourced friction value yet; it keeps the ratio of the
 //! earlier table (marked below). Grass's peak is not measured either: it
 //! takes gravel's sliding/peak ratio over the measured sliding friction.
@@ -33,17 +42,18 @@ pub enum Surface {
     Water = 4,
     Asphalt = 5,
     Mud = 6,
+    Sand = 7,
 }
 
 impl Surface {
-    pub const ALL: [Surface; 7] = [Surface::Gravel, Surface::Loose, Surface::Grass, Surface::Dirt, Surface::Water, Surface::Asphalt, Surface::Mud];
+    pub const ALL: [Surface; 8] = [Surface::Gravel, Surface::Loose, Surface::Grass, Surface::Dirt, Surface::Water, Surface::Asphalt, Surface::Mud, Surface::Sand];
 
     pub fn from_u8(v: u8) -> Surface {
         *Surface::ALL.get(v as usize).unwrap_or(&Surface::Gravel)
     }
 
     pub fn name(self) -> &'static str {
-        ["gravel", "loose", "grass", "dirt", "water", "asphalt", "mud"][self as usize]
+        ["gravel", "loose", "grass", "dirt", "water", "asphalt", "mud", "sand"][self as usize]
     }
 }
 
@@ -62,7 +72,7 @@ pub struct Grip {
 /// The authored table, then weather applied on a copy.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Surfaces {
-    pub table: [Grip; 7],
+    pub table: [Grip; 8],
 }
 
 const fn g(mu: f64, sliding: f64, rolling: f64, drag: f64) -> Grip {
@@ -77,7 +87,10 @@ const LOOSE_RATIO: f64 = 0.55 / 0.60;
 const GRASS_SLIDE: f64 = 0.37;
 const WET_GRASS_SLIDE: f64 = 0.225;
 
-pub const TABLE: [Grip; 7] = [
+/// Peak traction on dry sand: tan(34 deg) plus cohesion (Agarwal et al.).
+const SAND: f64 = 0.68;
+
+pub const TABLE: [Grip; 8] = [
     g(0.60 / DRY, 0.55 / 0.60, 0.020, 0.0),   // gravel (Wong), rolled gravel (Bosch)
     g(0.52 / DRY, 0.55 / 0.60, 0.050, 0.0),   // loose gravel: earlier ratio to gravel (0.86), unsourced; unpaved road
     g(GRASS_SLIDE / LOOSE_RATIO / DRY, LOOSE_RATIO, 0.100, 120.0), // dry rye-grass, sliding 0.37 (Cenek); field, low end (Bosch)
@@ -85,6 +98,7 @@ pub const TABLE: [Grip; 7] = [
     g(0.50 / DRY, 0.525 / 0.60, 0.050, 0.0),  // standing water, 2 mm puddles (Bosch); wet asphalt's sliding level
     g(1.0, 0.75 / DRY, 0.013, 0.0),           // dry asphalt (Wong); asphalt (Bosch)
     g(0.55 / DRY, 0.45 / 0.55, 0.080, 200.0), // wet earth road (Wong); medium hard soil (Wong)
+    g(SAND / DRY, 1.0, 0.060, 0.0),           // dry medium sand shear strength (Agarwal); firm sand rolling
 ];
 
 impl Default for Surfaces {

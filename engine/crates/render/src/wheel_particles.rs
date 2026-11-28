@@ -12,7 +12,7 @@ pub const MAX_VISIBLE_PER_VIEW: usize = 2048;
 const MAX_SCREEN_COVERAGE: f32 = 2.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
-pub enum Kind { Stone, SoilClod, GrassBlade, MudClod, Dust, TyreSmoke, WaterDrop }
+pub enum Kind { Stone, SoilClod, GrassBlade, MudClod, Dust, TyreSmoke, WaterDrop, Sand }
 #[derive(Clone, Copy, Debug)]
 pub struct Birth {
     pub position: Vec3, pub velocity: Vec3, pub normal: Vec3,
@@ -37,13 +37,18 @@ struct Particle {
 }
 fn particle(b: &Birth, epoch: f64) -> Particle {
     let (color, gravity, drag, opacity) = match b.kind {
-        Kind::Stone => (Vec3::new(0.23,0.21,0.18),9.81,0.28,1.0),
+        // Gravel is a mix of rock types: grey, buff, brown and near-black pieces.
+        Kind::Stone => ([Vec3::new(0.36,0.35,0.33),Vec3::new(0.45,0.40,0.32),Vec3::new(0.30,0.24,0.18),Vec3::new(0.16,0.16,0.16)][(b.seed>>3) as usize%4],9.81,0.28,1.0),
         Kind::SoilClod => (Vec3::new(0.14,0.085,0.041),9.81,0.45,1.0),
-        Kind::GrassBlade => (Vec3::new(0.085,0.14,0.025),5.5,2.0,1.0),
+        // Fresh blades, some yellowed (albedo of grass leaves, about 0.1-0.25).
+        Kind::GrassBlade => ([Vec3::new(0.11,0.24,0.04),Vec3::new(0.15,0.28,0.05),Vec3::new(0.24,0.26,0.08)][(b.seed>>3) as usize%3],5.5,2.0,1.0),
         Kind::MudClod => (Vec3::new(0.065,0.040,0.023),9.81,0.65,1.0),
         Kind::Dust => (Vec3::new(0.34,0.26,0.17),-0.16,1.5,0.21),
         Kind::TyreSmoke => (Vec3::splat(0.35),-0.32,1.8,0.19),
         Kind::WaterDrop => (Vec3::new(0.28,0.34,0.38),9.81,0.8,0.55),
+        // Dry quartz sand, pale buff to golden (linear albedo about 0.3-0.45). Clumps
+        // of fine grains feel more air drag than a stone of the same size.
+        Kind::Sand => ([Vec3::new(0.40,0.33,0.22),Vec3::new(0.45,0.37,0.25),Vec3::new(0.34,0.27,0.18)][(b.seed>>3) as usize%3],9.81,0.9,1.0),
     };
     let phase=(b.seed as f64 / u32::MAX as f64 * std::f64::consts::TAU) as f32;
     let variation=0.85+0.30*((b.seed.wrapping_mul(747796405)>>8) as f32 / 16777215.0);

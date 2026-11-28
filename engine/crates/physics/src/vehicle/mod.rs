@@ -3,6 +3,7 @@ mod car;
 pub mod fleet;
 mod spec;
 pub mod tyre;
+pub mod wheel_fx;
 pub mod surfaces;
 pub use car::{Car, CarStats, Ground, RoadTelemetry, SUBSTEPS, Wheel};
 pub use spec::CarSpec;

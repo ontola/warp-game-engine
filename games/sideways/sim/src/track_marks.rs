@@ -47,7 +47,7 @@ impl Emitter {
             let skid=((slip-0.5)/5.).clamp(0.,1.);
             let (compaction,rubber)=match c.surface {
                 Surface::Asphalt=>(0.,skid*load*(1.-wet*0.45)),
-                Surface::Mud=>(load*(0.55*rolling+0.4*skid),0.),
+                Surface::Mud|Surface::Sand=>(load*(0.55*rolling+0.4*skid),0.),
                 Surface::Grass=>(load*(0.45*rolling+0.4*skid),0.),
                 Surface::Loose|Surface::Dirt=>(load*(0.5*rolling+0.35*skid),0.),
                 _=>(load*(0.4*rolling+0.4*skid)*(1.+wet*0.15),0.),

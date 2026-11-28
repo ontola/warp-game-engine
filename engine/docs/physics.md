@@ -61,12 +61,31 @@ at the peak come from a published Magic Formula 5.2 property file of a
 angle and at mu 1.21 at slip ratio 0.144. Past the peak the curve falls to
 the measured sliding friction of the surface. Each surface in
 `vehicle/surfaces.rs` scales the friction by its measured peak relative to
-dry asphalt and sets its own sliding level (Wong 1993, Bosch 1996; the
-sources and the two unsourced rows, loose gravel and grass, are listed in
-the file). Combined braking and cornering share the grip by Pacejka's
+dry asphalt and sets its own sliding level (Wong 1993, Bosch 1996, Cenek
+for grass; sand is bounded by the measured shear strength of dry sand,
+tan 34 degrees plus cohesion; the sources and the unsourced parts are listed
+in the file). A heightfield's `grip` takes any surface name, `"sand"` too.
+Combined braking and cornering share the grip by Pacejka's
 similarity method. `tyre_grip_scale` and `lateral_peak_scale` in a car spec
 are the Magic Formula scale factors (LMU and 1/LKY); leave them at 1.0
 unless tyre data says otherwise.
+
+### Wheel debris
+
+`vehicle/wheel_fx.rs` turns each wheel contact into bounded particle births:
+stones and dust on gravel, blades and roots on grass, clods on dirt and mud,
+grain sprays on sand, tyre smoke on asphalt, spray in water. The amount
+follows the slip speed times the load (material the tread scrubs loose),
+plus a little flicked by a fast rolling tread. Under wheelspin material
+leaves the tread 5 to 45 degrees behind the contact at a share of the tread
+speed (a roost); a locked wheel ploughs material ahead; a sliding tyre
+bulldozes it sideways. `Fleet` runs it after every fixed step for up to four
+cars that are off asphalt or sliding, and Warp uploads the births to the
+renderer each frame, so every game with `vehicles` gets it. A car with
+traction control throws little when launched on grass, because its wheels
+hardly spin; sliding or a car without it (the Sideways rally cars) roosts.
+Check the look with `cargo run --release -p render --example
+wheel_spray_probe -- --out DIR`.
 
 `CarSpec::abs` gives a car anti-lock brakes with EBD (the rear wheels never
 slip more than the fronts) and `CarSpec::traction_control` brakes a driven

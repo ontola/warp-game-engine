@@ -35,7 +35,7 @@ fn run()->Result<(),String>{
     let(off,_)=renderer.render(&gpu,&camera,&light,W,H);save(&out,"off",&off)?;
     renderer.update_wheel_particles(&gpu,0.25,&[])?;let(empty,_)=renderer.render(&gpu,&camera,&light,W,H);
     let empty_difference=difference(&off,&empty);if empty_difference!=0{failures.push(format!("empty births changed {empty_difference} pixels"));}
-    let kinds=[("stone",Kind::Stone),("soil",Kind::SoilClod),("grass",Kind::GrassBlade),("mud",Kind::MudClod),("dust",Kind::Dust),("tyre-smoke",Kind::TyreSmoke),("water",Kind::WaterDrop)];
+    let kinds=[("stone",Kind::Stone),("soil",Kind::SoilClod),("grass",Kind::GrassBlade),("mud",Kind::MudClod),("dust",Kind::Dust),("tyre-smoke",Kind::TyreSmoke),("water",Kind::WaterDrop),("sand",Kind::Sand)];
     for(name,kind)in kinds{
         renderer.reset_wheel_particles();renderer.update_wheel_particles(&gpu,0.25,&[birth(kind)])?;
         let(pixels,stats)=renderer.render(&gpu,&camera,&light,W,H);save(&out,name,&pixels)?;let changed=difference(&off,&pixels);

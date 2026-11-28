@@ -45,3 +45,6 @@ cc = "1"
 # early exits it cannot prove uniform). WGPU_DX12_COMPILER still overrides.
 [target.'cfg(all(windows, not(target_arch = "aarch64")))'.dependencies]
 wgpu = { version = "30", features = ["static-dxc"] }
+
+[dev-dependencies]
+physics = { path = "../physics" }

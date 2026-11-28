@@ -7,6 +7,7 @@
 //! emissive, roughness, metal) seen for the first time adds a material and a
 //! mesh, which needs a new renderer on the next frame (`rebuild`): free
 //! during `init`, a short stall later.
+mod debris;
 mod dents;
 pub(crate) mod geometry;
 use glam::{Affine3A, EulerRot, Quat, Vec3};
@@ -311,6 +312,8 @@ pub struct World {
     pub(crate) baked_explosion_smoke: bool,
     /// None uses lazy loading; Some records whether the requested warmup ran on this renderer.
     pub(crate) explosions_prepared: Option<bool>,
+    /// The renderer holds wheel debris from a fleet (reset it when the fleet goes).
+    debris_live: bool,
 }
 
 /// Effects the engine animates on its own (`fx.burst`, `fx.ring`): plain
@@ -360,7 +363,7 @@ impl World {
         let m = scene.add_material(material(&Look::default()));
         let cube = scene.add_mesh(&primitives::cube(m).mesh());
         let slots = Slots::reserve(&mut scene, max_entities);
-        let mut w = World { fleet: None, entities: BTreeMap::new(), next: 1, scene, slots, materials: HashMap::new(), meshes: HashMap::new(), models: HashMap::new(), geometry: Default::default(), dents: Default::default(), warmed: BTreeMap::new(), rebuild: true, added: Vec::new(), dir: dir.to_path_buf(), fx: Fx::default(), explosions: None, baked_explosion_smoke: false, explosions_prepared: None };
+        let mut w = World { fleet: None, entities: BTreeMap::new(), next: 1, scene, slots, materials: HashMap::new(), meshes: HashMap::new(), models: HashMap::new(), geometry: Default::default(), dents: Default::default(), warmed: BTreeMap::new(), rebuild: true, added: Vec::new(), dir: dir.to_path_buf(), fx: Fx::default(), explosions: None, baked_explosion_smoke: false, explosions_prepared: None, debris_live: false };
         w.materials.insert(Look::default().key(), m);
         w.meshes.insert((0, m), cube);
         w
@@ -857,14 +860,14 @@ impl World {
     }
 
     /// Upload moved slots to a renderer made from this scene.
-    pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer) -> Result<(), String> { self.upload_dents(gpu, renderer)?; self.slots.flush(gpu, renderer, &self.scene) }
+    pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer) -> Result<(), String> { self.upload_dents(gpu, renderer)?; self.upload_wheel_debris(gpu, renderer)?; self.slots.flush(gpu, renderer, &self.scene) }
 
     /// A simulation tick starts (see [`World::flush_at`]).
     pub fn tick_start(&mut self) { self.slots.tick(&self.scene); }
 
     /// [`World::flush`], with moving entities drawn `alpha` of the way
     /// between their previous and current tick.
-    pub fn flush_at(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, alpha: f32) -> Result<(), String> { self.upload_dents(gpu, renderer)?; self.slots.flush_at(gpu, renderer, &self.scene, alpha) }
+    pub fn flush_at(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, alpha: f32) -> Result<(), String> { self.upload_dents(gpu, renderer)?; self.upload_wheel_debris(gpu, renderer)?; self.slots.flush_at(gpu, renderer, &self.scene, alpha) }
 }
 
 fn material(look: &Look) -> Material {

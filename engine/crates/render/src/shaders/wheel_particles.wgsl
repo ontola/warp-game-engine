@@ -45,11 +45,13 @@ fn rock_corner(i:u32,seed:f32)->vec3<f32>{
     var center=p.position_radius.xyz+p.velocity_born.xyz*travel-vec3<f32>(0.,p.params.y*(age/drag-travel/drag),0.);
     let angle=p.params.x+age*(7.0+2.0*sin(p.params.x));var offset=vec3<f32>(0.0);var normal=vec3<f32>(0.,1.,0.);var uv=vec2<f32>(0.0);
     let dust=kind==4u||kind==5u;let radius=p.position_radius.w*select(1.0,1.0+age*2.2,dust);
-    if dust||kind==2u {
+    // Sand flies as a loose spray of grains: a billboard speckled with grains.
+    let sheet=kind==7u;
+    if dust||kind==2u||sheet {
         let q=array<vec2<f32>,6>(vec2<f32>(-1.,-1.),vec2<f32>(1.,-1.),vec2<f32>(-1.,1.),vec2<f32>(-1.,1.),vec2<f32>(1.,-1.),vec2<f32>(1.,1.))[min(v,5u)];
         // Remaining vertices collapse to a point; only two dust/grass triangles.
         uv=select(vec2<f32>(0.0),q,v<6u);
-        if dust {offset=(fx.right_near.xyz*uv.x+fx.up.xyz*uv.y)*radius;normal=normalize(fx.camera_time.xyz-center);}
+        if dust||sheet {offset=(fx.right_near.xyz*uv.x+fx.up.xyz*uv.y)*radius;normal=normalize(fx.camera_time.xyz-center);}
         else {
             let width=(0.13+0.09*(1.0-uv.y))*uv.x;let bend=0.25*(uv.y*uv.y);
             offset=spin(vec3<f32>(width,uv.y,bend)*radius,angle);normal=spin(vec3<f32>(0.,0.,1.),angle);
@@ -76,8 +78,16 @@ fn rock_corner(i:u32,seed:f32)->vec3<f32>{
     var n=normalize(input.normal);var light=vec3<f32>(0.0);
     // Debris is a real convex mesh. Reject back faces explicitly so opaque
     // fragments cannot paint their hidden side over their visible front side.
-    if !dust&&kind!=2u&&dot(n,fx.camera_time.xyz-input.world)<=0.0{discard;}
-    if dust {
+    if !dust&&kind!=2u&&kind!=7u&&dot(n,fx.camera_time.xyz-input.world)<=0.0{discard;}
+    if kind==7u {
+        // Grains: a hashed speckle, denser in the middle of the clump.
+        let q=input.uv;let cell=floor((q*0.5+0.5)*16.0)+vec2<f32>(p.params.x*13.0,p.params.x*7.0);
+        let h=fract(sin(dot(cell,vec2<f32>(12.9898,78.233)))*43758.5453);
+        let radial=max(0.0,1.0-dot(q,q));
+        alpha*=select(0.0,1.0,h<radial*0.7)*clamp(gap/0.02,0.0,1.0);
+        // Grains face every way: on average half of each is in the sun.
+        light=(fx.ambient.rgb*0.8+fx.sun_color.rgb*0.5*input.sunlight)/3.14159265;
+    } else if dust {
         let q=input.uv;let seed=p.params.x;
         // Smooth overlapping lobes retain density through the puff interior;
         // every outside edge tends continuously to zero, never a square cutout.
@@ -92,7 +102,10 @@ fn rock_corner(i:u32,seed:f32)->vec3<f32>{
     } else {
         if kind==2u {n=faceForward(n,normalize(input.world-fx.camera_time.xyz),n);}
         let sky=0.4+0.6*max(0.0,n.y);
-        light=(fx.ambient.rgb*sky+fx.sun_color.rgb*max(0.0,dot(n,fx.sun_dir.xyz))*input.sunlight)/3.14159265;
+        var sun=max(0.0,dot(n,fx.sun_dir.xyz));
+        // Thin leaves let sunlight through: lit from behind they glow, not go black.
+        if kind==2u {sun=max(sun,0.35*abs(dot(n,fx.sun_dir.xyz)));}
+        light=(fx.ambient.rgb*sky+fx.sun_color.rgb*sun*input.sunlight)/3.14159265;
         alpha*=clamp(gap/max(0.005,p.position_radius.w*0.3),0.0,1.0);
     }
     if alpha<0.0001{discard;}

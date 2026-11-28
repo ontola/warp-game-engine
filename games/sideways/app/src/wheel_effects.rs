@@ -45,8 +45,8 @@ pub struct WheelEffects {
     marks: Vec<Stamp>,
     contacts: Vec<wheel_fx::Contact>,
     reset_pending: bool,
-    emitted: [u64; 7],
-    by_surface: [u64; 7],
+    emitted: [u64; 8],
+    by_surface: [u64; 8],
     marks_created: u64,
     births_expired: u64,
     births_dropped: u64,
@@ -67,7 +67,7 @@ impl WheelEffects {
         Self { enabled, seed, last: None, previous: [None; CARS],
             particles: wheel_fx::Emitter::new(seed), tracks: track_marks::Emitter::new(),
             births: Vec::with_capacity(BIRTH_CAPACITY), marks: Vec::new(), contacts: Vec::with_capacity(WHEELS),
-            reset_pending: true, emitted: [0; 7], by_surface: [0; 7], marks_created: 0,
+            reset_pending: true, emitted: [0; 8], by_surface: [0; 8], marks_created: 0,
             births_expired: 0, births_dropped: 0, marks_dropped: 0, stale_contacts: 0,
             discontinuities: 0, ignored_cars: 0, births_uploaded: 0, marks_uploaded: 0, track_stats: None }
     }
@@ -211,7 +211,7 @@ impl WheelEffects {
             "round":self.last.map(|t|t.round),"simulation_time":self.simulation_time(),"cars_limit":CARS,"wheel_limit":WHEELS,
             "birth_capacity":BIRTH_CAPACITY,"mark_queue_capacity":MARK_CAPACITY,"births_queued":self.births.len(),"marks_queued":self.marks.len(),
             "born_total":self.emitted.iter().sum::<u64>(),"born_by_kind":{"stone":self.emitted[0],"soil":self.emitted[1],"grass":self.emitted[2],
-                "mud":self.emitted[3],"dust":self.emitted[4],"tyre_smoke":self.emitted[5],"water":self.emitted[6]},
+                "mud":self.emitted[3],"dust":self.emitted[4],"tyre_smoke":self.emitted[5],"water":self.emitted[6],"sand":self.emitted[7]},
             "born_by_surface":self.by_surface,"surface_order":Surface::ALL.map(Surface::name),"marks_created":self.marks_created,
             "births_uploaded":self.births_uploaded,"marks_uploaded":self.marks_uploaded,
             "track_atlas":self.track_stats.map(|s|serde_json::json!({"stamps":s.stamps,"rejected":s.rejected,"tiles_resident":s.tiles_resident,
@@ -228,8 +228,8 @@ fn point_velocity(linear: Vec3, angular: Vec3, com: Vec3, point: Vec3) -> Vec3 {
 fn contact_surface(dry: Surface, y: f32, level: f64) -> Surface { if level.is_finite() && level > y as f64 + 0.08 { Surface::Water } else { dry } }
 fn keep_latest<T>(items: &mut Vec<T>, capacity: usize) -> usize { let drop = items.len().saturating_sub(capacity); if drop>0 {items.drain(..drop);} drop }
 fn hash(mut x: u64) -> u64 { x=x.wrapping_add(0x9e3779b97f4a7c15);x=(x^(x>>30)).wrapping_mul(0xbf58476d1ce4e5b9);x=(x^(x>>27)).wrapping_mul(0x94d049bb133111eb);x^(x>>31) }
-fn kind_index(k: wheel_fx::Kind) -> usize { match k {wheel_fx::Kind::Stone=>0,wheel_fx::Kind::SoilClod=>1,wheel_fx::Kind::GrassBlade=>2,wheel_fx::Kind::MudClod=>3,wheel_fx::Kind::Dust=>4,wheel_fx::Kind::TyreSmoke=>5,wheel_fx::Kind::WaterDrop=>6} }
-fn kind(k: wheel_fx::Kind) -> Kind { match k {wheel_fx::Kind::Stone=>Kind::Stone,wheel_fx::Kind::SoilClod=>Kind::SoilClod,wheel_fx::Kind::GrassBlade=>Kind::GrassBlade,wheel_fx::Kind::MudClod=>Kind::MudClod,wheel_fx::Kind::Dust=>Kind::Dust,wheel_fx::Kind::TyreSmoke=>Kind::TyreSmoke,wheel_fx::Kind::WaterDrop=>Kind::WaterDrop} }
+fn kind_index(k: wheel_fx::Kind) -> usize { match k {wheel_fx::Kind::Stone=>0,wheel_fx::Kind::SoilClod=>1,wheel_fx::Kind::GrassBlade=>2,wheel_fx::Kind::MudClod=>3,wheel_fx::Kind::Dust=>4,wheel_fx::Kind::TyreSmoke=>5,wheel_fx::Kind::WaterDrop=>6,wheel_fx::Kind::Sand=>7} }
+fn kind(k: wheel_fx::Kind) -> Kind { match k {wheel_fx::Kind::Stone=>Kind::Stone,wheel_fx::Kind::SoilClod=>Kind::SoilClod,wheel_fx::Kind::GrassBlade=>Kind::GrassBlade,wheel_fx::Kind::MudClod=>Kind::MudClod,wheel_fx::Kind::Dust=>Kind::Dust,wheel_fx::Kind::TyreSmoke=>Kind::TyreSmoke,wheel_fx::Kind::WaterDrop=>Kind::WaterDrop,wheel_fx::Kind::Sand=>Kind::Sand} }
 
 #[cfg(test)]
 mod tests {
@@ -296,7 +296,9 @@ mod tests {
     fn bounded_offline_queue_records_drops_and_expiry() {
         let mut fx=WheelEffects::with_enabled(1,true);
         for t in 0..2300 {fx.observe(tick(t),&inputs(t,4),0.0);}
-        assert_eq!(fx.marks.len(),MARK_CAPACITY);assert!(fx.marks_dropped>0);assert!(fx.births.len()<=BIRTH_CAPACITY);
+        assert_eq!(fx.marks.len(),MARK_CAPACITY);assert!(fx.marks_dropped>0&&fx.births_dropped>0);assert!(fx.births.len()<=BIRTH_CAPACITY);
+        // One car alone no longer fills the queue, so old births age out.
+        for t in 2300..2700 {fx.observe(tick(t),&inputs(t,1),0.0);}
         assert!(fx.births_expired>0);assert!(fx.births.iter().all(|b|fx.simulation_time()-b.birth_time<b.lifetime as f64));
         assert!(fx.emitted.iter().sum::<u64>()>0);
     }
