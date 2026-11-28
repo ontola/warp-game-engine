@@ -48,7 +48,7 @@ fn gas() -> Controls {
 
 #[test]
 fn bumper_severity_drives_blood_and_leaves_a_targetable_body_only_for_a_hard_hit() {
-    for (z, lethal) in [(-0.12, false), (-25.0, true)] {
+    for (z, lethal) in [(-0.12, false), (-45.0, true)] {
         let mut game = city();
         game.luau(&format!(
             r#"

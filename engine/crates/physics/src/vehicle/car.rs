@@ -6,7 +6,8 @@
 //! substeps per tick, couplings solved implicitly.
 
 use super::{GROUP_WORLD, ROAD, CarSpec};
-use super::surfaces::{Surface, Surfaces, curve};
+use super::surfaces::{Surface, Surfaces};
+use super::tyre::{ALPHA_PEAK, KAPPA_PEAK, Scale};
 use rapier3d::glamx::{Pose3, Quat, Vec3};
 use rapier3d::parry::query::ShapeCastOptions;
 use rapier3d::parry::shape::Cylinder;
@@ -19,6 +20,30 @@ const V_LOW: f64 = 1.2;
 const RELAX: f64 = 0.25;
 const RPM: f64 = 60.0 / TAU;
 const OVER_BUMP: f64 = 0.25;
+/// ABS thresholds around the reference tyre's longitudinal peak (slip 0.144).
+const ABS_RELEASE: f64 = 0.17;
+const ABS_APPLY: f64 = 0.11;
+const ABS_DUMP_TIME: f64 = 0.04;
+const ABS_BUILD_TIME: f64 = 0.15;
+const ABS_MIN_SPEED: f64 = 1.5;
+/// Traction control: on above 20% driving slip, off below 10%, measured
+/// against at least 3 m/s so a car can pull away.
+const TCS_ON: f64 = 0.2;
+const TCS_OFF: f64 = 0.1;
+const TCS_BUILD_TIME: f64 = 0.1;
+const TCS_MIN_SPEED: f64 = 3.0;
+// ESC (yaw control as in Bosch ESP, van Zanten 2000, SAE 2000-01-1633): the
+// reference yaw rate of a linear car with this characteristic speed (the
+// compact's 1.2 deg/g understeer gives 34 m/s), limited by the friction.
+const ESC_CHAR_SPEED: f64 = 34.0;
+const ESC_MIN_SPEED: f64 = 5.0;
+/// Yaw-rate error (rad/s) before ESC brakes, plus a share of the reference.
+const ESC_DEADBAND: f64 = 0.05;
+const ESC_DEADBAND_SHARE: f64 = 0.1;
+/// Yaw moment (Nm) per rad/s of error past the deadband.
+const ESC_GAIN: f64 = 15000.0;
+/// Time for the pump to build or drop full brake pressure.
+const ESC_BUILD_TIME: f64 = 0.15;
 
 /// What a car needs to know about the world beyond its colliders.
 pub trait Ground {
@@ -60,6 +85,14 @@ pub struct Wheel {
     #[serde(skip)]
     pub wr: Vec3,
     pub slide: f64,
+    /// ABS: the share of brake pressure the modulator lets through.
+    pub abs: f64,
+    /// Traction control: brake torque (Nm) on a spinning driven wheel.
+    pub tcs: f64,
+    /// Compliance and roll steer (rad), added to `steer`.
+    pub toe: f64,
+    /// ESC: brake torque (Nm) the stability control puts on this wheel.
+    pub esc: f64,
 }
 
 /// Engine and contact-patch signals for road sounds. Slip is the sum of
@@ -110,6 +143,7 @@ pub struct Car {
     #[serde(skip)]
     teleport: Option<Pose3>,
     engine_torque: f64,
+    esc_cut: f64,
 }
 
 fn v(x: f64, y: f64, z: f64) -> Vec3 {
@@ -149,6 +183,10 @@ impl Car {
                     wf: Vec3::NEG_Z,
                     wr: Vec3::X,
                     slide: 0.0,
+                    abs: 1.0,
+                    tcs: 0.0,
+                    toe: 0.0,
+                    esc: 0.0,
                 });
             }
         }
@@ -178,6 +216,7 @@ impl Car {
             shift_request: 0,
             teleport: None,
             engine_torque: 0.0,
+            esc_cut: 0.0,
         }
     }
 
@@ -270,7 +309,8 @@ impl Car {
         let fwd = xf.rotation * Vec3::NEG_Z;
         let right_axis = xf.rotation * Vec3::X;
         self.speed = lin.dot(fwd) as f64;
-        self.steering(dt, lin, right_axis, fwd);
+        let front_mid = xf.transform_point((self.wheels[0].anchor + self.wheels[1].anchor) * 0.5);
+        self.steering(dt, lin, lin + ang.cross(front_mid - com), right_axis, fwd);
         self.gearbox(dt);
         let water = ground.water_level(xf.translation.x as f64, xf.translation.z as f64);
         let mut force = Vec3::ZERO;
@@ -280,12 +320,14 @@ impl Car {
             torque += (at - com).cross(f);
         };
         self.suspension(phys, ground, &xf, up, dt, water, &mut apply);
+        self.compliance();
+        self.stability(dt, lin, ang, up, fwd, surfaces);
 
         for w in self.wheels.iter_mut() {
             if !w.contact {
                 continue;
             }
-            let mut wf = Quat::from_axis_angle(up, w.steer as f32) * fwd;
+            let mut wf = Quat::from_axis_angle(up, (w.steer + w.toe) as f32) * fwd;
             wf = (wf - w.normal * wf.dot(w.normal)).normalize_or_zero();
             let wr = wf.cross(w.normal);
             let vp = lin + ang.cross(w.point - com);
@@ -333,8 +375,7 @@ impl Car {
             let f = w.wf * (sum_fx[i] / SUBSTEPS as f64) as f32 + w.wr * (sum_fy[i] / SUBSTEPS as f64) as f32;
             apply(f, w.point);
             let surf = surfaces.get(w.surface);
-            let s = ((w.kappa / surf.kappa_peak).powi(2) + (w.tan_alpha / (surf.alpha_peak * self.spec.lateral_peak_scale)).powi(2)).sqrt();
-            w.slide = ((s - 0.8) / 2.0).clamp(0.0, 1.0);
+            w.slide = slide(w, self.spec.lateral_peak_scale);
             // Grass and dirt drag at the car a little.
             let drag = surf.drag * speed_len.min(10.0) * 0.1 * w.load / 3000.0;
             apply(-vdir * drag as f32, w.point);
@@ -425,6 +466,14 @@ impl Car {
     }
 
     fn drivetrain(&mut self, h: f64, surfaces: &Surfaces) {
+        // Wheel spin as a traction control would measure it: each wheel's
+        // speed at the start of the substep against the ground speed at that
+        // wheel (from the car's speed and yaw rate, as real systems estimate
+        // it), so the outer wheels of a tight turn do not count as spinning.
+        let spin: [f64; 4] = std::array::from_fn(|i| {
+            let w = &self.wheels[i];
+            (w.omega * w.radius - w.vx) / w.vx.abs().max(TCS_MIN_SPEED)
+        });
         for w in self.wheels.iter_mut() {
             w.omega += -w.fx * w.radius * h / w.inertia;
         }
@@ -440,6 +489,8 @@ impl Car {
         if cut {
             t = 0.0;
         }
+        // ESC takes engine torque away while it brakes a wheel.
+        t *= 1.0 - self.esc_cut;
         self.engine_torque = torque_curve(&spec.torque, rpm) * t - (spec.friction[0] + spec.friction[1] * rpm) * (1.0 - t);
         self.engine_omega += self.engine_torque * h / spec.engine_inertia;
         self.engine_omega = self.engine_omega.max(300.0 / RPM);
@@ -496,8 +547,39 @@ impl Car {
         if self.hold {
             foot = 1.0;
         }
-        for w in self.wheels.iter_mut() {
-            let mut t_b = foot * spec.brake[w.axle];
+        // EBD, part of every ABS: the rear wheels may not slip more than the
+        // fronts under braking, so the rear never locks first.
+        let front_slip = self.wheels[..2].iter().map(|w| -w.kappa * w.vx.signum()).fold(0.0f64, f64::max);
+        for (w, spin) in self.wheels.iter_mut().zip(spin) {
+            let release = if w.axle == 1 { ABS_RELEASE.min(front_slip.max(ABS_APPLY + 0.02)) } else { ABS_RELEASE };
+            // ABS (road cars): drop pressure when the wheel's braking slip
+            // passes the tyre's peak, build it again below it. A pump cycle
+            // of tens of milliseconds, as on real modulators.
+            let pedal = foot * spec.brake[w.axle] + w.esc;
+            if spec.abs && pedal > 0.0 && w.contact && w.vx.abs() > ABS_MIN_SPEED {
+                let braking_slip = -w.kappa * w.vx.signum();
+                if braking_slip > release {
+                    w.abs = (w.abs - h / ABS_DUMP_TIME).max(0.0);
+                } else if braking_slip < ABS_APPLY {
+                    w.abs = (w.abs + h / ABS_BUILD_TIME).min(1.0);
+                }
+            } else {
+                w.abs = 1.0;
+            }
+            let mut t_b = pedal * w.abs;
+            // Traction control (road cars, part of ESC): brake a driven wheel
+            // that spins well past the car's speed, e.g. lifted off the ground
+            // behind an open differential, so the other wheel gets the torque.
+            if spec.traction_control && spec.drive[w.axle] > 0.0 {
+                if spin > TCS_ON {
+                    w.tcs = (w.tcs + spec.brake[w.axle] * h / TCS_BUILD_TIME).min(spec.brake[w.axle]);
+                } else if spin < TCS_OFF {
+                    w.tcs = (w.tcs - spec.brake[w.axle] * h / TCS_BUILD_TIME).max(0.0);
+                }
+                t_b += w.tcs;
+            } else {
+                w.tcs = 0.0;
+            }
             if w.axle == 1 {
                 t_b += self.handbrake * spec.handbrake;
             }
@@ -509,12 +591,89 @@ impl Car {
         }
     }
 
-    fn steering(&mut self, dt: f64, lin: Vec3, right_axis: Vec3, fwd: Vec3) {
+    /// Toe change from the suspension's kinematics and compliance (K&C): the
+    /// lateral force and aligning torque bend the bushings and steering, and
+    /// body roll steers the wheels. Coefficients are per wheel in the K&C
+    /// convention, positive toward understeer: a front wheel turns out of
+    /// the corner, a rear wheel into it. Uses the forces of the last step.
+    fn compliance(&mut self) {
+        let s = &self.spec;
+        for axle in 0..2 {
+            let (l, r) = (axle * 2, axle * 2 + 1);
+            let track = if axle == 0 { s.track } else { s.track_rear() };
+            let both = self.wheels[l].contact && self.wheels[r].contact;
+            // Body roll (rad), positive when the right side is compressed
+            // (a left-hand corner).
+            let roll = if both { (self.wheels[r].compression - self.wheels[l].compression) / track } else { 0.0 };
+            // Positive toe along the tyre's lateral force aligns the wheel
+            // with its motion (understeer at the front, oversteer at the rear).
+            let align = if axle == 0 { 1.0 } else { -1.0 };
+            for k in [l, r] {
+                let w = &mut self.wheels[k];
+                if !w.contact {
+                    w.toe = 0.0;
+                    continue;
+                }
+                let mz = super::tyre::trail(w.tan_alpha.atan(), w.load) * w.fy;
+                let deg = s.force_steer[axle] * w.fy / 1000.0 + s.torque_steer[axle] * mz / 100.0 - s.roll_steer[axle] * roll.to_degrees();
+                w.toe = align * deg.to_radians();
+            }
+        }
+    }
+
+    /// ESC: compare the yaw rate with what the driver's steering asks of a
+    /// linear car, and brake one wheel to make up the difference: the outer
+    /// front when the car turns more than asked (oversteer), the inner rear
+    /// when it turns less (understeer), cutting engine torque meanwhile.
+    fn stability(&mut self, dt: f64, lin: Vec3, ang: Vec3, up: Vec3, fwd: Vec3, surfaces: &Surfaces) {
+        let v = lin.dot(fwd) as f64;
+        let mut target = [0.0f64; 4];
+        let on_ground = self.wheels.iter().filter(|w| w.contact).count();
+        if self.spec.esc && v > ESC_MIN_SPEED && on_ground >= 3 && self.handbrake < 0.1 && self.gear >= 0 {
+            let l = self.spec.wheelbase;
+            let delta = self.wheels[0].steer;
+            let mu = self.wheels.iter().filter(|w| w.contact).map(|w| surfaces.get(w.surface).mu).sum::<f64>() / on_ground as f64;
+            // Friction limit: a peak of about 1.1 x the surface's share of dry asphalt.
+            let r_max = 1.1 * mu * 9.81 / v;
+            let r_ref = (v * delta / (l * (1.0 + (v / ESC_CHAR_SPEED).powi(2)))).clamp(-r_max, r_max);
+            let r = ang.dot(up) as f64;
+            let err = r - r_ref;
+            let band = ESC_DEADBAND + ESC_DEADBAND_SHARE * r_ref.abs();
+            if err.abs() > band {
+                // Yaw moment wanted, positive to the left (about up).
+                let m = -(err - band * err.signum()) * ESC_GAIN;
+                let oversteer = r.abs() > r_ref.abs() || r * r_ref < 0.0;
+                let axle = if oversteer { 0 } else { 1 };
+                // Braking a left wheel (index 0 or 2) yaws the car left.
+                let k = axle * 2 + if m > 0.0 { 0 } else { 1 };
+                let track = if axle == 0 { self.spec.track } else { self.spec.track_rear() };
+                let w = &self.wheels[k];
+                target[k] = (m.abs() / (0.5 * track) * w.radius).min(self.spec.brake[axle]);
+            }
+        }
+        let mut cut = 0.0f64;
+        for (i, w) in self.wheels.iter_mut().enumerate() {
+            let step = self.spec.brake[w.axle] * dt / ESC_BUILD_TIME;
+            w.esc = move_toward(w.esc, target[i], step);
+            cut = cut.max(w.esc / self.spec.brake[w.axle]);
+        }
+        self.esc_cut = cut;
+    }
+
+    /// Steering assist: like a driver at speed, steer the front wheels no
+    /// further than the tyre's peak slip angle past the direction the front
+    /// axle is actually moving (so a sliding car can still be caught).
+    /// `front_vel` is the velocity at the middle of the front axle.
+    fn steering(&mut self, dt: f64, lin: Vec3, front_vel: Vec3, right_axis: Vec3, fwd: Vec3) {
         let mut lock = self.spec.max_steer();
         let ground_speed = lin.length() as f64;
-        if self.steer_assist && ground_speed > 6.0 {
-            let beta = (lin.dot(right_axis) as f64).atan2((lin.dot(fwd) as f64).abs()).abs();
-            let useful = beta + 9.0f64.to_radians();
+        let ahead = front_vel.dot(fwd) as f64;
+        if self.steer_assist && ground_speed > 6.0 && ahead > 0.0 {
+            // Front-axle velocity angle, positive to the right of the nose.
+            let theta = (front_vel.dot(right_axis) as f64).atan2(ahead);
+            let side = if self.steer_input >= 0.0 { theta } else { -theta };
+            let peak = ALPHA_PEAK * self.spec.lateral_peak_scale;
+            let useful = (side + peak).max(peak);
             lock += (lock.min(useful) - lock) * ((ground_speed - 6.0) / 22.0).clamp(0.0, 1.0);
         }
         let target = -self.steer_input * lock;
@@ -598,22 +757,23 @@ impl Car {
     }
 }
 
-/// Slip to force: the normalised slip vector picks the direction, its
-/// length the point on the curve.
+/// Slip to force through the measured tyre (`tyre.rs`), scaled by the
+/// surface's friction and the car's tyre scale factors.
 fn tyre(w: &Wheel, surfaces: &Surfaces, grip_scale: f64, lateral_peak_scale: f64) -> (f64, f64) {
     if !w.contact || w.load <= 0.0 {
         return (0.0, 0.0);
     }
     let surf = surfaces.get(w.surface);
-    let kn = w.kappa / surf.kappa_peak;
-    let an = w.tan_alpha / (surf.alpha_peak * lateral_peak_scale);
-    let s = (kn * kn + an * an).sqrt();
-    if s < 1e-6 {
-        return (0.0, 0.0);
-    }
-    let mu = surf.mu * grip_scale * (1.0 - 0.07 * (w.load / 3000.0 - 1.0)).clamp(0.75, 1.1);
-    let f = mu * w.load * curve(s, surf.c);
-    (f * kn / s * 1.04, -f * an / s)
+    let scale = Scale { mu: surf.mu * grip_scale, sliding: surf.sliding, kx: 1.0, ky: 1.0 / lateral_peak_scale };
+    let (fx, fy) = super::tyre::force(w.kappa, w.tan_alpha.atan(), w.load, scale);
+    (fx, -fy)
+}
+
+/// How far past the grip peak a wheel slides (0 at the peak, 1 at three
+/// times it), for wheel effects and the gearbox.
+fn slide(w: &Wheel, lateral_peak_scale: f64) -> f64 {
+    let s = (w.kappa / KAPPA_PEAK).hypot(w.tan_alpha.atan() / (ALPHA_PEAK * lateral_peak_scale));
+    ((s - 0.8) / 2.0).clamp(0.0, 1.0)
 }
 
 fn torque_curve(pts: &[[f64; 2]], r: f64) -> f64 {
@@ -680,35 +840,46 @@ mod tests {
     }
 
     fn loaded_wheel() -> Wheel {
-        let mut spec = CarSpec::compact();
-        spec.tyre_grip_scale = 1.12;
+        let spec = CarSpec::compact();
         let mut physics = PhysicsWorld::default();
         let body = super::super::add_car(&mut physics, &spec, Pose3::IDENTITY, false);
         let car = Car::new(spec, body);
-        assert_eq!(car.grip_scale, 1.12);
+        assert_eq!(car.grip_scale, 1.0);
         let mut wheel = car.wheels[0].clone();
         wheel.contact = true;
         wheel.load = 3000.0;
         wheel
     }
 
+    fn peak_lateral(wheel: &mut Wheel, surfaces: &Surfaces) -> f64 {
+        (1..400).map(|i| {
+            wheel.tan_alpha = (i as f64 * 0.001).tan();
+            tyre(wheel, surfaces, 1.0, 1.0).1.abs()
+        }).fold(0.0, f64::max)
+    }
+
     #[test]
-    fn tyre_tuning_improves_small_angle_bite_and_retains_weather_grip() {
+    fn surface_and_weather_scale_the_peak_and_keep_cornering_stiffness() {
         let mut wheel = loaded_wheel();
         let dry = Surfaces::default();
-        wheel.tan_alpha = 2.0f64.to_radians().tan();
-        let baseline = tyre(&wheel, &dry, 1.0, 1.0);
-        let candidate = tyre(&wheel, &dry, 1.12, 0.8);
-        assert!(candidate.1 < baseline.1 * 1.12, "earlier lateral bite must add to the grip increase");
-        assert_eq!(candidate.0, 0.0);
         let wet = Surfaces::with_wetness(&dry, 1.0);
-        for surface in [Surface::Asphalt, Surface::Mud] {
+        for surface in [Surface::Asphalt, Surface::Mud, Surface::Gravel] {
             wheel.surface = surface;
-            let dry_force = tyre(&wheel, &dry, 1.12, 0.8).1;
-            let wet_force = tyre(&wheel, &wet, 1.12, 0.8).1;
-            assert!(wet_force.abs() < dry_force.abs());
-            assert!((wet_force / dry_force - wet.get(surface).mu / dry.get(surface).mu).abs() < 1e-12);
+            let d = peak_lateral(&mut wheel, &dry);
+            let w = peak_lateral(&mut wheel, &wet);
+            let want = wet.get(surface).mu / dry.get(surface).mu;
+            assert!((w / d - want).abs() < 0.005, "{surface:?}: {} vs {want}", w / d);
         }
+        // Small slip angles: the force is the cornering stiffness times the angle
+        // on every surface (MF scales friction, not stiffness).
+        wheel.tan_alpha = 0.002;
+        wheel.surface = Surface::Asphalt;
+        let asphalt = tyre(&wheel, &dry, 1.0, 1.0).1;
+        wheel.surface = Surface::Gravel;
+        assert!((tyre(&wheel, &dry, 1.0, 1.0).1 / asphalt - 1.0).abs() < 0.01);
+        // A lower lateral peak scale bites earlier.
+        wheel.tan_alpha = 2.0f64.to_radians().tan();
+        assert!(tyre(&wheel, &dry, 1.0, 0.8).1.abs() > tyre(&wheel, &dry, 1.0, 1.0).1.abs());
     }
 
     #[test]
@@ -720,15 +891,55 @@ mod tests {
             for slip in [0.0, 0.01, 0.1, 1.0, 10.0] {
                 wheel.kappa = slip;
                 wheel.tan_alpha = -slip;
-                let (fx, fy) = tyre(&wheel, &surfaces, 1.12, 0.8);
+                let (fx, fy) = tyre(&wheel, &surfaces, 1.0, 1.0);
                 assert!(fx.is_finite() && fy.is_finite() && fx >= 0.0 && fy >= 0.0);
-                assert!((fx / 1.04).hypot(fy) <= surfaces.get(surface).mu * 1.12 * wheel.load + 1e-9);
+                // The reference tyre's highest friction is 1.214 (longitudinal, 3000 N).
+                assert!(fx.hypot(fy) <= surfaces.get(surface).mu * 1.215 * wheel.load);
             }
         }
         wheel.contact = false;
-        assert_eq!(tyre(&wheel, &surfaces, 1.12, 0.8), (0.0, 0.0));
+        assert_eq!(tyre(&wheel, &surfaces, 1.0, 1.0), (0.0, 0.0));
         wheel.contact = true;
         wheel.load = 0.0;
-        assert_eq!(tyre(&wheel, &surfaces, 1.12, 0.8), (0.0, 0.0));
+        assert_eq!(tyre(&wheel, &surfaces, 1.0, 1.0), (0.0, 0.0));
+    }
+
+    /// Left-hand corner: tyre forces point left (negative along the wheel's
+    /// right axis) and the right side is compressed. Understeer K&C turns the
+    /// front wheels out of the corner (right, negative steer) and the rear
+    /// wheels into it (left, positive steer), by the rig coefficients.
+    #[test]
+    fn compliance_steers_toward_understeer_in_a_corner() {
+        let spec = CarSpec::compact();
+        let mut physics = PhysicsWorld::default();
+        let body = super::super::add_car(&mut physics, &spec, Pose3::IDENTITY, false);
+        let mut car = Car::new(spec, body);
+        for (i, w) in car.wheels.iter_mut().enumerate() {
+            w.contact = true;
+            w.load = 3000.0;
+            w.fy = -2000.0;
+            w.tan_alpha = 0.0;
+            w.compression = if i % 2 == 1 { 0.1 } else { 0.06 };
+        }
+        car.compliance();
+        let s = &car.spec;
+        let roll = (0.04 / s.track).to_degrees();
+        let front = -(s.force_steer[0] * 2.0 + s.torque_steer[0] * super::super::tyre::trail(0.0, 3000.0) * 20.0 + s.roll_steer[0] * roll);
+        assert!(front < 0.0 && (car.wheels[0].toe.to_degrees() - front).abs() < 1e-9, "{} {front}", car.wheels[0].toe.to_degrees());
+        assert_eq!(car.wheels[0].toe, car.wheels[1].toe);
+        let rear = s.force_steer[1] * 2.0 + s.torque_steer[1] * super::super::tyre::trail(0.0, 3000.0) * 20.0 + s.roll_steer[1] * (0.04 / s.track_rear()).to_degrees();
+        assert!((car.wheels[2].toe.to_degrees() - rear).abs() < 1e-9, "{} {rear}", car.wheels[2].toe.to_degrees());
+        // The compact's rear compliance is the typical oversteer kind (out of
+        // the corner); an understeer coefficient turns the rear wheels in.
+        assert!(car.wheels[2].toe < 0.0);
+        car.spec.force_steer[1] = 0.3;
+        car.compliance();
+        assert!(car.wheels[2].toe > 0.0);
+        // A rigid suspension does not steer.
+        car.spec.force_steer = [0.0; 2];
+        car.spec.torque_steer = [0.0; 2];
+        car.spec.roll_steer = [0.0; 2];
+        car.compliance();
+        assert!(car.wheels.iter().all(|w| w.toe == 0.0));
     }
 }

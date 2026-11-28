@@ -601,6 +601,16 @@ fn a_driver_pinned_while_slowing_after_an_escape_leaves_the_car() {
     let mut crashed_while_slowing=false;
     for _ in 0..135 {
         traffic_ticks(&mut game,7);
+        // Once the panic is over and the driver slows down, a parked car stands
+        // across the lane just ahead. (Before 27 November the slippery cars ran wide out of
+        // the next corner by themselves; a road car now makes that corner.)
+        game.luau(r#"
+            local c=state.motorist
+            if not c.panic and not state.blocker and math.abs(c.speed)>6 then
+                local heading=vector.create(-math.sin(c.yaw),0,-math.cos(c.yaw))
+                state.blocker=vehicles.spawn(c.pos+heading*7,c.yaw+math.pi/2)
+            end
+        "#).unwrap();
         let crashed=game.luau("local c=state.motorist; return not c.panic and c.damage.total>.20").unwrap();
         if crashed=="true" { crashed_while_slowing=true; }
         if game.luau("return state.runner.rideId==nil").unwrap()=="true" { break; }
@@ -625,10 +635,21 @@ fn cape_gravel_tires_climb_the_same_ridge_as_walking_and_story_markers() {
         state.testRallyCar=vehicles.spawn(start,math.atan2(24.39,.66))
         vehicles.drive(state.testRallyCar,{throttle=1})
     "#).unwrap();
-    for _ in 0..240 {
+    // The stock compact is a front-wheel-drive road car on road-tyre gravel
+    // grip: like a driver, hold the heading up the pass while it climbs.
+    let mut climb_ticks = 0;
+    for _ in 0..600 {
+        g.luau(r#"
+            local c=vehicles.get(state.testRallyCar)
+            local want=math.atan2(24.39,.66)
+            local err=(c.rot.y-want+math.pi)%(2*math.pi)-math.pi
+            vehicles.drive(state.testRallyCar,{throttle=1,steer=math.clamp(err*3,-1,1)})
+        "#).unwrap();
         g.tick(&[Controls::default()]);
+        climb_ticks += 1;
         if g.luau("return vehicles.get(state.testRallyCar).pos.x < -603").unwrap()=="true" { break; }
     }
+    eprintln!("Mariner Wood climb took {climb_ticks} ticks");
     let sample = g.luau(r#"
         local car=vehicles.get(state.testRallyCar)
         local ground=world.raycast(car.pos+vector.create(0,2,0),vector.create(0,-1,0),4,{tag="city"})

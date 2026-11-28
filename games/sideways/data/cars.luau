@@ -27,10 +27,11 @@ local base = {
 	rebound = {4800.0, 4200.0},
 	arb = {9000.0, 6000.0},
 	max_steer_deg = 30.0,
-	-- 27 October handling trial: more available grip and earlier lateral bite.
-	-- Both scales accept 0.5..1.5; 1.0/1.0 restores the original tyre response.
-	tyre_grip_scale = 1.12,
-	lateral_peak_scale = 0.80,
+	-- Tyre scale factors on the measured tyre (physics vehicle/tyre.rs):
+	-- friction (MF LMU) and slip angle at the peak (1 / LKY). 1.0 is the
+	-- measured passenger tyre; change only from tyre data, not by feel.
+	tyre_grip_scale = 1.0,
+	lateral_peak_scale = 1.0,
 	brake = {1650.0, 1050.0},
 	handbrake = 2600.0,
 	drive = {0.5, 0.5},

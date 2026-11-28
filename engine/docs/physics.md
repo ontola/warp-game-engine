@@ -52,6 +52,55 @@ the fraction of tyres touching ground (`contact`), and the shares of
 contacting wheels on loose or soft surfaces (`loose`, `soft`). For each front-left, front-right, rear-left and rear-right wheel, its
 vector contains local centre height, steering angle and spin angle in radians.
 
+### Tyres, surfaces and calibration
+
+The tyre (`vehicle/tyre.rs`) is built from measured values, not tuned by
+feel. Its slip stiffness, peak friction with its load sensitivity, and slip
+at the peak come from a published Magic Formula 5.2 property file of a
+205/60R15 passenger tyre: at 3000 N it peaks at mu 1.12 at 9.1 degrees slip
+angle and at mu 1.21 at slip ratio 0.144. Past the peak the curve falls to
+the measured sliding friction of the surface. Each surface in
+`vehicle/surfaces.rs` scales the friction by its measured peak relative to
+dry asphalt and sets its own sliding level (Wong 1993, Bosch 1996; the
+sources and the two unsourced rows, loose gravel and grass, are listed in
+the file). Combined braking and cornering share the grip by Pacejka's
+similarity method. `tyre_grip_scale` and `lateral_peak_scale` in a car spec
+are the Magic Formula scale factors (LMU and 1/LKY); leave them at 1.0
+unless tyre data says otherwise.
+
+`CarSpec::abs` gives a car anti-lock brakes with EBD (the rear wheels never
+slip more than the fronts) and `CarSpec::traction_control` brakes a driven
+wheel that spins past the car's speed; the stock compact has both and is
+front-wheel drive with open differentials, like nearly every road car of its
+class. Rally cars
+have no ABS. `CarSpec::esc` adds yaw control as in Bosch ESP (van Zanten,
+SAE 2000-01-1633): when the yaw rate leaves that of a linear car with the
+driver's steering, it brakes the outer front wheel (oversteer) or the inner
+rear (understeer) and cuts engine torque. The compact has it and passes the
+FMVSS 126 sine with dwell. The steering assist lets the front wheels go no
+further than the tyre's peak slip angle past the direction the front axle
+moves.
+
+Suspension kinematics and compliance (K&C) steer the wheels:
+`force_steer` (deg/kN of lateral force), `torque_steer` (deg/100 Nm of
+aligning torque, from the tyre file's pneumatic trail) and `roll_steer`
+(deg per deg of body roll), front and rear, positive toward understeer as a
+K&C rig reports them. The compact uses the middle of the ranges measured on
+passenger cars (Lee 2018, "Summary of typical vehicle parameter
+measurements", after Bundorf and Leffert, SAE 760713): front 0.19 deg/kN,
+1.0 deg/100 Nm, 0.05 deg/deg; rear -0.10, -0.125, 0.035. Rally cars and
+Sideways' cars stay rigid (zero) for lack of data. Measured understeer
+gradients of road cars at 0.15 g run 0.7 to 8.2 deg/g (front-wheel drive,
+average 4.2); the compact measures 1.2. Roll camber, the largest K&C term in
+Bundorf's budget, needs camber thrust data the tyre file does not give.
+
+`cargo run --release -p physics --example handling_lab -- out.json` runs the
+standard objective tests headless and prints the results: 30.5 m skidpad
+(lateral g, understeer gradient), 100-0 km/h braking, 0-100 km/h,
+ISO 7401 step steer (yaw response time, overshoot), sine with dwell
+(FMVSS 126) and two keyboard-player manoeuvres. Check a handling change
+against it and against real road-test values, not by feel.
+
 ## `kern::collide`
 
 Level geometry as boxes rotated about the vertical axis (`YawBox`), which

@@ -21,14 +21,37 @@ pub struct CarSpec {
     pub rebound: [f64; 2],
     pub arb: [f64; 2],
     pub max_steer_deg: f64,
-    /// Multiplies each surface's tyre friction, retaining weather differences.
-    /// Old car files retain their original handling with an implicit 1.0.
+    /// Tyre friction scale (MF LMUX/LMUY) on top of the surface's; 1.0 is the
+    /// measured tyre. Weather differences stay.
     #[serde(default = "unit_scale", deserialize_with = "tyre_scale")]
     pub tyre_grip_scale: f64,
-    /// Multiplies the lateral slip at peak force; lower values bite earlier.
+    /// Multiplies the slip angle at peak force (MF LKY = 1 / this); 1.0 is
+    /// the measured tyre, lower values bite earlier.
     #[serde(default = "unit_scale", deserialize_with = "tyre_scale")]
     pub lateral_peak_scale: f64,
+    /// Suspension kinematics and compliance per wheel, front and rear, in
+    /// the K&C rig convention (positive toward understeer: a front wheel
+    /// turns out of the corner, a rear wheel into it). Lateral force
+    /// compliance steer in deg/kN, aligning torque compliance steer in
+    /// deg/100 Nm, roll steer in deg per deg of body roll. Zero is a rigid,
+    /// kinematically neutral suspension.
+    #[serde(default)]
+    pub force_steer: [f64; 2],
+    #[serde(default)]
+    pub torque_steer: [f64; 2],
+    #[serde(default)]
+    pub roll_steer: [f64; 2],
     pub brake: [f64; 2],
+    /// Anti-lock brakes (every road car since 2004 in the EU; banned in rally).
+    #[serde(default)]
+    pub abs: bool,
+    /// Traction control (with ESC, standard on EU road cars since 2014).
+    #[serde(default)]
+    pub traction_control: bool,
+    /// Electronic stability control (yaw control by braking one wheel;
+    /// required on new EU cars since 2014, FMVSS 126 in the US).
+    #[serde(default)]
+    pub esc: bool,
     pub handbrake: f64,
     pub drive: [f64; 2],
     pub centre_lock: f64,
@@ -73,7 +96,8 @@ impl CarSpec {
     }
 }
 
-/// A compact four-wheel-drive road car for games using the stock fleet.
+/// A compact road car for games using the stock fleet: front-wheel drive
+/// with open differentials, ABS, traction control and ESC, as nearly every car of this class is.
 impl CarSpec {
     pub fn compact() -> Self {
         Self {
@@ -82,8 +106,10 @@ impl CarSpec {
             track: 1.56, track_rear: None, wheel_radius: 0.33, wheel_inertia: 1.1,
             droop_y: -0.10, travel: 0.24, spring: [34000., 30000.], bump: [3200., 2800.],
             rebound: [4800., 4200.], arb: [9000., 6000.], max_steer_deg: 35.,
-            tyre_grip_scale: 1.12, lateral_peak_scale: 0.8, brake: [1650., 1050.], handbrake: 2600.,
-            drive: [0.5, 0.5], centre_lock: 900., diff_preload: [80., 120.], diff_ramp: [0.45, 0.65],
+            tyre_grip_scale: 1.0, lateral_peak_scale: 1.0, brake: [1650., 1050.], abs: true,
+            // K&C: the middle of the measured passenger-car ranges (Lee 2018, see docs/physics.md).
+            force_steer: [0.19, -0.10], torque_steer: [1.0, -0.125], roll_steer: [0.05, 0.035], traction_control: true, esc: true, handbrake: 2600.,
+            drive: [1.0, 0.0], centre_lock: 0., diff_preload: [0., 0.], diff_ramp: [0., 0.],
             idle_rpm: 950., limit_rpm: 7100., engine_inertia: 0.16,
             torque: vec![[1000., 130.], [2500., 240.], [4500., 300.], [6000., 260.], [7100., 180.], [7600., 0.]],
             friction: [18., 0.0085], gears: vec![3.20, 3.00, 2.15, 1.67, 1.36, 1.15, 1.00],

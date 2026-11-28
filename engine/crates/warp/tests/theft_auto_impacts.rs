@@ -225,7 +225,7 @@ fn a_resident_rolls_onto_the_sedan_without_a_second_launch_when_the_driver_brake
         ..idle
     };
 
-    for (target_z, expected_speed) in [(-0.12, 10.39), (-10.8, 15.97)] {
+    for (target_z, expected_speed) in [(-0.12, 9.22), (-18.0, 15.56)] {
         let mut game = LuaGame::load(
             &dir,
             &Overrides {

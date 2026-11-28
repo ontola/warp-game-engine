@@ -234,7 +234,7 @@ fn road_deaths_fail_required_cast_only_and_never_award_a_contract_shot() {
     ] {
         let mut g = load();
         g.apply_story(&format!(r#"return {{id="ride",title="Ride",cast={{
-            {{kind="person",key="arden",name="Arden",pos=vector.create(3.85,0,-25)}}
+            {{kind="person",key="arden",name="Arden",pos=vector.create(3.85,0,-45)}}
         }},steps={{{steps}}}}}"#)).unwrap();
         advance(&mut g, Controls::default(), 169);
         advance(&mut g, press(Buttons::NORTH), 1);

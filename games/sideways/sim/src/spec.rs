@@ -48,7 +48,7 @@ mod tests {
     /// The shipped cars with base's two tyre scales set (None: left out).
     fn configured(grip: Option<&str>, lateral: Option<&str>) -> Result<Cars, String> {
         let mut text = DEFAULT_CARS.to_string();
-        for (line, value) in [("tyre_grip_scale = 1.12,", grip), ("lateral_peak_scale = 0.80,", lateral)] {
+        for (line, value) in [("tyre_grip_scale = 1.0,", grip), ("lateral_peak_scale = 1.0,", lateral)] {
             assert!(text.contains(line));
             let key = line.split(' ').next().unwrap();
             text = text.replace(line, &value.map(|v| format!("{key} = {v},")).unwrap_or_default());
